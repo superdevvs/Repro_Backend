@@ -11,24 +11,41 @@ class ShootFile extends Model
 
     protected $fillable = [
         'shoot_id',
+        'album_id',
         'filename',
         'stored_filename',
         'path',
+        'storage_path',
+        'watermarked_storage_path',
         'file_type',
+        'mime_type',
+        'media_type',
         'file_size',
         'uploaded_by',
+        'uploaded_at',
         'workflow_stage',
         'dropbox_path',
         'dropbox_file_id',
         'moved_to_completed_at',
         'verified_at',
         'verified_by',
-        'verification_notes'
+        'verification_notes',
+        'is_cover',
+        'is_favorite',
+        'bracket_group',
+        'sequence',
+        'flag_reason',
+        'metadata'
     ];
 
     protected $casts = [
         'moved_to_completed_at' => 'datetime',
         'verified_at' => 'datetime',
+        'is_cover' => 'boolean',
+        'is_favorite' => 'boolean',
+        'bracket_group' => 'integer',
+        'sequence' => 'integer',
+        'metadata' => 'array',
     ];
 
     // Workflow stage constants
@@ -36,10 +53,16 @@ class ShootFile extends Model
     const STAGE_COMPLETED = 'completed';
     const STAGE_VERIFIED = 'verified';
     const STAGE_ARCHIVED = 'archived';
+    const STAGE_FLAGGED = 'flagged';
 
     public function shoot()
     {
         return $this->belongsTo(Shoot::class);
+    }
+
+    public function album()
+    {
+        return $this->belongsTo(ShootMediaAlbum::class, 'album_id');
     }
 
     public function uploadedBy()
@@ -100,5 +123,36 @@ class ShootFile extends Model
                 'verification_notes' => $notes
             ]
         ]);
+    }
+
+    /**
+     * Get public URL for media file based on paywall status
+     */
+    public function getPublicUrl(): ?string
+    {
+        $shoot = $this->shoot;
+
+        // If bypass_paywall is true OR payment_status is paid, return original
+        if ($shoot->bypass_paywall || $shoot->payment_status === 'paid') {
+            return $this->storage_path ?? $this->dropbox_path;
+        }
+
+        // Otherwise return watermarked version if available
+        if ($this->watermarked_storage_path) {
+            return $this->watermarked_storage_path;
+        }
+
+        // If no watermarked version yet, return original but mark as restricted
+        // Frontend should handle this appropriately
+        return $this->storage_path ?? $this->dropbox_path;
+    }
+
+    /**
+     * Check if file should be watermarked
+     */
+    public function shouldBeWatermarked(): bool
+    {
+        $shoot = $this->shoot;
+        return !$shoot->bypass_paywall && $shoot->payment_status !== 'paid';
     }
 }

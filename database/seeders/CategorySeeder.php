@@ -13,10 +13,23 @@ class CategorySeeder extends Seeder
      */
     public function run(): void
     {
-        $categories = ['Photos', 'Videos', '360/3D Tours', 'Virtual Staging'];
+        $categories = [
+            ['name' => 'Video', 'icon' => 'Video'],
+            ['name' => 'Drone', 'icon' => 'Plane'],
+            ['name' => 'Addons', 'icon' => 'PlusCircle'],
+            ['name' => 'Bundles', 'icon' => 'Package'],
+            ['name' => 'Commercials', 'icon' => 'Briefcase'],
+            ['name' => 'Photos', 'icon' => 'Camera'],
+            ['name' => 'Virtual Staging', 'icon' => 'BoxSelect'],
+            ['name' => 'Floor Plans', 'icon' => 'LayoutTemplate'],
+            ['name' => '360/3D Tours', 'icon' => 'View'],
+        ];
 
-        foreach ($categories as $category) {
-            Category::firstOrCreate(['name' => $category]);
+        foreach ($categories as $categoryData) {
+            Category::updateOrCreate(
+                ['name' => $categoryData['name']],
+                ['icon' => $categoryData['icon']]
+            );
         }
     }
 }

@@ -42,60 +42,68 @@ class DropboxWorkflowService
     }
 
     /**
-     * Create folder structure for a shoot with date-based organization
+     * Create folder structure for a shoot using new Photo Editing organization
      */
     public function createShootFolders(Shoot $shoot)
     {
-        // Use dd-mm-YYYY as requested; if no date yet, fallback to today's date
-        $dateFolder = ($shoot->scheduled_date ? $shoot->scheduled_date : now())->format('d-m-Y');
-        $addressFolder = $this->generateAddressFolderName($shoot);
+        // Generate property slug if not already set
+        if (!$shoot->property_slug) {
+            $shoot->property_slug = $shoot->generatePropertySlug();
+            $shoot->save();
+        }
+
+        $propertySlug = $shoot->property_slug;
+        $basePath = "/Photo Editing";
         
-        $basePath = "/RealEstatePhotos";
-        
-        // Create base RealEstatePhotos folder
+        // Create base Photo Editing folder
         $this->createFolderIfNotExists($basePath);
         
-        // Create ToDo and Completed base folders
-        $todoBasePath = "{$basePath}/ToDo";
+        // Create To-Do and Completed base folders
+        $todoBasePath = "{$basePath}/To-Do";
         $completedBasePath = "{$basePath}/Completed";
+        $archivedBasePath = "{$basePath}/Archived Shoots";
         
         $this->createFolderIfNotExists($todoBasePath);
         $this->createFolderIfNotExists($completedBasePath);
+        $this->createFolderIfNotExists($archivedBasePath);
         
-        // Create date folders inside ToDo and Completed
-        $todoDatePath = "{$todoBasePath}/{$dateFolder}";
-        $completedDatePath = "{$completedBasePath}/{$dateFolder}";
+        // Create property folder structure: /To-Do/{propertySlug}/raw and /extra
+        $todoPropertyPath = "{$todoBasePath}/{$propertySlug}";
+        $rawPath = "{$todoPropertyPath}/raw";
+        $extraPath = "{$todoPropertyPath}/extra";
         
-        $this->createFolderIfNotExists($todoDatePath);
-        $this->createFolderIfNotExists($completedDatePath);
+        $this->createFolderIfNotExists($todoPropertyPath);
+        $this->createFolderIfNotExists($rawPath);
+        $this->createFolderIfNotExists($extraPath);
         
-        // Create address folder under the date inside ToDo and Completed.
-        $addressOnlyFolderName = $addressFolder;
+        // Create Completed folder: /Completed/{propertySlug}-edited
+        $completedPath = "{$completedBasePath}/{$propertySlug}-edited";
+        $this->createFolderIfNotExists($completedPath);
 
-        $todoPath = "{$todoDatePath}/{$addressOnlyFolderName}";
-        $completedPath = "{$completedDatePath}/{$addressOnlyFolderName}";
+        // Update shoot with folder paths
+        $shoot->dropbox_raw_folder = $rawPath;
+        $shoot->dropbox_extra_folder = $extraPath;
+        $shoot->dropbox_edited_folder = $completedPath;
+        $shoot->save();
 
-        // Create ToDo folder record
-        if ($this->createFolderIfNotExists($todoPath)) {
-            DropboxFolder::create([
-                'shoot_id' => $shoot->id,
-                'folder_type' => DropboxFolder::TYPE_TODO,
-                'dropbox_path' => $todoPath,
-                'dropbox_folder_id' => null
-            ]);
-        }
+        // Create DropboxFolder records for compatibility
+        DropboxFolder::updateOrCreate(
+            ['shoot_id' => $shoot->id, 'folder_type' => DropboxFolder::TYPE_TODO],
+            ['dropbox_path' => $rawPath, 'dropbox_folder_id' => null]
+        );
 
-        // Create Completed folder record
-        if ($this->createFolderIfNotExists($completedPath)) {
-            DropboxFolder::create([
-                'shoot_id' => $shoot->id,
-                'folder_type' => DropboxFolder::TYPE_COMPLETED,
-                'dropbox_path' => $completedPath,
-                'dropbox_folder_id' => null
-            ]);
-        }
-        
-        // Note: Final files will be stored on server only, no Dropbox final folder needed
+        DropboxFolder::updateOrCreate(
+            ['shoot_id' => $shoot->id, 'folder_type' => DropboxFolder::TYPE_COMPLETED],
+            ['dropbox_path' => $completedPath, 'dropbox_folder_id' => null]
+        );
+
+        Log::info("Created Dropbox folders for shoot", [
+            'shoot_id' => $shoot->id,
+            'property_slug' => $propertySlug,
+            'raw_folder' => $rawPath,
+            'extra_folder' => $extraPath,
+            'edited_folder' => $completedPath,
+        ]);
     }
 
     /**
@@ -159,8 +167,8 @@ class DropboxWorkflowService
                 ]);
 
                 // Update shoot workflow status if this is the first photo upload
-                if ($shoot->workflow_status === Shoot::WORKFLOW_BOOKED) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_PHOTOS_UPLOADED, $userId);
+                if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOAD_PENDING])) {
+                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_RAW_UPLOADED, $userId);
                 }
 
                 Log::info("File uploaded to Dropbox ToDo folder", [
@@ -205,11 +213,11 @@ class DropboxWorkflowService
             'dropbox_file_id' => null,
         ]);
 
-        if ($stage === ShootFile::STAGE_TODO && $shoot->workflow_status === Shoot::WORKFLOW_BOOKED) {
-            $shoot->updateWorkflowStatus(Shoot::WORKFLOW_PHOTOS_UPLOADED, $userId);
+        if ($stage === ShootFile::STAGE_TODO && in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOAD_PENDING])) {
+            $shoot->updateWorkflowStatus(Shoot::WORKFLOW_RAW_UPLOADED, $userId);
         }
-        if ($stage === ShootFile::STAGE_COMPLETED && in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_PHOTOS_UPLOADED])) {
-            $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_COMPLETE, $userId);
+        if ($stage === ShootFile::STAGE_COMPLETED && in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOADED])) {
+            $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_UPLOADED, $userId);
         }
 
         Log::info('Stored file locally as Dropbox fallback', [
@@ -245,8 +253,8 @@ class DropboxWorkflowService
 
             // If no remaining TODO files and workflow is PHOTOS_UPLOADED, advance workflow
             $todoFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
-            if ($todoFiles === 0 && $shoot->workflow_status === Shoot::WORKFLOW_PHOTOS_UPLOADED) {
-                $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_COMPLETE, $userId);
+            if ($todoFiles === 0 && $shoot->workflow_status === Shoot::WORKFLOW_RAW_UPLOADED) {
+                $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING, $userId);
             }
             return true;
         }
@@ -270,8 +278,8 @@ class DropboxWorkflowService
 
                 // Check if all files are moved to completed
                 $todoFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
-                if ($todoFiles === 0 && $shoot->workflow_status === Shoot::WORKFLOW_PHOTOS_UPLOADED) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_COMPLETE, $userId);
+                if ($todoFiles === 0 && $shoot->workflow_status === Shoot::WORKFLOW_RAW_UPLOADED) {
+                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING, $userId);
                 }
 
                 Log::info("File moved to Completed folder", [
@@ -368,6 +376,37 @@ class DropboxWorkflowService
             Log::error("Exception downloading file from Dropbox", ['error' => $e->getMessage()]);
             throw $e;
         }
+    }
+
+    public function getTemporaryLink(?string $dropboxPath): ?string
+    {
+        if (!$dropboxPath) {
+            return null;
+        }
+
+        try {
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->post($this->dropboxApiUrl . '/files/get_temporary_link', [
+                    'path' => $dropboxPath,
+                ]);
+
+            if ($response->successful()) {
+                return $response->json()['link'] ?? null;
+            }
+
+            Log::warning('Failed to create Dropbox temporary link', [
+                'path' => $dropboxPath,
+                'error' => $response->json(),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Exception creating Dropbox temporary link', [
+                'path' => $dropboxPath,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
     }
 
     /**
@@ -580,8 +619,8 @@ class DropboxWorkflowService
                 ]);
 
                 // Update shoot workflow status if needed
-                if ($shoot->workflow_status === Shoot::WORKFLOW_BOOKED) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_COMPLETE, $userId);
+                if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOADED, Shoot::WORKFLOW_EDITING])) {
+                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_UPLOADED, $userId);
                 }
 
                 Log::info("File uploaded directly to Dropbox Completed folder", [
@@ -672,8 +711,8 @@ class DropboxWorkflowService
                 ]);
 
                 // Update shoot workflow status if this is the first photo upload
-                if ($shoot->workflow_status === Shoot::WORKFLOW_BOOKED) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_PHOTOS_UPLOADED, $userId);
+                if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOAD_PENDING])) {
+                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_RAW_UPLOADED, $userId);
                 }
 
                 Log::info("File copied from Dropbox to ToDo folder", [
@@ -743,5 +782,322 @@ class DropboxWorkflowService
             Log::error("Exception deleting file from Dropbox: {$path}", ['error' => $e->getMessage()]);
             return false;
         }
+    }
+
+    /**
+     * Upload file to Extra folder
+     */
+    public function uploadToExtra(Shoot $shoot, UploadedFile $file, $userId)
+    {
+        // Ensure extra folder exists
+        if (!$shoot->dropbox_extra_folder) {
+            $this->createShootFolders($shoot);
+            $shoot->refresh();
+        }
+
+        if (!$shoot->dropbox_extra_folder) {
+            Log::warning('Extra Dropbox folder not found, falling back to local storage', [
+                'shoot_id' => $shoot->id,
+            ]);
+            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO);
+        }
+
+        $filename = 'EXTRA_' . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
+        $dropboxPath = $shoot->dropbox_extra_folder . '/' . $filename;
+
+        try {
+            $fileContent = $file->get();
+            
+            $apiArgs = json_encode([
+                'path' => $dropboxPath,
+                'mode' => 'add',
+                'autorename' => true,
+                'mute' => false,
+            ]);
+
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->withBody($fileContent, 'application/octet-stream')
+                ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
+                ->post($this->dropboxContentUrl . '/files/upload');
+
+            if ($response->successful()) {
+                $fileData = $response->json();
+                
+                $shootFile = ShootFile::create([
+                    'shoot_id' => $shoot->id,
+                    'filename' => $file->getClientOriginalName(),
+                    'stored_filename' => $filename,
+                    'path' => $dropboxPath,
+                    'file_type' => $file->getMimeType(),
+                    'file_size' => $file->getSize(),
+                    'uploaded_by' => $userId,
+                    'workflow_stage' => ShootFile::STAGE_TODO,
+                    'dropbox_path' => $dropboxPath,
+                    'dropbox_file_id' => $fileData['id'] ?? null
+                ]);
+
+                // Update extra photo count
+                $shoot->extra_photo_count = $shoot->files()
+                    ->where('workflow_stage', ShootFile::STAGE_TODO)
+                    ->where('path', 'like', '%/extra/%')
+                    ->count();
+                $shoot->save();
+
+                Log::info("File uploaded to Dropbox Extra folder", [
+                    'shoot_id' => $shoot->id,
+                    'filename' => $filename,
+                    'path' => $dropboxPath
+                ]);
+
+                return $shootFile;
+            } else {
+                Log::error("Failed to upload file to Dropbox Extra folder, falling back to local", $response->json() ?: []);
+                return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO);
+            }
+        } catch (\Exception $e) {
+            Log::error("Exception uploading file to Dropbox Extra folder, falling back to local", ['error' => $e->getMessage()]);
+            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO);
+        }
+    }
+
+    /**
+     * Archive shoot by copying completed folder to Archived Shoots
+     */
+    public function archiveShoot(Shoot $shoot, $userId = null)
+    {
+        if (!$shoot->dropbox_edited_folder) {
+            Log::warning('No edited folder to archive', ['shoot_id' => $shoot->id]);
+            return false;
+        }
+
+        // Generate client slug
+        $client = $shoot->client;
+        $clientSlug = $client ? strtolower(preg_replace('/[^a-zA-Z0-9\-]/', '-', $client->name)) : 'unknown-client';
+        $clientSlug = preg_replace('/-+/', '-', trim($clientSlug, '-'));
+
+        // Create archive path: /Photo Editing/Archived Shoots/{clientSlug}/{propertySlug}-{shootId}
+        $basePath = "/Photo Editing/Archived Shoots";
+        $clientPath = "{$basePath}/{$clientSlug}";
+        $archivePath = "{$clientPath}/{$shoot->property_slug}-{$shoot->id}";
+
+        try {
+            // Create client folder if not exists
+            $this->createFolderIfNotExists($basePath);
+            $this->createFolderIfNotExists($clientPath);
+
+            // Copy the entire completed folder to archive
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->post($this->dropboxApiUrl . '/files/copy_v2', [
+                    'from_path' => $shoot->dropbox_edited_folder,
+                    'to_path' => $archivePath,
+                    'allow_shared_folder' => false,
+                    'autorename' => true
+                ]);
+
+            if ($response->successful()) {
+                // Update shoot with archive folder path
+                $shoot->dropbox_archive_folder = $archivePath;
+                $shoot->save();
+
+                Log::info("Shoot archived successfully", [
+                    'shoot_id' => $shoot->id,
+                    'from_path' => $shoot->dropbox_edited_folder,
+                    'to_path' => $archivePath
+                ]);
+
+                return true;
+            } else {
+                Log::error("Failed to archive shoot in Dropbox", $response->json() ?: []);
+                return false;
+            }
+        } catch (\Exception $e) {
+            Log::error("Exception archiving shoot", ['error' => $e->getMessage(), 'shoot_id' => $shoot->id]);
+            return false;
+        }
+    }
+
+    /**
+     * List shoot files by type (raw, edited, extra, archive)
+     */
+    public function listShootFiles(Shoot $shoot, string $type)
+    {
+        $folderPath = $shoot->getDropboxFolderForType($type);
+        
+        if (!$folderPath) {
+            Log::warning("No Dropbox folder found for type: {$type}", ['shoot_id' => $shoot->id]);
+            return [];
+        }
+
+        try {
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->post($this->dropboxApiUrl . '/files/list_folder', [
+                    'path' => $folderPath,
+                    'recursive' => false,
+                    'include_media_info' => true,
+                ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                $entries = $data['entries'] ?? [];
+
+                // Transform entries into our format
+                return collect($entries)
+                    ->filter(function ($entry) {
+                        return $entry['.tag'] === 'file';
+                    })
+                    ->map(function ($entry) use ($shoot) {
+                        return [
+                            'id' => $entry['id'] ?? null,
+                            'name' => $entry['name'] ?? '',
+                            'path' => $entry['path_display'] ?? '',
+                            'size' => $entry['size'] ?? 0,
+                            'modified' => $entry['client_modified'] ?? $entry['server_modified'] ?? null,
+                            'mime_type' => $this->getMimeTypeFromExtension($entry['name'] ?? ''),
+                            'thumbnail_link' => null, // Will be fetched on demand
+                        ];
+                    })
+                    ->values()
+                    ->toArray();
+            } else {
+                Log::error("Failed to list Dropbox folder files", $response->json() ?: []);
+                return [];
+            }
+        } catch (\Exception $e) {
+            Log::error("Exception listing Dropbox folder files", ['error' => $e->getMessage()]);
+            return [];
+        }
+    }
+
+    /**
+     * Get Dropbox shared link for ZIP download
+     */
+    public function getDropboxZipLink(string $folderPath)
+    {
+        try {
+            // Try to create a shared link for the folder
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->post($this->dropboxApiUrl . '/sharing/create_shared_link_with_settings', [
+                    'path' => $folderPath,
+                    'settings' => [
+                        'requested_visibility' => 'public',
+                        'audience' => 'public',
+                        'access' => 'viewer'
+                    ]
+                ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                $url = $data['url'] ?? null;
+                
+                // Convert to direct download link by replacing dl=0 with dl=1
+                if ($url) {
+                    $url = str_replace('dl=0', 'dl=1', $url);
+                    Log::info("Created Dropbox shared link", ['path' => $folderPath, 'url' => $url]);
+                    return $url;
+                }
+            } else {
+                $error = $response->json();
+                // If link already exists, try to get it
+                if (isset($error['error']['.tag']) && $error['error']['.tag'] === 'shared_link_already_exists') {
+                    return $this->getExistingSharedLink($folderPath);
+                }
+                Log::warning("Failed to create Dropbox shared link", $error ?: []);
+            }
+        } catch (\Exception $e) {
+            Log::error("Exception creating Dropbox shared link", ['error' => $e->getMessage()]);
+        }
+
+        return null;
+    }
+
+    /**
+     * Get existing shared link for a folder
+     */
+    private function getExistingSharedLink(string $folderPath)
+    {
+        try {
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->post($this->dropboxApiUrl . '/sharing/list_shared_links', [
+                    'path' => $folderPath,
+                    'direct_only' => true
+                ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                $links = $data['links'] ?? [];
+                
+                if (count($links) > 0) {
+                    $url = $links[0]['url'] ?? null;
+                    if ($url) {
+                        return str_replace('dl=0', 'dl=1', $url);
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            Log::error("Exception getting existing shared link", ['error' => $e->getMessage()]);
+        }
+
+        return null;
+    }
+
+    /**
+     * Generate ZIP file on-the-fly from Dropbox files (fallback)
+     */
+    public function generateZipOnFly(Shoot $shoot, string $type)
+    {
+        $files = $this->listShootFiles($shoot, $type);
+        
+        if (empty($files)) {
+            throw new \Exception("No files found for type: {$type}");
+        }
+
+        // Create a temporary ZIP file
+        $zipPath = storage_path("app/temp/shoot-{$shoot->id}-{$type}-" . time() . ".zip");
+        
+        // Ensure temp directory exists
+        if (!file_exists(dirname($zipPath))) {
+            mkdir(dirname($zipPath), 0755, true);
+        }
+
+        $zip = new \ZipArchive();
+        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            throw new \Exception("Failed to create ZIP file");
+        }
+
+        foreach ($files as $file) {
+            try {
+                // Download file from Dropbox
+                $apiArgs = json_encode(['path' => $file['path']]);
+                $response = Http::withToken($this->getAccessToken())
+                    ->withOptions($this->httpOptions)
+                    ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
+                    ->get($this->dropboxContentUrl . '/files/download');
+
+                if ($response->successful()) {
+                    $zip->addFromString($file['name'], $response->body());
+                }
+            } catch (\Exception $e) {
+                Log::error("Failed to download file for ZIP", [
+                    'file' => $file['path'],
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        $zip->close();
+
+        Log::info("Generated ZIP file on-the-fly", [
+            'shoot_id' => $shoot->id,
+            'type' => $type,
+            'file_count' => count($files),
+            'zip_path' => $zipPath
+        ]);
+
+        return $zipPath;
     }
 }

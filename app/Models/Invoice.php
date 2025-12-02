@@ -18,6 +18,12 @@ class Invoice extends Model
     public const ROLE_CLIENT = 'client';
     public const ROLE_PHOTOGRAPHER = 'photographer';
 
+    // Approval status constants
+    public const APPROVAL_STATUS_PENDING = 'pending';
+    public const APPROVAL_STATUS_APPROVED = 'approved';
+    public const APPROVAL_STATUS_REJECTED = 'rejected';
+    public const APPROVAL_STATUS_PENDING_APPROVAL = 'pending_approval';
+
     protected $fillable = [
         'photographer_id',
         'sales_rep_id',
@@ -38,6 +44,15 @@ class Invoice extends Model
         'status',
         'notes',
         'paid_at',
+        'approval_status',
+        'rejection_reason',
+        'rejected_by',
+        'rejected_at',
+        'approved_by',
+        'approved_at',
+        'modified_by',
+        'modified_at',
+        'modification_notes',
     ];
 
     protected $casts = [
@@ -48,6 +63,14 @@ class Invoice extends Model
         'is_sent' => 'boolean',
         'is_paid' => 'boolean',
         'paid_at' => 'datetime',
+        'rejected_at' => 'datetime',
+        'approved_at' => 'datetime',
+        'modified_at' => 'datetime',
+    ];
+
+    protected $attributes = [
+        'approval_status' => 'pending',
+        'status' => 'draft',
     ];
 
     public function photographer(): BelongsTo
@@ -99,11 +122,32 @@ class Invoice extends Model
         $items = $this->items()->get();
 
         $charges = $items->where('type', InvoiceItem::TYPE_CHARGE)->sum('total_amount');
+        $expenses = $items->where('type', InvoiceItem::TYPE_EXPENSE)->sum('total_amount');
         $payments = $items->where('type', InvoiceItem::TYPE_PAYMENT)->sum('total_amount');
 
-        $this->charges_total = $charges;
-        $this->payments_total = $payments;
-        $this->balance_due = $charges - $payments;
+        $totalCharges = $charges + $expenses;
+
+        // Update fields if they exist in the schema
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'charges_total')) {
+            $this->charges_total = $totalCharges;
+        }
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'payments_total')) {
+            $this->payments_total = $payments;
+        }
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'balance_due')) {
+            $this->balance_due = $totalCharges - $payments;
+        }
+
+        // Update total_amount if it exists
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'total_amount')) {
+            $this->total_amount = $totalCharges;
+        }
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'subtotal')) {
+            $this->subtotal = $totalCharges;
+        }
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'total')) {
+            $this->total = $totalCharges + ($this->tax ?? 0);
+        }
 
         $this->save();
     }
@@ -136,6 +180,40 @@ class Invoice extends Model
     public function client()
     {
         return $this->belongsTo(User::class, 'client_id');
+    }
+
+    public function rejectedBy()
+    {
+        return $this->belongsTo(User::class, 'rejected_by');
+    }
+
+    public function approvedBy()
+    {
+        return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    public function modifiedBy()
+    {
+        return $this->belongsTo(User::class, 'modified_by');
+    }
+
+    /**
+     * Check if invoice can be modified by photographer
+     */
+    public function canBeModifiedByPhotographer(): bool
+    {
+        return in_array($this->approval_status, [
+            self::APPROVAL_STATUS_PENDING,
+            self::APPROVAL_STATUS_REJECTED,
+        ]) && $this->status === self::STATUS_DRAFT;
+    }
+
+    /**
+     * Check if invoice requires admin approval
+     */
+    public function requiresApproval(): bool
+    {
+        return $this->approval_status === self::APPROVAL_STATUS_PENDING_APPROVAL;
     }
 
     public function payments()

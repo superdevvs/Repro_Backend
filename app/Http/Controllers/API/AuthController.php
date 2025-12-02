@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use App\Services\MailService;
 
@@ -65,15 +66,21 @@ class AuthController extends Controller
             'password' => 'required'
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        $email = strtolower(trim($request->email));
+        Log::info('[Auth] Login attempt', ['email' => $email]);
+
+        $user = User::where('email', $email)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
+            Log::warning('[Auth] Login failed', ['email' => $email]);
             return response()->json([
                 'message' => 'Invalid credentials'
             ], 401);
         }
 
         $token = $user->createToken('auth_token')->plainTextToken;
+
+        Log::info('[Auth] Login successful', ['email' => $email, 'user_id' => $user->id]);
 
         return response()->json([
             'message' => 'Login successful',

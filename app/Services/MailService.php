@@ -14,6 +14,11 @@ use App\Mail\ShootRemovedMail;
 use App\Mail\ShootReadyMail;
 use App\Mail\PaymentConfirmationMail;
 use App\Mail\TermsAcceptedMail;
+use App\Mail\WeeklySalesReportMail;
+use App\Mail\InvoiceGeneratedMail;
+use App\Mail\InvoicePendingApprovalMail;
+use App\Mail\InvoiceApprovedMail;
+use App\Mail\InvoiceRejectedMail;
 
 class MailService
 {
@@ -320,5 +325,165 @@ class MailService
         // This would typically use Laravel's password reset functionality
         $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
         return "{$frontendUrl}/reset-password?email={$user->email}";
+    }
+
+    /**
+     * Send weekly sales report email
+     */
+    public function sendWeeklySalesReportEmail(User $salesRep, array $reportData): bool
+    {
+        try {
+            Mail::to($salesRep->email)->send(new WeeklySalesReportMail($salesRep, $reportData));
+            
+            Log::info('Weekly sales report email sent', [
+                'sales_rep_id' => $salesRep->id,
+                'email' => $salesRep->email,
+                'period' => $reportData['period'] ?? null,
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send weekly sales report email', [
+                'sales_rep_id' => $salesRep->id,
+                'email' => $salesRep->email,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
+    /**
+     * Send invoice generated email
+     */
+    public function sendInvoiceGeneratedEmail(\App\Models\Invoice $invoice): bool
+    {
+        try {
+            $photographer = $invoice->photographer;
+            if (!$photographer) {
+                Log::warning('Cannot send invoice email: photographer not found', [
+                    'invoice_id' => $invoice->id
+                ]);
+                return false;
+            }
+
+            Mail::to($photographer->email)->send(new InvoiceGeneratedMail($invoice));
+            
+            Log::info('Invoice generated email sent', [
+                'invoice_id' => $invoice->id,
+                'photographer_id' => $photographer->id,
+                'email' => $photographer->email
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send invoice generated email', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
+    /**
+     * Send invoice pending approval email to admins
+     */
+    public function sendInvoicePendingApprovalEmail(\App\Models\Invoice $invoice): bool
+    {
+        try {
+            $admins = User::whereIn('role', ['admin', 'super_admin'])->get();
+            
+            if ($admins->isEmpty()) {
+                Log::warning('No admins found to send invoice approval email', [
+                    'invoice_id' => $invoice->id
+                ]);
+                return false;
+            }
+
+            foreach ($admins as $admin) {
+                Mail::to($admin->email)->send(new InvoicePendingApprovalMail($invoice, $admin));
+            }
+            
+            Log::info('Invoice pending approval emails sent', [
+                'invoice_id' => $invoice->id,
+                'admin_count' => $admins->count()
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send invoice pending approval emails', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
+    /**
+     * Send invoice approved email
+     */
+    public function sendInvoiceApprovedEmail(\App\Models\Invoice $invoice): bool
+    {
+        try {
+            $photographer = $invoice->photographer;
+            if (!$photographer) {
+                Log::warning('Cannot send invoice approved email: photographer not found', [
+                    'invoice_id' => $invoice->id
+                ]);
+                return false;
+            }
+
+            Mail::to($photographer->email)->send(new InvoiceApprovedMail($invoice));
+            
+            Log::info('Invoice approved email sent', [
+                'invoice_id' => $invoice->id,
+                'photographer_id' => $photographer->id,
+                'email' => $photographer->email
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send invoice approved email', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
+    /**
+     * Send invoice rejected email
+     */
+    public function sendInvoiceRejectedEmail(\App\Models\Invoice $invoice): bool
+    {
+        try {
+            $photographer = $invoice->photographer;
+            if (!$photographer) {
+                Log::warning('Cannot send invoice rejected email: photographer not found', [
+                    'invoice_id' => $invoice->id
+                ]);
+                return false;
+            }
+
+            Mail::to($photographer->email)->send(new InvoiceRejectedMail($invoice));
+            
+            Log::info('Invoice rejected email sent', [
+                'invoice_id' => $invoice->id,
+                'photographer_id' => $photographer->id,
+                'email' => $photographer->email
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send invoice rejected email', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
     }
 }

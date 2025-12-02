@@ -29,6 +29,9 @@ class User extends Authenticatable
         'bio',
         'account_status',
         'password',
+        'created_by_name',
+        'created_by_id',
+        'metadata',
     ];
 
 
@@ -52,6 +55,15 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'metadata' => 'array',
         ];
+    }
+
+    /**
+     * Get shoots where this user is the client
+     */
+    public function shoots()
+    {
+        return $this->hasMany(Shoot::class, 'client_id');
     }
 }

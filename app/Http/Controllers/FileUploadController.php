@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Shoot;
 use App\Services\DropboxWorkflowService;
+use App\Models\ShootFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -77,6 +78,19 @@ class FileUploadController extends Controller
                 'current_status' => $shoot->workflow_status
             ], 400);
         }
+        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
+            Shoot::WORKFLOW_RAW_UPLOADED,
+            Shoot::WORKFLOW_EDITING,
+            Shoot::WORKFLOW_EDITING_ISSUE,
+            Shoot::WORKFLOW_EDITING_UPLOADED,
+            Shoot::WORKFLOW_PENDING_REVIEW,
+        ])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot upload edited files at this workflow stage',
+                'current_status' => $shoot->workflow_status
+            ], 400);
+        }
 
         $uploadedFiles = [];
         $errors = [];
@@ -121,13 +135,28 @@ class FileUploadController extends Controller
                 }
             }
 
+            $shoot->refresh();
+            $rawCount = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
+            $editedCount = $shoot->files()->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])->count();
+            $shoot->raw_photo_count = $rawCount;
+            $shoot->edited_photo_count = $editedCount;
+            $shoot->raw_missing_count = max(0, ($shoot->expected_raw_count ?? 0) - $rawCount);
+            $shoot->edited_missing_count = max(0, ($shoot->expected_final_count ?? 0) - $editedCount);
+            $shoot->missing_raw = $shoot->raw_missing_count > 0;
+            $shoot->missing_final = $shoot->edited_missing_count > 0;
+            $shoot->save();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Files processed successfully',
                 'uploaded_files' => $uploadedFiles,
                 'errors' => $errors,
                 'success_count' => count($uploadedFiles),
-                'error_count' => count($errors)
+                'error_count' => count($errors),
+                'raw_photo_count' => $shoot->raw_photo_count,
+                'edited_photo_count' => $shoot->edited_photo_count,
+                'raw_missing_count' => $shoot->raw_missing_count,
+                'edited_missing_count' => $shoot->edited_missing_count,
             ]);
 
         } catch (\Exception $e) {

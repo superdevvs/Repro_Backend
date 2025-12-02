@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 
 
@@ -18,7 +19,7 @@ class UserController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        $users = User::all();
+        $users = User::all()->map(fn (User $record) => $this->presentUserForViewer($record, $user));
 
         return response()->json(['users' => $users]);
     }
@@ -37,9 +38,10 @@ class UserController extends Controller
             'username' => 'nullable|string|unique:users',
             'phone_number' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
-            'role' => 'required|in:super_admin,admin,client,photographer,editor',
+            'role' => 'required|in:super_admin,admin,client,photographer,editor,salesRep',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|image|max:2048',
+            'metadata' => 'nullable',
         ]);
 
         // Handle avatar upload
@@ -50,14 +52,49 @@ class UserController extends Controller
         // Generate a temporary password or leave it blank
         $validated['password'] = Hash::make('defaultpassword'); // or generate one
 
+        if ($request->has('metadata')) {
+            $metadata = $request->input('metadata');
+            if (is_string($metadata)) {
+                $decoded = json_decode($metadata, true);
+                $metadata = json_last_error() === JSON_ERROR_NONE ? $decoded : null;
+            }
+            if (is_array($metadata)) {
+                $validated['metadata'] = $this->filterMetadataForWriter($metadata, $admin);
+            }
+        }
+
         $user = User::create($validated);
 
-        return response()->json(['message' => 'User created successfully.', 'user' => $user], 201);
+        return response()->json([
+            'message' => 'User created successfully.',
+            'user' => $this->presentUserForViewer($user, $admin),
+        ], 201);
     }
 
     public function getClients()
     {
-        $clients = User::where('role', 'client')->get();
+        $clients = User::where('role', 'client')->get()->map(function ($client) {
+            // Get the most recent shoot for this client to find their rep
+            $mostRecentShoot = \App\Models\Shoot::where('client_id', $client->id)
+                ->whereNotNull('rep_id')
+                ->orderBy('created_at', 'desc')
+                ->first();
+            
+            $clientData = $client->toArray();
+            
+            if ($mostRecentShoot && $mostRecentShoot->rep_id) {
+                $rep = User::find($mostRecentShoot->rep_id);
+                if ($rep) {
+                    $clientData['rep'] = [
+                        'id' => $rep->id,
+                        'name' => $rep->name,
+                        'email' => $rep->email,
+                    ];
+                }
+            }
+            
+            return $clientData;
+        });
 
         return response()->json([
             'status' => 'success',
@@ -99,7 +136,7 @@ class UserController extends Controller
         }
 
         $validated = $request->validate([
-            'role' => 'required|in:super_admin,admin,client,photographer,editor',
+            'role' => 'required|in:super_admin,admin,client,photographer,editor,salesRep',
         ]);
 
         $user = User::findOrFail($id);
@@ -115,5 +152,37 @@ class UserController extends Controller
             'old_role' => $oldRole,
             'new_role' => $user->role,
         ]);
+    }
+
+    protected function presentUserForViewer(User $user, User $viewer): array
+    {
+        $payload = $user->toArray();
+        if (!$this->viewerIsSuperAdmin($viewer)) {
+            Arr::forget($payload, 'metadata.repDetails.homeAddress');
+            Arr::forget($payload, 'metadata.repDetails.commissionPercentage');
+        }
+
+        return $payload;
+    }
+
+    protected function filterMetadataForWriter(array $metadata, User $viewer): array
+    {
+        if ($this->viewerIsSuperAdmin($viewer)) {
+            return $metadata;
+        }
+
+        Arr::forget($metadata, 'repDetails.homeAddress');
+        Arr::forget($metadata, 'repDetails.commissionPercentage');
+
+        return $metadata;
+    }
+
+    protected function viewerIsSuperAdmin(?User $viewer): bool
+    {
+        if (!$viewer) {
+            return false;
+        }
+
+        return in_array($viewer->role, ['super_admin', 'superadmin'], true);
     }
 }

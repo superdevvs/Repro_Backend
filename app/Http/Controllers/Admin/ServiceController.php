@@ -19,6 +19,14 @@ class ServiceController extends Controller
             'category_id' => 'required|exists:categories,id',
         ]);
 
+        // Ensure category_id is not null
+        if (empty($validated['category_id'])) {
+            return response()->json([
+                'message' => 'Category is required.',
+                'errors' => ['category_id' => ['Please select a category.']]
+            ], 422);
+        }
+
         $service = Service::create($validated);
 
         return response()->json([

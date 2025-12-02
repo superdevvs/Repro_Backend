@@ -11,6 +11,7 @@ class InvoiceItem extends Model
 
     public const TYPE_CHARGE = 'charge';
     public const TYPE_PAYMENT = 'payment';
+    public const TYPE_EXPENSE = 'expense';
 
     protected $fillable = [
         'invoice_id',
@@ -61,5 +62,10 @@ class InvoiceItem extends Model
     public function isPayment(): bool
     {
         return $this->type === self::TYPE_PAYMENT;
+    }
+
+    public function isExpense(): bool
+    {
+        return $this->type === self::TYPE_EXPENSE;
     }
 }

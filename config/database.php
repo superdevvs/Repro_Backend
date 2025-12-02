@@ -2,6 +2,25 @@
 
 use Illuminate\Support\Str;
 
+$defaultSqlitePath = database_path('database.sqlite');
+
+$sqliteDatabasePath = env('DB_DATABASE');
+
+if ($sqliteDatabasePath === null || $sqliteDatabasePath === '') {
+    $sqliteDatabasePath = $defaultSqlitePath;
+} elseif ($sqliteDatabasePath !== ':memory:') {
+    $driveLetterAbsolute = strlen($sqliteDatabasePath) > 2
+        && ctype_alpha($sqliteDatabasePath[0])
+        && $sqliteDatabasePath[1] === ':'
+        && in_array($sqliteDatabasePath[2], ['\\', '/'], true);
+
+    $isAbsolutePath = Str::startsWith($sqliteDatabasePath, ['/', '\\']) || $driveLetterAbsolute;
+
+    if (! $isAbsolutePath) {
+        $sqliteDatabasePath = base_path($sqliteDatabasePath);
+    }
+}
+
 return [
 
     /*
@@ -34,12 +53,12 @@ return [
         'sqlite' => [
             'driver' => 'sqlite',
             'url' => env('DB_URL'),
-            'database' => env('DB_DATABASE', database_path('database.sqlite')),
+            'database' => $sqliteDatabasePath,
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            'busy_timeout' => null,
-            'journal_mode' => null,
-            'synchronous' => null,
+            'busy_timeout' => env('DB_BUSY_TIMEOUT'),
+            'journal_mode' => env('DB_JOURNAL_MODE'),
+            'synchronous' => env('DB_SYNCHRONOUS'),
         ],
 
         'mysql' => [

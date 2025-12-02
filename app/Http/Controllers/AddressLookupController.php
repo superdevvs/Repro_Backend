@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use App\Services\AddressLookupService;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
 
 class AddressLookupController extends Controller
 {
@@ -62,9 +63,18 @@ class AddressLookupController extends Controller
             ]);
 
         } catch (\Exception $e) {
+            Log::error('Address search controller error', [
+                'query' => $request->input('query'),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            
             return response()->json([
                 'error' => 'Address search failed',
-                'message' => $e->getMessage()
+                'message' => $e->getMessage(),
+                'hint' => str_contains($e->getMessage(), 'LocationIQ') 
+                    ? 'LocationIQ API key may not be configured. Please set LOCATIONIQ_API_KEY in your .env file. See LOCATIONIQ_SETUP.md for instructions.'
+                    : 'Please check your API configuration and try again.'
             ], 500);
         }
     }
