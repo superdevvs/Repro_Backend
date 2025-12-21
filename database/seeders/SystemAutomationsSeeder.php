@@ -16,7 +16,7 @@ class SystemAutomationsSeeder extends Seeder
     {
         // Get the first admin user for created_by/updated_by
         // Check multiple possible role formats
-        $admin = User::whereIn('role', ['admin', 'super_admin', 'superadmin'])->first();
+        $admin = User::whereIn('role', ['admin', 'superadmin'])->first();
 
         if (!$admin) {
             $this->command->warn('No admin user found. Skipping system automations seeding.');

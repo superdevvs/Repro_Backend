@@ -230,7 +230,7 @@ class MessagingService
                 ->all();
         }
 
-        $roles = ['admin', 'super_admin', 'salesRep', 'sales_rep'];
+        $roles = ['admin', 'superadmin', 'salesRep', 'sales_rep'];
 
         $userIds = User::query()
             ->whereIn('role', $roles)

@@ -12,7 +12,7 @@ return new class extends Migration
     {
         // Get the first admin user for created_by/updated_by
         // Check multiple possible role formats
-        $admin = User::whereIn('role', ['admin', 'super_admin', 'superadmin'])->first();
+        $admin = User::whereIn('role', ['admin', 'superadmin'])->first();
 
         if (!$admin) {
             // If no admin exists, we'll skip this migration

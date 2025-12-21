@@ -32,6 +32,7 @@ class User extends Authenticatable
         'created_by_name',
         'created_by_id',
         'metadata',
+        'timezone',
     ];
 
 

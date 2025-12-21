@@ -20,7 +20,7 @@ class PayoutReportService
 
     public function buildPhotographerSummaries(Carbon $start, Carbon $end): Collection
     {
-        $shoots = Shoot::with('photographer:id,name,email')
+        $shoots = Shoot::with(['photographer:id,name,email', 'services'])
             ->whereNotNull('photographer_id')
             ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
             ->whereIn('workflow_status', [
@@ -37,7 +37,12 @@ class PayoutReportService
                     return null;
                 }
 
-                $gross = (float) $group->sum('total_quote');
+                // Calculate total photographer pay from services
+                $gross = (float) $group->sum(function (Shoot $shoot) {
+                    $photographerPay = $shoot->total_photographer_pay ?? 0;
+                    // Fallback to total_quote if no photographer pay is set in services
+                    return $photographerPay > 0 ? $photographerPay : (float) ($shoot->total_quote ?? 0);
+                });
 
                 return [
                     'id' => $photographer->id,
@@ -46,7 +51,7 @@ class PayoutReportService
                     'role' => 'photographer',
                     'shoot_count' => $group->count(),
                     'gross_total' => round($gross, 2),
-                    'average_value' => round($group->avg('total_quote') ?? 0, 2),
+                    'average_value' => round($gross / max($group->count(), 1), 2),
                     'commission_rate' => null,
                     'commission_total' => null,
                 ];

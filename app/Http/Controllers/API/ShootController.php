@@ -21,13 +21,13 @@ use App\Http\Requests\StoreShootRequest;
 use App\Http\Requests\UpdateShootStatusRequest;
 use App\Http\Resources\ShootResource;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Carbon;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
-use App\Jobs\UploadShootMediaToDropboxJob;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -42,29 +42,26 @@ class ShootController extends Controller
 
     protected const TAB_STATUS_MAP = [
         'scheduled' => [
-            Shoot::WORKFLOW_BOOKED,
-            Shoot::WORKFLOW_RAW_UPLOAD_PENDING,
-            Shoot::WORKFLOW_RAW_UPLOADED,
-            Shoot::WORKFLOW_RAW_ISSUE,
-            Shoot::WORKFLOW_EDITING,
-            Shoot::WORKFLOW_EDITING_ISSUE,
-            Shoot::WORKFLOW_PENDING_REVIEW,
+            Shoot::STATUS_SCHEDULED,
         ],
         'completed' => [
-            Shoot::WORKFLOW_READY_FOR_CLIENT,
-            Shoot::WORKFLOW_EDITING_UPLOADED,
-            Shoot::WORKFLOW_ADMIN_VERIFIED,
-            Shoot::WORKFLOW_COMPLETED,
+            Shoot::STATUS_UPLOADED,
+            Shoot::STATUS_EDITING,
+            Shoot::STATUS_REVIEW,
+        ],
+        'delivered' => [
+            Shoot::STATUS_DELIVERED,
         ],
         'hold' => [
-            Shoot::WORKFLOW_ON_HOLD,
+            Shoot::STATUS_ON_HOLD,
+            Shoot::STATUS_CANCELLED,
         ],
     ];
 
     protected const HISTORY_ALLOWED_ROLES = [
         'admin',
         'superadmin',
-        'super_admin',
+        'superadmin',
         'finance',
         'accounting',
     ];
@@ -98,6 +95,7 @@ class ShootController extends Controller
             $query = Shoot::with([
                 'client:id,name,email,company_name,phonenumber',
                 'photographer:id,name,avatar',
+                'editor:id,name,avatar',
                 'service:id,name',
                 'services:id,name',
                 'files' => function ($query) {
@@ -112,6 +110,13 @@ class ShootController extends Controller
                 $query->where('photographer_id', $user->id);
             } elseif ($user && $user->role === 'client') {
                 $query->where('client_id', $user->id);
+            } elseif ($user && $user->role === 'editor') {
+                // Editors should only see shoots assigned to them
+                $query->where('editor_id', $user->id);
+                // Default to 'completed' tab for editors to see editing/review shoots
+                if ($tab === 'scheduled') {
+                    $tab = 'completed';
+                }
             }
 
             $this->applyTabScope($query, $tab);
@@ -142,7 +147,27 @@ class ShootController extends Controller
             
             $query->chunk(50, function ($chunk) use (&$shoots, &$totalCount) {
                 $transformed = $chunk->map(function ($shoot) {
-                    return $this->transformShoot($shoot);
+                    $transformedShoot = $this->transformShoot($shoot);
+                    // Convert to array and ensure services_list is included
+                    $shootArray = $transformedShoot->toArray();
+                    // Get services_list from the model attribute (set in transformShoot)
+                    $servicesArray = $transformedShoot->getAttribute('services_list') ?? 
+                                    $transformedShoot->services->pluck('name')->filter()->values()->all();
+                    $shootArray['services_list'] = $servicesArray;
+                    // Also ensure services relationship is properly formatted
+                    if (isset($shootArray['services']) && is_array($shootArray['services'])) {
+                        // Services already in array format, keep it
+                    } else {
+                        // Convert services relationship to array of names
+                        $shootArray['services'] = $servicesArray;
+                    }
+                    // Ensure created_by_name is included
+                    $createdByName = $transformedShoot->getAttribute('created_by_name');
+                    if ($createdByName) {
+                        $shootArray['created_by'] = $createdByName;
+                        $shootArray['createdBy'] = $createdByName;
+                    }
+                    return $shootArray;
                 });
                 $shoots = $shoots->merge($transformed);
                 $totalCount += $chunk->count();
@@ -187,37 +212,10 @@ class ShootController extends Controller
     {
         $tabKey = array_key_exists($tab, self::TAB_STATUS_MAP) ? $tab : 'scheduled';
 
-        // Use new status field if available, fallback to workflow_status
-        if ($tabKey === 'hold') {
-            $query->where(function (Builder $scope) {
-                $scope->where('status', ShootWorkflowService::STATUS_HOLD_ON)
-                    ->orWhereNull('scheduled_at')
-                    ->orWhereNull('scheduled_date')
-                    ->orWhereIn(DB::raw('LOWER(workflow_status)'), array_map('strtolower', self::TAB_STATUS_MAP['hold']));
-            });
-            return;
-        }
+        $statuses = self::TAB_STATUS_MAP[$tabKey] ?? self::TAB_STATUS_MAP['scheduled'];
 
-        // Map tab to new status values
-        $statusMap = [
-            'scheduled' => [
-                ShootWorkflowService::STATUS_SCHEDULED,
-                ShootWorkflowService::STATUS_IN_PROGRESS,
-            ],
-            'completed' => [
-                ShootWorkflowService::STATUS_COMPLETED,
-            ],
-        ];
-
-        if (isset($statusMap[$tabKey])) {
-            $query->whereIn('status', $statusMap[$tabKey]);
-        } else {
-            // Fallback to workflow_status for backward compatibility
-        $statuses = array_map('strtolower', self::TAB_STATUS_MAP[$tabKey]);
-        $query->where(function (Builder $scope) use ($statuses) {
-            $scope->whereIn(DB::raw('LOWER(workflow_status)'), $statuses);
-        });
-        }
+        // Filter by unified status column only (migration normalized all legacy values)
+        $query->whereIn('status', $statuses);
     }
 
     protected function applyOperationalFilters(Builder $query, Request $request, string $tab): void
@@ -274,7 +272,7 @@ class ShootController extends Controller
         $dateFrom = $request->query('date_from');
         $dateTo = $request->query('date_to');
         if ($dateFrom || $dateTo) {
-            $column = $tab === 'completed' ? 'admin_verified_at' : 'scheduled_date';
+            $column = $tab === 'delivered' ? 'admin_verified_at' : 'scheduled_date';
             $this->applyDateRangeFilter($query, $column, $dateFrom, $dateTo);
         }
 
@@ -288,18 +286,27 @@ class ShootController extends Controller
     protected function determineTabOrdering(string $tab): array
     {
         switch ($tab) {
-            case 'completed':
+            case 'delivered':
                 return [
                     ['raw' => 'COALESCE(admin_verified_at, editing_completed_at, scheduled_date) DESC'],
+                ];
+            case 'completed':
+                return [
+                    ['column' => 'created_at', 'direction' => 'desc'],
                 ];
             case 'hold':
                 return [
                     ['column' => 'created_at', 'direction' => 'desc'],
                 ];
-            default:
+            case 'scheduled':
+                // Sort by most recent booking first (created_at DESC)
                 return [
-                    ['column' => 'scheduled_date', 'direction' => 'asc'],
-                    ['column' => 'time', 'direction' => 'asc'],
+                    ['column' => 'created_at', 'direction' => 'desc'],
+                ];
+            default:
+                // Default to most recent booking first
+                return [
+                    ['column' => 'created_at', 'direction' => 'desc'],
                 ];
         }
     }
@@ -891,7 +898,8 @@ class ShootController extends Controller
         $validated = $request->validated();
         $user = $request->user();
 
-        return DB::transaction(function () use ($validated, $user) {
+        try {
+            return DB::transaction(function () use ($validated, $user) {
             // 1. Calculate base quote from services
             $baseQuote = $this->calculateBaseQuote($validated['services']);
 
@@ -904,13 +912,24 @@ class ShootController extends Controller
 
             // 4. Determine initial status
             $scheduledAt = $validated['scheduled_at'] ? new \DateTime($validated['scheduled_at']) : null;
-            $initialStatus = $scheduledAt 
-                ? ShootWorkflowService::STATUS_SCHEDULED 
-                : ShootWorkflowService::STATUS_HOLD_ON;
+            // Create shoot with on_hold status first, then schedule it via workflow service
+            // This avoids the "scheduled to scheduled" transition error
+            $initialStatus = Shoot::STATUS_ON_HOLD;
 
-            // 5. Check photographer availability if scheduled
+            // 5. Check photographer availability if scheduled (with lock to prevent race conditions)
             if ($validated['photographer_id'] && $scheduledAt) {
-                $this->checkPhotographerAvailability($validated['photographer_id'], $scheduledAt);
+                // Lock photographer's shoots for this date to prevent concurrent bookings
+                $carbonDate = \Carbon\Carbon::parse($scheduledAt);
+                DB::table('shoots')
+                    ->where('photographer_id', $validated['photographer_id'])
+                    ->whereDate('scheduled_at', $carbonDate->toDateString())
+                    ->lockForUpdate()
+                    ->get();
+                
+                // Now check availability (lock is held, preventing race conditions)
+                // Calculate duration from services (in minutes)
+                $durationMinutes = $this->calculateShootDurationFromServices($validated['services']);
+                $this->checkPhotographerAvailability($validated['photographer_id'], $scheduledAt, $durationMinutes);
             }
 
             // 6. Create shoot
@@ -929,8 +948,8 @@ class ShootController extends Controller
                 'scheduled_at' => $scheduledAt,
                 'scheduled_date' => $scheduledAt ? $scheduledAt->format('Y-m-d') : null, // Legacy
                 'time' => $scheduledAt ? $scheduledAt->format('H:i') : ($validated['time'] ?? null), // Legacy
-                'status' => $initialStatus,
-                'workflow_status' => Shoot::WORKFLOW_BOOKED,
+                'status' => $initialStatus, // Start as on_hold, then schedule via workflow
+                'workflow_status' => Shoot::STATUS_SCHEDULED,
                 'base_quote' => $taxCalculation['base_quote'],
                 'tax_region' => $taxCalculation['tax_region'],
                 'tax_percent' => $taxCalculation['tax_percent'],
@@ -967,7 +986,7 @@ class ShootController extends Controller
                 [
                     'by' => $user->name,
                     'status' => $initialStatus,
-                    'scheduled_at' => $scheduledAt?->toIso8601String(),
+                    'scheduled_at' => $scheduledAt ? \Carbon\Carbon::instance($scheduledAt)->toIso8601String() : null,
                 ],
                 $user
             );
@@ -985,7 +1004,20 @@ class ShootController extends Controller
                 'message' => 'Shoot created successfully',
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services', 'notes']))
             ], 201);
-        });
+            });
+        } catch (\Exception $e) {
+            \Log::error('Error creating shoot', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'validated' => $validated,
+                'user_id' => $user->id ?? null,
+            ]);
+            
+            return response()->json([
+                'message' => 'Failed to create shoot: ' . $e->getMessage(),
+                'error' => config('app.debug') ? $e->getTraceAsString() : 'Internal server error'
+            ], 500);
+        }
     }
 
     /**
@@ -1025,18 +1057,76 @@ class ShootController extends Controller
     /**
      * Check photographer availability
      * 
+     * @param int $photographerId
+     * @param \DateTime $scheduledAt
+     * @param int|null $durationMinutes Duration in minutes (default: 120)
+     * @param int|null $excludeShootId Shoot ID to exclude (for updates)
      * @throws ValidationException
      */
-    protected function checkPhotographerAvailability(int $photographerId, \DateTime $scheduledAt): void
+    protected function checkPhotographerAvailability(int $photographerId, \DateTime $scheduledAt, ?int $durationMinutes = 120, ?int $excludeShootId = null): void
     {
         $carbonDate = \Carbon\Carbon::parse($scheduledAt);
         
-        // Use availability service to check
-        if (!$this->availabilityService->isAvailable($photographerId, $carbonDate)) {
+        // Use availability service to check with duration
+        if (!$this->availabilityService->isAvailable($photographerId, $carbonDate, $durationMinutes, $excludeShootId)) {
             $validator = \Illuminate\Support\Facades\Validator::make([], []);
             $validator->errors()->add('photographer_id', 'Photographer is not available at the selected time.');
             throw new ValidationException($validator);
         }
+    }
+
+    /**
+     * Calculate shoot duration in minutes from services array
+     * 
+     * @param array $services Array of service data with 'id' key
+     * @return int Duration in minutes
+     */
+    protected function calculateShootDurationFromServices(array $services): int
+    {
+        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
+        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
+        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
+        
+        $serviceIds = collect($services)->pluck('id')->unique();
+        $serviceModels = Service::whereIn('id', $serviceIds)->get();
+        
+        if ($serviceModels->isEmpty()) {
+            return $defaultDurationMinutes;
+        }
+        
+        // Use max delivery_time from services (assuming it represents shoot duration)
+        // Convert hours to minutes
+        $maxHours = $serviceModels->max('delivery_time') ?? ($defaultDurationMinutes / 60);
+        $durationMinutes = (int)($maxHours * 60);
+        
+        // Ensure within min/max bounds from config
+        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+    }
+
+    /**
+     * Calculate shoot duration in minutes from existing shoot
+     * 
+     * @param Shoot $shoot
+     * @return int Duration in minutes
+     */
+    protected function calculateShootDurationFromShoot(Shoot $shoot): int
+    {
+        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
+        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
+        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
+        
+        $services = $shoot->services;
+        
+        if (!$services || $services->isEmpty()) {
+            return $defaultDurationMinutes;
+        }
+        
+        // Use max delivery_time from services
+        $maxHours = $services->max('delivery_time') ?? ($defaultDurationMinutes / 60);
+        $durationMinutes = (int)($maxHours * 60);
+        
+        // Ensure within min/max bounds from config
+        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
     }
 
     /**
@@ -1084,6 +1174,7 @@ class ShootController extends Controller
                     $service['id'] => [
                     'price' => $service['price'] ?? $serviceModel?->price ?? 0,
                         'quantity' => $service['quantity'] ?? 1,
+                        'photographer_pay' => $service['photographer_pay'] ?? null,
                     ],
                 ];
             })->toArray();
@@ -1174,14 +1265,43 @@ class ShootController extends Controller
                 return response()->json(['message' => 'scheduled_at is required'], 422);
             }
 
-            // Check photographer availability if photographer_id is provided
+            // Check photographer availability if photographer_id is provided (with lock)
             $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
             if ($photographerId) {
-                $this->checkPhotographerAvailability($photographerId, $scheduledAt);
+                // Lock photographer's shoots for this date to prevent concurrent bookings
+                $carbonDate = \Carbon\Carbon::parse($scheduledAt);
+                DB::table('shoots')
+                    ->where('photographer_id', $photographerId)
+                    ->whereDate('scheduled_at', $carbonDate->toDateString())
+                    ->where('id', '!=', $shoot->id) // Exclude current shoot
+                    ->lockForUpdate()
+                    ->get();
+                
+                // Now check availability (lock is held, preventing race conditions)
+                // Calculate duration from shoot's services (in minutes)
+                $durationMinutes = $this->calculateShootDurationFromShoot($shoot);
+                $this->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes, $shoot->id);
                 
                 // Update photographer if different
                 if ($photographerId !== $shoot->photographer_id) {
                     $shoot->photographer_id = $photographerId;
+                    $shoot->save();
+                }
+            }
+
+            // Check if shoot was on hold and remove cancellation fee if it was added
+            $wasOnHold = ($shoot->status === 'hold_on' || $shoot->workflow_status === 'on_hold');
+            if ($wasOnHold) {
+                // Remove cancellation fee (typically $60) that was added when put on hold
+                // We'll check if the current total is higher than expected and remove the fee
+                $cancellationFee = 60; // Standard cancellation fee
+                $currentBase = $shoot->base_quote ?? 0;
+                $currentTotal = $shoot->total_quote ?? 0;
+                
+                // If the quotes are high enough to contain the cancellation fee, remove it
+                if ($currentBase >= $cancellationFee && $currentTotal >= $cancellationFee) {
+                    $shoot->base_quote = max(0, $currentBase - $cancellationFee);
+                    $shoot->total_quote = max(0, $currentTotal - $cancellationFee);
                     $shoot->save();
                 }
             }
@@ -1193,9 +1313,13 @@ class ShootController extends Controller
                 $this->dropboxService->createShootFolders($shoot);
             }
             
+            // Reload the shoot to get the latest status from database
+            $shoot->refresh();
+            $shoot->load(['client', 'rep', 'photographer', 'services', 'createdByUser']);
+            
             return response()->json([
                 'message' => 'Shoot scheduled successfully',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+                'data' => new ShootResource($shoot)
             ]);
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
@@ -1218,11 +1342,16 @@ class ShootController extends Controller
         }
 
         // Admin/super admin can also trigger this
-        if (!in_array($user->role, ['admin', 'superadmin', 'super_admin', 'photographer'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'photographer'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         try {
+            if (Schema::hasColumn('shoots', 'editor_id') && empty($shoot->editor_id)) {
+                $shoot->editor_id = 377;
+                $shoot->save();
+            }
+
             $this->workflowService->startEditing($shoot, $user);
 
             return response()->json([
@@ -1243,7 +1372,7 @@ class ShootController extends Controller
         $user = $request->user();
 
         // Only editor or admin can mark as ready for review
-        if (!in_array($user->role, ['admin', 'superadmin', 'super_admin', 'editor'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'editor'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1268,7 +1397,7 @@ class ShootController extends Controller
         $user = $request->user();
 
         // Only admin and super admin can complete shoots
-        if (!in_array($user->role, ['admin', 'superadmin', 'super_admin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1292,19 +1421,33 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        // Admin, super admin, or assigned photographer can put on hold
+        // Admin, super admin, rep, or assigned photographer can put on hold
         if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'super_admin', 'photographer'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'rep', 'representative', 'photographer'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $reason = $request->input('reason');
+        $cancellationFee = $request->input('cancellation_fee', 0);
 
         try {
             $this->workflowService->putOnHold($shoot, $user, $reason);
+
+            // Add cancellation fee if provided
+            // Cancellation fee is a flat fee added to both base and total (doesn't affect tax)
+            if ($cancellationFee > 0) {
+                $currentBase = $shoot->base_quote ?? 0;
+                $currentTotal = $shoot->total_quote ?? 0;
+                
+                // Add cancellation fee to base quote and total quote
+                // Tax amount remains unchanged (cancellation fee is not taxed)
+                $shoot->base_quote = $currentBase + $cancellationFee;
+                $shoot->total_quote = $currentTotal + $cancellationFee;
+                $shoot->save();
+            }
 
             return response()->json([
                 'message' => 'Shoot put on hold',
@@ -1321,19 +1464,31 @@ class ShootController extends Controller
     public function update(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin','superadmin','super_admin'])) {
+        if (!$user || !in_array($user->role, ['admin','superadmin','superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $validated = $request->validate([
-            'status' => 'nullable|string|in:booked,scheduled,completed,on_hold,cancelled',
-            'workflow_status' => 'nullable|string|in:booked,photos_uploaded,editing_complete,pending_review,on_hold,admin_verified,completed',
+            'status' => 'nullable|string|in:scheduled,completed,uploaded,editing,review,delivered,on_hold,cancelled',
+            'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,review,delivered,on_hold,cancelled',
             'scheduled_date' => 'nullable|date',
             'time' => 'nullable|string',
             'services' => 'nullable|array',
             'services.*.id' => 'required_with:services|integer|exists:services,id',
             'services.*.price' => 'nullable|numeric|min:0',
             'services.*.quantity' => 'nullable|integer|min:1',
+            // Location fields
+            'address' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:255',
+            'state' => 'nullable|string|max:2',
+            'zip' => 'nullable|string|max:10',
+            // Client and photographer
+            'client_id' => 'nullable|exists:users,id',
+            'photographer_id' => 'nullable|exists:users,id',
+            // Payment fields
+            'base_quote' => 'nullable|numeric|min:0',
+            'tax_amount' => 'nullable|numeric|min:0',
+            'total_quote' => 'nullable|numeric|min:0',
         ]);
 
         $shoot = Shoot::findOrFail($shootId);
@@ -1341,8 +1496,8 @@ class ShootController extends Controller
         if (array_key_exists('status', $validated)) {
             $shoot->status = $validated['status'];
         }
-        // If marking completed via either status or workflow_status, stamp admin_verified_at
-        $markCompleted = false;
+        // If marking delivered, stamp admin_verified_at
+        $markDelivered = false;
         if (array_key_exists('scheduled_date', $validated)) {
             $shoot->scheduled_date = $validated['scheduled_date'];
         }
@@ -1352,13 +1507,13 @@ class ShootController extends Controller
 
         if (array_key_exists('workflow_status', $validated)) {
             $shoot->workflow_status = $validated['workflow_status'];
-            if ($validated['workflow_status'] === 'completed' || $validated['workflow_status'] === 'admin_verified') {
-                $markCompleted = true;
+            if ($validated['workflow_status'] === Shoot::STATUS_DELIVERED) {
+                $markDelivered = true;
             }
         }
 
-        if (array_key_exists('status', $validated) && $validated['status'] === 'completed') {
-            $markCompleted = true;
+        if (array_key_exists('status', $validated) && $validated['status'] === Shoot::STATUS_DELIVERED) {
+            $markDelivered = true;
         }
 
         // Update services if provided
@@ -1366,17 +1521,52 @@ class ShootController extends Controller
             $this->attachServices($shoot, $validated['services']);
         }
 
+        // Update location fields
+        if (array_key_exists('address', $validated)) {
+            $shoot->address = $validated['address'];
+        }
+        if (array_key_exists('city', $validated)) {
+            $shoot->city = $validated['city'];
+        }
+        if (array_key_exists('state', $validated)) {
+            $shoot->state = $validated['state'];
+        }
+        if (array_key_exists('zip', $validated)) {
+            $shoot->zip = $validated['zip'];
+        }
+
+        // Update client if provided
+        if (array_key_exists('client_id', $validated)) {
+            $shoot->client_id = $validated['client_id'];
+        }
+
+        // Update photographer if provided
+        if (array_key_exists('photographer_id', $validated)) {
+            $shoot->photographer_id = $validated['photographer_id'];
+        }
+
+        // Update payment fields
+        if (array_key_exists('base_quote', $validated)) {
+            $shoot->base_quote = $validated['base_quote'];
+        }
+        if (array_key_exists('tax_amount', $validated)) {
+            $shoot->tax_amount = $validated['tax_amount'];
+        }
+        if (array_key_exists('total_quote', $validated)) {
+            $shoot->total_quote = $validated['total_quote'];
+        }
+
         $shoot->save();
 
-        if ($markCompleted) {
+        if ($markDelivered) {
             // Set admin_verified_at if not already set
             if (empty($shoot->admin_verified_at)) {
                 $shoot->admin_verified_at = now();
                 $shoot->save();
             }
-            // Ensure workflow_status reflects completion
-            if ($shoot->workflow_status !== 'completed') {
-                $shoot->workflow_status = 'completed';
+            // Ensure workflow_status reflects delivery
+            if ($shoot->workflow_status !== Shoot::STATUS_DELIVERED) {
+                $shoot->workflow_status = Shoot::STATUS_DELIVERED;
                 $shoot->save();
             }
         }
@@ -1390,7 +1580,7 @@ class ShootController extends Controller
     public function destroy($shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'super_admin'])) {
+        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1404,29 +1594,116 @@ class ShootController extends Controller
 
     public function uploadFiles(Request $request, $shootId)
     {
-        $request->validate([
-            'files' => 'required|array',
-            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,nef,arw,tiff,bmp,heic,heif,zip',
-            'service_category' => 'nullable|string|in:P,iGuide,Video',
-            'upload_type' => 'nullable|string|in:raw,edited',
+        // Check PHP upload errors
+        $phpFileUploadErrors = [
+            UPLOAD_ERR_INI_SIZE => 'File exceeds upload_max_filesize (' . ini_get('upload_max_filesize') . ')',
+            UPLOAD_ERR_FORM_SIZE => 'File exceeds MAX_FILE_SIZE directive',
+            UPLOAD_ERR_PARTIAL => 'File was only partially uploaded',
+            UPLOAD_ERR_NO_FILE => 'No file was uploaded',
+            UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder',
+            UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk',
+            UPLOAD_ERR_EXTENSION => 'A PHP extension stopped the upload',
+        ];
+        
+        Log::info('Upload request received', [
+            'shoot_id' => $shootId,
+            'has_files' => $request->hasFile('files'),
+            'file_count' => $request->hasFile('files') ? (is_array($request->file('files')) ? count($request->file('files')) : 1) : 0,
+            'all_keys' => array_keys($request->all()),
+            'php_files' => array_keys($_FILES),
+            'content_length' => $request->header('Content-Length'),
+            'post_max_size' => ini_get('post_max_size'),
+            'upload_max_filesize' => ini_get('upload_max_filesize'),
         ]);
+
+        // Handle both single file and array of files
+        $files = $request->file('files');
+        
+        // If no files, check if upload was truncated due to size limits
+        if (!$files) {
+            $contentLength = (int) $request->header('Content-Length', 0);
+            $postMaxSize = $this->parseSize(ini_get('post_max_size'));
+            
+            if ($contentLength > $postMaxSize) {
+                return response()->json([
+                    'message' => 'Upload too large. Maximum allowed: ' . ini_get('post_max_size'),
+                    'errors' => ['files' => ['The uploaded file exceeds the server limit of ' . ini_get('post_max_size')]],
+                ], 413);
+            }
+            
+            return response()->json([
+                'message' => 'No files received. The file may have been too large or the upload was interrupted.',
+                'errors' => ['files' => ['No valid files were received by the server.']],
+                'debug' => [
+                    'post_max_size' => ini_get('post_max_size'),
+                    'upload_max_filesize' => ini_get('upload_max_filesize'),
+                    'content_length' => $contentLength,
+                ],
+            ], 422);
+        }
+        
+        // Normalize to array
+        if (!is_array($files)) {
+            $files = [$files];
+        }
+        
+        // Validate each file
+        foreach ($files as $file) {
+            if (!$file->isValid()) {
+                return response()->json([
+                    'message' => 'Invalid file uploaded',
+                    'errors' => ['files' => ['One or more files failed to upload properly.']],
+                ], 422);
+            }
+            
+            // Check file size (500MB limit per file - effectively unlimited for most use cases)
+            $maxFileSize = 500 * 1024 * 1024; // 500MB in bytes
+            if ($file->getSize() > $maxFileSize) {
+                return response()->json([
+                    'message' => 'File too large: ' . $file->getClientOriginalName(),
+                    'errors' => ['files' => ['File exceeds 500MB limit: ' . $file->getClientOriginalName()]],
+                ], 422);
+            }
+        }
+        
+        // Store normalized files back for processing
+        $request->files->set('files', $files);
 
         $shoot = Shoot::findOrFail($shootId);
         $uploadType = $request->input('upload_type', 'raw');
+        
+        // Update bracket_mode if provided (for raw uploads)
+        if ($uploadType === 'raw' && $request->has('bracket_mode')) {
+            $bracketMode = (int) $request->input('bracket_mode');
+            $shoot->bracket_mode = $bracketMode;
+            
+            // Calculate expected raw count based on bracket mode and expected final count
+            $expectedFinalCount = $shoot->expected_final_count ?? $shoot->package?->expectedDeliveredCount ?? 0;
+            $shoot->expected_raw_count = $expectedFinalCount * $bracketMode;
+            $shoot->save();
+        }
+        
+        // Update photographer notes if provided
+        if ($request->has('photographer_notes')) {
+            $shoot->photographer_notes = $request->input('photographer_notes');
+            $shoot->save();
+        }
 
-        if ($uploadType === 'raw' && !$shoot->canUploadPhotos()) {
+        // Check if user is admin (admins can upload at any stage)
+        $user = auth()->user();
+        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin']);
+
+        if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
             return response()->json([
                 'message' => 'Cannot upload raw files at this workflow stage',
                 'current_status' => $shoot->workflow_status,
             ], 400);
         }
 
-        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
-            Shoot::WORKFLOW_RAW_UPLOADED,
-            Shoot::WORKFLOW_EDITING,
-            Shoot::WORKFLOW_EDITING_ISSUE,
-            Shoot::WORKFLOW_EDITING_UPLOADED,
-            Shoot::WORKFLOW_PENDING_REVIEW,
+        if ($uploadType === 'edited' && !$isAdmin && !in_array($shoot->workflow_status, [
+            Shoot::STATUS_UPLOADED,
+            Shoot::STATUS_EDITING,
+            Shoot::STATUS_REVIEW,
         ])) {
             return response()->json([
                 'message' => 'Cannot upload edited files at this workflow stage',
@@ -1439,13 +1716,21 @@ class ShootController extends Controller
 
         DB::beginTransaction();
         try {
-            foreach ($request->file('files') as $file) {
+            $isExtra = $request->boolean('is_extra', false);
+            
+            foreach ($files as $file) {
                 try {
                     $serviceCategory = $request->input('service_category');
 
                     $shootFile = $uploadType === 'raw'
                         ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory)
                         : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory);
+
+                    // Mark as extra if flagged
+                    if ($isExtra && $shootFile) {
+                        $shootFile->media_type = 'extra';
+                        $shootFile->save();
+                    }
 
                     $uploadedFiles[] = [
                         'id' => $shootFile->id,
@@ -1454,6 +1739,7 @@ class ShootController extends Controller
                         'dropbox_path' => $shootFile->dropbox_path,
                         'file_size' => $shootFile->file_size,
                         'uploaded_at' => $shootFile->created_at,
+                        'is_extra' => $shootFile->media_type === 'extra',
                     ];
                 } catch (\Exception $e) {
                     $errors[] = [
@@ -1535,7 +1821,7 @@ class ShootController extends Controller
         }
 
         // Check if user has admin permissions
-        if (!in_array(auth()->user()->role, ['admin', 'super_admin'])) {
+        if (!in_array(auth()->user()->role, ['admin', 'superadmin'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -1591,7 +1877,7 @@ class ShootController extends Controller
     public function setCoverMedia(Shoot $shoot, ShootFile $file)
     {
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'super_admin', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'photographer', 'editor']);
 
         $shoot->files()->where('is_cover', true)->update(['is_cover' => false]);
         $file->is_cover = true;
@@ -1607,7 +1893,7 @@ class ShootController extends Controller
     public function flagMedia(Request $request, Shoot $shoot, ShootFile $file)
     {
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'super_admin', 'editor', 'photographer']);
+        $this->authorizeRole(['admin', 'superadmin', 'editor', 'photographer']);
 
         $request->validate([
             'reason' => 'nullable|string|max:500',
@@ -1673,7 +1959,7 @@ class ShootController extends Controller
     public function deleteMedia(Shoot $shoot, ShootFile $file)
     {
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'super_admin', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'photographer', 'editor']);
 
         return $this->performFileDeletion($shoot, $file);
     }
@@ -1688,6 +1974,40 @@ class ShootController extends Controller
         }
 
         return response()->json(['url' => $url]);
+    }
+
+    /**
+     * Preview a file - serves as a proxy for Dropbox files or redirects to local storage
+     */
+    public function previewFile(Shoot $shoot, ShootFile $file)
+    {
+        $this->authorizeFile($shoot, $file);
+
+        // Try local storage first
+        if ($file->path && Storage::disk('public')->exists($file->path)) {
+            $path = Storage::disk('public')->path($file->path);
+            $mimeType = mime_content_type($path) ?: 'image/jpeg';
+            return response()->file($path, ['Content-Type' => $mimeType]);
+        }
+
+        // Try URL field
+        if ($file->url && Str::startsWith($file->url, 'http')) {
+            return redirect($file->url);
+        }
+
+        // Try Dropbox
+        if ($file->dropbox_path) {
+            try {
+                $url = $this->dropboxService->getTemporaryLink($file->dropbox_path);
+                if ($url) {
+                    return redirect($url);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to get Dropbox preview link', ['file_id' => $file->id, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return response()->json(['message' => 'File not available'], 404);
     }
 
     public function bulkDownloadMedia(Request $request, Shoot $shoot)
@@ -1715,7 +2035,7 @@ class ShootController extends Controller
             'ids.*' => 'integer',
         ]);
 
-        $this->authorizeRole(['admin', 'super_admin', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'photographer', 'editor']);
 
         $files = $shoot->files()->whereIn('id', $request->input('ids'))->get();
         $errors = [];
@@ -1812,7 +2132,7 @@ class ShootController extends Controller
     public function finalize(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin','superadmin','super_admin'])) {
+        if (!$user || !in_array($user->role, ['admin','superadmin','superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1863,23 +2183,27 @@ class ShootController extends Controller
     }
 
     /**
-     * Submit shoot for admin review (photographer endpoint)
+     * Submit shoot for admin review (photographer/editor endpoint)
      */
     public function submitForReview(Request $request, $shootId)
     {
         $user = auth()->user();
         $shoot = Shoot::findOrFail($shootId);
 
-        // Check if user is the photographer assigned to this shoot
-        if ($shoot->photographer_id !== $user->id) {
+        // Check if user is the photographer, editor, or admin
+        $isPhotographer = $shoot->photographer_id === $user->id;
+        $isEditor = $shoot->editor_id === $user->id || $user->role === 'editor';
+        $isAdmin = in_array($user->role, ['admin', 'superadmin']);
+        
+        if (!$isPhotographer && !$isEditor && !$isAdmin) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         // Check if shoot is in a valid state to submit for review
+        // Only editing status shoots can be submitted for review (editor submits their work)
         if (!in_array($shoot->workflow_status, [
-            Shoot::WORKFLOW_RAW_UPLOADED,
-            Shoot::WORKFLOW_EDITING_UPLOADED,
-            Shoot::WORKFLOW_ON_HOLD
+            Shoot::STATUS_EDITING,
+            Shoot::STATUS_ON_HOLD,
         ])) {
             return response()->json([
                 'message' => 'Shoot cannot be submitted for review in current workflow status',
@@ -1887,8 +2211,9 @@ class ShootController extends Controller
             ], 400);
         }
 
-        // Update workflow status to pending_review
-        $shoot->workflow_status = Shoot::WORKFLOW_PENDING_REVIEW;
+        // Update workflow status to review
+        $shoot->workflow_status = Shoot::STATUS_REVIEW;
+        $shoot->status = Shoot::STATUS_REVIEW;
         $shoot->submitted_for_review_at = now();
         // Clear any previous flags and issue notes if resubmitting after issues resolved
         if ($shoot->is_flagged) {
@@ -1919,22 +2244,23 @@ class ShootController extends Controller
     public function approveShoot(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!in_array($user->role, ['admin','superadmin','super_admin'])) {
+        if (!in_array($user->role, ['admin','superadmin','superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $shoot = Shoot::findOrFail($shootId);
 
-        // Check if shoot is pending review
-        if ($shoot->workflow_status !== Shoot::WORKFLOW_PENDING_REVIEW) {
+        // Check if shoot is in review
+        if ($shoot->workflow_status !== Shoot::STATUS_REVIEW) {
             return response()->json([
-                'message' => 'Shoot is not pending review',
+                'message' => 'Shoot is not in review',
                 'current_status' => $shoot->workflow_status
             ], 400);
         }
 
-        // Approve the shoot
-        $shoot->workflow_status = Shoot::WORKFLOW_ADMIN_VERIFIED;
+        // Approve raw review -> send to editing
+        $shoot->workflow_status = Shoot::STATUS_EDITING;
+        $shoot->status = Shoot::STATUS_EDITING;
         $shoot->admin_verified_at = now();
         $shoot->verified_by = $user->id;
         $shoot->is_flagged = false;
@@ -1964,7 +2290,7 @@ class ShootController extends Controller
     public function rejectShoot(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!in_array($user->role, ['admin','superadmin','super_admin'])) {
+        if (!in_array($user->role, ['admin','superadmin','superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -1974,16 +2300,17 @@ class ShootController extends Controller
 
         $shoot = Shoot::findOrFail($shootId);
 
-        // Check if shoot is pending review
-        if ($shoot->workflow_status !== Shoot::WORKFLOW_PENDING_REVIEW) {
+        // Check if shoot is in review
+        if ($shoot->workflow_status !== Shoot::STATUS_REVIEW) {
             return response()->json([
-                'message' => 'Shoot is not pending review',
+                'message' => 'Shoot is not in review',
                 'current_status' => $shoot->workflow_status
             ], 400);
         }
 
         // Put shoot on hold with issue notes
-        $shoot->workflow_status = Shoot::WORKFLOW_ON_HOLD;
+        $shoot->workflow_status = Shoot::STATUS_ON_HOLD;
+        $shoot->status = Shoot::STATUS_ON_HOLD;
         $shoot->is_flagged = true;
         $shoot->admin_issue_notes = $request->input('admin_issue_notes');
         $shoot->save();
@@ -2007,20 +2334,28 @@ class ShootController extends Controller
     }
 
     /**
-     * Mark issues as resolved (photographer endpoint)
+     * Mark issues as resolved (photographer/editor endpoint)
      */
     public function markIssuesResolved(Request $request, $shootId)
     {
         $user = auth()->user();
         $shoot = Shoot::findOrFail($shootId);
 
-        // Check if user is the photographer assigned to this shoot
-        if ($shoot->photographer_id !== $user->id) {
+        // Check if user is the photographer, editor, or admin
+        $isPhotographer = $shoot->photographer_id === $user->id;
+        $isEditor = $shoot->editor_id === $user->id || $user->role === 'editor';
+        $isAdmin = in_array($user->role, ['admin', 'superadmin']);
+        
+        if (!$isPhotographer && !$isEditor && !$isAdmin) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        // Check if shoot is on hold
-        if ($shoot->workflow_status !== Shoot::WORKFLOW_ON_HOLD || !$shoot->is_flagged) {
+        // Check if shoot has issues (on_hold, raw_issue, or editing_issue)
+        $hasIssues = in_array($shoot->workflow_status, [
+            Shoot::STATUS_ON_HOLD,
+        ]) || $shoot->is_flagged;
+        
+        if (!$hasIssues) {
             return response()->json([
                 'message' => 'Shoot is not on hold with issues',
                 'current_status' => $shoot->workflow_status,
@@ -2033,7 +2368,8 @@ class ShootController extends Controller
         $shoot->issues_resolved_by = $user->id;
         $shoot->is_flagged = false;
         // Keep admin_issue_notes for reference, but workflow status changes
-        $shoot->workflow_status = Shoot::WORKFLOW_PENDING_REVIEW;
+        $shoot->workflow_status = Shoot::STATUS_UPLOADED;
+        $shoot->status = Shoot::STATUS_UPLOADED;
         $shoot->save();
 
         // Log the action
@@ -2104,7 +2440,7 @@ class ShootController extends Controller
         $user = $request->user();
         $role = strtolower($user->role ?? '');
         $role = str_replace('-', '_', $role);
-        if ($role === 'superadmin') { $role = 'super_admin'; }
+        if ($role === 'superadmin') { $role = 'superadmin'; }
 
         $request->validate([
             'shoot_notes' => 'nullable|string',
@@ -2114,7 +2450,7 @@ class ShootController extends Controller
         ]);
 
         $allowed = [];
-        if (in_array($role, ['admin', 'super_admin'])) {
+        if (in_array($role, ['admin', 'superadmin'])) {
             $allowed = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
         } elseif ($role === 'client') {
             $allowed = ['shoot_notes'];
@@ -2414,14 +2750,48 @@ class ShootController extends Controller
     protected function transformShoot(Shoot $shoot)
     {
         // Only load missing relationships if not already loaded
-        $shoot->loadMissing(['client', 'photographer', 'service', 'services']);
+        $shoot->loadMissing(['client', 'photographer', 'service', 'services', 'rep', 'createdByUser']);
         // Only load files if not already loaded (they should be from eager loading)
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select('id', 'shoot_id', 'workflow_stage', 'is_favorite', 'is_cover', 'flag_reason', 'url', 'path', 'dropbox_path');
             }]);
         }
-        $shoot->append('total_paid', 'remaining_balance');
+        $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
+        
+        // Set created_by_name based on who created the shoot
+        $createdByName = 'Unknown';
+        if ($shoot->created_by) {
+            // Try to get the user who created it
+            $createdByUser = $shoot->createdByUser ?? \App\Models\User::find($shoot->created_by);
+            if ($createdByUser) {
+                // If superadmin, show "superadmin", otherwise show name
+                if ($createdByUser->role === 'superadmin') {
+                    $createdByName = 'superadmin';
+                } else {
+                    $createdByName = $createdByUser->name ?? 'Unknown';
+                }
+            } else {
+                // If created_by is set but user not found, check if it's rep_id
+                if ($shoot->rep_id && $shoot->rep) {
+                    $createdByName = $shoot->rep->name ?? 'Unknown';
+                } elseif ($shoot->client_id && $shoot->client) {
+                    $createdByName = $shoot->client->name ?? 'Unknown';
+                } elseif ($shoot->photographer_id && $shoot->photographer) {
+                    $createdByName = $shoot->photographer->name ?? 'Unknown';
+                }
+            }
+        } else {
+            // If created_by is null, check relationships
+            if ($shoot->rep_id && $shoot->rep) {
+                $createdByName = $shoot->rep->name ?? 'Unknown';
+            } elseif ($shoot->client_id && $shoot->client) {
+                $createdByName = $shoot->client->name ?? 'Unknown';
+            } elseif ($shoot->photographer_id && $shoot->photographer) {
+                $createdByName = $shoot->photographer->name ?? 'Unknown';
+            }
+        }
+        $shoot->setAttribute('created_by_name', $createdByName);
 
         $shoot->package = [
             'name' => $shoot->package_name ?? optional($shoot->service)->name,
@@ -2468,6 +2838,19 @@ class ShootController extends Controller
         $shoot->iguide_last_synced_at = $shoot->iguide_last_synced_at;
         $shoot->is_private_listing = $shoot->is_private_listing ?? false;
 
+        // Explicitly include services as an array of names for frontend compatibility
+        // Ensure services relationship is loaded and has data
+        $servicesArray = $shoot->services->pluck('name')->filter()->values()->all();
+        
+        // Set as attribute so it's included in JSON serialization
+        $shoot->setAttribute('services_list', $servicesArray);
+        
+        // Also ensure the services relationship is properly serialized
+        // This ensures frontend gets both services (relationship) and services_list (array)
+        if ($shoot->relationLoaded('services')) {
+            // Services relationship is already loaded, it will be included in JSON response
+        }
+
         return $shoot;
     }
 
@@ -2485,11 +2868,24 @@ class ShootController extends Controller
 
     protected function resolveHeroImage(Shoot $shoot, bool $allowDropboxCalls = true): ?string
     {
+        // First priority: explicitly set cover
         $cover = $shoot->files->firstWhere('is_cover', true);
         if ($cover) {
             return $this->resolveFileUrl($cover, $allowDropboxCalls);
         }
 
+        // Second priority: first displayable image (JPG, PNG, WEBP, GIF)
+        $displayableExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+        $displayable = $shoot->files->first(function ($file) use ($displayableExtensions) {
+            $filename = $file->filename ?? $file->path ?? '';
+            $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+            return in_array($ext, $displayableExtensions);
+        });
+        if ($displayable) {
+            return $this->resolveFileUrl($displayable, $allowDropboxCalls);
+        }
+
+        // Fallback: first file (even if not displayable)
         $first = $shoot->files->first();
         return $first ? $this->resolveFileUrl($first, $allowDropboxCalls) : null;
     }
@@ -2512,6 +2908,11 @@ class ShootController extends Controller
             return Storage::disk('public')->url($file->path);
         }
 
+        // Fallback: generate URL from path even if exists check fails (may be encoding issue)
+        if ($file->path && !Str::startsWith($file->path, 'http') && !$file->dropbox_path) {
+            return Storage::disk('public')->url($file->path);
+        }
+
         // Skip expensive Dropbox API calls during bulk operations to save memory/time
         if ($file->dropbox_path && $allowDropboxCalls) {
             try {
@@ -2523,9 +2924,10 @@ class ShootController extends Controller
             }
         }
 
-        // Return dropbox_path as-is if we're skipping API calls
+        // Return a proxy URL for Dropbox files when skipping API calls
+        // This allows the frontend to fetch the file through our backend proxy
         if ($file->dropbox_path && !$allowDropboxCalls) {
-            return $file->dropbox_path;
+            return url('/api/shoots/' . $file->shoot_id . '/files/' . $file->id . '/preview');
         }
 
         return null;
@@ -2579,6 +2981,103 @@ class ShootController extends Controller
             default:
                 return ['label' => 'Open Workflow', 'action' => 'open_workflow'];
         }
+    }
+
+    /**
+     * Get all files for a shoot
+     */
+    public function getFiles($id, Request $request)
+    {
+        $shoot = Shoot::findOrFail($id);
+        
+        $type = strtolower((string) $request->query('type', ''));
+
+        // Get files from database (optionally scoped by type)
+        $filesQuery = $shoot->files()->orderBy('created_at', 'desc');
+
+        if ($type === 'raw') {
+            // RAW uploads live in the TODO stage (older data may have null workflow_stage)
+            $filesQuery->where(function ($q) {
+                $q->where('workflow_stage', 'todo')
+                  ->orWhereNull('workflow_stage');
+            });
+        } elseif ($type === 'edited') {
+            // Edited uploads live in COMPLETED/VERIFIED
+            $filesQuery->whereIn('workflow_stage', ['completed', 'verified']);
+
+            // Also ensure we only return renderable edited formats (avoid RAW files like .NEF)
+            $filesQuery->where(function ($q) {
+                $q->whereRaw(
+                    "LOWER(COALESCE(file_type, mime_type, '')) IN ('image/jpeg','image/jpg','image/png','image/pjpeg')"
+                )
+                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.jpg'")
+                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.jpeg'")
+                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.png'")
+                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.jpg'")
+                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.jpeg'")
+                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.png'");
+            });
+        }
+
+        $files = $filesQuery->get();
+        
+        // Format files for frontend
+        $formattedFiles = $files->map(function ($file) {
+            $baseUrl = rtrim(config('app.url'), '/');
+            
+            // Resolve file URL
+            // For the media tab we do need actual viewable links.
+            // Allow Dropbox temporary link generation so previews work after upload.
+            $url = $this->resolveFileUrl($file, true);
+            
+            // Build response
+            $fileData = [
+                'id' => $file->id,
+                'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
+                'stored_filename' => $file->stored_filename,
+                'url' => $url,
+                'path' => $file->path,
+                'file_type' => $file->file_type ?? $file->mime_type,
+                'fileType' => $file->file_type ?? $file->mime_type,
+                'workflow_stage' => $file->workflow_stage,
+                'workflowStage' => $file->workflow_stage,
+                'is_extra' => ($file->media_type ?? 'raw') === 'extra',
+                'is_cover' => $file->is_cover ?? false,
+                'is_favorite' => $file->is_favorite ?? false,
+                'file_size' => $file->file_size,
+                'fileSize' => $file->file_size,
+            ];
+            
+            // Add image size URLs if available (for future implementation)
+            // For now, use the main URL for all sizes
+            if ($url) {
+                $fileData['thumb_url'] = $url;
+                $fileData['thumb'] = $url;
+                $fileData['medium_url'] = $url;
+                $fileData['medium'] = $url;
+                $fileData['large_url'] = $url;
+                $fileData['large'] = $url;
+                $fileData['original_url'] = $url;
+                $fileData['original'] = $url;
+            }
+            
+            // Add dimensions if available in metadata
+            if ($file->metadata && is_array($file->metadata)) {
+                if (isset($file->metadata['width'])) {
+                    $fileData['width'] = $file->metadata['width'];
+                }
+                if (isset($file->metadata['height'])) {
+                    $fileData['height'] = $file->metadata['height'];
+                }
+            }
+            
+            return $fileData;
+        });
+        
+        return response()->json([
+            'data' => $formattedFiles,
+            'count' => $formattedFiles->count(),
+        ]);
     }
 
     /**
@@ -2691,7 +3190,7 @@ class ShootController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'super_admin', 'photographer'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'photographer'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -2766,7 +3265,7 @@ class ShootController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'super_admin', 'photographer', 'editor'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'photographer', 'editor'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -2930,7 +3429,7 @@ class ShootController extends Controller
 
         // Role-based restrictions
         $allowedTypes = match($role) {
-            'admin', 'superadmin', 'super_admin' => ['shoot', 'company', 'photographer', 'editing'],
+            'admin', 'superadmin', 'superadmin' => ['shoot', 'company', 'photographer', 'editing'],
             'client' => ['shoot'],
             'photographer' => ['photographer', 'shoot'],
             'editor' => ['editing', 'shoot'],
@@ -2995,7 +3494,7 @@ class ShootController extends Controller
         $user = auth()->user();
 
         // Check if user is admin
-        if (!in_array($user->role, ['admin', 'super_admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin'])) {
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
@@ -3032,7 +3531,6 @@ class ShootController extends Controller
                 'amount' => $amount,
                 'currency' => 'USD',
                 'status' => Payment::STATUS_COMPLETED,
-                'payment_method' => $paymentType,
                 'processed_at' => now(),
             ]);
 
@@ -3095,5 +3593,26 @@ class ShootController extends Controller
         }
 
         return 'partial';
+    }
+    
+    /**
+     * Parse PHP size string (e.g., "50M") to bytes
+     */
+    protected function parseSize(string $size): int
+    {
+        $size = trim($size);
+        $last = strtolower($size[strlen($size) - 1]);
+        $value = (int) $size;
+        
+        switch ($last) {
+            case 'g':
+                $value *= 1024;
+            case 'm':
+                $value *= 1024;
+            case 'k':
+                $value *= 1024;
+        }
+        
+        return $value;
     }
 }

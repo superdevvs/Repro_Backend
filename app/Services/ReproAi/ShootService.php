@@ -104,6 +104,7 @@ class ShootService
                     $service->id => [
                         'price' => $service->price ?? 0,
                         'quantity' => 1,
+                        'photographer_pay' => $service->photographer_pay ?? null,
                     ],
                 ];
             })->toArray();
@@ -217,6 +218,7 @@ class ShootService
                             $service->id => [
                                 'price' => $service->price ?? 0,
                                 'quantity' => 1,
+                                'photographer_pay' => $service->photographer_pay ?? null,
                             ],
                         ];
                     })->toArray();

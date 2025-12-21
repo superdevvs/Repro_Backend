@@ -33,6 +33,7 @@ class InvoiceService
                     $query->where('status', Payment::STATUS_COMPLETED);
                 },
                 'photographer',
+                'services', // Load services to calculate photographer pay
             ])
             ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
             ->whereNotNull('photographer_id')
@@ -75,7 +76,13 @@ class InvoiceService
 
                 // Create invoice items for each shoot
                 foreach ($photographerShoots as $shoot) {
-                    $amount = $shoot->base_quote ?? $shoot->total_quote ?? 0;
+                    // Use photographer pay from services, fallback to total_quote if not set
+                    $amount = $shoot->total_photographer_pay ?? 0;
+                    
+                    // If no photographer pay is set in services, use total_quote as fallback
+                    if ($amount == 0) {
+                        $amount = $shoot->base_quote ?? $shoot->total_quote ?? 0;
+                    }
                     
                     $invoice->items()->create([
                         'shoot_id' => $shoot->id,
@@ -87,12 +94,17 @@ class InvoiceService
                         'recorded_at' => $shoot->scheduled_date,
                         'meta' => [
                             'workflow_status' => $shoot->workflow_status,
+                            'photographer_pay_from_services' => $shoot->total_photographer_pay > 0,
                         ],
                     ]);
                 }
 
-                // Calculate totals
-                $totalAmount = $photographerShoots->sum(fn (Shoot $shoot) => (float) ($shoot->total_quote ?? 0));
+                // Calculate totals using photographer pay from services
+                $totalAmount = $photographerShoots->sum(function (Shoot $shoot) {
+                    $photographerPay = $shoot->total_photographer_pay ?? 0;
+                    // Fallback to total_quote if no photographer pay is set
+                    return $photographerPay > 0 ? $photographerPay : (float) ($shoot->total_quote ?? 0);
+                });
                 $amountPaid = $photographerShoots
                     ->flatMap(fn (Shoot $shoot) => $shoot->payments)
                     ->sum(fn ($payment) => (float) $payment->amount);

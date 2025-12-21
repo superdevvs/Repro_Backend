@@ -79,11 +79,9 @@ class FileUploadController extends Controller
             ], 400);
         }
         if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
-            Shoot::WORKFLOW_RAW_UPLOADED,
-            Shoot::WORKFLOW_EDITING,
-            Shoot::WORKFLOW_EDITING_ISSUE,
-            Shoot::WORKFLOW_EDITING_UPLOADED,
-            Shoot::WORKFLOW_PENDING_REVIEW,
+            Shoot::STATUS_UPLOADED,
+            Shoot::STATUS_EDITING,
+            Shoot::STATUS_REVIEW,
         ])) {
             return response()->json([
                 'success' => false,

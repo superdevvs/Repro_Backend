@@ -192,10 +192,17 @@ class BookShootFlow
 
     protected function askDate(AiChatSession $session, string $message, array $context, array $data): array
     {
-        // For now, super simple: treat whatever they send as label & date string
-        if (!empty(trim($message))) {
+        // Treat user entry as label, but only persist a parsed value if valid
+        $trimmed = trim($message);
+        if (!empty($trimmed)) {
             $data['date_label'] = $message;
-            $data['date'] = $this->parseDateFromMessage($message) ?? $message; // Try to parse, fallback to literal
+            $parsedDate = $this->parseDateFromMessage($trimmed);
+
+            if ($parsedDate) {
+                $data['date'] = $parsedDate;
+            } else {
+                unset($data['date']);
+            }
 
             $this->setStepAndData($session, 'ask_time', $data);
             $session->save();

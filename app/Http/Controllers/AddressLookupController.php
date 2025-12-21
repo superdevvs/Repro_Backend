@@ -5,16 +5,19 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use App\Services\AddressLookupService;
+use App\Services\ZillowPropertyService;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Log;
 
 class AddressLookupController extends Controller
 {
     private AddressLookupService $addressService;
+    private ZillowPropertyService $zillowService;
 
-    public function __construct(AddressLookupService $addressService)
+    public function __construct(AddressLookupService $addressService, ZillowPropertyService $zillowService)
     {
         $this->addressService = $addressService;
+        $this->zillowService = $zillowService;
     }
 
     /**
@@ -28,7 +31,7 @@ class AddressLookupController extends Controller
         }
 
         $validator = Validator::make($request->all(), [
-            'query' => 'required|string|min:3|max:255',
+            'query' => 'required|string|min:1|max:255',
             'location' => 'nullable|string', // lat,lng format
             'radius' => 'nullable|integer|min:1000|max:50000' // meters
         ]);
@@ -98,11 +101,28 @@ class AddressLookupController extends Controller
         try {
             $details = $this->addressService->getAddressDetails((string) $request->input('place_id'));
 
+            // If parcel lookup failed (404 or null), return a successful response with null property metrics
+            // This allows the frontend to still populate address fields from autocomplete data
             if (!$details) {
-                return response()->json([
-                    'error' => 'Address not found',
-                    'message' => 'Could not retrieve address details for the provided place ID'
-                ], 404);
+                Log::info('Property details not found in parcel database, returning null metrics', [
+                    'place_id' => $request->input('place_id'),
+                ]);
+                
+                $details = [
+                    'formatted_address' => '',
+                    'address' => '',
+                    'city' => '',
+                    'state' => '',
+                    'zip' => '',
+                    'country' => 'US',
+                    'latitude' => null,
+                    'longitude' => null,
+                    'bedrooms' => null,
+                    'bathrooms' => null,
+                    'sqft' => null,
+                    'property_details' => null,
+                    'zpid' => $request->input('place_id'),
+                ];
             }
 
             return response()->json([

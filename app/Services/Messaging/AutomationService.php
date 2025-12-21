@@ -169,6 +169,7 @@ class AutomationService
                         $client = $context['client'];
                         $recipients[] = [
                             'email' => $client['email'] ?? $client->email ?? null,
+                            'phone' => $client['phonenumber'] ?? $client->phonenumber ?? $client['phone'] ?? $client->phone ?? null,
                             'name' => $client['name'] ?? $client->name ?? 'Client',
                             'type' => 'client',
                         ];
@@ -249,6 +250,29 @@ class AutomationService
             }
         }
 
+        // Special handling for PROPERTY_CONTACT_REMINDER - only trigger if contact details are missing
+        if ($rule->trigger_type === 'PROPERTY_CONTACT_REMINDER') {
+            $hasContactDetails = data_get($context, 'has_contact_details', false);
+            $hasLockboxDetails = data_get($context, 'has_lockbox_details', false);
+            $presenceOption = data_get($context, 'presence_option');
+            
+            // If presence option is not set, or required details are missing, trigger reminder
+            if (!$presenceOption) {
+                return true; // No presence option set, trigger reminder
+            }
+            
+            if ($presenceOption === 'other' && !$hasContactDetails) {
+                return true; // Other contact selected but details missing
+            }
+            
+            if ($presenceOption === 'lockbox' && !$hasLockboxDetails) {
+                return true; // Lockbox selected but details missing
+            }
+            
+            // If presence is 'self' or all required details are provided, don't trigger
+            return false;
+        }
+
         return true;
     }
 
@@ -281,19 +305,25 @@ class AutomationService
     /**
      * Build context array from a shoot model
      */
-    private function buildShootContext(Shoot $shoot): array
+    public function buildShootContext(Shoot $shoot): array
     {
+        $propertyDetails = $shoot->property_details ?? [];
+        
         return [
             'shoot_id' => $shoot->id,
             'shoot_date' => $shoot->scheduled_date?->format('Y-m-d'),
             'shoot_time' => $shoot->scheduled_date?->format('H:i'),
             'shoot_datetime' => $shoot->scheduled_date,
-            'shoot_address' => $shoot->property_address ?? 'N/A',
+            'shoot_address' => $shoot->address ?? 'N/A',
             'shoot_services' => $shoot->service?->name ?? 'Photography',
             'shoot_notes' => $shoot->notes ?? '',
             'client' => $shoot->client,
             'photographer' => $shoot->photographer,
             'account_id' => $shoot->client_id,
+            'property_details' => $propertyDetails,
+            'presence_option' => $propertyDetails['presenceOption'] ?? null,
+            'has_contact_details' => !empty($propertyDetails['accessContactName']) && !empty($propertyDetails['accessContactPhone']),
+            'has_lockbox_details' => !empty($propertyDetails['lockboxCode']) && !empty($propertyDetails['lockboxLocation']),
         ];
     }
 }

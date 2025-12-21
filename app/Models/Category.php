@@ -12,6 +12,11 @@ class Category extends Model
     protected $fillable = [
         'name',
         'icon',
+        'is_default',
+    ];
+
+    protected $casts = [
+        'is_default' => 'boolean',
     ];
     
     public function services()

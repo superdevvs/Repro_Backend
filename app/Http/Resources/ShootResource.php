@@ -8,6 +8,29 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class ShootResource extends JsonResource
 {
     /**
+     * Calculate total photographer pay from services
+     */
+    protected function calculatePhotographerPay(): float
+    {
+        // Ensure services are loaded
+        if (!$this->relationLoaded('services')) {
+            $this->load('services');
+        }
+        
+        // Calculate total photographer pay from services
+        return (float) $this->services->sum(function ($service) {
+            $photographerPay = $service->pivot->photographer_pay ?? null;
+            $quantity = $service->pivot->quantity ?? 1;
+            
+            if ($photographerPay === null) {
+                return 0;
+            }
+            
+            return (float) $photographerPay * $quantity;
+        });
+    }
+
+    /**
      * Transform the resource into an array.
      *
      * @return array<string, mixed>
@@ -42,8 +65,11 @@ class ShootResource extends JsonResource
                     'name' => $service->name,
                     'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
                     'quantity' => (int) ($service->pivot->quantity ?? 1),
+                    'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
                 ];
             }),
+            // Explicitly include services_list for frontend compatibility
+            'services_list' => $this->services->pluck('name')->filter()->values()->all(),
             'scheduledAt' => $this->scheduled_at?->toIso8601String(),
             'scheduledDate' => $this->scheduled_date?->toDateString(),
             'time' => $this->time,
@@ -60,8 +86,11 @@ class ShootResource extends JsonResource
                 'remainingBalance' => (float) $this->remaining_balance,
                 'paymentStatus' => $this->payment_status,
             ],
+            'photographerPay' => $this->calculatePhotographerPay(),
+            'totalPhotographerPay' => $this->calculatePhotographerPay(),
+            'photographer_pay' => $this->calculatePhotographerPay(), // Alternative key for compatibility
             'bypassPaywall' => (bool) $this->bypass_paywall,
-            'createdBy' => $this->created_by,
+            'createdBy' => $this->created_by_name ?? $this->created_by ?? 'Unknown',
             'createdAt' => $this->created_at->toIso8601String(),
         ];
     }

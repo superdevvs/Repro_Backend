@@ -28,7 +28,7 @@ class AuthController extends Controller
             'password' => 'required|string|min:6|confirmed',
             'phonenumber' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
-            'role' => ['required', Rule::in(['super_admin', 'admin', 'client', 'photographer', 'editor'])],
+            'role' => ['required', Rule::in(['superadmin', 'admin', 'client', 'photographer', 'editor'])],
             'avatar' => 'nullable|url',
             'bio' => 'nullable|string',
         ]);

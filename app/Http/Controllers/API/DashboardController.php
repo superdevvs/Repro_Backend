@@ -21,7 +21,7 @@ class DashboardController extends Controller
     {
         $user = $request->user();
 
-        if (!$user || !in_array($user->role, ['admin', 'super_admin', 'superadmin'])) {
+        if (!$user || !in_array($user->role, ['admin', 'superadmin'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -50,8 +50,7 @@ class DashboardController extends Controller
                 'service:id,name',
             ])
                 ->whereIn('workflow_status', [
-                    Shoot::WORKFLOW_PENDING_REVIEW,
-                    Shoot::WORKFLOW_EDITING_UPLOADED,
+                    Shoot::STATUS_REVIEW,
                 ])
                 ->orderByDesc('submitted_for_review_at')
                 ->limit(12)
@@ -86,7 +85,7 @@ class DashboardController extends Controller
             'total_shoots' => Shoot::count(),
             'scheduled_today' => Shoot::whereDate('scheduled_date', $today->toDateString())->count(),
             'flagged_shoots' => Shoot::where('is_flagged', true)->count(),
-            'pending_reviews' => Shoot::where('workflow_status', Shoot::WORKFLOW_PENDING_REVIEW)->count(),
+            'pending_reviews' => Shoot::where('workflow_status', Shoot::STATUS_REVIEW)->count(),
         ];
 
         return response()->json([
@@ -236,16 +235,14 @@ class DashboardController extends Controller
             [
                 'key' => 'booked',
                 'label' => 'Booked',
-                'statuses' => [Shoot::WORKFLOW_BOOKED],
+                'statuses' => [Shoot::STATUS_SCHEDULED],
                 'accent' => '#3b82f6',
             ],
             [
-                'key' => 'raw_upload',
-                'label' => 'Raw Upload',
+                'key' => 'uploaded',
+                'label' => 'Photos Uploaded',
                 'statuses' => [
-                    Shoot::WORKFLOW_RAW_UPLOAD_PENDING,
-                    Shoot::WORKFLOW_RAW_UPLOADED,
-                    Shoot::WORKFLOW_RAW_ISSUE,
+                    Shoot::STATUS_UPLOADED,
                 ],
                 'accent' => '#0ea5e9',
             ],
@@ -253,22 +250,20 @@ class DashboardController extends Controller
                 'key' => 'editing',
                 'label' => 'Editing',
                 'statuses' => [
-                    Shoot::WORKFLOW_EDITING,
-                    Shoot::WORKFLOW_EDITING_UPLOADED,
-                    Shoot::WORKFLOW_EDITING_ISSUE,
+                    Shoot::STATUS_EDITING,
                 ],
                 'accent' => '#a855f7',
             ],
             [
                 'key' => 'pending_review',
                 'label' => 'Pending Review',
-                'statuses' => [Shoot::WORKFLOW_PENDING_REVIEW],
+                'statuses' => [Shoot::STATUS_REVIEW],
                 'accent' => '#f97316',
             ],
             [
                 'key' => 'ready',
                 'label' => 'Ready / Delivered',
-                'statuses' => [Shoot::WORKFLOW_ADMIN_VERIFIED, Shoot::WORKFLOW_COMPLETED],
+                'statuses' => [Shoot::STATUS_DELIVERED],
                 'accent' => '#22c55e',
             ],
         ];
@@ -360,10 +355,76 @@ class DashboardController extends Controller
             return null;
         }
 
-        $datePart = $date instanceof Carbon ? $date : Carbon::parse($date);
-        $timeString = $time ?: '09:00';
+        try {
+            $datePart = $date instanceof Carbon ? $date : Carbon::parse($date);
+            $timeString = $this->normalizeTimeString($time);
 
-        return Carbon::parse($datePart->format('Y-m-d') . ' ' . $timeString);
+            // Ensure time string doesn't have AM/PM if hour is >= 13
+            if (preg_match('/(\d{1,2}):(\d{2})\s*(AM|PM)/i', $timeString, $matches)) {
+                $hour = (int) $matches[1];
+                if ($hour >= 13) {
+                    // Remove AM/PM for 24-hour format
+                    $timeString = $matches[1] . ':' . $matches[2];
+                }
+            }
+
+            // Try parsing with the normalized time string
+            $dateTimeString = $datePart->format('Y-m-d') . ' ' . $timeString;
+            return Carbon::parse($dateTimeString);
+        } catch (\Throwable $e) {
+            // Log the error for debugging but don't fail the request
+            \Log::warning('Failed to parse date/time', [
+                'date' => $date,
+                'time' => $time,
+                'error' => $e->getMessage(),
+            ]);
+            
+            // Final fallback to default time if parsing still fails
+            try {
+                $datePart = $date instanceof Carbon ? $date : Carbon::parse($date);
+                return Carbon::parse($datePart->format('Y-m-d') . ' 09:00');
+            } catch (\Throwable $e2) {
+                // If even the fallback fails, return null
+                return null;
+            }
+        }
+    }
+
+    protected function normalizeTimeString(?string $time): string
+    {
+        $timeString = trim($time ?: '09:00');
+
+        // If both 24-hour value and AM/PM suffix are present (e.g. "14:00 PM"),
+        // drop the suffix so Carbon can parse the 24-hour value.
+        if (preg_match('/\b(AM|PM)\b/i', $timeString)) {
+            // Extract hour from time string
+            if (preg_match('/(\d{1,2}):(\d{2})/i', $timeString, $matches)) {
+                $hour = (int) $matches[1];
+                
+                // If hour is 13 or greater, it's already 24-hour format, remove AM/PM
+                if ($hour >= 13) {
+                    $timeString = preg_replace('/\s*(AM|PM)\b/i', '', $timeString);
+                } else {
+                    // For 12-hour format, keep AM/PM but ensure proper format
+                    $timeString = preg_replace('/\s+/', ' ', $timeString);
+                }
+            } else {
+                // If we can't parse the time, remove AM/PM and use default
+                $timeString = preg_replace('/\s*(AM|PM)\b/i', '', $timeString);
+            }
+        }
+
+        // Final validation - ensure we have a valid time format
+        if (!preg_match('/^\d{1,2}:\d{2}(\s*(AM|PM))?$/i', $timeString)) {
+            // If format is still invalid, try to extract just the time part
+            if (preg_match('/(\d{1,2}):(\d{2})/i', $timeString, $matches)) {
+                $timeString = $matches[1] . ':' . $matches[2];
+            } else {
+                $timeString = '09:00';
+            }
+        }
+
+        return $timeString === '' ? '09:00' : trim($timeString);
     }
 
     protected function inferPhotographerStatus(int $loadToday, bool $hasUpcomingShoot, bool $hasAvailability): string

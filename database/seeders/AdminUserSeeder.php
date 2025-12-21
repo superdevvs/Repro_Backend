@@ -18,7 +18,7 @@ class AdminUserSeeder extends Seeder
                 'username' => 'superadmin',
                 'phonenumber' => null,
                 'company_name' => null,
-                'role' => 'super_admin',
+                'role' => 'superadmin',
                 'avatar' => null,
                 'bio' => null,
                 'account_status' => 'active',

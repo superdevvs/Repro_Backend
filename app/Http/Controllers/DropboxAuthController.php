@@ -34,6 +34,35 @@ class DropboxAuthController extends Controller
     }
 
     // ===================================================================
+    // == CONFIGURATION
+    // ===================================================================
+
+    /**
+     * Get Dropbox configuration for frontend (non-sensitive data only)
+     */
+    public function getConfig()
+    {
+        $clientId = config('services.dropbox.client_id');
+        $redirectUri = config('services.dropbox.redirect');
+        
+        if (empty($clientId) || $clientId === 'your_dropbox_app_key') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Dropbox Client ID is not configured. Please set DROPBOX_CLIENT_ID in your .env file.',
+                'config' => null,
+            ], 400);
+        }
+        
+        return response()->json([
+            'success' => true,
+            'config' => [
+                'client_id' => $clientId,
+                'redirect_uri' => $redirectUri,
+            ],
+        ]);
+    }
+
+    // ===================================================================
     // == AUTHENTICATION FLOW
     // ===================================================================
 

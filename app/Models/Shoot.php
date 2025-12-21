@@ -118,19 +118,31 @@ class Shoot extends Model
         'is_private_listing' => 'boolean',
     ];
 
-    // Workflow status constants
-    const WORKFLOW_BOOKED = 'booked';
-    const WORKFLOW_RAW_UPLOAD_PENDING = 'raw_upload_pending';
-    const WORKFLOW_RAW_UPLOADED = 'raw_uploaded';
-    const WORKFLOW_RAW_ISSUE = 'raw_issue';
-    const WORKFLOW_EDITING = 'editing';
-    const WORKFLOW_EDITING_UPLOADED = 'editing_uploaded';
-    const WORKFLOW_EDITING_ISSUE = 'editing_issue';
-    const WORKFLOW_PENDING_REVIEW = 'pending_review';
-    const WORKFLOW_READY_FOR_CLIENT = 'ready_for_client';
-    const WORKFLOW_ON_HOLD = 'on_hold';
-    const WORKFLOW_ADMIN_VERIFIED = 'admin_verified';
-    const WORKFLOW_COMPLETED = 'completed';
+    // Unified workflow status constants
+    const STATUS_SCHEDULED = 'scheduled'; // shoot is booked
+    const STATUS_UPLOADED = 'uploaded';   // photos uploaded by photographer/admin
+    const STATUS_EDITING = 'editing';     // sent to editor, in progress
+    const STATUS_REVIEW = 'review';       // editor submitted, admin review
+    const STATUS_DELIVERED = 'delivered'; // finalized and delivered to client
+    const STATUS_ON_HOLD = 'on_hold';
+    const STATUS_CANCELLED = 'cancelled';
+
+    // Legacy aliases (all map to the unified statuses above)
+    const WORKFLOW_BOOKED = self::STATUS_SCHEDULED;
+    const WORKFLOW_RAW_UPLOAD_PENDING = self::STATUS_SCHEDULED;
+    const WORKFLOW_RAW_UPLOADED = self::STATUS_UPLOADED;
+    const WORKFLOW_RAW_ISSUE = self::STATUS_UPLOADED;
+    const WORKFLOW_EDITING = self::STATUS_EDITING;
+    const WORKFLOW_EDITING_UPLOADED = self::STATUS_REVIEW;
+    const WORKFLOW_EDITING_ISSUE = self::STATUS_REVIEW;
+    const WORKFLOW_PENDING_REVIEW = self::STATUS_REVIEW;
+    const WORKFLOW_READY_FOR_CLIENT = self::STATUS_DELIVERED;
+    const WORKFLOW_ON_HOLD = self::STATUS_ON_HOLD;
+    const WORKFLOW_ADMIN_VERIFIED = self::STATUS_DELIVERED;
+    const WORKFLOW_COMPLETED = self::STATUS_DELIVERED;
+
+    // Backwards compatibility - 'completed' maps to 'uploaded'
+    const STATUS_COMPLETED = self::STATUS_UPLOADED;
 
     public function client()
     {
@@ -142,6 +154,11 @@ class Shoot extends Model
         return $this->belongsTo(User::class, 'photographer_id');
     }
 
+    public function editor()
+    {
+        return $this->belongsTo(User::class, 'editor_id');
+    }
+
     public function service()
     {
         return $this->belongsTo(Service::class);
@@ -150,7 +167,7 @@ class Shoot extends Model
     public function services()
     {
         return $this->belongsToMany(Service::class, 'shoot_service')
-            ->withPivot(['price', 'quantity'])
+            ->withPivot(['price', 'quantity', 'photographer_pay'])
             ->withTimestamps();
     }
 
@@ -204,6 +221,11 @@ class Shoot extends Model
         return $this->belongsTo(User::class, 'rep_id');
     }
 
+    public function createdByUser()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
     public function notes()
     {
         return $this->hasMany(ShootNote::class);
@@ -230,32 +252,64 @@ class Shoot extends Model
         return $this->total_quote - $this->total_paid;
     }
 
+    /**
+     * Calculate total photographer pay from services
+     * Sums up photographer_pay from all services in the shoot
+     */
+    public function getTotalPhotographerPayAttribute(): float
+    {
+        if (!$this->relationLoaded('services')) {
+            $this->load('services');
+        }
+        
+        return (float) $this->services->sum(function ($service) {
+            $photographerPay = $service->pivot->photographer_pay ?? null;
+            $quantity = $service->pivot->quantity ?? 1;
+            
+            if ($photographerPay === null) {
+                return 0;
+            }
+            
+            return (float) $photographerPay * $quantity;
+        });
+    }
+
+    /**
+     * Get photographer pay for a specific service
+     */
+    public function getPhotographerPayForService(int $serviceId): ?float
+    {
+        $service = $this->services->firstWhere('id', $serviceId);
+        if (!$service || !$service->pivot) {
+            return null;
+        }
+        
+        return $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null;
+    }
+
     public function canUploadPhotos()
     {
-        // Allow raw uploads when newly booked/scheduled, and allow additional raw uploads
-        // after initial upload until admin moves the workflow forward.
+        // Allow raw uploads until admin moves the shoot past raw review
         return in_array($this->workflow_status, [
-            self::WORKFLOW_BOOKED,
-            self::WORKFLOW_RAW_UPLOAD_PENDING,
-            self::WORKFLOW_RAW_UPLOADED,
-            self::WORKFLOW_RAW_ISSUE,
+            self::STATUS_SCHEDULED,
+            self::STATUS_COMPLETED,
+            self::STATUS_UPLOADED,
         ]);
     }
 
     public function canMoveToCompleted()
     {
         return in_array($this->workflow_status, [
-            self::WORKFLOW_RAW_UPLOADED,
-            self::WORKFLOW_EDITING,
-            self::WORKFLOW_EDITING_UPLOADED,
+            self::STATUS_UPLOADED,
+            self::STATUS_EDITING,
+            self::STATUS_REVIEW,
         ]);
     }
 
     public function canVerify()
     {
         return in_array($this->workflow_status, [
-            self::WORKFLOW_EDITING_UPLOADED,
-            self::WORKFLOW_PENDING_REVIEW,
+            self::STATUS_REVIEW,
         ]);
     }
 
@@ -263,32 +317,22 @@ class Shoot extends Model
     {
         $oldStatus = $this->workflow_status;
         $this->workflow_status = $status;
+        $this->status = $status;
 
         // Set timestamps based on status
         switch ($status) {
-            case self::WORKFLOW_RAW_UPLOADED:
+            case self::STATUS_COMPLETED:
+            case self::STATUS_UPLOADED:
                 $this->photos_uploaded_at = now();
                 break;
-            case self::WORKFLOW_EDITING_UPLOADED:
+            case self::STATUS_REVIEW:
                 $this->editing_completed_at = now();
+                $this->submitted_for_review_at = now();
                 break;
-            case self::WORKFLOW_ADMIN_VERIFIED:
+            case self::STATUS_DELIVERED:
                 $this->admin_verified_at = now();
                 $this->verified_by = $userId;
-                break;
-            case self::WORKFLOW_COMPLETED:
-                // Auto-archive when transitioning to completed
-                if ($this->dropbox_edited_folder && !$this->dropbox_archive_folder) {
-                    try {
-                        $dropboxService = app(\App\Services\DropboxWorkflowService::class);
-                        $dropboxService->archiveShoot($this, $userId);
-                    } catch (\Exception $e) {
-                        \Log::error('Failed to auto-archive shoot on completion', [
-                            'shoot_id' => $this->id,
-                            'error' => $e->getMessage()
-                        ]);
-                    }
-                }
+                $this->completed_at = now();
                 break;
         }
 

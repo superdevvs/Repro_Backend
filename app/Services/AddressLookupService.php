@@ -66,69 +66,22 @@ class AddressLookupService
      */
     public function searchAddresses(string $query, array $options = []): array
     {
-        if (strlen($query) < 3) {
+        if (strlen(trim($query)) < 1) {
             return [];
         }
 
         $cacheKey = 'address_search_' . md5($this->provider . '|' . $query . serialize($options));
 
-        return Cache::remember($cacheKey, 300, function () use ($query, $options) {
-            // Use Zillow, Geoapify, and LocationIQ for autocomplete and merge results
-            $results = [];
-            
-            // Fetch from all APIs in parallel
-            $zillowResults = [];
-            $locationIqResults = [];
-            $geoapifyResults = [];
-            
-            // Get Zillow results (public endpoint, no auth needed)
+        return Cache::remember($cacheKey, 120, function () use ($query, $options) {
             try {
-                $zillowResults = $this->zillowAutocomplete($query, $options);
+                return $this->zillowAutocomplete($query, $options);
             } catch (\Exception $e) {
                 Log::warning('Zillow autocomplete failed', [
                     'query' => $query,
                     'error' => $e->getMessage(),
                 ]);
+                return [];
             }
-            
-            // Get LocationIQ results
-            if (!empty($this->locationIqKey)) {
-                try {
-                    $locationIqResults = $this->locationIqAutocomplete($query, $options);
-                } catch (\Exception $e) {
-                    Log::warning('LocationIQ autocomplete failed', [
-                        'query' => $query,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-            
-            // Get Geoapify results
-            if (!empty($this->geoapifyKey)) {
-                try {
-                    $geoapifyResults = $this->geoapifyAutocomplete($query, $options);
-                } catch (\Exception $e) {
-                    Log::warning('Geoapify autocomplete failed', [
-                        'query' => $query,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-            
-            // Merge and deduplicate results from all providers
-            $results = $this->mergeAndDeduplicateResults($zillowResults, $locationIqResults, $geoapifyResults, $query);
-            
-            // If no results from any API, return empty
-            if (empty($results)) {
-                Log::warning('No address autocomplete results from any provider', [
-                    'query' => $query,
-                    'zillow_available' => true,
-                    'locationiq_available' => !empty($this->locationIqKey),
-                    'geoapify_available' => !empty($this->geoapifyKey),
-                ]);
-            }
-            
-            return $results;
         });
     }
 
@@ -1087,16 +1040,19 @@ class AddressLookupService
                 // Format is typically: "123 Main St, City, State ZIP"
                 $parts = explode(',', $display);
                 $main = trim($parts[0] ?? '');
-                $city = trim($parts[1] ?? '');
-                $stateZip = trim($parts[2] ?? '');
+                $city = $metaData['city'] ?? trim($parts[1] ?? '');
+
+                // State/ZIP may be in either the metadata or the final comma section
+                $stateZipSource = $metaData['state'] ?? trim($parts[2] ?? ($parts[1] ?? ''));
+                $zipFromMeta = $metaData['zip'] ?? $metaData['zipcode'] ?? $metaData['zipCode'] ?? null;
                 
                 // Extract state and zip from "State ZIP" format
-                $state = '';
-                $zip = '';
-                if ($stateZip) {
-                    $stateZipParts = preg_split('/\s+/', $stateZip, 2);
-                    $state = $stateZipParts[0] ?? '';
-                    $zip = $stateZipParts[1] ?? '';
+                $state = $metaData['state'] ?? '';
+                $zip = $zipFromMeta ?? '';
+                if (!$state || !$zip) {
+                    $stateZipParts = preg_split('/\s+/', trim((string)$stateZipSource), 2);
+                    $state = $state ?: ($stateZipParts[0] ?? '');
+                    $zip = $zip ?: ($stateZipParts[1] ?? '');
                 }
                 
                 $secondary = trim(implode(', ', array_filter([$city, $state, $zip])));
@@ -1135,58 +1091,145 @@ class AddressLookupService
 
     private function zillowDetails(string $placeId): ?array
     {
-        // Zillow API endpoint for property details by zpid
-        $endpoints = [
-            $this->zillowBaseUrl . '/properties',
-            $this->zillowBaseUrl . '/zestimates',
+        // Bridge Data API endpoint for parcel details
+        $url = $this->zillowBaseUrl . '/pub/parcels/' . $placeId;
+        $params = [
+            'access_token' => $this->zillowServerToken,
+            'fields' => 'areas,building,garages',
         ];
 
-        foreach ($endpoints as $url) {
-            $params = [
-                'access_token' => $this->zillowServerToken,
-                'zpid' => $placeId,
-            ];
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $this->zillowServerToken,
+                'Accept' => 'application/json',
+            ])->withoutVerifying()->get($url, $params);
 
-            try {
-                $response = Http::withHeaders([
-                    'Authorization' => 'Bearer ' . $this->zillowServerToken,
-                    'Accept' => 'application/json',
-                ])->get($url, $params);
-
-                if ($response->successful()) {
-                    $data = $response->json();
-                    $property = $data['bundle'] ?? $data['data'] ?? $data['property'] ?? $data;
-                    
-                    if (!is_array($property)) {
-                        continue; // Try next endpoint
-                    }
-
-                    $address = $property['address'] ?? $property;
-                    $streetNumber = $address['streetNumber'] ?? $address['houseNumber'] ?? $address['street_number'] ?? '';
-                    $streetName = $address['streetName'] ?? $address['street'] ?? $address['street_name'] ?? '';
-                    $addressLine = trim($streetNumber . ' ' . $streetName);
-
-                    return [
-                        'formatted_address' => $address['formattedStreetAddress'] ?? $address['formatted_address'] ?? $addressLine,
-                        'address' => $addressLine,
-                        'city' => $address['city'] ?? '',
-                        'state' => $address['state'] ?? $address['stateCode'] ?? $address['state_code'] ?? '',
-                        'zip' => $address['zipcode'] ?? $address['zip'] ?? $address['postalCode'] ?? $address['postal_code'] ?? '',
-                        'country' => 'US',
-                        'latitude' => isset($address['latitude']) ? (float)$address['latitude'] : (isset($property['latitude']) ? (float)$property['latitude'] : null),
-                        'longitude' => isset($address['longitude']) ? (float)$address['longitude'] : (isset($property['longitude']) ? (float)$property['longitude'] : null),
-                    ];
+            if ($response->successful()) {
+                $data = $response->json();
+                $property = $data['bundle'] ?? $data['data'] ?? $data['property'] ?? $data;
+                
+                if (!is_array($property)) {
+                    Log::error('Bridge Data parcel lookup failed - invalid response format', [
+                        'place_id' => $placeId,
+                        'response' => $data,
+                    ]);
+                    return null;
                 }
-            } catch (\Exception $e) {
-                Log::warning('Zillow details lookup exception', [
-                    'url' => $url,
-                    'place_id' => $placeId,
-                    'error' => $e->getMessage(),
-                ]);
+
+                $address = $property['address'] ?? $property;
+                $streetNumber = $address['streetNumber'] ?? $address['houseNumber'] ?? $address['street_number'] ?? '';
+                $streetName = $address['streetName'] ?? $address['street'] ?? $address['street_name'] ?? '';
+                $addressLine = trim($streetNumber . ' ' . $streetName);
+                
+                // Extract property metrics from areas and building data
+                $areas = $property['areas'] ?? [];
+                $building = $property['building'] ?? [];
+                
+                // Get bedrooms from building data
+                $bedrooms = null;
+                if (!empty($building) && isset($building[0]['bedrooms'])) {
+                    $bedrooms = $building[0]['bedrooms'];
+                }
+                
+                // Calculate bathrooms from full and half baths, with fallback to simple baths field
+                $bathrooms = null;
+                if (!empty($building) && isset($building[0])) {
+                    // Try detailed breakdown first (common for single-family homes)
+                    $fullBaths = $building[0]['fullBaths'] ?? 0;
+                    $halfBaths = ($building[0]['halfBaths'] ?? 0) * 0.5;
+                    $threeQuarterBaths = ($building[0]['threeQuarterBaths'] ?? 0) * 0.75;
+                    $quarterBaths = ($building[0]['quarterBaths'] ?? 0) * 0.25;
+                    $bathrooms = $fullBaths + $halfBaths + $threeQuarterBaths + $quarterBaths;
+                    
+                    // If detailed breakdown is zero, try simple baths field (common for condos/apartments)
+                    if ($bathrooms == 0) {
+                        $bathrooms = $building[0]['baths'] ?? null;
+                    }
+                    
+                    if ($bathrooms == 0) $bathrooms = null;
+                }
+                
+                // Get living area from areas data - check multiple area types in priority order
+                // Priority: Living Building Area (houses) → Finished Building Area (condos) → Zillow Calculated → Base → Gross
+                $sqft = null;
+                if (!empty($areas)) {
+                    $areaTypePriority = [
+                        'Living Building Area',
+                        'Finished Building Area', 
+                        'Zillow Calculated Finished Area',
+                        'Base Building Area',
+                        'Gross Building Area'
+                    ];
+                    
+                    foreach ($areas as $area) {
+                        $areaType = $area['type'] ?? '';
+                        if (in_array($areaType, $areaTypePriority) && isset($area['areaSquareFeet'])) {
+                            $sqft = $area['areaSquareFeet'];
+                            break;
+                        }
+                    }
+                }
+
+                // Get garage information
+                $garageCars = null;
+                $garageSqft = null;
+                $garages = $property['garages'] ?? [];
+                
+                if (!empty($garages)) {
+                    $totalCars = 0;
+                    $totalSqft = 0;
+                    $hasGarageData = false;
+                    
+                    foreach ($garages as $garage) {
+                        // Sum car count if available
+                        if (isset($garage['carCount']) && $garage['carCount'] !== null) {
+                            $totalCars += (int)$garage['carCount'];
+                            $hasGarageData = true;
+                        }
+                        
+                        // Sum garage square footage
+                        if (isset($garage['areaSquareFeet']) && $garage['areaSquareFeet'] !== null) {
+                            $totalSqft += (int)$garage['areaSquareFeet'];
+                            $hasGarageData = true;
+                        }
+                    }
+                    
+                    // If no carCount data, use count of garage objects
+                    if ($totalCars === 0 && $hasGarageData) {
+                        $totalCars = count($garages);
+                    }
+                    
+                    $garageCars = $totalCars > 0 ? $totalCars : null;
+                    $garageSqft = $totalSqft > 0 ? $totalSqft : null;
+                }
+
+                return [
+                    'formatted_address' => $address['formattedStreetAddress'] ?? $address['formatted_address'] ?? $addressLine,
+                    'address' => $addressLine,
+                    'city' => $address['city'] ?? '',
+                    'state' => $address['state'] ?? $address['stateCode'] ?? $address['state_code'] ?? '',
+                    'zip' => $address['zipcode'] ?? $address['zip'] ?? $address['postalCode'] ?? $address['postal_code'] ?? '',
+                    'country' => 'US',
+                    'latitude' => isset($address['latitude']) ? (float)$address['latitude'] : (isset($property['latitude']) ? (float)$property['latitude'] : null),
+                    'longitude' => isset($address['longitude']) ? (float)$address['longitude'] : (isset($property['longitude']) ? (float)$property['longitude'] : null),
+                    'bedrooms' => $bedrooms !== null ? (float)$bedrooms : null,
+                    'bathrooms' => $bathrooms !== null ? (float)$bathrooms : null,
+                    'sqft' => $sqft !== null ? (int)$sqft : null,
+                    'garage_cars' => $garageCars,
+                    'garage_sqft' => $garageSqft,
+                    'property_details' => $property,
+                    'zpid' => $placeId,
+                ];
             }
+        } catch (\Exception $e) {
+            Log::warning('Bridge Data parcel lookup exception', [
+                'url' => $url,
+                'place_id' => $placeId,
+                'error' => $e->getMessage(),
+            ]);
         }
 
-        Log::error('Zillow details lookup failed - all endpoints failed', [
+        Log::error('Bridge Data parcel lookup failed', [
             'place_id' => $placeId,
         ]);
         return null;

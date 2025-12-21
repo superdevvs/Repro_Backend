@@ -21,8 +21,8 @@ class ClearAllDataSeeder extends Seeder
         $this->command->info("Deleted {$shootsCount} shoots");
         
         // Delete all users except super admins (to preserve your admin account)
-        $usersCount = User::whereNotIn('role', ['super_admin', 'superadmin'])->count();
-        User::whereNotIn('role', ['super_admin', 'superadmin'])->delete();
+        $usersCount = User::whereNotIn('role', ['superadmin'])->count();
+        User::whereNotIn('role', ['superadmin'])->delete();
         $this->command->info("Deleted {$usersCount} users (preserved super admins)");
         
         // Vacuum database to reclaim space

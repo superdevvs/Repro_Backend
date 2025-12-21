@@ -14,7 +14,7 @@ class UpdateShootStatusRequest extends FormRequest
         }
 
         // Only admin, super admin, photographer (for their shoots), and editor can update status
-        return in_array($user->role, ['admin', 'superadmin', 'super_admin', 'photographer', 'editor']);
+        return in_array($user->role, ['admin', 'superadmin', 'photographer', 'editor']);
     }
 
     public function rules(): array

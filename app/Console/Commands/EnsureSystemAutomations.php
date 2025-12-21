@@ -17,7 +17,7 @@ class EnsureSystemAutomations extends Command
         $this->newLine();
 
         // Get admin user - try all possible role formats
-        $admin = User::whereIn('role', ['admin', 'super_admin', 'superadmin'])->first();
+        $admin = User::whereIn('role', ['admin', 'superadmin'])->first();
 
         if (!$admin) {
             $this->error('No admin user found!');

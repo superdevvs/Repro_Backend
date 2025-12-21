@@ -160,7 +160,13 @@ class ReproAiOrchestrator
         
         $prompt .= "4. DASHBOARD & ANALYTICS:\n";
         $prompt .= "   - Get dashboard statistics (revenue, shoot counts, pending items)\n";
-        $prompt .= "   - Show upcoming shoots and items needing attention\n";
+        $prompt .= "   - Show upcoming shoots and items needing attention\n\n";
+        
+        $prompt .= "5. AI PHOTO EDITING:\n";
+        $prompt .= "   - Submit images for AI-powered editing (enhance, sky replacement, object removal, etc.)\n";
+        $prompt .= "   - Check status of editing jobs\n";
+        $prompt .= "   - Get available editing types\n";
+        $prompt .= "   - Use submit_ai_editing when user wants to enhance or edit photos\n";
         $prompt .= "   - Provide insights on business performance\n";
         $prompt .= "   - Filter by time ranges (today, week, month, year, all)\n\n";
         
@@ -447,6 +453,50 @@ class ReproAiOrchestrator
                     ],
                 ],
             ],
+            
+            // AI Editing Tools
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'submit_ai_editing',
+                    'description' => 'Submit images from a shoot for AI-powered photo editing. Use this when user wants to enhance, improve, or edit photos using AI.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'shoot_id' => ['type' => 'integer', 'description' => 'The shoot ID containing images to edit'],
+                            'editing_type' => ['type' => 'string', 'description' => 'Type of editing: enhance, sky_replace, remove_object, color_correction, exposure_fix, white_balance (default: enhance)'],
+                            'file_ids' => ['type' => 'array', 'description' => 'Array of file IDs to edit (optional, if not provided, will edit all images in shoot)', 'items' => ['type' => 'integer']],
+                            'params' => ['type' => 'object', 'description' => 'Additional parameters for specific editing types'],
+                        ],
+                        'required' => ['shoot_id'],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'get_ai_editing_status',
+                    'description' => 'Get status of AI editing jobs. Use this to check progress of submitted editing jobs.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'job_id' => ['type' => 'integer', 'description' => 'Specific job ID to check'],
+                            'shoot_id' => ['type' => 'integer', 'description' => 'Shoot ID to get all editing jobs for'],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'get_editing_types',
+                    'description' => 'Get list of available AI editing types and their descriptions',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [],
+                    ],
+                ],
+            ],
         ];
     }
 
@@ -584,6 +634,11 @@ class ReproAiOrchestrator
             // Dashboard Tools
             'get_dashboard_stats' => ['DashboardTools', 'getDashboardStats'],
             'update_shoot_status' => ['DashboardTools', 'updateShootStatus'],
+            
+            // AI Editing Tools
+            'submit_ai_editing' => ['AiEditingTools', 'submitAiEditing'],
+            'get_ai_editing_status' => ['AiEditingTools', 'getAiEditingStatus'],
+            'get_editing_types' => ['AiEditingTools', 'getEditingTypes'],
         ];
 
         if (!isset($toolMapping[$toolName])) {
@@ -603,9 +658,13 @@ class ReproAiOrchestrator
             throw new \Exception("Tool method not found: {$methodName} in {$className}");
         }
 
-        // Add session user_id to context if not present
+        // Add session user_id and role to context if not present
         if (!isset($context['user_id'])) {
             $context['user_id'] = $session->user_id;
+        }
+        if (!isset($context['user_role'])) {
+            $user = $session->user ?? \App\Models\User::find($session->user_id);
+            $context['user_role'] = $user->role ?? 'client';
         }
 
         return $toolHandler->$methodName($params, $context);

@@ -37,18 +37,18 @@ class ShootActivityLogger
     protected function generateDescription(string $action, array $metadata): string
     {
         $descriptions = [
-            'shoot_scheduled' => 'Shoot scheduled' . ($metadata['scheduled_at'] ?? ''),
-            'shoot_scheduled_email' => 'Scheduled email sent' . ($metadata['to'] ? " to {$metadata['to']}" : ''),
+            'shoot_scheduled' => 'Shoot scheduled' . (isset($metadata['scheduled_at']) ? $metadata['scheduled_at'] : ''),
+            'shoot_scheduled_email' => 'Scheduled email sent' . (isset($metadata['to']) && $metadata['to'] ? " to {$metadata['to']}" : ''),
             'shoot_started' => 'Shoot started',
             'shoot_editing_started' => 'Editing started',
             'shoot_submitted_for_review' => 'Submitted for review',
             'shoot_completed' => 'Shoot completed',
-            'shoot_put_on_hold' => 'Shoot put on hold' . ($metadata['reason'] ? ": {$metadata['reason']}" : ''),
-            'shoot_cancelled' => 'Shoot cancelled' . ($metadata['reason'] ? ": {$metadata['reason']}" : ''),
-            'payment_done' => 'Payment received' . ($metadata['amount'] ? ": $" . number_format($metadata['amount'], 2) : ''),
+            'shoot_put_on_hold' => 'Shoot put on hold' . (isset($metadata['reason']) && $metadata['reason'] ? ": {$metadata['reason']}" : ''),
+            'shoot_cancelled' => 'Shoot cancelled' . (isset($metadata['reason']) && $metadata['reason'] ? ": {$metadata['reason']}" : ''),
+            'payment_done' => 'Payment received' . (isset($metadata['amount']) && $metadata['amount'] ? ": $" . number_format($metadata['amount'], 2) : ''),
             'payment_completion_email' => 'Payment completion email sent',
-            'media_uploaded' => 'Media uploaded' . ($metadata['file_count'] ? ": {$metadata['file_count']} files" : ''),
-            'reminder_sent' => 'Reminder sent' . ($metadata['type'] ? " ({$metadata['type']})" : ''),
+            'media_uploaded' => 'Media uploaded' . (isset($metadata['file_count']) && $metadata['file_count'] ? ": {$metadata['file_count']} files" : ''),
+            'reminder_sent' => 'Reminder sent' . (isset($metadata['type']) && $metadata['type'] ? " ({$metadata['type']})" : ''),
         ];
 
         return $descriptions[$action] ?? ucfirst(str_replace('_', ' ', $action));

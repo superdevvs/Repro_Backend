@@ -348,6 +348,38 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
+            
+            // 15. Property Contact Reminder
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Property Contact Reminder',
+                'slug' => 'property-contact-reminder',
+                'description' => 'Reminder to provide property contact or lockbox details',
+                'category' => 'REMINDER',
+                'subject' => 'Action Required: Property Access Details for [shoot_location]',
+                'body_html' => $this->getPropertyContactReminderTemplate(),
+                'body_text' => $this->getPropertyContactReminderPlainText(),
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
+            
+            // 16. Property Contact Reminder SMS
+            [
+                'channel' => 'SMS',
+                'name' => 'Property Contact Reminder SMS',
+                'slug' => 'property-contact-reminder-sms',
+                'description' => 'SMS reminder to provide property contact or lockbox details',
+                'category' => 'REMINDER',
+                'subject' => '',
+                'body_html' => $this->getPropertyContactReminderSmsTemplate(),
+                'body_text' => $this->getPropertyContactReminderSmsTemplate(),
+                'variables_json' => ['shoot_location', 'shoot_date', 'shoot_time', 'portal_url'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
         ];
 
         foreach ($templates as $template) {
@@ -396,6 +428,61 @@ class MessagingSystemSeeder extends Seeder
                 'scope' => 'SYSTEM',
                 'recipients_json' => ['client'],
             ],
+            [
+                'name' => 'Property Contact Reminder - 2 Days Before',
+                'description' => 'Remind client to provide property contact or lockbox details (2 days before shoot)',
+                'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'condition_json' => ['days_before' => 2],
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Property Contact Reminder - 1 Day Before',
+                'description' => 'Remind client to provide property contact or lockbox details (1 day before shoot)',
+                'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'condition_json' => ['days_before' => 1],
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Property Contact Reminder - Shoot Day',
+                'description' => 'Remind client to provide property contact or lockbox details (on shoot day)',
+                'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'condition_json' => ['days_before' => 0],
+                'recipients_json' => ['client'],
+            ],
+            // SMS Reminders
+            [
+                'name' => 'Property Contact Reminder SMS - 2 Days Before',
+                'description' => 'SMS reminder to provide property contact or lockbox details (2 days before shoot)',
+                'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'condition_json' => ['days_before' => 2],
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Property Contact Reminder SMS - 1 Day Before',
+                'description' => 'SMS reminder to provide property contact or lockbox details (1 day before shoot)',
+                'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'condition_json' => ['days_before' => 1],
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Property Contact Reminder SMS - Shoot Day',
+                'description' => 'SMS reminder to provide property contact or lockbox details (on shoot day)',
+                'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'condition_json' => ['days_before' => 0],
+                'recipients_json' => ['client'],
+            ],
         ];
 
         foreach ($automations as $automation) {
@@ -404,9 +491,19 @@ class MessagingSystemSeeder extends Seeder
                 'SHOOT_BOOKED' => 'shoot-scheduled',
                 'SHOOT_REMINDER' => 'shoot-reminder',
                 'PAYMENT_COMPLETED' => 'payment-thank-you',
+                'PROPERTY_CONTACT_REMINDER' => 'property-contact-reminder',
             ];
 
-            if (isset($slugMap[$automation['trigger_type']])) {
+            // For property contact reminders, use email template for email channel and SMS template for SMS
+            if ($automation['trigger_type'] === 'PROPERTY_CONTACT_REMINDER') {
+                // Check if this is an SMS rule (name contains "SMS")
+                if (strpos($automation['name'], 'SMS') !== false) {
+                    $templateSlug = 'property-contact-reminder-sms';
+                } else {
+                    $templateSlug = 'property-contact-reminder';
+                }
+                $automation['template_id'] = MessageTemplate::where('slug', $templateSlug)->first()?->id;
+            } elseif (isset($slugMap[$automation['trigger_type']])) {
                 $automation['template_id'] = MessageTemplate::where('slug', $slugMap[$automation['trigger_type']])->first()?->id;
             }
 
@@ -1322,6 +1419,84 @@ Location: [shoot_location]
 If you have any questions regarding this refund, please feel free to reply to this email.
 
 Thank you!';
+    }
+
+    private function getPropertyContactReminderTemplate(): string
+    {
+        return '<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Property Access Details Required</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+        <h2 style="color: #2c3e50; margin-top: 0;">Action Required: Property Access Details</h2>
+    </div>
+    
+    <p>[greeting], [realtor_first]!</p>
+    
+    <p>We need property access information for your upcoming shoot:</p>
+    
+    <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
+        <p style="margin: 0;"><strong>Location:</strong> [shoot_location]</p>
+        <p style="margin: 5px 0 0 0;"><strong>Date:</strong> [shoot_date]</p>
+        <p style="margin: 5px 0 0 0;"><strong>Time:</strong> [shoot_time]</p>
+    </div>
+    
+    <p><strong>Please provide one of the following:</strong></p>
+    <ul>
+        <li><strong>Who will be at the property?</strong> (Name and phone number of on-site contact)</li>
+        <li><strong>Lockbox details:</strong> (Code and location/instructions)</li>
+    </ul>
+    
+    <p>You can update this information by visiting your shoot details:</p>
+    <p style="text-align: center; margin: 30px 0;">
+        <a href="[portal_url]" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Update Property Access Details</a>
+    </p>
+    
+    <p>This information is essential for our photographer to access the property on the scheduled date.</p>
+    
+    <p>If you have any questions, please reply to this email or contact us at [company_email].</p>
+    
+    <p>Thank you!</p>
+    
+    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+    <p style="color: #666; font-size: 12px;">This is an automated reminder. If you have already provided this information, please disregard this message.</p>
+</body>
+</html>';
+    }
+
+    private function getPropertyContactReminderPlainText(): string
+    {
+        return '[greeting], [realtor_first]!
+
+We need property access information for your upcoming shoot:
+
+Location: [shoot_location]
+Date: [shoot_date]
+Time: [shoot_time]
+
+Please provide one of the following:
+- Who will be at the property? (Name and phone number of on-site contact)
+- Lockbox details: (Code and location/instructions)
+
+You can update this information by visiting: [portal_url]
+
+This information is essential for our photographer to access the property on the scheduled date.
+
+If you have any questions, please contact us at [company_email].
+
+Thank you!
+
+---
+This is an automated reminder. If you have already provided this information, please disregard this message.';
+    }
+
+    private function getPropertyContactReminderSmsTemplate(): string
+    {
+        return 'REPRO: Action required for shoot at [shoot_location] on [shoot_date] at [shoot_time]. Please provide property access details (who will be at property or lockbox info). Update: [portal_url]';
     }
 
     private function normalizeTemplateDefinition(array $template): array

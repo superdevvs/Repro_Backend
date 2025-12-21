@@ -105,7 +105,7 @@ class ShootRescheduleRequestController extends Controller
         }
 
         $role = strtolower($user->role ?? '');
-        return in_array($role, ['admin', 'super_admin', 'superadmin'], true);
+        return in_array($role, ['admin', 'superadmin'], true);
     }
 
     private function authorizeAdmin(Request $request): void

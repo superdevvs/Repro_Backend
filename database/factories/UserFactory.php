@@ -66,7 +66,7 @@ class UserFactory extends Factory
     public function superAdmin(): static
     {
         return $this->state(fn (array $attributes) => [
-            'role' => 'super_admin',
+            'role' => 'superadmin',
         ]);
     }
 }

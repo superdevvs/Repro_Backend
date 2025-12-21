@@ -8,7 +8,7 @@
 ## Most Likely Causes
 
 ### 1. Role Middleware Blocking (403)
-Your user role doesn't match `client`, `admin`, or `super_admin`.
+Your user role doesn't match `client`, `admin`, or `superadmin`.
 
 **Test:**
 ```

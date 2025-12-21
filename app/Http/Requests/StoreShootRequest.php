@@ -19,7 +19,7 @@ class StoreShootRequest extends FormRequest
         }
 
         // Admin and super admin can book for any client
-        if (in_array($user->role, ['admin', 'superadmin', 'super_admin'])) {
+        if (in_array($user->role, ['admin', 'superadmin'])) {
             return true;
         }
 
@@ -39,7 +39,7 @@ class StoreShootRequest extends FormRequest
     public function rules(): array
     {
         $user = $this->user();
-        $isAdmin = in_array($user->role ?? '', ['admin', 'superadmin', 'super_admin']);
+        $isAdmin = in_array($user->role ?? '', ['admin', 'superadmin']);
 
         return [
             // Client ID: required for admin, optional for client (defaults to auth user)
@@ -94,7 +94,7 @@ class StoreShootRequest extends FormRequest
             'expected_raw_count' => 'nullable|integer|min:0',
 
             // Integration fields (optional)
-            'mls_id' => 'nullable|string|max:100',
+            'mls_id' => 'nullable|string|max:50',
             'listing_source' => 'nullable|string|in:BrightMLS,Other',
             'property_details' => 'nullable|array',
             'is_private_listing' => 'nullable|boolean',

@@ -111,6 +111,12 @@ class DropboxWorkflowService
      */
     public function uploadToTodo(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null)
     {
+        // Check if Dropbox is enabled - if not, use local storage
+        if (!$this->isEnabled()) {
+            Log::info('Dropbox disabled, using local storage for upload', ['shoot_id' => $shoot->id]);
+            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO);
+        }
+
         // Find (or create) the ToDo folder for this shoot
         $todoFolder = $shoot->dropboxFolders()
             ->where('folder_type', DropboxFolder::TYPE_TODO)
@@ -167,14 +173,14 @@ class DropboxWorkflowService
                 ]);
 
                 // Update shoot workflow status if this is the first photo upload
-                if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOAD_PENDING])) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_RAW_UPLOADED, $userId);
+                if ($shoot->workflow_status === Shoot::STATUS_SCHEDULED) {
+                    $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
                 }
 
                 Log::info("File uploaded to Dropbox ToDo folder", [
                     'shoot_id' => $shoot->id,
                     'filename' => $filename,
-                    'path' => $dropboxPath
+                    'dropbox_path' => $dropboxPath,
                 ]);
 
                 return $shootFile;
@@ -213,11 +219,9 @@ class DropboxWorkflowService
             'dropbox_file_id' => null,
         ]);
 
-        if ($stage === ShootFile::STAGE_TODO && in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOAD_PENDING])) {
-            $shoot->updateWorkflowStatus(Shoot::WORKFLOW_RAW_UPLOADED, $userId);
-        }
-        if ($stage === ShootFile::STAGE_COMPLETED && in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOADED])) {
-            $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_UPLOADED, $userId);
+        // When photos are uploaded, auto-transition from scheduled to uploaded
+        if ($stage === ShootFile::STAGE_TODO && $shoot->workflow_status === Shoot::STATUS_SCHEDULED) {
+            $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
         }
 
         Log::info('Stored file locally as Dropbox fallback', [
@@ -251,11 +255,7 @@ class DropboxWorkflowService
 
             $shootFile->moveToCompleted($userId);
 
-            // If no remaining TODO files and workflow is PHOTOS_UPLOADED, advance workflow
-            $todoFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
-            if ($todoFiles === 0 && $shoot->workflow_status === Shoot::WORKFLOW_RAW_UPLOADED) {
-                $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING, $userId);
-            }
+            // Files moved to completed - status stays as 'uploaded' until admin sends to editing
             return true;
         }
 
@@ -276,11 +276,7 @@ class DropboxWorkflowService
                 $shootFile->dropbox_path = $newPath;
                 $shootFile->moveToCompleted($userId);
 
-                // Check if all files are moved to completed
-                $todoFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
-                if ($todoFiles === 0 && $shoot->workflow_status === Shoot::WORKFLOW_RAW_UPLOADED) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING, $userId);
-                }
+                // Files moved to completed - status stays as 'uploaded' until admin sends to editing
 
                 Log::info("File moved to Completed folder", [
                     'shoot_id' => $shoot->id,
@@ -561,6 +557,12 @@ class DropboxWorkflowService
      */
     public function uploadToCompleted(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null)
     {
+        // Check if Dropbox is enabled - if not, use local storage
+        if (!$this->isEnabled()) {
+            Log::info('Dropbox disabled, using local storage for edited upload', ['shoot_id' => $shoot->id]);
+            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED);
+        }
+
         // Find (or create) the Completed folder for this shoot
         $completedFolder = $shoot->dropboxFolders()
             ->where('folder_type', DropboxFolder::TYPE_COMPLETED)
@@ -1099,5 +1101,69 @@ class DropboxWorkflowService
         ]);
 
         return $zipPath;
+    }
+
+    /**
+     * Test Dropbox connection
+     */
+    public function testConnection(): array
+    {
+        try {
+            // Check if Dropbox is enabled
+            if (!config('services.dropbox.enabled', false)) {
+                return [
+                    'success' => false,
+                    'message' => 'Dropbox integration is disabled. Enable it in settings to test.',
+                ];
+            }
+
+            // Check if access token is configured
+            $accessToken = config('services.dropbox.access_token');
+            if (empty($accessToken)) {
+                return [
+                    'success' => false,
+                    'message' => 'No Dropbox access token configured.',
+                ];
+            }
+
+            // Test the connection by getting account info
+            $response = Http::withToken($this->getAccessToken())
+                ->withOptions($this->httpOptions)
+                ->withHeaders(['Content-Type' => 'application/json'])
+                ->withBody('null')
+                ->post($this->dropboxApiUrl . '/users/get_current_account');
+
+            if ($response->successful()) {
+                $accountInfo = $response->json();
+                return [
+                    'success' => true,
+                    'message' => 'Connected to Dropbox as ' . ($accountInfo['name']['display_name'] ?? 'Unknown User'),
+                    'account' => [
+                        'name' => $accountInfo['name']['display_name'] ?? null,
+                        'email' => $accountInfo['email'] ?? null,
+                    ],
+                ];
+            }
+
+            return [
+                'success' => false,
+                'message' => 'Failed to connect to Dropbox: ' . ($response->json()['error_summary'] ?? 'Unknown error'),
+            ];
+
+        } catch (\Exception $e) {
+            Log::error('Dropbox connection test failed', ['error' => $e->getMessage()]);
+            return [
+                'success' => false,
+                'message' => 'Connection failed: ' . $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Check if Dropbox storage is enabled
+     */
+    public function isEnabled(): bool
+    {
+        return config('services.dropbox.enabled', false) && !empty(config('services.dropbox.access_token'));
     }
 }

@@ -58,7 +58,7 @@ class ZillowPropertyService
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->serverToken,
                 'Accept' => 'application/json',
-            ])->get($this->baseUrl . '/properties', $params);
+            ])->withoutVerifying()->get($this->baseUrl . '/properties', $params);
 
             if (!$response->successful()) {
                 Log::error('Zillow property lookup failed', [

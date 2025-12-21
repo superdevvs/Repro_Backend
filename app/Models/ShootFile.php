@@ -35,7 +35,10 @@ class ShootFile extends Model
         'bracket_group',
         'sequence',
         'flag_reason',
-        'metadata'
+        'metadata',
+        'ai_editing_job_id',
+        'is_ai_edited',
+        'ai_editing_metadata',
     ];
 
     protected $casts = [
@@ -46,6 +49,8 @@ class ShootFile extends Model
         'bracket_group' => 'integer',
         'sequence' => 'integer',
         'metadata' => 'array',
+        'is_ai_edited' => 'boolean',
+        'ai_editing_metadata' => 'array',
     ];
 
     // Workflow stage constants
@@ -73,6 +78,11 @@ class ShootFile extends Model
     public function verifiedBy()
     {
         return $this->belongsTo(User::class, 'verified_by');
+    }
+
+    public function aiEditingJob()
+    {
+        return $this->belongsTo(AiEditingJob::class, 'ai_editing_job_id');
     }
 
     public function canMoveToCompleted()

@@ -28,6 +28,8 @@ use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\EditingRequestController;
 use App\Http\Controllers\API\AiChatController;
 use App\Http\Controllers\API\CubiCasaController;
+use App\Http\Controllers\API\FotelloController;
+use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
 
 
@@ -40,6 +42,17 @@ Route::get('/ping', function () {
         'status' => 'success',
         'timestamp' => now()->toIso8601String(),
         'message' => 'API is working V1'
+    ]);
+});
+
+// Debug route to check PHP upload limits
+Route::get('/php-limits', function () {
+    return response()->json([
+        'upload_max_filesize' => ini_get('upload_max_filesize'),
+        'post_max_size' => ini_get('post_max_size'),
+        'memory_limit' => ini_get('memory_limit'),
+        'max_execution_time' => ini_get('max_execution_time'),
+        'max_file_uploads' => ini_get('max_file_uploads'),
     ]);
 });
 
@@ -61,8 +74,8 @@ Route::middleware('auth:sanctum')->get('/ai/test-auth', function (Request $reque
         'authenticated' => $user !== null,
         'user_id' => $user?->id,
         'user_role' => $user?->role,
-        'allowed_roles' => ['client', 'admin', 'super_admin'],
-        'has_access' => $user && in_array($user->role, ['client', 'admin', 'super_admin']),
+        'allowed_roles' => ['client', 'admin', 'superadmin'],
+        'has_access' => $user && in_array($user->role, ['client', 'admin', 'superadmin']),
     ]);
 });
 
@@ -96,6 +109,9 @@ Route::post('/ai/test', function (Request $request) {
 })->middleware('auth:sanctum');
 
 Route::prefix('dropbox')->name('dropbox.')->group(function () {
+    // Config (public endpoint for frontend)
+    Route::get('config', [DropboxAuthController::class, 'getConfig'])->name('config');
+    
     // Auth
     Route::get('connect', [DropboxAuthController::class, 'connect'])->name('connect');
     Route::get('callback', [DropboxAuthController::class, 'callback'])->name('callback');
@@ -195,18 +211,44 @@ Route::post('/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 
-Route::middleware('auth:sanctum')->get('/admin/users', [UserController::class, 'index']);
+// Debug route to check current user role
+Route::middleware('auth:sanctum')->get('/debug/user-role', function (Request $request) {
+    $user = $request->user();
+    return response()->json([
+        'user_id' => $user->id,
+        'email' => $user->email,
+        'role' => $user->role,
+        'name' => $user->name,
+        'can_access_users' => in_array($user->role, ['admin', 'superadmin']),
+        'can_access_account_links' => in_array($user->role, ['admin', 'superadmin'])
+    ]);
+});
 
-Route::middleware(['auth:sanctum','role:admin,super_admin'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,salesRep'])->get('/admin/users', [UserController::class, 'index']);
+
+Route::middleware(['auth:sanctum','role:admin,superadmin'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
+Route::middleware(['auth:sanctum','role:admin,superadmin'])->put('/admin/users/{id}', [UserController::class, 'update']);
+Route::middleware(['auth:sanctum','role:admin,superadmin'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
 Route::middleware(['auth:sanctum'])->post('/admin/users', [UserController::class, 'store']);
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->get('/admin/clients', [UserController::class, 'getClients']);
+// Account Linking Routes
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,superadmin'])->group(function () {
+    Route::get('/admin/account-links', [AccountLinkController::class, 'index']);
+    Route::post('/admin/account-links', [AccountLinkController::class, 'store']);
+    Route::post('/admin/account-links/batch', [AccountLinkController::class, 'batchStore']);
+    Route::patch('/admin/account-links/{id}', [AccountLinkController::class, 'update']);
+    Route::delete('/admin/account-links/{id}', [AccountLinkController::class, 'destroy']);
+    Route::get('/admin/account-links/shared-data/{accountId}', [AccountLinkController::class, 'getSharedData']);
+    Route::get('/admin/account-links/available-accounts', [AccountLinkController::class, 'getAvailableAccounts']);
+});
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin,client,superadmin'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,superadmin'])->get('/admin/clients', [UserController::class, 'getClients']);
+
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,client,superadmin'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
 // Public lightweight list for dropdowns
 Route::get('/photographers', [UserController::class, 'simplePhotographers']);
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->group(function () {
     Route::post('/admin/services', [ServiceController::class, 'store']);
 
     Route::put('/admin/services/{id}', [ServiceController::class, 'update']);
@@ -214,12 +256,12 @@ Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->group(function ()
     Route::delete('/admin/services/{id}', [ServiceController::class, 'destroy']);
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin,superadmin'])->get(
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,superadmin'])->get(
     '/dashboard/overview',
     [DashboardController::class, 'overview']
 );
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->prefix('admin')->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin')->group(function () {
     Route::get('invoices', [InvoiceController::class, 'index']);
     Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
     Route::get('invoices/{invoice}', [InvoiceController::class, 'show']);
@@ -238,7 +280,7 @@ Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->prefix('admin')->
 });
 
 // Tour Branding routes (Admin/Super Admin only)
-Route::middleware(['auth:sanctum', 'role:admin,super_admin,superadmin'])->prefix('tour-branding')->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,superadmin'])->prefix('tour-branding')->group(function () {
     Route::get('/', [App\Http\Controllers\API\TourBrandingController::class, 'index']);
     Route::post('/', [App\Http\Controllers\API\TourBrandingController::class, 'store']);
     Route::put('/{id}', [App\Http\Controllers\API\TourBrandingController::class, 'update']);
@@ -248,7 +290,7 @@ Route::middleware(['auth:sanctum', 'role:admin,super_admin,superadmin'])->prefix
 Route::middleware('auth:sanctum')->group(function () {
     // User branding routes
     Route::get('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'show']);
-    Route::put('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'update'])->middleware('role:admin,super_admin,superadmin');
+    Route::put('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'update'])->middleware('role:admin,superadmin,superadmin');
     
     // Shoot management
     Route::get('/shoots', [ShootController::class, 'index']);
@@ -260,7 +302,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Minimal update endpoint for status/workflow updates
     Route::patch('/shoots/{shoot}', [ShootController::class, 'update']);
     // Mark shoot as paid (Super Admin only)
-    Route::post('/shoots/{shoot}/mark-paid', [ShootController::class, 'markAsPaid'])->middleware('role:superadmin,super_admin');
+    Route::post('/shoots/{shoot}/mark-paid', [ShootController::class, 'markAsPaid'])->middleware('role:superadmin,superadmin');
     // State transition endpoints
     Route::post('/shoots/{shoot}/schedule', [ShootController::class, 'schedule']);
     Route::post('/shoots/{shoot}/start-editing', [ShootController::class, 'startEditing']);
@@ -280,14 +322,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/notes', [ShootController::class, 'getNotes']);
     Route::post('/shoots/{shoot}/notes', [ShootController::class, 'storeNote']);
     Route::patch('/shoots/{shoot}/notes', [ShootController::class, 'updateNotesSimple']);
-    Route::delete('/shoots/{shoot}', [ShootController::class, 'destroy'])->middleware('role:admin,super_admin');
+    Route::delete('/shoots/{shoot}', [ShootController::class, 'destroy'])->middleware('role:admin,superadmin');
     
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootController::class, 'uploadFiles']);
     Route::post('/shoots/{shoot}/upload-extra', [ShootController::class, 'uploadExtra']);
+    Route::get('/shoots/{shoot}/files', [ShootController::class, 'getFiles']);
+    Route::get('/shoots/{shoot}/files/{file}/preview', [ShootController::class, 'previewFile']);
     Route::get('/shoots/{shoot}/media', [ShootController::class, 'listMedia']);
     Route::get('/shoots/{shoot}/media/download-zip', [ShootController::class, 'downloadMediaZip']);
-    Route::post('/shoots/{shoot}/archive', [ShootController::class, 'archiveShoot'])->middleware('role:admin,super_admin,superadmin');
+    Route::post('/shoots/{shoot}/archive', [ShootController::class, 'archiveShoot'])->middleware('role:admin,superadmin,superadmin');
     Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootController::class, 'moveFileToCompleted']);
     Route::post('/shoots/{shoot}/files/{file}/verify', [ShootController::class, 'verifyFile']);
     Route::get('/shoots/{shoot}/workflow-status', [ShootController::class, 'getWorkflowStatus']);
@@ -355,13 +399,22 @@ Route::middleware('auth:sanctum')->group(function () {
         });
         
         // Actual AI chat endpoints with role middleware
-        Route::middleware('role:client,admin,super_admin')->group(function () {
+        Route::middleware('role:client,admin,superadmin')->group(function () {
             Route::post('/chat', [AiChatController::class, 'chat']);
             Route::get('/sessions', [AiChatController::class, 'sessions']);
             Route::get('/sessions/{session}', [AiChatController::class, 'sessionMessages']);
             Route::delete('/sessions/{session}', [AiChatController::class, 'deleteSession']);
             Route::post('/sessions/{session}/archive', [AiChatController::class, 'archiveSession']);
         });
+    });
+
+    // Fotello AI Photo Editing endpoints (Admin/Super Admin only)
+    Route::prefix('fotello')->middleware('role:admin,superadmin')->group(function () {
+        Route::get('/editing-types', [FotelloController::class, 'getEditingTypes']);
+        Route::post('/edit', [FotelloController::class, 'submitEditing']);
+        Route::get('/jobs', [FotelloController::class, 'listJobs']);
+        Route::get('/jobs/{jobId}', [FotelloController::class, 'getJobStatus']);
+        Route::post('/jobs/{jobId}/cancel', [FotelloController::class, 'cancelJob']);
     });
 
     // Integration endpoints
@@ -377,22 +430,25 @@ Route::middleware('auth:sanctum')->group(function () {
         });
 
         // MLS Publishing Queue (admin only)
-        Route::middleware('role:admin,super_admin')->group(function () {
+        Route::middleware('role:admin,superadmin')->group(function () {
             Route::get('/mls-queue', [IntegrationController::class, 'getMlsQueue']);
         });
 
         // Test connections (admin only)
-        Route::middleware('role:admin,super_admin')->post('/test-connection', [IntegrationController::class, 'testConnection']);
+        Route::middleware('role:admin,superadmin')->post('/test-connection', [IntegrationController::class, 'testConnection']);
+        
+        // Dropbox status
+        Route::get('/dropbox/status', [IntegrationController::class, 'getDropboxStatus']);
     });
 
     // Settings endpoints (admin only)
-    Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->prefix('admin/settings')->group(function () {
+    Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin/settings')->group(function () {
         Route::get('/{key}', [App\Http\Controllers\API\SettingsController::class, 'get']);
         Route::post('/', [App\Http\Controllers\API\SettingsController::class, 'store']);
     });
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->patch(
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->patch(
     '/shoots/reschedule-requests/{rescheduleRequest}',
     [ShootRescheduleRequestController::class, 'updateStatus']
 );
@@ -421,15 +477,17 @@ Route::get('/services', [ServiceController::class, 'index']);
 
 Route::get('/services/{id}', [ServiceController::class, 'show']);
 
+Route::get('/services/{id}/calculate-price', [ServiceController::class, 'calculatePrice']);
+
 Route::get('/categories', [CategoryController::class, 'index']); // Public
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->group(function () {
     Route::post('/categories', [CategoryController::class, 'store']);
     Route::put('/categories/{id}', [CategoryController::class, 'update']);
     Route::delete('/categories/{id}', [CategoryController::class, 'destroy']);
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->prefix('coupons')->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('coupons')->group(function () {
     Route::get('/', [CouponController::class, 'index']);
     Route::post('/', [CouponController::class, 'store']);
     Route::patch('{coupon}', [CouponController::class, 'update']);
@@ -438,7 +496,7 @@ Route::middleware(['auth:sanctum', 'role:admin,super_admin'])->prefix('coupons')
 });
 
 // CubiCasa scanning routes - accessible to photographers and admins
-Route::middleware(['auth:sanctum', 'role:photographer,admin,super_admin'])->prefix('cubicasa')->group(function () {
+Route::middleware(['auth:sanctum', 'role:photographer,admin,superadmin'])->prefix('cubicasa')->group(function () {
     Route::post('/orders', [CubiCasaController::class, 'createOrder']);
     Route::get('/orders', [CubiCasaController::class, 'listOrders']);
     Route::get('/orders/{id}', [CubiCasaController::class, 'getOrder']);
@@ -457,6 +515,12 @@ Route::prefix('photographer/availability')->group(function () {
     // Bulk add availability (weekly schedule)
     Route::post('/bulk', [PhotographerAvailabilityController::class, 'bulkStore']);
 
+    // Bulk fetch availability for multiple photographers (optimized)
+    Route::post('/bulk-index', [PhotographerAvailabilityController::class, 'bulkIndex']);
+
+    // Get booked slots with shoot details for a photographer
+    Route::post('/booked-slots', [PhotographerAvailabilityController::class, 'getBookedSlotsWithDetails']);
+
     // Update availability
     Route::put('/{id}', [PhotographerAvailabilityController::class, 'update']);
 
@@ -471,10 +535,13 @@ Route::prefix('photographer/availability')->group(function () {
 
     // Find all photographers available for given date & time
     Route::post('/available-photographers', [PhotographerAvailabilityController::class, 'availablePhotographers']);
+
+    // Get comprehensive photographer info for booking (distance, availability, bookings)
+    Route::post('/for-booking', [PhotographerAvailabilityController::class, 'getPhotographersForBooking']);
 });
 
 Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
-    Route::middleware('role:super_admin,admin,sales_rep')->group(function () {
+    Route::middleware('role:superadmin,admin,sales_rep')->group(function () {
         Route::get('/overview', MessagingOverviewController::class);
 
         // Templates
@@ -518,7 +585,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/settings/sms', [MessagingSettingsController::class, 'saveSmsSettings']);
     });
 
-    Route::middleware('role:super_admin,admin,sales_rep,photographer')->group(function () {
+    Route::middleware('role:superadmin,admin,sales_rep,photographer')->group(function () {
         Route::get('/sms/threads', [SmsMessagingController::class, 'threads']);
         Route::get('/sms/threads/{thread}', [SmsMessagingController::class, 'showThread']);
         Route::post('/sms/threads/{thread}/messages', [SmsMessagingController::class, 'sendToThread']);
@@ -526,7 +593,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/sms/threads/{thread}/mark-read', [SmsMessagingController::class, 'markRead']);
     });
 
-    Route::middleware('role:super_admin,admin,sales_rep')->group(function () {
+    Route::middleware('role:superadmin,admin,sales_rep')->group(function () {
         Route::put('/contacts/{contact}', [SmsContactController::class, 'update']);
         Route::put('/contacts/{contact}/comment', [SmsContactController::class, 'updateComment']);
     });

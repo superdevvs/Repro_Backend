@@ -2,7 +2,7 @@
 
 Since other endpoints work but AI chat doesn't, the issue is likely:
 
-1. **Role middleware blocking** - Your user role doesn't match `client,admin,super_admin`
+1. **Role middleware blocking** - Your user role doesn't match `client,admin,superadmin`
 2. **Controller instantiation failure** - Dependency injection issue
 
 ## Test Steps
@@ -48,11 +48,11 @@ In browser console or via API:
 ## Common Issues
 
 ### Issue: 403 Forbidden
-**Cause:** Your user role is not in `['client', 'admin', 'super_admin']`
+**Cause:** Your user role is not in `['client', 'admin', 'superadmin']`
 
 **Check:**
 - What is your user's role? (check `/api/ai/test-auth`)
-- Does it match one of: `client`, `admin`, `super_admin`?
+- Does it match one of: `client`, `admin`, `superadmin`?
 
 **Fix:**
 - Update your user's role in the database

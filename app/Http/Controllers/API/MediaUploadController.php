@@ -12,7 +12,7 @@ class MediaUploadController extends Controller
     public function uploadImage(Request $request)
     {
         $request->validate([
-            'file' => 'required|image|max:5120',
+            'file' => 'required|file|mimes:jpeg,jpg,png,gif,bmp,webp,pdf|max:10240',
             'folder' => 'nullable|string|max:100',
         ]);
 

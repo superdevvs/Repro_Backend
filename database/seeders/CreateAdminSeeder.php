@@ -26,7 +26,7 @@ class CreateAdminSeeder extends Seeder
             'name' => 'Super Admin',
             'email' => 'admin@reprophotos.com',
             'password' => Hash::make('admin123'),
-            'role' => 'super_admin',
+            'role' => 'superadmin',
             'account_status' => 'active',
             'phonenumber' => '(202) 868-1663',
             'company_name' => 'R/E Pro Photos',

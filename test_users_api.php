@@ -12,7 +12,7 @@ $kernel->bootstrap();
 
 try {
     // Mock request and auth
-    $admin = User::where('role', 'super_admin')->first();
+    $admin = User::where('role', 'superadmin')->first();
     if (!$admin) {
         $admin = User::where('role', 'admin')->first();
     }

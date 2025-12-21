@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Services\ZillowPropertyService;
 use App\Services\BrightMlsService;
 use App\Services\IguideService;
+use App\Services\DropboxWorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -16,15 +17,18 @@ class IntegrationController extends Controller
     protected $zillowService;
     protected $brightMlsService;
     protected $iguideService;
+    protected $dropboxService;
 
     public function __construct(
         ZillowPropertyService $zillowService,
         BrightMlsService $brightMlsService,
-        IguideService $iguideService
+        IguideService $iguideService,
+        DropboxWorkflowService $dropboxService
     ) {
         $this->zillowService = $zillowService;
         $this->brightMlsService = $brightMlsService;
         $this->iguideService = $iguideService;
+        $this->dropboxService = $dropboxService;
     }
 
     /**
@@ -286,7 +290,7 @@ class IntegrationController extends Controller
     public function testConnection(Request $request)
     {
         $request->validate([
-            'service' => 'required|in:zillow,bright_mls,iguide',
+            'service' => 'required|in:zillow,bright_mls,iguide,dropbox',
         ]);
 
         try {
@@ -303,10 +307,14 @@ class IntegrationController extends Controller
                 case 'iguide':
                     $result = $this->iguideService->testConnection();
                     break;
+                case 'dropbox':
+                    $result = $this->dropboxService->testConnection();
+                    break;
             }
 
             return response()->json([
                 'success' => $result['success'] ?? false,
+                'message' => $result['message'] ?? ($result['success'] ? 'Connection successful' : 'Connection failed'),
                 'data' => $result,
             ]);
 
@@ -314,6 +322,29 @@ class IntegrationController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Test failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get Dropbox storage status
+     */
+    public function getDropboxStatus()
+    {
+        try {
+            $enabled = config('services.dropbox.enabled', false);
+            
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'enabled' => $enabled,
+                    'configured' => !empty(config('services.dropbox.access_token')),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
             ], 500);
         }
     }

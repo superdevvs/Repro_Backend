@@ -49,7 +49,7 @@ class ShootNote extends Model
     public function isVisibleToRole(string $role): bool
     {
         // Super admin and admin see everything
-        if (in_array($role, ['superadmin', 'admin', 'super_admin'])) {
+        if (in_array($role, ['superadmin', 'admin'])) {
             return true;
         }
 

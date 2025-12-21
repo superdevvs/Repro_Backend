@@ -5,6 +5,7 @@ namespace App\Console;
 use App\Console\Commands\GenerateInvoices;
 use App\Console\Commands\ImportShootHistory;
 use App\Console\Commands\ProcessShootReminders;
+use App\Console\Commands\ProcessPropertyContactReminders;
 use App\Console\Commands\SendPayoutReports;
 use App\Console\Commands\SeedPhotographerAvailability;
 use App\Console\Commands\SendWeeklySalesReports;
@@ -23,6 +24,7 @@ class Kernel extends ConsoleKernel
         GenerateInvoices::class,
         ImportShootHistory::class,
         ProcessShootReminders::class,
+        ProcessPropertyContactReminders::class,
         SendPayoutReports::class,
         SeedPhotographerAvailability::class,
         SendWeeklySalesReports::class,
@@ -41,6 +43,7 @@ class Kernel extends ConsoleKernel
         
         $schedule->job(new DispatchScheduledMessages())->everyMinute();
         $schedule->command('messaging:shoot-reminders')->everyFiveMinutes();
+        $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');
         $schedule->command('payouts:send')->weeklyOn(0, '05:00');
     }
 

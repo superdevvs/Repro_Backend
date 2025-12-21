@@ -33,7 +33,15 @@ class RoleMiddleware
             ->header('Access-Control-Allow-Credentials', 'true');
         }
 
-        if (!in_array($user->role, $roles)) {
+        $normalize = static function (?string $role): string {
+            if ($role === null) return '';
+            return strtolower(str_replace(['_', '-'], '', $role));
+        };
+
+        $normalizedUserRole = $normalize($user->role);
+        $normalizedAllowedRoles = array_map($normalize, $roles);
+
+        if (!in_array($normalizedUserRole, $normalizedAllowedRoles, true)) {
             $origin = $request->headers->get('Origin', '*');
             return response()->json([
                 'message' => 'Unauthorized. Access restricted to specific roles.',
