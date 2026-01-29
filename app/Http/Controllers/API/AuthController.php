@@ -26,7 +26,7 @@ class AuthController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'username' => 'required|string|max:255|unique:users',
+            'username' => 'nullable|string|max:255|unique:users',
             'email' => 'required|email|unique:users',
             'password' => 'required|string|min:6|confirmed',
             'phonenumber' => 'nullable|string|max:20',
@@ -36,9 +36,12 @@ class AuthController extends Controller
             'bio' => 'nullable|string',
         ]);
 
+        // Auto-generate username from email if not provided
+        $username = $validated['username'] ?? explode('@', $validated['email'])[0] . '_' . uniqid();
+
         $user = User::create([
             'name' => $validated['name'],
-            'username' => $validated['username'],
+            'username' => $username,
             'email' => $validated['email'],
             'password' => Hash::make($validated['password']),
             'phonenumber' => $validated['phonenumber'] ?? null,
