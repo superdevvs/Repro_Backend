@@ -63,7 +63,7 @@ class CakemailProvider implements EmailProviderInterface
         ];
 
         // Add list_id if available
-        if ($listId && $contentType === 'marketing') {
+        if ($listId) {
             $emailPayload['list_id'] = (int) $listId;
         }
 
