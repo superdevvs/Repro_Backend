@@ -12,7 +12,7 @@ class MessagingSystemSeeder extends Seeder
     private const BRAND_PHONE = '202-868-1663';
     private const BRAND_EMAIL = 'contact@reprophotos.com';
     private const BRAND_SITE = 'https://reprophotos.com';
-    private const BRAND_PORTAL = 'https://reprodashboard.com';
+    private const BRAND_PORTAL = 'https://reprophotos.com';
 
     private array $tokenMap = [
         '[greeting]' => '{{greeting}}',
@@ -692,7 +692,7 @@ class MessagingSystemSeeder extends Seeder
         $content = '
             <p>[greeting]!</p>
             
-            <p>A new account has been created on the <strong>REPRO HQ</strong> client website: <a href="https://pro.reprohq.com">https://pro.reprohq.com</a></p>
+            <p>A new account has been created on the <strong>RE Pro Dashboard</strong>: <a href="https://reprophotos.com">https://reprophotos.com</a></p>
             
             <p>[password_resetlink]</p>
             
