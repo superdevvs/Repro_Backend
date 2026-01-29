@@ -13,12 +13,19 @@ use Illuminate\Support\Facades\Hash;
 
 class UserController extends Controller
 {
+    private const PRIMARY_SUPERADMIN_EMAIL = 'aj@reprophotos.com';
+
     public function index(Request $request)
     {
         $user = $request->user();
 
         if (!in_array($user->role, ['admin', 'superadmin', 'salesRep'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $primarySuperAdmin = User::whereRaw('LOWER(email) = ?', [self::PRIMARY_SUPERADMIN_EMAIL])->first();
+        if ($primarySuperAdmin && $primarySuperAdmin->role === 'superadmin') {
+            $this->demoteOtherSuperAdmins($primarySuperAdmin);
         }
 
         // Optimize: Eager load relationships and batch queries
@@ -145,6 +152,21 @@ class UserController extends Controller
             'specialties' => 'nullable|string',
         ]);
 
+        $requestedRole = $validated['role'] ?? null;
+        if ($requestedRole !== null) {
+            $requestedEmail = strtolower((string) ($validated['email'] ?? ''));
+            if ($requestedEmail === self::PRIMARY_SUPERADMIN_EMAIL && $requestedRole !== 'superadmin') {
+                return response()->json([
+                    'message' => 'The primary superadmin must remain aj@reprophotos.com.',
+                ], 422);
+            }
+            if ($requestedRole === 'superadmin' && $requestedEmail !== self::PRIMARY_SUPERADMIN_EMAIL) {
+                return response()->json([
+                    'message' => 'Only aj@reprophotos.com can be a superadmin.',
+                ], 422);
+            }
+        }
+
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
             unset($validated['phone_number']);
@@ -206,6 +228,10 @@ class UserController extends Controller
         }
 
         $user = User::create($validated);
+
+        if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
+            $this->demoteOtherSuperAdmins($user);
+        }
 
         return response()->json([
             'message' => 'User created successfully.',
@@ -338,6 +364,22 @@ class UserController extends Controller
             'specialties' => 'nullable|string',
         ]);
 
+        $requestedRole = $validated['role'] ?? $user->role;
+        $requestedEmail = strtolower((string) ($validated['email'] ?? $user->email));
+        if ($response = $this->guardPrimarySuperAdmin($user, $requestedRole)) {
+            return $response;
+        }
+        if ($requestedEmail === self::PRIMARY_SUPERADMIN_EMAIL && $requestedRole !== 'superadmin') {
+            return response()->json([
+                'message' => 'The primary superadmin must remain aj@reprophotos.com.',
+            ], 422);
+        }
+        if ($requestedRole === 'superadmin' && $requestedEmail !== self::PRIMARY_SUPERADMIN_EMAIL) {
+            return response()->json([
+                'message' => 'Only aj@reprophotos.com can be a superadmin.',
+            ], 422);
+        }
+
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
             unset($validated['phone_number']);
@@ -390,6 +432,10 @@ class UserController extends Controller
         // Update user
         $user->update($validated);
 
+        if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
+            $this->demoteOtherSuperAdmins($user);
+        }
+
         return response()->json([
             'message' => 'User updated successfully.',
             'user' => $this->presentUserForViewer($user, $admin),
@@ -408,10 +454,17 @@ class UserController extends Controller
         ]);
 
         $user = User::findOrFail($id);
+        if ($response = $this->guardPrimarySuperAdmin($user, $validated['role'] ?? null)) {
+            return $response;
+        }
         $oldRole = $user->role;
         $user->role = $validated['role'];
         $changed = $user->isDirty('role');
         $user->save();
+
+        if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
+            $this->demoteOtherSuperAdmins($user);
+        }
 
         return response()->json([
             'message' => $changed ? 'Role updated successfully.' : 'Role unchanged.',
@@ -544,6 +597,41 @@ class UserController extends Controller
         }
 
         return in_array($viewer->role, ['superadmin'], true);
+    }
+
+    protected function guardPrimarySuperAdmin(User $user, ?string $requestedRole)
+    {
+        if ($requestedRole === null) {
+            return null;
+        }
+
+        $normalizedEmail = strtolower((string) $user->email);
+        $isPrimary = $normalizedEmail === self::PRIMARY_SUPERADMIN_EMAIL;
+
+        if ($isPrimary && $requestedRole !== 'superadmin') {
+            return response()->json([
+                'message' => 'The primary superadmin must remain aj@reprophotos.com.',
+            ], 422);
+        }
+
+        if (!$isPrimary && $requestedRole === 'superadmin') {
+            return response()->json([
+                'message' => 'Only aj@reprophotos.com can be a superadmin.',
+            ], 422);
+        }
+
+        return null;
+    }
+
+    protected function demoteOtherSuperAdmins(User $primary): void
+    {
+        if (strtolower((string) $primary->email) !== self::PRIMARY_SUPERADMIN_EMAIL) {
+            return;
+        }
+
+        User::where('role', 'superadmin')
+            ->where('id', '!=', $primary->id)
+            ->update(['role' => 'admin']);
     }
 
     /**

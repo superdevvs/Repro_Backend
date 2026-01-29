@@ -12,35 +12,39 @@ class AdminUserSeeder extends Seeder
     {
         // Super Admin
         User::updateOrCreate(
-            ['email' => 'superadmin@example.com'],
+            ['email' => 'aj@reprophotos.com'],
             [
-                'name' => 'Super Admin',
-                'username' => 'superadmin',
+                'name' => 'AJ',
+                'username' => 'aj',
                 'phonenumber' => null,
                 'company_name' => null,
                 'role' => 'superadmin',
                 'avatar' => null,
                 'bio' => null,
                 'account_status' => 'active',
-                'password' => Hash::make('Password123!'),
+                'password' => Hash::make('PowerMove*5484'),
             ]
         );
 
         // Admin
         User::updateOrCreate(
-            ['email' => 'admin@example.com'],
+            ['email' => 'creator@reprophotos.com'],
             [
-                'name' => 'Admin User',
-                'username' => 'admin',
+                'name' => 'Creator',
+                'username' => 'creator',
                 'phonenumber' => null,
                 'company_name' => null,
                 'role' => 'admin',
                 'avatar' => null,
                 'bio' => null,
                 'account_status' => 'active',
-                'password' => Hash::make('Password123!'),
+                'password' => Hash::make('ReCreate1!'),
             ]
         );
+
+        User::whereIn('role', ['admin', 'superadmin'])
+            ->whereNotIn('email', ['aj@reprophotos.com', 'creator@reprophotos.com'])
+            ->update(['role' => 'client']);
     }
 }
 

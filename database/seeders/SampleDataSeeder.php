@@ -86,7 +86,7 @@ class SampleDataSeeder extends Seeder
                     'base_quote' => 450,
                     'tax_amount' => 27.00,
                     'total_quote' => 477.00,
-                    'workflow_status' => Shoot::WORKFLOW_PENDING_REVIEW,
+                    'workflow_status' => Shoot::STATUS_REQUESTED,
                 ],
                 [
                     'address' => '1103 Coastal View Dr',
