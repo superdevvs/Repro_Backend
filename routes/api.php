@@ -755,3 +755,11 @@ Route::middleware(['auth:sanctum'])->prefix('raw-preview')->group(function () {
     Route::delete('/delete', [App\Http\Controllers\Api\RawPreviewController::class, 'delete']);
 });
 
+// Import routes (admin only)
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('import')->group(function () {
+    Route::post('/accounts', [App\Http\Controllers\API\ImportController::class, 'importAccounts']);
+    Route::post('/shoots', [App\Http\Controllers\API\ImportController::class, 'importShoots']);
+    Route::get('/accounts/template', [App\Http\Controllers\API\ImportController::class, 'getAccountsTemplate']);
+    Route::get('/shoots/template', [App\Http\Controllers\API\ImportController::class, 'getShootsTemplate']);
+});
+
