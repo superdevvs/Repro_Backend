@@ -57,6 +57,19 @@ class UserController extends Controller
         if ($users->isEmpty()) {
             return response()->json(['users' => []]);
         }
+
+        $useLightPayload = $request->boolean('light');
+        if ($useLightPayload) {
+            $emptyLinks = collect();
+            $emptyCounts = collect();
+            $emptyTotals = collect();
+
+            $users = $users->map(function (User $record) use ($user, $emptyLinks, $emptyCounts, $emptyTotals) {
+                return $this->presentUserForViewerOptimized($record, $user, $emptyLinks, $emptyCounts, $emptyTotals);
+            });
+
+            return response()->json(['users' => $users]);
+        }
         
         // Pre-load all account links in one query
         $allAccountIds = $users->pluck('id')->toArray();
