@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\Messaging;
 use App\Http\Controllers\Controller;
 use App\Models\MessageChannel;
 use App\Models\SmsNumber;
+use App\Services\Messaging\Providers\MightyCallSmsProvider;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -202,6 +203,133 @@ class MessagingSettingsController extends Controller
             return response()->json(['status' => 'sent']);
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
+        }
+    }
+
+    /**
+     * Test MightyCall API connection
+     */
+    public function testSmsConnection(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'sms_number_id' => ['nullable', 'exists:sms_numbers,id'],
+        ]);
+
+        $apiKey = config('services.mightycall.api_key');
+
+        if (empty($apiKey)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'MightyCall API key not configured in environment. Add MIGHTYCALL_API_KEY to .env file.',
+            ], 400);
+        }
+
+        $smsNumber = !empty($data['sms_number_id'])
+            ? SmsNumber::find($data['sms_number_id'])
+            : SmsNumber::where('is_default', true)->first();
+
+        if (!$smsNumber) {
+            return response()->json([
+                'success' => false,
+                'error' => 'No SMS number configured. Please add a number first.',
+            ], 400);
+        }
+
+        if (empty($smsNumber->mighty_call_key)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Selected SMS number does not have a MightyCall user key configured.',
+            ], 400);
+        }
+
+        $provider = app(MightyCallSmsProvider::class);
+        $result = $provider->testConnection($apiKey, $smsNumber->mighty_call_key);
+        
+        return response()->json($result, $result['success'] ? 200 : 400);
+    }
+
+    /**
+     * Test sending SMS to a specific number
+     */
+    public function testSmsSend(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'to' => ['required', 'string'],
+            'message' => ['required', 'string', 'max:160'],
+            'sms_number_id' => ['nullable', 'exists:sms_numbers,id'],
+        ]);
+
+        try {
+            $smsNumber = !empty($data['sms_number_id']) 
+                ? SmsNumber::find($data['sms_number_id'])
+                : SmsNumber::where('is_default', true)->first();
+
+            if (!$smsNumber) {
+                return response()->json([
+                    'success' => false,
+                    'error' => 'No SMS number configured. Please add a number first.',
+                ], 400);
+            }
+
+            $provider = app(MightyCallSmsProvider::class);
+            $messageId = $provider->send($smsNumber, [
+                'to' => $data['to'],
+                'text' => $data['message'],
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message_id' => $messageId,
+                'from' => $smsNumber->phone_number,
+                'to' => $data['to'],
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Test SMS send failed', [
+                'error' => $e->getMessage(),
+                'to' => $data['to'],
+            ]);
+            
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete an SMS number
+     */
+    public function deleteSmsNumber(SmsNumber $smsNumber): JsonResponse
+    {
+        $smsNumber->delete();
+        
+        return response()->json(['status' => 'deleted']);
+    }
+
+    /**
+     * Sync messages from MightyCall
+     */
+    public function syncSmsMessages(Request $request): JsonResponse
+    {
+        $hours = $request->input('hours', 24);
+        
+        try {
+            \Artisan::call('mightycall:sync-messages', [
+                '--hours' => $hours,
+            ]);
+            
+            $output = \Artisan::output();
+            
+            return response()->json([
+                'success' => true,
+                'message' => 'Sync completed',
+                'output' => $output,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
         }
     }
 }

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -12,8 +13,68 @@ class InvoiceController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Invoice::with(['photographer', 'salesRep'])->withCount('shoots');
+        $user = $request->user();
+        
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
 
+        $query = Invoice::with([
+            'photographer',
+            'salesRep',
+            'client',
+            'shoot',
+            'shoot.client',
+            'shoot.photographer',
+            'shoots',
+            'shoots.client',
+            'shoots.photographer',
+            'items',
+        ])->withCount('shoots');
+
+        // Apply role-based filtering
+        if (in_array($user->role, ['admin', 'superadmin'])) {
+            // Admins and superadmins can see all invoices
+        } elseif ($user->role === 'client') {
+            // Clients can only see invoices for their own shoots
+            $query->where(function ($q) use ($user) {
+                $q->where('client_id', $user->id)
+                  ->orWhereHas('shoots', function ($shootQuery) use ($user) {
+                      $shootQuery->where('client_id', $user->id);
+                  });
+            });
+        } elseif ($user->role === 'photographer') {
+            // Photographers can only see invoices for their own shoots
+            $query->where(function ($q) use ($user) {
+                $q->where('photographer_id', $user->id)
+                  ->orWhereHas('shoots', function ($shootQuery) use ($user) {
+                      $shootQuery->where('photographer_id', $user->id);
+                  });
+            });
+        } elseif ($user->role === 'salesRep') {
+            // Sales reps can only see invoices for their clients
+            $query->where(function ($q) use ($user) {
+                $q->where('sales_rep_id', $user->id)
+                  ->orWhereHas('shoots', function ($shootQuery) use ($user) {
+                      $shootQuery->where('rep_id', $user->id);
+                  })
+                  ->orWhereHas('shoots.client', function ($clientQuery) use ($user) {
+                      // Also check if client has this rep in metadata
+                      $clientQuery->where(function ($cq) use ($user) {
+                          $cq->whereRaw("JSON_EXTRACT(metadata, '$.accountRepId') = ?", [$user->id])
+                             ->orWhereRaw("JSON_EXTRACT(metadata, '$.account_rep_id') = ?", [$user->id])
+                             ->orWhereRaw("JSON_EXTRACT(metadata, '$.repId') = ?", [$user->id])
+                             ->orWhereRaw("JSON_EXTRACT(metadata, '$.rep_id') = ?", [$user->id])
+                             ->orWhere('created_by_id', $user->id);
+                      });
+                  });
+            });
+        } else {
+            // Other roles (editor, etc.) cannot see invoices
+            return response()->json(['data' => [], 'message' => 'No access to invoices'], 403);
+        }
+
+        // Additional filters (applied after role filtering)
         if ($request->filled('photographer_id')) {
             $query->where('photographer_id', $request->input('photographer_id'));
         }
@@ -86,6 +147,24 @@ class InvoiceController extends Controller
 
     public function markPaid(Request $request, Invoice $invoice)
     {
+        $user = $request->user();
+        
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        // Only admins, superadmins, and photographers (for their own invoices) can mark invoices as paid
+        $canMarkPaid = false;
+        if (in_array($user->role, ['admin', 'superadmin'])) {
+            $canMarkPaid = true;
+        } elseif ($user->role === 'photographer' && $invoice->photographer_id == $user->id) {
+            $canMarkPaid = true;
+        }
+
+        if (!$canMarkPaid) {
+            return response()->json(['message' => 'You do not have permission to mark this invoice as paid'], 403);
+        }
+
         $data = $request->validate([
             'paid_at' => ['nullable', 'date'],
             'amount_paid' => ['nullable', 'numeric', 'min:0'],
@@ -103,6 +182,20 @@ class InvoiceController extends Controller
         }
 
         $invoice->save();
+
+        $invoice->loadMissing(['client', 'photographer']);
+        $context = [
+            'invoice' => $invoice,
+            'invoice_id' => $invoice->id,
+        ];
+        if ($invoice->client) {
+            $context['client'] = $invoice->client;
+            $context['account_id'] = $invoice->client_id;
+        } elseif ($invoice->photographer) {
+            $context['photographer'] = $invoice->photographer;
+            $context['account_id'] = $invoice->photographer_id;
+        }
+        app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
 
         return response()->json([
             'data' => $invoice->fresh(['photographer', 'salesRep'])->loadCount('shoots'),

@@ -30,17 +30,47 @@ class ClientStatsFlow
 
     private function askClient(AiChatSession $session, string $message, array $data): array
     {
+        // Check if client_id already set
         if (!empty($data['client_id'])) {
-            if (Schema::hasColumn('ai_chat_sessions', 'step')) {
-                $session->step = 'show_summary';
-            }
+            $this->setStepAndData($session, 'show_summary', $data);
             $session->save();
             return $this->showSummary($session, $message, $data);
         }
 
-        if (Schema::hasColumn('ai_chat_sessions', 'step')) {
-            $session->step = 'ask_client';
+        // Try to match client from message
+        $messageLower = strtolower(trim($message));
+        
+        // Handle "my stats" or "my" - show current user's stats
+        if ($messageLower === 'my stats' || $messageLower === 'my' || $messageLower === 'me') {
+            $data['client_id'] = $session->user_id;
+            $this->setStepAndData($session, 'show_summary', $data);
+            $session->save();
+            return $this->showSummary($session, $message, $data);
         }
+
+        // Try to match a specific client by name
+        if (!empty(trim($message)) && !str_contains($messageLower, 'stats') && !str_contains($messageLower, 'client')) {
+            $recentClients = User::where('role', 'client')
+                ->has('shoots')
+                ->get(['id', 'name', 'email']);
+            
+            foreach ($recentClients as $client) {
+                $clientNameLower = strtolower($client->name);
+                // Match by name (with or without shoot count suffix)
+                if (str_contains($messageLower, $clientNameLower) || 
+                    str_contains($clientNameLower, $messageLower) ||
+                    preg_match('/^' . preg_quote($clientNameLower, '/') . '\s*\(/i', $messageLower)) {
+                    $data['client_id'] = $client->id;
+                    $data['client_name'] = $client->name;
+                    $this->setStepAndData($session, 'show_summary', $data);
+                    $session->save();
+                    return $this->showSummary($session, $message, $data);
+                }
+            }
+        }
+
+        // First time asking - show client list
+        $this->setStepAndData($session, 'ask_client', $data);
         $session->save();
 
         $recentClients = User::where('role', 'client')
@@ -50,7 +80,7 @@ class ClientStatsFlow
             ->limit(10)
             ->get(['id', 'name', 'email']);
 
-        $suggestions = [];
+        $suggestions = ['My stats'];
         foreach ($recentClients as $client) {
             $suggestions[] = "{$client->name} ({$client->shoots_count} shoots)";
         }
@@ -139,6 +169,7 @@ class ClientStatsFlow
         $summary .= "• Most Used Service: {$topService}\n";
 
         $this->setStepAndData($session, 'show_summary', $data);
+        $session->save();
 
         return [
             'assistant_messages' => [[
@@ -146,9 +177,9 @@ class ClientStatsFlow
                 'metadata' => ['step' => 'show_summary', 'client_id' => $clientId],
             ]],
             'suggestions' => [
-                'View client details',
+                'View another client',
                 'Book a shoot for this client',
-                'See accounting',
+                'See accounting summary',
             ],
             'meta' => [
                 'client_id' => $clientId,

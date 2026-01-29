@@ -92,6 +92,16 @@ class ShootResource extends JsonResource
             'bypassPaywall' => (bool) $this->bypass_paywall,
             'createdBy' => $this->created_by_name ?? $this->created_by ?? 'Unknown',
             'createdAt' => $this->created_at->toIso8601String(),
+            'cancellationRequestedAt' => $this->cancellation_requested_at?->toIso8601String(),
+            'cancellationReason' => $this->cancellation_reason,
+            'property_details' => $this->property_details,
+            'tour_links' => $this->tour_links ?? [],
+            'iguide_tour_url' => $this->iguide_tour_url,
+            'iguide_floorplans' => $this->iguide_floorplans ?? [],
+            'iguide_last_synced_at' => $this->iguide_last_synced_at?->toIso8601String(),
+            'iguide_property_id' => $this->iguide_property_id,
+            'is_private_listing' => (bool) ($this->is_private_listing ?? false),
+            'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
         ];
     }
 }

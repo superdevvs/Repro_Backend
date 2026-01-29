@@ -21,17 +21,36 @@ class AccountLinkController extends Controller
     public function index(Request $request): JsonResponse
     {
         try {
-            // Check user role
+            // Check user role - allow editing_manager as well
             $user = $request->user();
-            if (!in_array($user->role, ['admin', 'superadmin'])) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Unauthorized access restricted to specific roles'
                 ], 403);
             }
 
-            // Simplified test without relationships
-            $links = AccountLink::all();
+            // Load relationships and filter active links
+            $links = AccountLink::with(['mainAccount', 'linkedAccount'])
+                ->where('status', 'active')
+                ->get()
+                ->map(function ($link) {
+                    return [
+                        'id' => (string) $link->id,
+                        'accountId' => (string) $link->linked_account_id,
+                        'accountName' => $link->linkedAccount->name ?? 'Unknown',
+                        'accountEmail' => $link->linkedAccount->email ?? '',
+                        'accountAvatar' => $link->linkedAccount->avatar ?? null,
+                        'mainAccountId' => (string) $link->main_account_id,
+                        'mainAccountName' => $link->mainAccount->name ?? 'Unknown',
+                        'mainAccountEmail' => $link->mainAccount->email ?? '',
+                        'mainAccountAvatar' => $link->mainAccount->avatar ?? null,
+                        'sharedDetails' => $link->getFormattedSharedDetails(),
+                        'linkedAt' => $link->linked_at?->toISOString(),
+                        'status' => $link->status,
+                        'notes' => $link->notes,
+                    ];
+                });
             
             return response()->json([
                 'success' => true,
@@ -117,7 +136,7 @@ class AccountLinkController extends Controller
         try {
             // Check user role
             $user = $request->user();
-            if (!in_array($user->role, ['admin', 'superadmin'])) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Unauthorized access restricted to specific roles'
@@ -470,6 +489,213 @@ class AccountLinkController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to get available accounts: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Check if current user has any linked accounts (for showing/hiding linked tab)
+     */
+    public function hasLinkedAccounts(Request $request): JsonResponse
+    {
+        try {
+            $user = $request->user();
+            
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'hasLinkedAccounts' => false,
+                ], 401);
+            }
+
+            // Check if user is a main account with linked accounts
+            $asMainAccount = AccountLink::where('main_account_id', $user->id)
+                ->where('status', 'active')
+                ->exists();
+
+            // Check if user is a linked account
+            $asLinkedAccount = AccountLink::where('linked_account_id', $user->id)
+                ->where('status', 'active')
+                ->exists();
+
+            $hasLinks = $asMainAccount || $asLinkedAccount;
+
+            // If has links, also return basic info about linked accounts
+            $linkedAccounts = [];
+            if ($hasLinks) {
+                // Get accounts linked TO this user (user is main)
+                $linkedTo = AccountLink::with('linkedAccount')
+                    ->where('main_account_id', $user->id)
+                    ->where('status', 'active')
+                    ->get();
+
+                foreach ($linkedTo as $link) {
+                    $linkedUser = $link->linkedAccount;
+                    if ($linkedUser) {
+                        $linkedAccounts[] = [
+                            'id' => (string) $linkedUser->id,
+                            'name' => $linkedUser->name,
+                            'email' => $linkedUser->email,
+                            'role' => $linkedUser->role,
+                            'avatar' => $linkedUser->avatar,
+                            'sharedDetails' => $link->getFormattedSharedDetails(),
+                        ];
+                    }
+                }
+
+                // Get accounts this user is linked FROM (user is linked account)
+                $linkedFrom = AccountLink::with('mainAccount')
+                    ->where('linked_account_id', $user->id)
+                    ->where('status', 'active')
+                    ->get();
+
+                foreach ($linkedFrom as $link) {
+                    $mainUser = $link->mainAccount;
+                    if ($mainUser) {
+                        $linkedAccounts[] = [
+                            'id' => (string) $mainUser->id,
+                            'name' => $mainUser->name,
+                            'email' => $mainUser->email,
+                            'role' => $mainUser->role,
+                            'avatar' => $mainUser->avatar,
+                            'sharedDetails' => $link->getFormattedSharedDetails(),
+                        ];
+                    }
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'hasLinkedAccounts' => $hasLinks,
+                'linkedAccounts' => $linkedAccounts,
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'hasLinkedAccounts' => false,
+                'message' => 'Error checking linked accounts: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get full linked accounts data with shared shoots for the linked tab
+     */
+    public function getLinkedAccountsForUser(Request $request): JsonResponse
+    {
+        try {
+            $user = $request->user();
+            
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized',
+                ], 401);
+            }
+
+            $linkedAccounts = [];
+
+            // Get accounts linked TO this user (user is main account)
+            $linkedTo = AccountLink::with('linkedAccount')
+                ->where('main_account_id', $user->id)
+                ->where('status', 'active')
+                ->get();
+
+            foreach ($linkedTo as $link) {
+                $linkedUser = $link->linkedAccount;
+                if (!$linkedUser) continue;
+
+                $sharedDetails = $link->getFormattedSharedDetails();
+                $sharedShoots = [];
+
+                // If shoots are shared, get them
+                if (isset($sharedDetails['shoots']) && $sharedDetails['shoots']) {
+                    $sharedShoots = Shoot::where('client_id', $linkedUser->id)
+                        ->select(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'hero_image'])
+                        ->orderBy('scheduled_date', 'desc')
+                        ->limit(10)
+                        ->get()
+                        ->map(function ($shoot) {
+                            return [
+                                'id' => $shoot->id,
+                                'address' => $shoot->address,
+                                'city' => $shoot->city,
+                                'state' => $shoot->state,
+                                'scheduledDate' => $shoot->scheduled_date,
+                                'status' => $shoot->status,
+                                'hero_image' => $shoot->hero_image,
+                            ];
+                        });
+                }
+
+                $linkedAccounts[] = [
+                    'id' => (string) $linkedUser->id,
+                    'name' => $linkedUser->name,
+                    'email' => $linkedUser->email,
+                    'role' => $linkedUser->role,
+                    'avatar' => $linkedUser->avatar,
+                    'sharedDetails' => $sharedDetails,
+                    'sharedShoots' => $sharedShoots,
+                    'linkDirection' => 'outgoing', // This user is the main account
+                ];
+            }
+
+            // Get accounts this user is linked FROM (user is linked account)
+            $linkedFrom = AccountLink::with('mainAccount')
+                ->where('linked_account_id', $user->id)
+                ->where('status', 'active')
+                ->get();
+
+            foreach ($linkedFrom as $link) {
+                $mainUser = $link->mainAccount;
+                if (!$mainUser) continue;
+
+                $sharedDetails = $link->getFormattedSharedDetails();
+                $sharedShoots = [];
+
+                // If shoots are shared, get the main account's shoots
+                if (isset($sharedDetails['shoots']) && $sharedDetails['shoots']) {
+                    $sharedShoots = Shoot::where('client_id', $mainUser->id)
+                        ->select(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'hero_image'])
+                        ->orderBy('scheduled_date', 'desc')
+                        ->limit(10)
+                        ->get()
+                        ->map(function ($shoot) {
+                            return [
+                                'id' => $shoot->id,
+                                'address' => $shoot->address,
+                                'city' => $shoot->city,
+                                'state' => $shoot->state,
+                                'scheduledDate' => $shoot->scheduled_date,
+                                'status' => $shoot->status,
+                                'hero_image' => $shoot->hero_image,
+                            ];
+                        });
+                }
+
+                $linkedAccounts[] = [
+                    'id' => (string) $mainUser->id,
+                    'name' => $mainUser->name,
+                    'email' => $mainUser->email,
+                    'role' => $mainUser->role,
+                    'avatar' => $mainUser->avatar,
+                    'sharedDetails' => $sharedDetails,
+                    'sharedShoots' => $sharedShoots,
+                    'linkDirection' => 'incoming', // This user is the linked account
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'linkedAccounts' => $linkedAccounts,
+                'total' => count($linkedAccounts),
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to get linked accounts: ' . $e->getMessage(),
             ], 500);
         }
     }

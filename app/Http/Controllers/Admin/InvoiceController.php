@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Models\User;
 use App\Services\InvoiceService;
+use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 
@@ -93,6 +94,20 @@ class InvoiceController extends Controller
         ]);
 
         $invoice->markPaid(isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : null);
+
+        $invoice->loadMissing(['client', 'photographer']);
+        $context = [
+            'invoice' => $invoice,
+            'invoice_id' => $invoice->id,
+        ];
+        if ($invoice->client) {
+            $context['client'] = $invoice->client;
+            $context['account_id'] = $invoice->client_id;
+        } elseif ($invoice->photographer) {
+            $context['photographer'] = $invoice->photographer;
+            $context['account_id'] = $invoice->photographer_id;
+        }
+        app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
 
         return response()->json([
             'message' => 'Invoice marked as paid.',

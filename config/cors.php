@@ -23,9 +23,9 @@ return [
 
     'allowed_origins_patterns' => [],
 
-    'allowed_headers' => ['*'],
+    'allowed_headers' => ['*', 'X-Impersonate-User-Id'],
 
-    'exposed_headers' => [],
+    'exposed_headers' => ['X-Impersonate-User-Id'],
 
     'max_age' => 0,
 

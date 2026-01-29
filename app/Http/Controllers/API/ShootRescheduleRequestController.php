@@ -5,6 +5,8 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Models\ShootRescheduleRequest;
+use App\Services\MailService;
+use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -29,6 +31,7 @@ class ShootRescheduleRequestController extends Controller
 
         $user = $request->user();
 
+        // Auto-approve all reschedule requests - update shoot immediately
         $record = ShootRescheduleRequest::create([
             'shoot_id' => $shoot->id,
             'requested_by' => $user?->id,
@@ -36,14 +39,13 @@ class ShootRescheduleRequestController extends Controller
             'requested_date' => $validated['requested_date'],
             'requested_time' => $validated['requested_time'] ?? $shoot->time,
             'reason' => $validated['reason'] ?? null,
-            'status' => $this->userCanApprove($user) ? 'approved' : 'pending',
-            'reviewed_at' => $this->userCanApprove($user) ? now() : null,
-            'approved_by' => $this->userCanApprove($user) ? $user?->id : null,
+            'status' => 'approved',
+            'reviewed_at' => now(),
+            'approved_by' => $user?->id,
         ]);
 
-        if ($this->userCanApprove($user)) {
-            $this->applyScheduleChanges($shoot, $record);
-        }
+        // Always apply schedule changes immediately
+        $this->applyScheduleChanges($shoot, $record);
 
         return response()->json([
             'message' => $record->status === 'approved'
@@ -94,8 +96,68 @@ class ShootRescheduleRequestController extends Controller
         if (!empty($request->requested_time)) {
             $shoot->time = $request->requested_time;
         }
-        $shoot->status = 'scheduled';
+        
+        // Also update scheduled_at to keep it in sync
+        $timeStr = $request->requested_time ?? $shoot->time ?? '10:00';
+        // Parse time (e.g., "10:15 AM" or "10:15")
+        $timeParsed = date_parse($timeStr);
+        $hours = $timeParsed['hour'] ?? 10;
+        $minutes = $timeParsed['minute'] ?? 0;
+        
+        $scheduledAt = \Carbon\Carbon::parse($request->requested_date)
+            ->setTime($hours, $minutes, 0);
+        $shoot->scheduled_at = $scheduledAt;
+        
+        // Don't change status - keep original status (e.g., 'requested' stays 'requested')
         $shoot->save();
+
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+        $automationService = app(AutomationService::class);
+        $context = $automationService->buildShootContext($shoot);
+        if ($shoot->rep) {
+            $context['rep'] = $shoot->rep;
+        }
+        $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
+        $automationService->handleEvent('SHOOT_SCHEDULED', $context);
+        $automationService->handleEvent('SHOOT_UPDATED', $context);
+
+        if ($shoot->client) {
+            app(MailService::class)->sendShootUpdatedEmail($shoot->client, $shoot);
+        }
+        
+        // Log activity for the reschedule
+        $this->logRescheduleActivity($shoot, $request);
+    }
+    
+    private function logRescheduleActivity(Shoot $shoot, ShootRescheduleRequest $request): void
+    {
+        try {
+            $requester = $request->requester;
+            $requesterName = $requester ? $requester->name : 'System';
+            
+            $originalDate = $request->original_date 
+                ? \Carbon\Carbon::parse($request->original_date)->format('M j, Y')
+                : 'Unknown';
+            $newDate = \Carbon\Carbon::parse($request->requested_date)->format('M j, Y');
+            $newTime = $request->requested_time ?? 'same time';
+            
+            // Create activity log entry
+            \App\Models\ShootActivityLog::create([
+                'shoot_id' => $shoot->id,
+                'user_id' => $request->requested_by,
+                'action' => 'rescheduled',
+                'description' => "{$requesterName} rescheduled shoot from {$originalDate} to {$newDate} at {$newTime}",
+                'metadata' => [
+                    'original_date' => $request->original_date,
+                    'new_date' => $request->requested_date,
+                    'new_time' => $request->requested_time,
+                    'reason' => $request->reason,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            // Don't fail the reschedule if activity logging fails
+            \Illuminate\Support\Facades\Log::warning('Failed to log reschedule activity: ' . $e->getMessage());
+        }
     }
 
     private function userCanApprove(?\App\Models\User $user): bool

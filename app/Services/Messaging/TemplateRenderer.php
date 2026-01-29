@@ -23,6 +23,8 @@ class TemplateRenderer
             'subject' => $subject,
             'html' => $html,
             'text' => $text,
+            'body_html' => $html,
+            'body_text' => $text,
             'missing' => $this->missingVariables($template, $variables),
         ];
     }

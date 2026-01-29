@@ -18,13 +18,15 @@ class StoreShootRequest extends FormRequest
             return false;
         }
 
+        $userRole = strtolower($user->role ?? '');
+
         // Admin and super admin can book for any client
-        if (in_array($user->role, ['admin', 'superadmin'])) {
+        if (in_array($userRole, ['admin', 'superadmin'])) {
             return true;
         }
 
         // Clients can only book for themselves
-        if ($user->role === 'client') {
+        if ($userRole === 'client') {
             // If client_id is provided, it must match the authenticated user
             $clientId = $this->input('client_id');
             return !$clientId || (int) $clientId === $user->id;

@@ -130,7 +130,7 @@ class ImportShootHistory extends Command
             return null;
         }
 
-        return $this->upsertUser($repName, null, null, null, 'sales_rep');
+        return $this->upsertUser($repName, null, null, null, 'salesRep');
     }
 
     protected function upsertService(?string $name, ?string $price): Service

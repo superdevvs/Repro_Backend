@@ -103,7 +103,9 @@ return [
 
     'mightycall' => [
         'api_key' => env('MIGHTYCALL_API_KEY', 'a2ef1a6d-842a-4848-9777-0372d5fe5de0'),
+        'secret_key' => env('MIGHTYCALL_SECRET_KEY'),
         'base_url' => env('MIGHTYCALL_BASE_URL', 'https://ccapi.mightycall.com/v4'),
+        'webhook_secret' => env('MIGHTYCALL_WEBHOOK_SECRET'),
     ],
 
     // Bright MLS Integration
@@ -114,6 +116,7 @@ return [
         'vendor_id' => env('BRIGHT_MLS_VENDOR_ID'),
         'vendor_name' => env('BRIGHT_MLS_VENDOR_NAME', 'Repro Photos'),
         'default_doc_visibility' => env('BRIGHT_MLS_DEFAULT_DOC_VISIBILITY', 'private'),
+        'enabled' => env('BRIGHT_MLS_ENABLED', true),
     ],
 
     // iGUIDE Integration
@@ -131,6 +134,33 @@ return [
         'base_url' => env('FOTELLO_BASE_URL', 'https://app.fotello.co/api'),
         'timeout' => env('FOTELLO_TIMEOUT', 120),
         'retry_attempts' => env('FOTELLO_RETRY_ATTEMPTS', 3),
+    ],
+
+    // MyMarketingMatters (MMM) Punchout/SSO Integration
+    'mmm' => [
+        'enabled' => env('MMM_ENABLED', true),
+        'duns' => env('MMM_DUNS'),
+        'shared_secret' => env('MMM_SHARED_SECRET'),
+        'user_agent' => env('MMM_USER_AGENT', 'REPro Photos'),
+        'punchout_url' => env('MMM_PUNCHOUT_URL'),
+        'template_external_number' => env('MMM_TEMPLATE_EXTERNAL_NUMBER'),
+        'deployment_mode' => env('MMM_DEPLOYMENT_MODE', 'test'),
+        'start_point' => env('MMM_START_POINT', 'Category'),
+        'to_identity' => env('MMM_TO_IDENTITY', ''),
+        'sender_identity' => env('MMM_SENDER_IDENTITY', ''),
+        'url_return' => env('MMM_URL_RETURN', env('APP_URL') . '/api/integrations/mmm/return'),
+        'return_redirect_url' => env('MMM_RETURN_REDIRECT_URL'),
+        'timeout' => env('MMM_TIMEOUT', 20),
+    ],
+
+    // Cakemail Email API Integration
+    'cakemail' => [
+        'username' => env('CAKEMAIL_USERNAME', 'contact@reprophotos.com'),
+        'password' => env('CAKEMAIL_PASSWORD'),
+        'sender_id' => env('CAKEMAIL_SENDER_ID'),
+        'list_id' => env('CAKEMAIL_LIST_ID'),
+        'base_url' => env('CAKEMAIL_BASE_URL', 'https://api.cakemail.dev'),
+        'webhook_secret' => env('CAKEMAIL_WEBHOOK_SECRET'),
     ],
 
 ];

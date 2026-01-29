@@ -5,8 +5,8 @@ namespace App\Jobs;
 use App\Models\Shoot;
 use App\Models\ShootMediaAlbum;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
-use App\Services\ShootActivityLogger;
+use App\Models\User;
+use App\Services\DropboxService;
 use App\Jobs\GenerateWatermarkedImageJob;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -73,6 +73,29 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
                 'workflow_stage' => ShootFile::STAGE_TODO,
             ]);
 
+            // Process image for thumbnails/web sizes
+            $fileType = strtolower((string) $shootFile->file_type);
+            $mimeType = strtolower((string) ($shootFile->mime_type ?? ''));
+            $shouldProcessImage = $fileType === 'image'
+                || str_starts_with($fileType, 'image/')
+                || str_starts_with($mimeType, 'image/');
+
+            if ($shouldProcessImage) {
+                try {
+                    $imageService = app(\App\Services\ImageProcessingService::class);
+                    $imageService->processImage($shootFile);
+                    Log::info('Image processed successfully', [
+                        'file_id' => $shootFile->id,
+                        'filename' => $this->originalFilename,
+                    ]);
+                } catch (\Exception $e) {
+                    Log::error('Image processing failed', [
+                        'file_id' => $shootFile->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             // Update album cover if this is the first file
             if (!$this->album->cover_image_path) {
                 $this->album->cover_image_path = $dropboxPath;
@@ -107,8 +130,8 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
                 Storage::delete($this->tempFilePath);
             }
 
-            // Dispatch watermarking job if needed (for raw photos)
-            if ($this->mediaType === 'raw' && !$this->shoot->bypass_paywall && $this->shoot->payment_status !== 'paid') {
+            // Dispatch watermarking job if needed (for all image files when payment not complete)
+            if (($this->mediaType === 'image' || $this->mediaType === 'raw') && $shootFile->shouldBeWatermarked()) {
                 GenerateWatermarkedImageJob::dispatch($shootFile);
             }
 

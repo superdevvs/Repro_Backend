@@ -9,14 +9,17 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use App\Services\MailService;
+use App\Services\Messaging\AutomationService;
 
 class AuthController extends Controller
 {
     protected $mailService;
+    protected $automationService;
 
-    public function __construct(MailService $mailService)
+    public function __construct(MailService $mailService, AutomationService $automationService)
     {
         $this->mailService = $mailService;
+        $this->automationService = $automationService;
     }
 
     public function register(Request $request)
@@ -28,7 +31,7 @@ class AuthController extends Controller
             'password' => 'required|string|min:6|confirmed',
             'phonenumber' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
-            'role' => ['required', Rule::in(['superadmin', 'admin', 'client', 'photographer', 'editor'])],
+            'role' => ['required', Rule::in(['superadmin', 'admin', 'editing_manager', 'client', 'photographer', 'editor', 'salesRep'])],
             'avatar' => 'nullable|url',
             'bio' => 'nullable|string',
         ]);
@@ -51,6 +54,8 @@ class AuthController extends Controller
         // Send account created email
         $resetLink = $this->mailService->generatePasswordResetLink($user);
         $this->mailService->sendAccountCreatedEmail($user, $resetLink);
+
+        $this->automationService->handleEvent('ACCOUNT_CREATED', $this->buildUserContext($user));
 
         return response()->json([
             'message' => 'User registered successfully.',
@@ -96,5 +101,82 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Logged out successfully'
         ]);
+    }
+
+    /**
+     * Update the authenticated user's profile
+     */
+    public function updateProfile(Request $request)
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'name' => 'sometimes|string|max:255',
+            'phonenumber' => 'nullable|string|max:20',
+            'phone_number' => 'nullable|string|max:20',
+            'company_name' => 'nullable|string|max:255',
+            'address' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:50',
+            'zip' => 'nullable|string|max:20',
+            'bio' => 'nullable|string',
+            'avatar' => 'nullable|string',
+            'terms_accepted' => 'sometimes|boolean',
+            'termsAccepted' => 'sometimes|boolean',
+        ]);
+
+        // Map phone_number to phonenumber if provided
+        if (array_key_exists('phone_number', $validated)) {
+            $validated['phonenumber'] = $validated['phone_number'];
+            unset($validated['phone_number']);
+        }
+
+        $termsAccepted = $validated['terms_accepted'] ?? $validated['termsAccepted'] ?? false;
+        unset($validated['terms_accepted'], $validated['termsAccepted']);
+
+        $user->update($validated);
+
+        if ($termsAccepted) {
+            $metadata = $user->metadata ?? [];
+            if (is_string($metadata)) {
+                $metadata = json_decode($metadata, true) ?? [];
+            }
+
+            if (empty($metadata['terms_accepted_at'])) {
+                $metadata['terms_accepted_at'] = now()->toISOString();
+                $user->metadata = $metadata;
+                $user->save();
+
+                $this->mailService->sendTermsAcceptedEmail($user);
+                $this->automationService->handleEvent('TERMS_ACCEPTED', $this->buildUserContext($user));
+            }
+        }
+
+        Log::info('[Auth] Profile updated', ['user_id' => $user->id, 'fields' => array_keys($validated)]);
+
+        return response()->json([
+            'message' => 'Profile updated successfully',
+            'user' => $user->fresh(),
+        ]);
+    }
+
+    private function buildUserContext(User $user): array
+    {
+        $context = [
+            'account_id' => $user->id,
+        ];
+
+        $role = strtolower((string) $user->role);
+        if ($role === 'client') {
+            $context['client'] = $user;
+        } elseif ($role === 'photographer') {
+            $context['photographer'] = $user;
+        } elseif ($role === 'salesrep') {
+            $context['rep'] = $user;
+        } else {
+            $context['client'] = $user;
+        }
+
+        return $context;
     }
 }

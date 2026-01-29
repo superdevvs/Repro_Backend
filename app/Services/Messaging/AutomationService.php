@@ -15,7 +15,8 @@ class AutomationService
 {
     public function __construct(
         private readonly MessagingService $messagingService,
-        private readonly TemplateRenderer $templateRenderer
+        private readonly TemplateRenderer $templateRenderer,
+        private readonly TemplateVariableResolver $variableResolver
     ) {
     }
 
@@ -66,8 +67,16 @@ class AutomationService
             return;
         }
 
-        // Render template with context
-        $rendered = $this->templateRenderer->render($rule->template, $context);
+        $resolvedContext = $this->variableResolver->resolve($context);
+        $rendered = $this->templateRenderer->render($rule->template, $resolvedContext);
+
+        if (!empty($rendered['missing'])) {
+            Log::warning('Automation email missing template variables', [
+                'rule_id' => $rule->id,
+                'template_id' => $rule->template_id,
+                'missing' => $rendered['missing'],
+            ]);
+        }
 
         $payload = [
             'to' => $recipient['email'] ?? $recipient['phone'] ?? null,
@@ -76,14 +85,22 @@ class AutomationService
             'body_text' => $rendered['body_text'] ?? null,
             'send_source' => 'AUTOMATION',
             'template_id' => $rule->template_id,
-            'related_shoot_id' => $context['shoot_id'] ?? null,
-            'related_account_id' => $context['account_id'] ?? null,
-            'related_invoice_id' => $context['invoice_id'] ?? null,
+            'related_shoot_id' => $resolvedContext['shoot_id'] ?? null,
+            'related_account_id' => $resolvedContext['account_id'] ?? null,
+            'related_invoice_id' => $resolvedContext['invoice_id'] ?? null,
             'contact_email' => $recipient['email'] ?? null,
             'contact_phone' => $recipient['phone'] ?? null,
             'contact_name' => $recipient['name'] ?? 'Customer',
             'contact_type' => $recipient['type'] ?? 'other',
         ];
+
+        if (!empty($context['tags_json'])) {
+            $payload['tags_json'] = $context['tags_json'];
+        }
+
+        if (!empty($context['attachments_json'])) {
+            $payload['attachments_json'] = $context['attachments_json'];
+        }
 
         if ($rule->channel_id) {
             $payload['channel_id'] = $rule->channel_id;
@@ -302,6 +319,26 @@ class AutomationService
         }
     }
 
+    public function buildUserContext(User $user): array
+    {
+        $context = [
+            'account_id' => $user->id,
+        ];
+
+        $role = strtolower((string) $user->role);
+        if ($role === 'client') {
+            $context['client'] = $user;
+        } elseif ($role === 'photographer') {
+            $context['photographer'] = $user;
+        } elseif ($role === 'salesrep') {
+            $context['rep'] = $user;
+        } else {
+            $context['client'] = $user;
+        }
+
+        return $context;
+    }
+
     /**
      * Build context array from a shoot model
      */
@@ -310,6 +347,7 @@ class AutomationService
         $propertyDetails = $shoot->property_details ?? [];
         
         return [
+            'shoot' => $shoot,
             'shoot_id' => $shoot->id,
             'shoot_date' => $shoot->scheduled_date?->format('Y-m-d'),
             'shoot_time' => $shoot->scheduled_date?->format('H:i'),

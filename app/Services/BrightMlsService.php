@@ -8,12 +8,16 @@ use Illuminate\Support\Facades\DB;
 
 class BrightMlsService
 {
+    private const MAX_PHOTOS = 150;
+    private const MAX_VIRTUAL_TOURS = 20;
+
     private $apiUrl;
     private $apiUser;
     private $apiKey;
     private $vendorId;
     private $vendorName;
     private $defaultDocVisibility;
+    private $enabled;
 
     public function __construct()
     {
@@ -26,6 +30,39 @@ class BrightMlsService
         $this->vendorId = $settings['vendorId'] ?? config('services.bright_mls.vendor_id');
         $this->vendorName = $settings['vendorName'] ?? config('services.bright_mls.vendor_name', 'Repro Photos');
         $this->defaultDocVisibility = $settings['defaultDocVisibility'] ?? config('services.bright_mls.default_doc_visibility', 'private');
+        $this->enabled = $settings['enabled'] ?? config('services.bright_mls.enabled', true);
+    }
+
+    private function validateConfiguration(?array $manifestData = null): ?array
+    {
+        if (!$this->enabled) {
+            return [
+                'success' => false,
+                'status' => 'disabled',
+                'error' => 'Bright MLS integration is disabled',
+                'response' => null,
+            ];
+        }
+
+        if (empty($this->apiUser) || empty($this->apiKey)) {
+            return [
+                'success' => false,
+                'status' => 'config_error',
+                'error' => 'Bright MLS API credentials are missing',
+                'response' => null,
+            ];
+        }
+
+        if ($manifestData && empty($this->vendorId) && empty($manifestData['vendorId'])) {
+            return [
+                'success' => false,
+                'status' => 'config_error',
+                'error' => 'Bright MLS vendor ID is missing',
+                'response' => null,
+            ];
+        }
+
+        return null;
     }
 
     private function loadSettings(string $key): array
@@ -47,20 +84,72 @@ class BrightMlsService
     public function publishManifest(array $manifestData): array
     {
         try {
+            if ($configError = $this->validateConfiguration($manifestData)) {
+                return $configError;
+            }
+
+            if (empty($manifestData['mlsId'])) {
+                return [
+                    'success' => false,
+                    'status' => 'validation_error',
+                    'error' => 'MLS ID is required to publish a manifest',
+                    'response' => null,
+                ];
+            }
+
+            if (empty($manifestData['propertyAddress'])) {
+                return [
+                    'success' => false,
+                    'status' => 'validation_error',
+                    'error' => 'Property address is required to publish a manifest',
+                    'response' => null,
+                ];
+            }
+
+            if (empty($manifestData['listItems'])) {
+                return [
+                    'success' => false,
+                    'status' => 'validation_error',
+                    'error' => 'At least one media item is required to publish a manifest',
+                    'response' => null,
+                ];
+            }
+
+            $listItems = collect($manifestData['listItems'] ?? []);
+            $photoCount = $listItems->where('mediaType', 'photo')->count();
+            if ($photoCount > self::MAX_PHOTOS) {
+                return [
+                    'success' => false,
+                    'status' => 'validation_error',
+                    'error' => sprintf('Maximum %d photos allowed per listing (received %d).', self::MAX_PHOTOS, $photoCount),
+                    'response' => ['photo_count' => $photoCount],
+                ];
+            }
+
+            $virtualTourCount = $listItems->where('mediaType', 'virtual_tour')->count();
+            if ($virtualTourCount > self::MAX_VIRTUAL_TOURS) {
+                return [
+                    'success' => false,
+                    'status' => 'validation_error',
+                    'error' => sprintf('Maximum %d virtual tours allowed per listing (received %d).', self::MAX_VIRTUAL_TOURS, $virtualTourCount),
+                    'response' => ['virtual_tour_count' => $virtualTourCount],
+                ];
+            }
+
             $payload = [
                 'propertyAddress' => $manifestData['propertyAddress'],
                 'mlsId' => $manifestData['mlsId'],
                 'vendorId' => $this->vendorId ?? $manifestData['vendorId'],
                 'vendorName' => $this->vendorName ?? $manifestData['vendorName'],
                 'dateFileCreated' => $manifestData['dateFileCreated'] ?? now()->toIso8601String(),
-                'listItems' => $manifestData['listItems'] ?? [],
+                'listItems' => $listItems->values()->all(),
             ];
 
             $response = Http::withHeaders([
                 'x-api-user' => $this->apiUser ?? '',
                 'x-api-key' => $this->apiKey ?? '',
                 'Content-Type' => 'application/json',
-            ])->post($this->apiUrl . '/manifests', $payload);
+            ])->timeout(20)->post($this->apiUrl . '/manifests', $payload);
 
             if (!$response->successful()) {
                 $errorBody = $response->json() ?? $response->body();
@@ -181,6 +270,22 @@ class BrightMlsService
     public function testConnection(): array
     {
         try {
+            if (!$this->enabled) {
+                return [
+                    'success' => false,
+                    'status' => 'disabled',
+                    'message' => 'Bright MLS integration is disabled',
+                ];
+            }
+
+            if (empty($this->apiUser) || empty($this->apiKey)) {
+                return [
+                    'success' => false,
+                    'status' => 'config_error',
+                    'message' => 'Bright MLS API credentials are missing',
+                ];
+            }
+
             // Try to make a minimal test request
             $response = Http::withHeaders([
                 'x-api-user' => $this->apiUser ?? '',

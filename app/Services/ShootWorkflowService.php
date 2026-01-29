@@ -4,42 +4,43 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ShootWorkflowService
 {
     // Unified status constants (aligned with Shoot model)
+    const STATUS_REQUESTED = Shoot::STATUS_REQUESTED;   // client-submitted, awaiting approval
     const STATUS_SCHEDULED = Shoot::STATUS_SCHEDULED;
     const STATUS_IN_PROGRESS = Shoot::STATUS_SCHEDULED;
     const STATUS_COMPLETED = Shoot::STATUS_COMPLETED;
     const STATUS_UPLOADED = Shoot::STATUS_UPLOADED;     // photos uploaded by photographer/admin
     const STATUS_EDITING = Shoot::STATUS_EDITING;       // sent to editor, in progress
-    const STATUS_REVIEW = Shoot::STATUS_REVIEW;         // editor submitted, admin review
     const STATUS_DELIVERED = Shoot::STATUS_DELIVERED;   // finalized and delivered to client
     const STATUS_READY = Shoot::STATUS_DELIVERED;
-    const STATUS_READY_FOR_REVIEW = Shoot::STATUS_REVIEW;
     const STATUS_BOOKED = Shoot::STATUS_SCHEDULED;
     const STATUS_RAW_UPLOAD_PENDING = Shoot::STATUS_SCHEDULED;
     const STATUS_RAW_UPLOADED = Shoot::STATUS_UPLOADED;
     const STATUS_RAW_ISSUE = Shoot::STATUS_UPLOADED;
-    const STATUS_PENDING_REVIEW = Shoot::STATUS_REVIEW;
     const STATUS_ADMIN_VERIFIED = Shoot::STATUS_DELIVERED;
     const STATUS_READY_FOR_CLIENT = Shoot::STATUS_DELIVERED;
     const STATUS_ON_HOLD = Shoot::STATUS_ON_HOLD;
     const STATUS_CANCELLED = Shoot::STATUS_CANCELLED;
+    const STATUS_DECLINED = Shoot::STATUS_DECLINED;     // admin/rep declined the request
 
     // Valid transitions for the simplified pipeline
-    // scheduled → uploaded → editing → review → delivered
+    // requested → scheduled → uploaded → editing → delivered
     private const VALID_TRANSITIONS = [
+        self::STATUS_REQUESTED => [self::STATUS_SCHEDULED, self::STATUS_DECLINED], // approve or decline
         self::STATUS_SCHEDULED => [self::STATUS_UPLOADED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_UPLOADED => [self::STATUS_EDITING, self::STATUS_ON_HOLD],
-        self::STATUS_EDITING => [self::STATUS_REVIEW, self::STATUS_ON_HOLD],
-        self::STATUS_REVIEW => [self::STATUS_DELIVERED, self::STATUS_EDITING, self::STATUS_ON_HOLD],
+        self::STATUS_EDITING => [self::STATUS_DELIVERED, self::STATUS_ON_HOLD],
         self::STATUS_DELIVERED => [],   // terminal
         // on_hold can resume back into the pipeline
-        self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_REVIEW, self::STATUS_CANCELLED],
+        self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_CANCELLED],
         self::STATUS_CANCELLED => [],   // terminal
+        self::STATUS_DECLINED => [],    // terminal
     ];
 
     protected ShootActivityLogger $activityLogger;
@@ -47,6 +48,23 @@ class ShootWorkflowService
     public function __construct(ShootActivityLogger $activityLogger)
     {
         $this->activityLogger = $activityLogger;
+    }
+
+    /**
+     * Clear all dashboard caches to reflect changes immediately
+     */
+    protected function clearDashboardCache(): void
+    {
+        // Clear dashboard overview caches for all admin users
+        $adminUsers = User::whereIn('role', ['admin', 'superadmin'])->pluck('id');
+        foreach ($adminUsers as $userId) {
+            Cache::forget('dashboard_overview_admin_' . $userId);
+            Cache::forget('dashboard_overview_superadmin_' . $userId);
+        }
+        
+        // Also clear shoots index caches (pattern-based)
+        // Note: This clears commonly used cache keys
+        Cache::forget('shoots_index_*');
     }
 
     /**
@@ -87,6 +105,9 @@ class ShootWorkflowService
                 );
             }
         });
+        
+        // Clear dashboard cache so changes reflect immediately
+        $this->clearDashboardCache();
     }
 
     /**
@@ -136,29 +157,6 @@ class ShootWorkflowService
         });
     }
 
-    /**
-     * Mark as ready for review (editor has completed editing)
-     */
-    public function markReadyForReview(Shoot $shoot, ?User $user = null): void
-    {
-        $this->validateTransition($shoot, self::STATUS_REVIEW);
-
-        DB::transaction(function () use ($shoot, $user) {
-            $shoot->status = self::STATUS_REVIEW;
-            $shoot->workflow_status = self::STATUS_REVIEW;
-            $shoot->editing_completed_at = now();
-            $shoot->submitted_for_review_at = now();
-            $shoot->updated_by = $user?->id ?? auth()->id();
-            $shoot->save();
-
-            $this->activityLogger->log(
-                $shoot,
-                'shoot_submitted_for_review',
-                ['by' => $user?->name ?? auth()->user()?->name],
-                $user
-            );
-        });
-    }
 
     /**
      * Mark as completed (admin/super admin finalizes)
@@ -183,9 +181,23 @@ class ShootWorkflowService
                 $user
             );
 
+            // Log delivery notification for client
+            $this->activityLogger->log(
+                $shoot,
+                'shoot_delivered',
+                [
+                    'by' => $user?->name ?? auth()->user()?->name,
+                    'message' => 'Your photos are ready for download!'
+                ],
+                $user
+            );
+
             // Trigger any completion jobs (archiving, notifications, etc.)
             // This can be dispatched as a job if needed
         });
+        
+        // Clear dashboard cache so changes reflect immediately
+        $this->clearDashboardCache();
     }
 
     /**
@@ -238,6 +250,74 @@ class ShootWorkflowService
     }
 
     /**
+     * Approve a requested shoot (move from requested to scheduled)
+     */
+    public function approve(Shoot $shoot, \DateTime $scheduledAt, ?User $user = null, ?string $notes = null): void
+    {
+        $this->validateTransition($shoot, self::STATUS_SCHEDULED);
+
+        DB::transaction(function () use ($shoot, $scheduledAt, $user, $notes) {
+            $shoot->status = self::STATUS_SCHEDULED;
+            $shoot->workflow_status = self::STATUS_SCHEDULED;
+            $shoot->scheduled_at = $scheduledAt;
+            $shoot->scheduled_date = $scheduledAt->format('Y-m-d');
+            $shoot->approved_at = now();
+            $shoot->approved_by = $user?->id ?? auth()->id();
+            if ($notes) {
+                $shoot->approval_notes = $notes;
+            }
+            $shoot->updated_by = $user?->id ?? auth()->id();
+            $shoot->save();
+
+            $scheduledAtCarbon = \Carbon\Carbon::instance($scheduledAt);
+            $this->activityLogger->log(
+                $shoot,
+                'shoot_approved',
+                [
+                    'scheduled_at' => $scheduledAtCarbon->toIso8601String(),
+                    'by' => $user?->name ?? auth()->user()?->name,
+                    'notes' => $notes,
+                ],
+                $user
+            );
+        });
+        
+        // Clear dashboard cache so changes reflect immediately
+        $this->clearDashboardCache();
+    }
+
+    /**
+     * Decline a requested shoot
+     */
+    public function decline(Shoot $shoot, ?User $user = null, ?string $reason = null): void
+    {
+        $this->validateTransition($shoot, self::STATUS_DECLINED);
+
+        DB::transaction(function () use ($shoot, $user, $reason) {
+            $shoot->status = self::STATUS_DECLINED;
+            $shoot->workflow_status = self::STATUS_DECLINED;
+            $shoot->declined_at = now();
+            $shoot->declined_by = $user?->id ?? auth()->id();
+            $shoot->declined_reason = $reason;
+            $shoot->updated_by = $user?->id ?? auth()->id();
+            $shoot->save();
+
+            $this->activityLogger->log(
+                $shoot,
+                'shoot_declined',
+                [
+                    'by' => $user?->name ?? auth()->user()?->name,
+                    'reason' => $reason,
+                ],
+                $user
+            );
+        });
+        
+        // Clear dashboard cache so changes reflect immediately
+        $this->clearDashboardCache();
+    }
+
+    /**
      * Validate that a transition is allowed
      */
     protected function validateTransition(Shoot $shoot, string $targetStatus): void
@@ -252,12 +332,13 @@ class ShootWorkflowService
             'photos_uploaded' => self::STATUS_UPLOADED,
             'in_progress' => self::STATUS_UPLOADED,
             'raw_issue' => self::STATUS_UPLOADED,
-            'editing_uploaded' => self::STATUS_REVIEW,
-            'editing_complete' => self::STATUS_REVIEW,
-            'editing_issue' => self::STATUS_REVIEW,
-            'pending_review' => self::STATUS_REVIEW,
-            'ready_for_review' => self::STATUS_REVIEW,
-            'qc' => self::STATUS_REVIEW,
+            'editing_uploaded' => self::STATUS_EDITING,
+            'editing_complete' => self::STATUS_EDITING,
+            'editing_issue' => self::STATUS_EDITING,
+            'pending_review' => self::STATUS_EDITING,
+            'ready_for_review' => self::STATUS_EDITING,
+            'qc' => self::STATUS_EDITING,
+            'review' => self::STATUS_EDITING,
             'ready_for_client' => self::STATUS_DELIVERED,
             'admin_verified' => self::STATUS_DELIVERED,
             'ready' => self::STATUS_DELIVERED,

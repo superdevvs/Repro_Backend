@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Services\SalesReportService;
 use App\Services\MailService;
+use App\Services\Messaging\AutomationService;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
@@ -12,11 +13,13 @@ class SalesReportController extends Controller
 {
     protected $salesReportService;
     protected $mailService;
+    protected $automationService;
 
-    public function __construct(SalesReportService $salesReportService, MailService $mailService)
+    public function __construct(SalesReportService $salesReportService, MailService $mailService, AutomationService $automationService)
     {
         $this->salesReportService = $salesReportService;
         $this->mailService = $mailService;
+        $this->automationService = $automationService;
     }
 
     /**
@@ -96,6 +99,11 @@ class SalesReportController extends Controller
             if ($salesRep) {
                 if ($this->mailService->sendWeeklySalesReportEmail($salesRep, $reportData)) {
                     $sent++;
+                    $this->automationService->handleEvent('WEEKLY_SALES_REPORT', [
+                        'rep' => $salesRep,
+                        'account_id' => $salesRep->id,
+                        'report' => $reportData,
+                    ]);
                 } else {
                     $failed++;
                 }

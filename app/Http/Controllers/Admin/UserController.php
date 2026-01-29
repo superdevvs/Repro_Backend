@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\AccountLink;
+use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
@@ -111,7 +112,13 @@ class UserController extends Controller
             'username' => 'nullable|string|unique:users',
             'phone_number' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
-            'role' => 'required|in:superadmin,admin,client,photographer,editor,salesRep',
+            'address' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:50',
+            'zip' => 'nullable|string|max:20',
+            'license_number' => 'nullable|string|max:100',
+            'company_notes' => 'nullable|string',
+            'role' => 'required|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|image|max:2048',
             'metadata' => 'nullable',
@@ -124,6 +131,11 @@ class UserController extends Controller
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
         ]);
+
+        if (array_key_exists('phone_number', $validated)) {
+            $validated['phonenumber'] = $validated['phone_number'];
+            unset($validated['phone_number']);
+        }
 
         // Handle avatar upload
         if ($request->hasFile('avatar')) {
@@ -281,7 +293,7 @@ class UserController extends Controller
     public function update(Request $request, $id)
     {
         $admin = $request->user();
-        if (!in_array($admin->role, ['admin', 'superadmin'])) {
+        if (!in_array($admin->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -293,9 +305,15 @@ class UserController extends Controller
             'username' => 'nullable|string|unique:users,username,' . $id,
             'phone_number' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
-            'role' => 'sometimes|in:superadmin,admin,client,photographer,editor,salesRep',
+            'address' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:50',
+            'zip' => 'nullable|string|max:20',
+            'license_number' => 'nullable|string|max:100',
+            'company_notes' => 'nullable|string',
+            'role' => 'sometimes|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
             'bio' => 'nullable|string',
-            'avatar' => 'nullable|string|url',
+            'avatar' => 'nullable|string',
             'metadata' => 'nullable',
             'created_by_name' => 'nullable|string|max:255',
             'created_by_id' => 'nullable|integer|exists:users,id',
@@ -306,6 +324,11 @@ class UserController extends Controller
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
         ]);
+
+        if (array_key_exists('phone_number', $validated)) {
+            $validated['phonenumber'] = $validated['phone_number'];
+            unset($validated['phone_number']);
+        }
 
         // Handle metadata
         if ($request->has('metadata')) {
@@ -368,7 +391,7 @@ class UserController extends Controller
         }
 
         $validated = $request->validate([
-            'role' => 'required|in:superadmin,admin,client,photographer,editor,salesRep',
+            'role' => 'required|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
         ]);
 
         $user = User::findOrFail($id);
@@ -386,6 +409,43 @@ class UserController extends Controller
         ]);
     }
 
+    /**
+     * Admin-only: reset a user's password
+     */
+    public function resetPassword(Request $request, $id)
+    {
+        $admin = $request->user();
+        if (!$admin || !in_array($admin->role, ['admin', 'superadmin'])) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'password' => 'required|string|min:6',
+        ]);
+
+        $user = User::findOrFail($id);
+        $user->password = Hash::make($validated['password']);
+        $user->save();
+
+        $context = ['account_id' => $user->id];
+        $role = strtolower((string) $user->role);
+        if ($role === 'client') {
+            $context['client'] = $user;
+        } elseif ($role === 'photographer') {
+            $context['photographer'] = $user;
+        } elseif ($role === 'salesrep') {
+            $context['rep'] = $user;
+        } else {
+            $context['client'] = $user;
+        }
+        app(AutomationService::class)->handleEvent('PASSWORD_RESET', $context);
+
+        return response()->json([
+            'message' => 'Password updated successfully.',
+            'user_id' => $user->id,
+        ]);
+    }
+
     protected function presentUserForViewer(User $user, User $viewer): array
     {
         $payload = $user->attributesToArray();
@@ -396,6 +456,24 @@ class UserController extends Controller
         }
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
+        }
+        if (isset($payload['zip'])) {
+            $payload['zipcode'] = $payload['zip'];
+        }
+        if (isset($payload['license_number'])) {
+            $payload['licenseNumber'] = $payload['license_number'];
+        }
+        if (isset($payload['company_notes'])) {
+            $payload['companyNotes'] = $payload['company_notes'];
+        }
+        if (isset($payload['zip'])) {
+            $payload['zipcode'] = $payload['zip'];
+        }
+        if (isset($payload['license_number'])) {
+            $payload['licenseNumber'] = $payload['license_number'];
+        }
+        if (isset($payload['company_notes'])) {
+            $payload['companyNotes'] = $payload['company_notes'];
         }
         
         // Handle account linking - merge shared data with error handling
@@ -642,5 +720,48 @@ class UserController extends Controller
         }
 
         return $payload;
+    }
+
+    /**
+     * Delete a user (Super Admin only)
+     */
+    public function destroy(Request $request, $id)
+    {
+        $viewer = $request->user();
+        
+        // Only superadmin can delete users
+        if ($viewer->role !== 'superadmin') {
+            return response()->json(['message' => 'Unauthorized. Only Super Admin can delete users.'], 403);
+        }
+
+        $user = User::find($id);
+        
+        if (!$user) {
+            return response()->json(['message' => 'User not found'], 404);
+        }
+
+        // Prevent self-deletion
+        if ($user->id === $viewer->id) {
+            return response()->json(['message' => 'Cannot delete your own account'], 400);
+        }
+
+        // Prevent deletion of superadmin accounts
+        if ($user->role === 'superadmin') {
+            return response()->json(['message' => 'Cannot delete Super Admin accounts'], 400);
+        }
+
+        $deletedUser = [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+        ];
+
+        $user->delete();
+
+        return response()->json([
+            'message' => 'User deleted successfully',
+            'user' => $deletedUser,
+        ]);
     }
 }

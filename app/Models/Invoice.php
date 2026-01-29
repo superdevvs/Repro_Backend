@@ -25,6 +25,10 @@ class Invoice extends Model
     public const APPROVAL_STATUS_PENDING_APPROVAL = 'pending_approval';
 
     protected $fillable = [
+        'user_id',
+        'role',
+        'period_start',
+        'period_end',
         'photographer_id',
         'sales_rep_id',
         'billing_period_start',
@@ -56,6 +60,8 @@ class Invoice extends Model
     ];
 
     protected $casts = [
+        'period_start' => 'date',
+        'period_end' => 'date',
         'billing_period_start' => 'date',
         'billing_period_end' => 'date',
         'total_amount' => 'decimal:2',
@@ -240,7 +246,18 @@ class Invoice extends Model
 
     public function balanceDue(): float
     {
-        return max((float) $this->total - $this->totalPaid(), 0);
+        $total = $this->total ?? $this->total_amount ?? $this->charges_total ?? 0;
+        $paid = $this->totalPaid();
+
+        if ($paid <= 0 && $this->getAttribute('amount_paid') !== null) {
+            $paid = (float) $this->getAttribute('amount_paid');
+        }
+
+        if ($paid <= 0 && $this->getAttribute('payments_total') !== null) {
+            $paid = (float) $this->getAttribute('payments_total');
+        }
+
+        return max((float) $total - (float) $paid, 0);
     }
 
     public function isPastDue(): bool

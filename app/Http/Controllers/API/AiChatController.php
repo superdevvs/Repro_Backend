@@ -141,7 +141,19 @@ class AiChatController extends Controller
             
             // Detect intent early - if it's a clear booking/manage intent, use rule-based directly
             $detectedIntent = $this->detectIntent($validated['message'], $validated['context'] ?? []);
-            $shouldUseRuleBased = in_array($detectedIntent, ['book_shoot', 'manage_booking', 'availability', 'client_stats', 'accounting', 'greeting']);
+            $shouldUseRuleBased = in_array($detectedIntent, [
+                'book_shoot', 
+                'manage_booking', 
+                'availability', 
+                'client_stats', 
+                'accounting', 
+                'greeting',
+                'photographer_management',
+                'invoice_billing',
+                'media_delivery',
+                'client_crm',
+                'support_faq',
+            ]);
             
             // For greetings, always use rule-based to show proper welcome with suggestions
             if ($detectedIntent === 'greeting') {
@@ -318,11 +330,111 @@ class AiChatController extends Controller
         // Detect from message content
         $m = strtolower(trim($message));
         
+        // Exact matches for common suggestions (highest priority)
+        $exactMatches = [
+            'book a new shoot' => 'book_shoot',
+            'book a shoot' => 'book_shoot',
+            'manage an existing booking' => 'manage_booking',
+            'check photographer availability' => 'availability',
+            'view client stats' => 'client_stats',
+            'see accounting summary' => 'accounting',
+            'assign photographer' => 'photographer_management',
+            'view photographer schedule' => 'photographer_management',
+            'view photographer earnings' => 'photographer_management',
+            'create invoice' => 'invoice_billing',
+            'send invoice' => 'invoice_billing',
+            'view outstanding invoices' => 'invoice_billing',
+            'outstanding invoices' => 'invoice_billing',
+            'apply discount' => 'invoice_billing',
+            'check delivery status' => 'media_delivery',
+            'share gallery' => 'media_delivery',
+            'request reshoot' => 'media_delivery',
+            'download all photos' => 'media_delivery',
+            'view client history' => 'client_crm',
+            'send follow-up' => 'client_crm',
+            'add client note' => 'client_crm',
+            'view at-risk clients' => 'client_crm',
+            'help & faq' => 'support_faq',
+            'faq' => 'support_faq',
+            'help' => 'support_faq',
+        ];
+        
+        if (isset($exactMatches[$m])) {
+            return $exactMatches[$m];
+        }
+        
+        // Photographer Management
+        if (str_contains($m, 'assign') && str_contains($m, 'photographer')) {
+            return 'photographer_management';
+        }
+        if (str_contains($m, 'photographer') && (str_contains($m, 'schedule') || str_contains($m, 'earning') || str_contains($m, 'payout'))) {
+            return 'photographer_management';
+        }
+        
+        // Invoice & Billing (before accounting to catch invoice-specific queries)
+        if (str_contains($m, 'invoice')) {
+            return 'invoice_billing';
+        }
+        if (str_contains($m, 'outstanding') || str_contains($m, 'unpaid')) {
+            return 'invoice_billing';
+        }
+        if (str_contains($m, 'discount')) {
+            return 'invoice_billing';
+        }
+        if (str_contains($m, 'billing')) {
+            return 'invoice_billing';
+        }
+        
+        // Media Delivery
+        if (str_contains($m, 'gallery')) {
+            return 'media_delivery';
+        }
+        if (str_contains($m, 'delivery') || str_contains($m, 'photos ready')) {
+            return 'media_delivery';
+        }
+        if (str_contains($m, 'reshoot') || str_contains($m, 're-shoot')) {
+            return 'media_delivery';
+        }
+        if (str_contains($m, 'download') && (str_contains($m, 'photo') || str_contains($m, 'all'))) {
+            return 'media_delivery';
+        }
+        
+        // Client CRM
+        if (str_contains($m, 'client') && str_contains($m, 'history')) {
+            return 'client_crm';
+        }
+        if (str_contains($m, 'follow-up') || str_contains($m, 'follow up')) {
+            return 'client_crm';
+        }
+        if (str_contains($m, 'client') && str_contains($m, 'note')) {
+            return 'client_crm';
+        }
+        if (str_contains($m, 'at-risk') || str_contains($m, 'at risk')) {
+            return 'client_crm';
+        }
+        
+        // Support & FAQ
+        if (str_contains($m, 'faq')) {
+            return 'support_faq';
+        }
+        if (str_contains($m, 'how much') || str_contains($m, 'pricing') || str_contains($m, 'turnaround')) {
+            return 'support_faq';
+        }
+        if (str_contains($m, 'ticket') || str_contains($m, 'support')) {
+            return 'support_faq';
+        }
+        if (str_contains($m, 'human') || str_contains($m, 'representative')) {
+            return 'support_faq';
+        }
+        
         // Booking intents
         if (str_contains($m, 'book') && (str_contains($m, 'shoot') || str_contains($m, 'new'))) {
             return 'book_shoot';
         }
-        if (str_contains($m, 'schedule') || str_contains($m, 'new shoot')) {
+        if (str_contains($m, 'schedule') && !str_contains($m, 'reschedule') && !str_contains($m, 'photographer')) {
+            return 'book_shoot';
+        }
+        if (str_contains($m, 'new shoot')) {
             return 'book_shoot';
         }
         
@@ -334,17 +446,23 @@ class AiChatController extends Controller
             return 'manage_booking';
         }
         
-        // Other intents
+        // Availability
         if (str_contains($m, 'availability') || str_contains($m, 'available')) {
             return 'availability';
         }
-        if (str_contains($m, 'stats') || str_contains($m, 'client stats')) {
+        
+        // Client stats
+        if (str_contains($m, 'stats')) {
             return 'client_stats';
         }
-        if (str_contains($m, 'invoice') || str_contains($m, 'revenue') || str_contains($m, 'accounting')) {
+        
+        // Accounting (after invoice_billing to avoid conflicts)
+        if (str_contains($m, 'revenue') || str_contains($m, 'accounting')) {
             return 'accounting';
         }
-        if (str_contains($m, 'hi') || str_contains($m, 'hello') || str_contains($m, 'hey')) {
+        
+        // Greetings
+        if ($m === 'hi' || $m === 'hello' || $m === 'hey') {
             return 'greeting';
         }
         

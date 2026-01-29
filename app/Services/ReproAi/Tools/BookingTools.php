@@ -7,6 +7,7 @@ use App\Models\Service;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\MailService;
+use App\Services\Messaging\AutomationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -14,11 +15,13 @@ class BookingTools
 {
     private DropboxWorkflowService $dropboxService;
     private MailService $mailService;
+    private AutomationService $automationService;
 
     public function __construct()
     {
         $this->dropboxService = app(DropboxWorkflowService::class);
         $this->mailService = app(MailService::class);
+        $this->automationService = app(AutomationService::class);
     }
 
     /**
@@ -117,6 +120,17 @@ class BookingTools
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
                         $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
                     }
+                }
+
+                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+                $context = $this->automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $this->automationService->handleEvent('SHOOT_BOOKED', $context);
+                if ($shoot->scheduled_at) {
+                    $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
+                    $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
                 }
 
                 DB::commit();

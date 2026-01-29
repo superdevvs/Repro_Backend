@@ -121,6 +121,7 @@ class AccountingFlow
         $summary .= "• Last Payment: {$lastPaymentDate}\n";
 
         $this->setStepAndData($session, 'show_numbers', $data);
+        $session->save();
 
         return [
             'assistant_messages' => [[
@@ -128,11 +129,10 @@ class AccountingFlow
                 'metadata' => ['step' => 'show_numbers', 'period' => $period],
             ]],
             'suggestions' => [
-                'Show unpaid invoices',
-                'Export report',
-                'Check client stats',
                 'View this month',
                 'View last month',
+                'View this quarter',
+                'Check client stats',
             ],
             'meta' => [
                 'period' => $period,

@@ -12,7 +12,7 @@ class MessagingSystemSeeder extends Seeder
     private const BRAND_PHONE = '202-868-1663';
     private const BRAND_EMAIL = 'contact@reprophotos.com';
     private const BRAND_SITE = 'https://reprophotos.com';
-    private const BRAND_PORTAL = 'https://pro.reprophotos.com';
+    private const BRAND_PORTAL = 'https://reprodashboard.com';
 
     private array $tokenMap = [
         '[greeting]' => '{{greeting}}',
@@ -380,6 +380,22 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
+            
+            // 17. Photographer Assigned
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Photographer Assigned',
+                'slug' => 'photographer-assigned',
+                'description' => 'Notify photographer when assigned to a shoot',
+                'category' => 'BOOKING',
+                'subject' => 'New Shoot Assignment - [shoot_location]',
+                'body_html' => $this->getPhotographerAssignedTemplate(),
+                'body_text' => $this->getPhotographerAssignedPlainText(),
+                'variables_json' => ['greeting', 'photographer_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_packages', 'shoot_notes', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
         ];
 
         foreach ($templates as $template) {
@@ -483,6 +499,96 @@ class MessagingSystemSeeder extends Seeder
                 'condition_json' => ['days_before' => 0],
                 'recipients_json' => ['client'],
             ],
+            // Additional automations
+            [
+                'name' => 'Shoot Request Received',
+                'description' => 'Notify client when shoot request is received',
+                'trigger_type' => 'SHOOT_REQUESTED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Shoot Request Approved',
+                'description' => 'Notify client when shoot request is approved',
+                'trigger_type' => 'SHOOT_REQUEST_APPROVED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Shoot Request Declined',
+                'description' => 'Notify client when shoot request is declined',
+                'trigger_type' => 'SHOOT_REQUEST_DECLINED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Shoot Updated Notification',
+                'description' => 'Notify client when shoot is updated',
+                'trigger_type' => 'SHOOT_UPDATED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Photos Ready Notification',
+                'description' => 'Notify client when photos are ready',
+                'trigger_type' => 'SHOOT_COMPLETED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Media Upload Complete Notification',
+                'description' => 'Notify client when media upload is complete',
+                'trigger_type' => 'MEDIA_UPLOAD_COMPLETE',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Shoot Cancelled Notification',
+                'description' => 'Notify client when shoot is cancelled',
+                'trigger_type' => 'SHOOT_CANCELED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Shoot Removed Notification',
+                'description' => 'Notify client when shoot is removed',
+                'trigger_type' => 'SHOOT_REMOVED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Refund Notification',
+                'description' => 'Notify client when refund is processed',
+                'trigger_type' => 'PAYMENT_REFUNDED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Photographer Assignment Notification',
+                'description' => 'Notify photographer when assigned to a shoot',
+                'trigger_type' => 'PHOTOGRAPHER_ASSIGNED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['photographer'],
+            ],
+            [
+                'name' => 'Photographer Shoot Reminder',
+                'description' => 'Remind photographer before shoot',
+                'trigger_type' => 'SHOOT_REMINDER',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'schedule_json' => ['offset' => '-24h'],
+                'recipients_json' => ['photographer'],
+            ],
         ];
 
         foreach ($automations as $automation) {
@@ -492,6 +598,16 @@ class MessagingSystemSeeder extends Seeder
                 'SHOOT_REMINDER' => 'shoot-reminder',
                 'PAYMENT_COMPLETED' => 'payment-thank-you',
                 'PROPERTY_CONTACT_REMINDER' => 'property-contact-reminder',
+                'SHOOT_REQUESTED' => 'shoot-requested',
+                'SHOOT_REQUEST_APPROVED' => 'shoot-request-approved',
+                'SHOOT_REQUEST_DECLINED' => 'shoot-request-declined',
+                'SHOOT_UPDATED' => 'shoot-updated',
+                'SHOOT_COMPLETED' => 'shoot-ready',
+                'MEDIA_UPLOAD_COMPLETE' => 'shoot-ready',
+                'SHOOT_CANCELED' => 'shoot-deleted',
+                'SHOOT_REMOVED' => 'shoot-deleted',
+                'PAYMENT_REFUNDED' => 'refund-submitted',
+                'PHOTOGRAPHER_ASSIGNED' => 'photographer-assigned',
             ];
 
             // For property contact reminders, use email template for email channel and SMS template for SMS
@@ -574,7 +690,7 @@ class MessagingSystemSeeder extends Seeder
     private function getAccountCreatedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>A new account has been created on the <strong>REPRO HQ</strong> client website: <a href="https://pro.reprohq.com">https://pro.reprohq.com</a></p>
             
@@ -609,7 +725,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootScheduledTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>A new photo shoot has been scheduled under your account!</p>
             
@@ -660,7 +776,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootRequestedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>We have received your request for a new photo shoot!</p>
             
@@ -706,7 +822,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootRequestApprovedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>One of your requested photo shoots has been <strong style="color: #22c55e;">APPROVED</strong> and scheduled under your account! You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
             
@@ -755,7 +871,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootRequestModifiedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>One of your requested photo shoots has been <strong style="color: #22c55e;">APPROVED</strong> and scheduled under your account! You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
             
@@ -804,7 +920,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootRequestDeclinedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>Unfortunately one of your requested shoots has been <strong style="color: #dc2626;">declined</strong>.</p>
             
@@ -838,7 +954,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootReminderTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>You have a scheduled shoot coming up! Here is a summary of the latest shoot information:</p>
             
@@ -879,7 +995,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootUpdatedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>One of your scheduled photo shoots has been <strong>updated</strong>. Here is a summary of the latest information regarding the shoot that was updated:</p>
             
@@ -921,7 +1037,7 @@ class MessagingSystemSeeder extends Seeder
     {
         $content = '
             <h1>Your Photos Are Ready! 📸</h1>
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>The content for <strong>[shoot_location]</strong> is uploaded!</p>
             
@@ -961,7 +1077,7 @@ class MessagingSystemSeeder extends Seeder
     private function getPaymentDueReminderTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>This is a friendly reminder that one of your shoots is ready and <strong>payment is requested</strong>:</p>
             
@@ -1037,7 +1153,7 @@ class MessagingSystemSeeder extends Seeder
     {
         $content = '
             <h1>Your Shoot is Ready!</h1>
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>One of your photo shoots is ready!</p>
             
@@ -1097,7 +1213,7 @@ class MessagingSystemSeeder extends Seeder
     private function getShootDeletedTemplate(): string
     {
         $content = '
-            <p>[greeting], [realtor_first]!</p>
+            <p>[greeting]!</p>
             
             <p>One of your Real Estate photo shoots has been <strong>removed from the schedule</strong> due to a cancellation or a re-schedule.</p>
             
@@ -1125,8 +1241,6 @@ class MessagingSystemSeeder extends Seeder
     {
         $content = '
             <h1>Refund Applied</h1>
-            <p>[greeting], [realtor_first]!</p>
-            
             <p>One of your Real Estate photo shoots has been <strong>refunded</strong>.</p>
             
             <div class="info-box" style="background-color: #f0f9ff; border-left-color: #3b82f6;">
@@ -1407,9 +1521,7 @@ Thank you!';
 
     private function getRefundSubmittedPlainText(): string
     {
-        return '[greeting], [realtor_first]!
-
-One of your Real Estate photo shoots has been refunded.
+        return 'One of your Real Estate photo shoots has been refunded.
 
 Location: [shoot_location]
 [shoot_packages]
@@ -1435,7 +1547,7 @@ Thank you!';
         <h2 style="color: #2c3e50; margin-top: 0;">Action Required: Property Access Details</h2>
     </div>
     
-    <p>[greeting], [realtor_first]!</p>
+    <p>[greeting]!</p>
     
     <p>We need property access information for your upcoming shoot:</p>
     
@@ -1497,6 +1609,63 @@ This is an automated reminder. If you have already provided this information, pl
     private function getPropertyContactReminderSmsTemplate(): string
     {
         return 'REPRO: Action required for shoot at [shoot_location] on [shoot_date] at [shoot_time]. Please provide property access details (who will be at property or lockbox info). Update: [portal_url]';
+    }
+
+    private function getPhotographerAssignedTemplate(): string
+    {
+        $content = '
+            <p>[greeting]!</p>
+            
+            <p>You have been assigned to a new photo shoot!</p>
+            
+            <div class="info-box">
+                <p style="margin-top: 0;"><strong>Shoot Details:</strong></p>
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Services:</span> [shoot_packages]
+                </div>
+            </div>
+            
+            <p><strong>Notes:</strong></p>
+            <p>[shoot_notes]</p>
+            
+            <p>You can view more details and manage this shoot by logging into your dashboard at <a href="[portal_url]">[portal_url]</a></p>
+            
+            <p>If you have any questions, please email <a href="mailto:[company_email]">[company_email]</a></p>
+            
+            <p>Thank you!</p>
+        ';
+        
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getPhotographerAssignedPlainText(): string
+    {
+        return 'Hello!
+
+You have been assigned to a new photo shoot!
+
+SHOOT DETAILS:
+Location: [shoot_location]
+Date: [shoot_date]
+Time: [shoot_time]
+Services: [shoot_packages]
+
+Notes: [shoot_notes]
+
+You can view more details and manage this shoot by logging into your dashboard at [portal_url]
+
+If you have any questions, please email [company_email]
+
+Thank you!';
     }
 
     private function normalizeTemplateDefinition(array $template): array

@@ -408,25 +408,30 @@ class PhotographerAvailabilityController extends Controller
             'end_time' => 'required|date_format:H:i|after:start_time',
         ]);
 
-        $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
-        // Prefer specific overrides for that date; otherwise use recurring
-        $specific = PhotographerAvailability::whereDate('date', $validated['date'])
-            ->where('start_time', '<=', $validated['start_time'])
-            ->where('end_time', '>=', $validated['end_time'])
-            ->where('status', '!=', 'unavailable')
-            ->get();
+        // Create cache key from request parameters
+        $cacheKey = 'available_photographers_' . md5(json_encode($validated));
+        
+        $merged = \Illuminate\Support\Facades\Cache::remember($cacheKey, now()->addSeconds(30), function () use ($validated) {
+            $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
+            // Prefer specific overrides for that date; otherwise use recurring
+            $specific = PhotographerAvailability::whereDate('date', $validated['date'])
+                ->where('start_time', '<=', $validated['start_time'])
+                ->where('end_time', '>=', $validated['end_time'])
+                ->where('status', '!=', 'unavailable')
+                ->get();
 
-        $specificPhotographerIds = $specific->pluck('photographer_id')->unique();
+            $specificPhotographerIds = $specific->pluck('photographer_id')->unique();
 
-        // Recurring for others who don't have specific overrides
-        $recurring = PhotographerAvailability::whereNull('date')
-            ->where('day_of_week', $dayOfWeek)
-            ->where('start_time', '<=', $validated['start_time'])
-            ->where('end_time', '>=', $validated['end_time'])
-            ->whereNotIn('photographer_id', $specificPhotographerIds)
-            ->get();
+            // Recurring for others who don't have specific overrides
+            $recurring = PhotographerAvailability::whereNull('date')
+                ->where('day_of_week', $dayOfWeek)
+                ->where('start_time', '<=', $validated['start_time'])
+                ->where('end_time', '>=', $validated['end_time'])
+                ->whereNotIn('photographer_id', $specificPhotographerIds)
+                ->get();
 
-        $merged = $specific->concat($recurring)->values();
+            return $specific->concat($recurring)->values();
+        });
 
         return response()->json(['data' => $merged]);
     }
@@ -512,7 +517,6 @@ class PhotographerAvailabilityController extends Controller
                 \App\Services\ShootWorkflowService::STATUS_SCHEDULED,
                 \App\Services\ShootWorkflowService::STATUS_IN_PROGRESS,
                 \App\Services\ShootWorkflowService::STATUS_EDITING,
-                \App\Services\ShootWorkflowService::STATUS_READY_FOR_REVIEW,
             ])
             ->with(['client:id,name,email,phone', 'services:id,name,price'])
             ->orderBy('scheduled_at')

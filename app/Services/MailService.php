@@ -277,13 +277,30 @@ class MailService
     {
         $packages = [];
         
-        // Get service information if available
-        if ($shoot->service) {
+        // Load services relationship if not already loaded
+        if (!$shoot->relationLoaded('services')) {
+            $shoot->load('services');
+        }
+        
+        // Get all services from the shoot (many-to-many relationship)
+        if ($shoot->services && $shoot->services->count() > 0) {
+            foreach ($shoot->services as $service) {
+                $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
+                $quantity = (int) ($service->pivot->quantity ?? 1);
+                $serviceName = $service->name ?? $service->service_name ?? 'Service';
+                
+                $packages[] = [
+                    'name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
+                    'price' => $servicePrice * $quantity
+                ];
+            }
+        } elseif ($shoot->service) {
+            // Fallback to single service relationship (legacy)
             $packages[] = [
                 'name' => $shoot->service->name ?? 'Photography Service',
                 'price' => $shoot->base_quote ?? 0
             ];
-        } else if ($shoot->service_category) {
+        } elseif ($shoot->service_category) {
             // Fallback to service category
             $categoryNames = [
                 'P' => 'Photography Package',
@@ -294,6 +311,14 @@ class MailService
             $packages[] = [
                 'name' => $categoryNames[$shoot->service_category] ?? $shoot->service_category,
                 'price' => $shoot->base_quote ?? 0
+            ];
+        }
+        
+        // If still no packages, add a generic one based on quote
+        if (empty($packages) && ($shoot->base_quote ?? 0) > 0) {
+            $packages[] = [
+                'name' => 'Photography Services',
+                'price' => $shoot->base_quote
             ];
         }
         
@@ -310,11 +335,12 @@ class MailService
 
     /**
      * Generate payment link for shoot
+     * Points to shoot details page with payment action parameter
      */
     public function generatePaymentLink(Shoot $shoot): string
     {
-        $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
-        return "{$frontendUrl}/payment/{$shoot->id}";
+        $frontendUrl = config('app.frontend_url', 'https://pro.reprophotos.com');
+        return "{$frontendUrl}/shoots/{$shoot->id}?action=pay";
     }
 
     /**

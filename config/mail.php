@@ -115,6 +115,8 @@ return [
         'name' => env('MAIL_FROM_NAME', 'Example'),
     ],
 
+    'contact_address' => env('MAIL_CONTACT_ADDRESS', 'contact@reprophotos.com'),
+
     'accounting_address' => env('MAIL_ACCOUNTING_ADDRESS', 'accounting@reprophotos.com'),
 
     'editing_team_address' => env('MAIL_EDITING_TEAM_ADDRESS', 'editing@reprophotos.com'),

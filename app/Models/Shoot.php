@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class Shoot extends Model
 {
@@ -83,6 +85,25 @@ class Shoot extends Model
         'iguide_last_synced_at',
         'iguide_property_id',
         'is_private_listing',
+        // MMM Integration
+        'mmm_status',
+        'mmm_order_number',
+        'mmm_buyer_cookie',
+        'mmm_redirect_url',
+        'mmm_last_punchout_at',
+        'mmm_last_order_at',
+        'mmm_last_error',
+        // Approval workflow fields
+        'approval_notes',
+        'approved_at',
+        'approved_by',
+        'declined_at',
+        'declined_by',
+        'declined_reason',
+        // Cancellation request fields
+        'cancellation_requested_at',
+        'cancellation_requested_by',
+        'cancellation_reason',
     ];
 
     protected $casts = [
@@ -116,16 +137,23 @@ class Shoot extends Model
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
+        'mmm_last_punchout_at' => 'datetime',
+        'mmm_last_order_at' => 'datetime',
+        'approved_at' => 'datetime',
+        'declined_at' => 'datetime',
+        'tour_links' => 'array',
+        'cancellation_requested_at' => 'datetime',
     ];
 
     // Unified workflow status constants
-    const STATUS_SCHEDULED = 'scheduled'; // shoot is booked
+    const STATUS_REQUESTED = 'requested'; // client-submitted, awaiting admin/rep approval
+    const STATUS_SCHEDULED = 'scheduled'; // shoot is booked/approved
     const STATUS_UPLOADED = 'uploaded';   // photos uploaded by photographer/admin
     const STATUS_EDITING = 'editing';     // sent to editor, in progress
-    const STATUS_REVIEW = 'review';       // editor submitted, admin review
     const STATUS_DELIVERED = 'delivered'; // finalized and delivered to client
     const STATUS_ON_HOLD = 'on_hold';
     const STATUS_CANCELLED = 'cancelled';
+    const STATUS_DECLINED = 'declined';   // admin/rep declined the shoot request
 
     // Legacy aliases (all map to the unified statuses above)
     const WORKFLOW_BOOKED = self::STATUS_SCHEDULED;
@@ -133,9 +161,6 @@ class Shoot extends Model
     const WORKFLOW_RAW_UPLOADED = self::STATUS_UPLOADED;
     const WORKFLOW_RAW_ISSUE = self::STATUS_UPLOADED;
     const WORKFLOW_EDITING = self::STATUS_EDITING;
-    const WORKFLOW_EDITING_UPLOADED = self::STATUS_REVIEW;
-    const WORKFLOW_EDITING_ISSUE = self::STATUS_REVIEW;
-    const WORKFLOW_PENDING_REVIEW = self::STATUS_REVIEW;
     const WORKFLOW_READY_FOR_CLIENT = self::STATUS_DELIVERED;
     const WORKFLOW_ON_HOLD = self::STATUS_ON_HOLD;
     const WORKFLOW_ADMIN_VERIFIED = self::STATUS_DELIVERED;
@@ -186,6 +211,21 @@ class Shoot extends Model
         return $this->hasMany(ShootFile::class);
     }
 
+    public function shareLinks()
+    {
+        return $this->hasMany(ShootShareLink::class);
+    }
+
+    public function activeShareLinks()
+    {
+        return $this->shareLinks()
+            ->where('is_revoked', false)
+            ->where(function ($query) {
+                $query->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            });
+    }
+
     public function payments()
     {
         return $this->hasMany(Payment::class);
@@ -209,6 +249,13 @@ class Shoot extends Model
     public function rescheduleRequests()
     {
         return $this->hasMany(ShootRescheduleRequest::class);
+    }
+
+    public function mmmPunchoutSessions()
+    {
+        return $this->hasMany(
+            \App\Models\MmmPunchoutSession::class
+        );
     }
 
     public function messages()
@@ -287,6 +334,46 @@ class Shoot extends Model
         return $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null;
     }
 
+    /**
+     * Get company logo for watermarking from photographer's or rep's branding
+     * Returns the logo URL from user_branding table
+     */
+    public function getCompanyLogoForWatermark(): ?string
+    {
+        // Try photographer first
+        if ($this->photographer_id) {
+            $branding = DB::table('user_branding')
+                ->where('user_id', $this->photographer_id)
+                ->whereNotNull('logo')
+                ->first();
+            
+            if ($branding && $branding->logo) {
+                return $branding->logo;
+            }
+        }
+
+        // Fallback to rep's logo
+        if ($this->rep_id) {
+            $branding = DB::table('user_branding')
+                ->where('user_id', $this->rep_id)
+                ->whereNotNull('logo')
+                ->first();
+            
+            if ($branding && $branding->logo) {
+                return $branding->logo;
+            }
+        }
+
+        // Fallback to default REPRO logo (return local path prefixed with 'local:')
+        $defaultLogo = public_path('images/repro-logo.png');
+        if (file_exists($defaultLogo)) {
+            return 'local:' . $defaultLogo;
+        }
+
+        // Return null if no logo found (will fallback to text watermark)
+        return null;
+    }
+
     public function canUploadPhotos()
     {
         // Allow raw uploads until admin moves the shoot past raw review
@@ -302,14 +389,6 @@ class Shoot extends Model
         return in_array($this->workflow_status, [
             self::STATUS_UPLOADED,
             self::STATUS_EDITING,
-            self::STATUS_REVIEW,
-        ]);
-    }
-
-    public function canVerify()
-    {
-        return in_array($this->workflow_status, [
-            self::STATUS_REVIEW,
         ]);
     }
 
@@ -325,14 +404,11 @@ class Shoot extends Model
             case self::STATUS_UPLOADED:
                 $this->photos_uploaded_at = now();
                 break;
-            case self::STATUS_REVIEW:
-                $this->editing_completed_at = now();
-                $this->submitted_for_review_at = now();
-                break;
             case self::STATUS_DELIVERED:
                 $this->admin_verified_at = now();
                 $this->verified_by = $userId;
                 $this->completed_at = now();
+                $this->editing_completed_at = now();
                 break;
         }
 
@@ -349,6 +425,71 @@ class Shoot extends Model
                 'timestamp' => now()->toISOString()
             ]
         ]);
+    }
+
+    /**
+     * Boot the model and set up cache invalidation
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        // Invalidate caches when shoot is updated
+        static::saved(function ($shoot) {
+            static::invalidateCaches($shoot);
+        });
+
+        static::deleted(function ($shoot) {
+            static::invalidateCaches($shoot);
+        });
+    }
+
+    /**
+     * Invalidate all caches related to this shoot
+     */
+    protected static function invalidateCaches(Shoot $shoot)
+    {
+        $shootId = $shoot->id;
+        
+        // Invalidate shoot-specific caches
+        Cache::forget("shoot_files_{$shootId}_raw");
+        Cache::forget("shoot_files_{$shootId}_edited");
+        Cache::forget("shoot_files_{$shootId}_all");
+        
+        // Invalidate dashboard caches - clear all dashboard overview caches
+        // Since we can't easily get all keys, we'll let them expire naturally
+        // or use a more targeted approach if cache tags are available
+        
+        // Invalidate shoots list caches - pattern-based clearing
+        // Note: This is a simple approach. For production, consider using cache tags
+        try {
+            $store = Cache::getStore();
+            if (method_exists($store, 'getRedis')) {
+                $redis = $store->getRedis();
+                if (method_exists($redis, 'keys')) {
+                    // Invalidate dashboard caches
+                    $dashboardKeys = $redis->keys('dashboard_overview_*');
+                    foreach ($dashboardKeys as $key) {
+                        Cache::forget(str_replace(config('cache.prefix', '') . ':', '', $key));
+                    }
+                    
+                    // Invalidate shoots list caches
+                    $shootsKeys = $redis->keys('shoots_index_*');
+                    foreach ($shootsKeys as $key) {
+                        Cache::forget(str_replace(config('cache.prefix', '') . ':', '', $key));
+                    }
+                    
+                    // Invalidate notifications caches
+                    $notificationsKeys = $redis->keys('notifications_*');
+                    foreach ($notificationsKeys as $key) {
+                        Cache::forget(str_replace(config('cache.prefix', '') . ':', '', $key));
+                    }
+                }
+            }
+        } catch (\Exception $e) {
+            // If cache store doesn't support key scanning, just log and continue
+            \Log::warning('Could not invalidate cache keys', ['error' => $e->getMessage()]);
+        }
     }
 
     /**

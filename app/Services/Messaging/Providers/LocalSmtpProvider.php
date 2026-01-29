@@ -11,26 +11,18 @@ class LocalSmtpProvider implements EmailProviderInterface
 {
     public function send(MessageChannel $channel, array $payload): string
     {
-        Mail::send([], [], function ($message) use ($channel, $payload) {
+        $fromEmail = $channel->from_email ?? config('mail.from.address');
+        $fromName = $channel->display_name ?? config('mail.from.name');
+
+        Mail::html($payload['html'] ?? $payload['text'] ?? '', function ($message) use ($channel, $payload, $fromEmail, $fromName) {
             $message->to($payload['to']);
 
             if (!empty($payload['reply_to'])) {
                 $message->replyTo($payload['reply_to']);
             }
 
-            $fromEmail = $channel->from_email ?? config('mail.from.address');
-            $fromName = $channel->display_name ?? config('mail.from.name');
             $message->from($fromEmail, $fromName);
             $message->subject($payload['subject'] ?? 'Message from Repro HQ');
-
-            if (!empty($payload['html'])) {
-                $message->setBody($payload['html'], 'text/html');
-                if (!empty($payload['text'])) {
-                    $message->addPart($payload['text'], 'text/plain');
-                }
-            } else {
-                $message->setBody($payload['text'] ?? '', 'text/plain');
-            }
         });
 
         return (string) Str::uuid();

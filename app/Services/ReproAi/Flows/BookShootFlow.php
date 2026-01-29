@@ -204,6 +204,30 @@ class BookShootFlow
                 unset($data['date']);
             }
 
+            // Check if message also contains time info (e.g., "tomorrow morning")
+            $parsedTime = $this->parseTimeFromMessage($trimmed);
+            if ($parsedTime) {
+                $data['time_label'] = $parsedTime;
+                $data['time_window'] = $parsedTime;
+                
+                // Skip time step, go directly to services
+                $this->setStepAndData($session, 'ask_services', $data);
+                $session->save();
+
+                return [
+                    'assistant_messages' => [[
+                        'content'  => "Got it, {$message}. What services would you like?",
+                        'metadata' => ['step' => 'ask_services'],
+                    ]],
+                    'suggestions' => [
+                        'Photos only',
+                        'Photos + video',
+                        'Photos + drone',
+                        'Full package (photos, video, drone, floorplan)',
+                    ],
+                ];
+            }
+
             $this->setStepAndData($session, 'ask_time', $data);
             $session->save();
 
@@ -393,11 +417,40 @@ class BookShootFlow
             ];
         }
 
+        // Handle retry/start over from error state
+        if (str_contains($m, 'try again') || str_contains($m, 'retry')) {
+            $propertyLabel = $data['property_label'] ?? ($data['property_address'] ?? 'Unknown property');
+            $dateLabel = $data['date_label'] ?? 'TBD';
+            $timeLabel = $data['time_label'] ?? 'TBD';
+            $servicesLabel = $data['services_label'] ?? 'TBD';
+            
+            return [
+                'assistant_messages' => [[
+                    'content'  => "Let's try again. Ready to confirm this booking?\n\n📍 {$propertyLabel}\n📅 {$dateLabel}\n⏰ {$timeLabel}\n📸 {$servicesLabel}",
+                    'metadata' => ['step' => 'confirm'],
+                ]],
+                'suggestions' => [
+                    'Yes, confirm booking',
+                    'Change the date',
+                    'Change the services',
+                ],
+            ];
+        }
+        
+        if (str_contains($m, 'start over') || str_contains($m, 'nevermind') || str_contains($m, 'never mind')) {
+            return $this->reset($session);
+        }
+
         // Check for confirmation
         $isConfirmed = str_contains($m, 'yes') || 
                        str_contains($m, 'confirm') || 
                        str_contains($m, 'book') ||
-                       str_contains($m, 'proceed');
+                       str_contains($m, 'proceed') ||
+                       str_contains($m, 'go ahead') ||
+                       str_contains($m, 'do it') ||
+                       str_contains($m, 'sure') ||
+                       str_contains($m, 'looks good') ||
+                       str_contains($m, 'perfect');
         
         if (!$isConfirmed) {
             // user is unsure; gently re-ask with better suggestions
@@ -569,31 +622,72 @@ class BookShootFlow
         $t = strtolower($text);
         $serviceIds = [];
 
-        $services = Service::all(['id', 'name']);
-        foreach ($services as $service) {
-            $serviceName = strtolower($service->name);
-            if (str_contains($t, $serviceName) || str_contains($serviceName, $t)) {
-                $serviceIds[] = $service->id;
+        // Handle "Full package" - includes all main services
+        if (str_contains($t, 'full package') || str_contains($t, 'everything') || str_contains($t, 'all services')) {
+            $services = Service::where('name', 'like', '%photo%')
+                ->orWhere('name', 'like', '%video%')
+                ->orWhere('name', 'like', '%drone%')
+                ->orWhere('name', 'like', '%floor%')
+                ->pluck('id')
+                ->toArray();
+            
+            if (!empty($services)) {
+                return $services;
             }
         }
 
-        // Fallback: if no matches, try common keywords
+        // Handle common patterns
+        $patterns = [
+            'photo' => ['photo', 'picture', 'pics', 'images'],
+            'video' => ['video', 'walkthrough', 'tour'],
+            'drone' => ['drone', 'aerial', 'fly'],
+            'floor' => ['floor', 'floorplan', 'floor plan', 'layout'],
+            'iguide' => ['iguide', 'i-guide', 'matterport', '3d', 'virtual tour'],
+        ];
+
+        foreach ($patterns as $serviceType => $keywords) {
+            foreach ($keywords as $keyword) {
+                if (str_contains($t, $keyword)) {
+                    $service = Service::where('name', 'like', "%{$serviceType}%")->first();
+                    if ($service && !in_array($service->id, $serviceIds)) {
+                        $serviceIds[] = $service->id;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Handle "photos only" - just photos
+        if (str_contains($t, 'only') && str_contains($t, 'photo')) {
+            $photoService = Service::where('name', 'like', '%photo%')->first();
+            return $photoService ? [$photoService->id] : [];
+        }
+
+        // Try exact name matching if nothing found
         if (empty($serviceIds)) {
-            if (str_contains($t, 'photo')) {
-                $photoService = Service::where('name', 'like', '%photo%')->first();
-                if ($photoService) $serviceIds[] = $photoService->id;
-            }
-            if (str_contains($t, 'video')) {
-                $videoService = Service::where('name', 'like', '%video%')->first();
-                if ($videoService) $serviceIds[] = $videoService->id;
-            }
-            if (str_contains($t, 'drone')) {
-                $droneService = Service::where('name', 'like', '%drone%')->first();
-                if ($droneService) $serviceIds[] = $droneService->id;
+            $services = Service::all(['id', 'name']);
+            foreach ($services as $service) {
+                $serviceName = strtolower($service->name);
+                if (str_contains($t, $serviceName) || str_contains($serviceName, $t)) {
+                    $serviceIds[] = $service->id;
+                }
             }
         }
 
-        return $serviceIds ?: [Service::first()?->id ?? 1]; // Default to first service if none found
+        // Default to photo service if nothing matched
+        if (empty($serviceIds)) {
+            $photoService = Service::where('name', 'like', '%photo%')->first();
+            if ($photoService) {
+                $serviceIds[] = $photoService->id;
+            } else {
+                $firstService = Service::first();
+                if ($firstService) {
+                    $serviceIds[] = $firstService->id;
+                }
+            }
+        }
+
+        return array_unique($serviceIds);
     }
 
     protected function formatPropertyLabel(array $data): string
@@ -608,23 +702,78 @@ class BookShootFlow
 
     protected function parseDateFromMessage(string $message): ?string
     {
-        $messageLower = strtolower($message);
+        $messageLower = strtolower(trim($message));
         
-        if ($messageLower === 'tomorrow') {
+        // Handle compound phrases like "tomorrow morning"
+        if (str_contains($messageLower, 'tomorrow')) {
             return now()->addDay()->format('Y-m-d');
-        } elseif ($messageLower === 'this weekend' || $messageLower === 'weekend') {
-            $nextSaturday = now()->next(6);
-            return $nextSaturday->format('Y-m-d');
-        } elseif ($messageLower === 'next week') {
-            return now()->addWeek()->format('Y-m-d');
-        } elseif (preg_match('/(\d{4}-\d{2}-\d{2})/', $message, $matches)) {
+        }
+        if (str_contains($messageLower, 'today')) {
+            return now()->format('Y-m-d');
+        }
+        if ($messageLower === 'this weekend' || $messageLower === 'weekend' || str_contains($messageLower, 'saturday')) {
+            return now()->next(\Carbon\Carbon::SATURDAY)->format('Y-m-d');
+        }
+        if (str_contains($messageLower, 'sunday')) {
+            return now()->next(\Carbon\Carbon::SUNDAY)->format('Y-m-d');
+        }
+        if ($messageLower === 'this week' || $messageLower === 'week') {
+            // Return next available weekday (tomorrow if weekday, else Monday)
+            $next = now()->addDay();
+            if ($next->isWeekend()) {
+                $next = now()->next(\Carbon\Carbon::MONDAY);
+            }
+            return $next->format('Y-m-d');
+        }
+        if ($messageLower === 'next week') {
+            return now()->addWeek()->startOfWeek()->format('Y-m-d');
+        }
+        if (str_contains($messageLower, 'next available') || str_contains($messageLower, 'asap') || str_contains($messageLower, 'soon')) {
+            return now()->addDay()->format('Y-m-d');
+        }
+        
+        // Try ISO format: YYYY-MM-DD
+        if (preg_match('/(\d{4}-\d{2}-\d{2})/', $message, $matches)) {
             return $matches[1];
-        } elseif (preg_match('/(\d{1,2}\/\d{1,2}\/\d{4})/', $message, $matches)) {
+        }
+        
+        // Try US format: MM/DD/YYYY
+        if (preg_match('/(\d{1,2}\/\d{1,2}\/\d{4})/', $message, $matches)) {
             try {
                 return \Carbon\Carbon::createFromFormat('m/d/Y', $matches[1])->format('Y-m-d');
             } catch (\Exception $e) {
                 return null;
             }
+        }
+        
+        // Try parsing natural language dates like "January 15" or "Jan 15th"
+        try {
+            $parsed = \Carbon\Carbon::parse($message);
+            if ($parsed->isFuture() || $parsed->isToday()) {
+                return $parsed->format('Y-m-d');
+            }
+        } catch (\Exception $e) {
+            // Not parseable
+        }
+        
+        return null;
+    }
+
+    /**
+     * Extract time preference from message like "tomorrow morning"
+     */
+    protected function parseTimeFromMessage(string $message): ?string
+    {
+        $messageLower = strtolower($message);
+        
+        if (str_contains($messageLower, 'morning')) {
+            return 'Morning';
+        }
+        if (str_contains($messageLower, 'afternoon')) {
+            return 'Afternoon';
+        }
+        if (str_contains($messageLower, 'evening') || str_contains($messageLower, 'golden hour')) {
+            return 'Golden hour';
         }
         
         return null;

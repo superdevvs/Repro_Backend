@@ -85,7 +85,6 @@ class PhotographerAvailabilityService
                 ShootWorkflowService::STATUS_SCHEDULED,
                 ShootWorkflowService::STATUS_IN_PROGRESS,
                 ShootWorkflowService::STATUS_EDITING,
-                ShootWorkflowService::STATUS_READY_FOR_REVIEW,
             ])
             ->whereNotNull('scheduled_at')
             ->get();
@@ -118,7 +117,6 @@ class PhotographerAvailabilityService
                 ShootWorkflowService::STATUS_SCHEDULED,
                 ShootWorkflowService::STATUS_IN_PROGRESS,
                 ShootWorkflowService::STATUS_EDITING,
-                ShootWorkflowService::STATUS_READY_FOR_REVIEW,
             ])
             ->whereNotNull('scheduled_at')
             ->orderBy('scheduled_at')
@@ -273,7 +271,6 @@ class PhotographerAvailabilityService
                 ShootWorkflowService::STATUS_SCHEDULED,
                 ShootWorkflowService::STATUS_IN_PROGRESS,
                 ShootWorkflowService::STATUS_EDITING,
-                ShootWorkflowService::STATUS_READY_FOR_REVIEW,
             ])
             ->when($excludeShootId, function ($query) use ($excludeShootId) {
                 $query->where('id', '!=', $excludeShootId);

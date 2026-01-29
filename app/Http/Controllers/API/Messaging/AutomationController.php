@@ -6,8 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Models\AutomationRule;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\TemplateRenderer;
+use App\Services\Messaging\TemplateVariableResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
 class AutomationController extends Controller
@@ -98,11 +100,22 @@ class AutomationController extends Controller
             return response()->json(['error' => 'Automation has no template'], 400);
         }
 
+        $resolver = app(TemplateVariableResolver::class);
+        $variables = $resolver->resolve($data['test_context'] ?? []);
+
         // Render template with test context
         $rendered = $this->templateRenderer->render(
             $automation->template,
-            $data['test_context'] ?? []
+            $variables
         );
+
+        if (!empty($rendered['missing'])) {
+            Log::warning('Automation test email missing template variables', [
+                'automation_id' => $automation->id,
+                'template_id' => $automation->template_id,
+                'missing' => $rendered['missing'],
+            ]);
+        }
 
         // Send test email
         $messagingService = app(\App\Services\Messaging\MessagingService::class);
@@ -138,17 +151,29 @@ class AutomationController extends Controller
         $triggerTypes = [
             'ACCOUNT_CREATED',
             'ACCOUNT_VERIFIED',
+            'PASSWORD_RESET',
+            'TERMS_ACCEPTED',
             'SHOOT_BOOKED',
             'SHOOT_SCHEDULED',
+            'SHOOT_UPDATED',
             'SHOOT_REMINDER',
             'SHOOT_COMPLETED',
+            'SHOOT_CANCELED',
+            'SHOOT_REMOVED',
             'PAYMENT_COMPLETED',
+            'PAYMENT_FAILED',
+            'PAYMENT_REFUNDED',
+            'INVOICE_DUE',
+            'INVOICE_OVERDUE',
             'INVOICE_SUMMARY',
+            'INVOICE_PAID',
             'WEEKLY_PHOTOGRAPHER_INVOICE',
             'WEEKLY_REP_INVOICE',
             'WEEKLY_SALES_REPORT',
             'WEEKLY_AUTOMATED_INVOICING',
             'PHOTO_UPLOADED',
+            'MEDIA_UPLOAD_COMPLETE',
+            'PHOTOGRAPHER_ASSIGNED',
         ];
 
         return $request->validate([

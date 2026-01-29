@@ -30,18 +30,6 @@ class InvoiceItem extends Model
         'total_amount' => 'decimal:2',
         'recorded_at' => 'datetime',
         'meta' => 'array',
-    protected $fillable = [
-        'invoice_id',
-        'description',
-        'quantity',
-        'unit_price',
-        'total',
-    ];
-
-    protected $casts = [
-        'quantity' => 'integer',
-        'unit_price' => 'decimal:2',
-        'total' => 'decimal:2',
     ];
 
     public function invoice()

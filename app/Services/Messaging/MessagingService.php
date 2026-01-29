@@ -2,6 +2,8 @@
 
 namespace App\Services\Messaging;
 
+use App\Events\EmailMessageReceived;
+use App\Events\EmailMessageSent;
 use App\Events\SmsMessageReceived;
 use App\Events\SmsMessageSent;
 use App\Events\SmsThreadUpdated;
@@ -16,6 +18,7 @@ use App\Services\Messaging\Contracts\EmailProviderInterface;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Illuminate\Support\Str;
 
@@ -27,6 +30,7 @@ class MessagingService
         private readonly Providers\GoogleOAuthProvider $googleOAuthProvider,
         private readonly Providers\MailchimpProvider $mailchimpProvider,
         private readonly Providers\MightyCallSmsProvider $mightyCallProvider,
+        private readonly Providers\CakemailProvider $cakemailProvider,
     ) {
     }
 
@@ -70,6 +74,25 @@ class MessagingService
             'EMAIL',
             status: 'SCHEDULED'
         );
+    }
+
+    /**
+     * Store an internal-only email message (no provider send).
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function storeInternalEmail(array $payload, string $direction = 'INBOUND'): Message
+    {
+        $message = $this->storeMessageRecord(
+            $payload,
+            null,
+            'EMAIL',
+            direction: $direction,
+            status: 'SENT',
+            providerOverride: 'INTERNAL'
+        );
+
+        return $message->fresh();
     }
 
     /**
@@ -166,14 +189,24 @@ class MessagingService
             'provider' => $providerOverride ?? $channel?->provider,
             'from_address' => $payload['from'] ?? $channel?->from_email,
             'to_address' => $payload['to'],
+            'reply_to_email' => $payload['reply_to'] ?? null,
             'subject' => $payload['subject'] ?? null,
             'body_text' => $payload['body_text'] ?? null,
             'body_html' => $payload['body_html'] ?? null,
+            'attachments_json' => $payload['attachments_json'] ?? null,
             'status' => $status,
+            'send_source' => $payload['send_source'] ?? null,
+            'tags_json' => $payload['tags_json'] ?? null,
             'scheduled_at' => $payload['scheduled_at'] ?? null,
             'created_by' => $payload['user_id'] ?? null,
+            'sender_user_id' => $payload['sender_user_id'] ?? null,
+            'sender_account_id' => $payload['sender_account_id'] ?? null,
+            'sender_role' => $payload['sender_role'] ?? null,
+            'sender_display_name' => $payload['sender_display_name'] ?? null,
+            'template_id' => $payload['template_id'] ?? null,
             'related_shoot_id' => $payload['related_shoot_id'] ?? null,
             'related_account_id' => $payload['related_account_id'] ?? null,
+            'related_invoice_id' => $payload['related_invoice_id'] ?? null,
             'thread_id' => $thread->id,
             'message_channel_id' => $channel?->id,
         ]);
@@ -190,6 +223,17 @@ class MessagingService
             }
 
             SmsThreadUpdated::dispatch($thread);
+        }
+
+        // Dispatch email events for real-time notifications
+        if ($channelType === 'EMAIL') {
+            $message->loadMissing(['channelConfig', 'shoot', 'creator']);
+
+            if ($direction === 'OUTBOUND') {
+                EmailMessageSent::dispatch($message);
+            } else {
+                EmailMessageReceived::dispatch($message);
+            }
         }
 
         return $message;
@@ -230,7 +274,7 @@ class MessagingService
                 ->all();
         }
 
-        $roles = ['admin', 'superadmin', 'salesRep', 'sales_rep'];
+        $roles = ['admin', 'superadmin', 'salesRep'];
 
         $userIds = User::query()
             ->whereIn('role', $roles)
@@ -253,8 +297,27 @@ class MessagingService
             [
                 'name' => $payload['contact_name'] ?? 'Unknown',
                 'type' => $payload['contact_type'] ?? 'other',
+                'user_id' => $payload['contact_user_id'] ?? null,
+                'account_id' => $payload['contact_account_id'] ?? null,
             ]
         );
+
+        $updates = [];
+        if (!empty($payload['contact_name']) && $contact->name !== $payload['contact_name']) {
+            $updates['name'] = $payload['contact_name'];
+        }
+        if (!empty($payload['contact_type']) && $contact->type !== $payload['contact_type']) {
+            $updates['type'] = $payload['contact_type'];
+        }
+        if (!empty($payload['contact_user_id']) && $contact->user_id !== $payload['contact_user_id']) {
+            $updates['user_id'] = $payload['contact_user_id'];
+        }
+        if (!empty($payload['contact_account_id']) && $contact->account_id !== $payload['contact_account_id']) {
+            $updates['account_id'] = $payload['contact_account_id'];
+        }
+        if ($updates) {
+            $contact->fill($updates)->save();
+        }
 
         return $contact;
     }
@@ -311,8 +374,17 @@ class MessagingService
         return match ($channel->provider) {
             'GOOGLE_OAUTH' => $this->googleOAuthProvider,
             'MAILCHIMP' => $this->mailchimpProvider,
+            'CAKEMAIL' => $this->cakemailProvider,
             default => $this->localSmtpProvider,
         };
+    }
+
+    /**
+     * Get the Cakemail provider instance for direct access
+     */
+    public function getCakemailProvider(): Providers\CakemailProvider
+    {
+        return $this->cakemailProvider;
     }
 
     public function dispatchScheduledMessage(Message $message): Message

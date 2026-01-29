@@ -7,6 +7,7 @@ use App\Models\Shoot; // Your Shoot model
 use App\Models\Payment;
 use App\Models\User;
 use App\Services\MailService;
+use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Support\Facades\DB;
 use Square\SquareClient;
@@ -26,14 +27,16 @@ class PaymentController extends Controller
     protected $squareClient;
     protected $mailService;
     protected $activityLogger;
+    protected $automationService;
 
     /**
      * Constructor to initialize the Square Client.
      */
-    public function __construct(MailService $mailService, ShootActivityLogger $activityLogger)
+    public function __construct(MailService $mailService, ShootActivityLogger $activityLogger, AutomationService $automationService)
     {
         $this->mailService = $mailService;
         $this->activityLogger = $activityLogger;
+        $this->automationService = $automationService;
         // Don't initialize Square client in constructor - lazy load it when needed
     }
 
@@ -323,6 +326,13 @@ class PaymentController extends Controller
                         ],
                         null
                     );
+
+                    $context = $this->automationService->buildShootContext($shoot);
+                    $context['payment'] = $payment;
+                    $context['payment_id'] = $payment->id;
+                    $context['payment_status'] = $newPaymentStatus;
+                    $context['amount_paid'] = $totalPaid;
+                    $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
                 }
 
                 // Dispatch payment confirmation email job (async)
@@ -396,6 +406,11 @@ class PaymentController extends Controller
                             ],
                             null
                         );
+
+                        $context = $this->automationService->buildShootContext($shoot);
+                        $context['payment_id'] = $paymentId;
+                        $context['failure_reason'] = $paymentData['failure_reason'] ?? null;
+                        $this->automationService->handleEvent('PAYMENT_FAILED', $context);
                     }
                 }
             }
@@ -531,6 +546,15 @@ class PaymentController extends Controller
                             auth()->user()
                         );
 
+                        if ($newPaymentStatus === 'paid' && $oldPaymentStatus !== 'paid') {
+                            $context = $this->automationService->buildShootContext($shoot);
+                            $context['payment'] = $paymentRecord;
+                            $context['payment_id'] = $paymentRecord->id;
+                            $context['payment_status'] = $newPaymentStatus;
+                            $context['amount_paid'] = $totalPaid;
+                            $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
+                        }
+
                         return response()->json([
                             'status' => 'success',
                             'payment' => $payment,
@@ -649,6 +673,13 @@ class PaymentController extends Controller
                         ],
                         auth()->user()
                     );
+
+                    $context = $this->automationService->buildShootContext($shoot);
+                    $context['payment'] = $payment;
+                    $context['payment_id'] = $payment->id;
+                    $context['refund_amount'] = $request->input('amount');
+                    $context['payment_status'] = $newStatus;
+                    $this->automationService->handleEvent('PAYMENT_REFUNDED', $context);
                 }
                 
                 Log::info("Refund processed for payment ID: {$paymentId}");
