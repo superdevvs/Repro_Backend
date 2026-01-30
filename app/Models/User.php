@@ -31,6 +31,7 @@ class User extends Authenticatable
         'license_number',
         'company_notes',
         'role',
+        'secondary_roles',
         'avatar',
         'bio',
         'account_status',
@@ -63,6 +64,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'metadata' => 'array',
+            'secondary_roles' => 'array',
         ];
     }
 

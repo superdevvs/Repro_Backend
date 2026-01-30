@@ -459,6 +459,8 @@ class UserController extends Controller
 
         $validated = $request->validate([
             'role' => 'required|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
+            'secondary_roles' => 'nullable|array',
+            'secondary_roles.*' => 'in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
         ]);
 
         $user = User::findOrFail($id);
@@ -466,8 +468,10 @@ class UserController extends Controller
             return $response;
         }
         $oldRole = $user->role;
+        $oldSecondaryRoles = $user->secondary_roles ?? [];
         $user->role = $validated['role'];
-        $changed = $user->isDirty('role');
+        $user->secondary_roles = $validated['secondary_roles'] ?? [];
+        $changed = $user->isDirty('role') || $user->isDirty('secondary_roles');
         $user->save();
 
         if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
@@ -475,11 +479,13 @@ class UserController extends Controller
         }
 
         return response()->json([
-            'message' => $changed ? 'Role updated successfully.' : 'Role unchanged.',
+            'message' => $changed ? 'Roles updated successfully.' : 'Roles unchanged.',
             'changed' => $changed,
             'user' => $user,
             'old_role' => $oldRole,
             'new_role' => $user->role,
+            'old_secondary_roles' => $oldSecondaryRoles,
+            'new_secondary_roles' => $user->secondary_roles,
         ]);
     }
 
