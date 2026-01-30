@@ -9,6 +9,7 @@ use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 
 class UserController extends Controller
@@ -172,6 +173,13 @@ class UserController extends Controller
             unset($validated['phone_number']);
         }
 
+        // Ensure username exists even if frontend omits it
+        if (empty($validated['username'] ?? null)) {
+            $validated['username'] = $this->generateUniqueUsername(
+                $validated['email'] ?? ($validated['name'] ?? 'user')
+            );
+        }
+
         // Handle avatar upload
         if ($request->hasFile('avatar')) {
             $validated['avatar'] = $request->file('avatar')->store('avatars', 'public');
@@ -244,22 +252,22 @@ class UserController extends Controller
         $clients = User::where('role', 'client')->get()->map(function ($client) {
             $clientData = $client->toArray();
             $rep = null;
-            
+
             // First, check if client has rep stored in metadata
             $metadata = $client->metadata ?? [];
             if (is_array($metadata) && !empty($metadata)) {
                 // Check various possible field names for rep ID
-                $repId = $metadata['accountRepId'] 
-                    ?? $metadata['account_rep_id'] 
+                $repId = $metadata['accountRepId']
+                    ?? $metadata['account_rep_id']
                     ?? $metadata['repId']
                     ?? $metadata['rep_id']
                     ?? null;
-                
+
                 if ($repId) {
                     // Convert to integer if it's a string
                     $repId = is_numeric($repId) ? (int)$repId : $repId;
                     $rep = User::find($repId);
-                    
+
                     // Log for debugging
                     \Log::info('Client rep found in metadata', [
                         'client_id' => $client->id,
@@ -270,19 +278,19 @@ class UserController extends Controller
                     ]);
                 }
             }
-            
+
             // If no rep from metadata, check the most recent shoot for this client
             if (!$rep) {
                 $mostRecentShoot = \App\Models\Shoot::where('client_id', $client->id)
                     ->whereNotNull('rep_id')
                     ->orderBy('created_at', 'desc')
                     ->first();
-                
+
                 if ($mostRecentShoot && $mostRecentShoot->rep_id) {
                     $rep = User::find($mostRecentShoot->rep_id);
                 }
             }
-            
+
             // Add rep information if found
             if ($rep) {
                 $clientData['rep'] = [
@@ -291,7 +299,7 @@ class UserController extends Controller
                     'email' => $rep->email,
                 ];
             }
-            
+
             return $clientData;
         });
 
@@ -821,6 +829,27 @@ class UserController extends Controller
         }
 
         return $payload;
+    }
+
+    private function generateUniqueUsername(?string $seed): string
+    {
+        $base = Str::slug($seed ?? 'user', '_');
+        if (empty($base)) {
+            $base = 'user';
+        }
+
+        $username = $base;
+        $counter = 1;
+        while (User::where('username', $username)->exists()) {
+            $username = $base . '_' . $counter;
+            $counter++;
+            if ($counter > 50) {
+                $username = $base . '_' . Str::lower(Str::random(5));
+                break;
+            }
+        }
+
+        return $username;
     }
 
     /**
