@@ -87,6 +87,8 @@ class ShootWorkflowService
             $shoot->workflow_status = self::STATUS_SCHEDULED;
             $shoot->status = self::STATUS_SCHEDULED;
             $shoot->scheduled_at = $scheduledAt;
+            $shoot->scheduled_date = $scheduledAt->format('Y-m-d');
+            $shoot->time = $scheduledAt->format('H:i');
             $shoot->updated_by = $user?->id ?? auth()->id();
             $shoot->save();
 

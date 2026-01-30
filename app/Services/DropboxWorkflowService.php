@@ -276,6 +276,22 @@ class DropboxWorkflowService
                 // Extract image metadata (dimensions, EXIF)
                 $metadata = $this->extractImageMetadata($file);
                 
+                // Process image for thumbnails BEFORE creating record (while file is still available)
+                $thumbnailPath = null;
+                $webPath = null;
+                $placeholderPath = null;
+                
+                if ($this->shouldProcessImage($file)) {
+                    $tempPath = $file->getRealPath();
+                    if ($tempPath && file_exists($tempPath)) {
+                        $imageService = app(\App\Services\ImageProcessingService::class);
+                        $processedPaths = $imageService->processImageFromPath($shoot->id, $file->getClientOriginalName(), $tempPath);
+                        $thumbnailPath = $processedPaths['thumbnail'] ?? null;
+                        $webPath = $processedPaths['web'] ?? null;
+                        $placeholderPath = $processedPaths['placeholder'] ?? null;
+                    }
+                }
+                
                 // Store file record in database
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,
@@ -290,11 +306,11 @@ class DropboxWorkflowService
                     'dropbox_path' => $dropboxPath,
                     'dropbox_file_id' => $fileData['id'] ?? null,
                     'metadata' => !empty($metadata) ? $metadata : null,
+                    'thumbnail_path' => $thumbnailPath,
+                    'web_path' => $webPath,
+                    'placeholder_path' => $placeholderPath,
+                    'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
                 ]);
-
-                if ($this->shouldProcessImage($file)) {
-                    ProcessImageJob::dispatch($shootFile);
-                }
 
                 // Update shoot workflow status if this is the first photo upload
                 if ($shoot->workflow_status === Shoot::STATUS_SCHEDULED) {
@@ -387,7 +403,7 @@ class DropboxWorkflowService
         ]);
 
         if ($this->shouldProcessImage($file)) {
-            ProcessImageJob::dispatch($shootFile);
+            ProcessImageJob::dispatchSync($shootFile);
         }
 
         // When photos are uploaded, auto-transition from scheduled to uploaded
@@ -914,6 +930,22 @@ class DropboxWorkflowService
                 // Extract image metadata (dimensions, EXIF)
                 $metadata = $this->extractImageMetadata($file);
                 
+                // Process image for thumbnails BEFORE creating record (while file is still available)
+                $thumbnailPath = null;
+                $webPath = null;
+                $placeholderPath = null;
+                
+                if ($this->shouldProcessImage($file)) {
+                    $tempPath = $file->getRealPath();
+                    if ($tempPath && file_exists($tempPath)) {
+                        $imageService = app(\App\Services\ImageProcessingService::class);
+                        $processedPaths = $imageService->processImageFromPath($shoot->id, $file->getClientOriginalName(), $tempPath);
+                        $thumbnailPath = $processedPaths['thumbnail'] ?? null;
+                        $webPath = $processedPaths['web'] ?? null;
+                        $placeholderPath = $processedPaths['placeholder'] ?? null;
+                    }
+                }
+                
                 // Store file record in database
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,
@@ -928,11 +960,11 @@ class DropboxWorkflowService
                     'dropbox_path' => $dropboxPath,
                     'dropbox_file_id' => $fileData['id'] ?? null,
                     'metadata' => !empty($metadata) ? $metadata : null,
+                    'thumbnail_path' => $thumbnailPath,
+                    'web_path' => $webPath,
+                    'placeholder_path' => $placeholderPath,
+                    'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
                 ]);
-
-                if ($this->shouldProcessImage($file)) {
-                    ProcessImageJob::dispatch($shootFile);
-                }
 
                 // Update shoot workflow status if needed
                 if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOADED, Shoot::WORKFLOW_EDITING])) {
@@ -1030,7 +1062,7 @@ class DropboxWorkflowService
                 ]);
 
                 if ($this->shouldProcessFilename($filename, $mimeType)) {
-                    ProcessImageJob::dispatch($shootFile);
+                    ProcessImageJob::dispatchSync($shootFile);
                 }
 
                 // Update shoot workflow status if this is the first photo upload
@@ -1150,6 +1182,22 @@ class DropboxWorkflowService
                 // Extract image metadata (dimensions, EXIF)
                 $metadata = $this->extractImageMetadata($file);
                 
+                // Process image for thumbnails BEFORE creating record (while file is still available)
+                $thumbnailPath = null;
+                $webPath = null;
+                $placeholderPath = null;
+                
+                if ($this->shouldProcessImage($file)) {
+                    $tempPath = $file->getRealPath();
+                    if ($tempPath && file_exists($tempPath)) {
+                        $imageService = app(\App\Services\ImageProcessingService::class);
+                        $processedPaths = $imageService->processImageFromPath($shoot->id, $file->getClientOriginalName(), $tempPath);
+                        $thumbnailPath = $processedPaths['thumbnail'] ?? null;
+                        $webPath = $processedPaths['web'] ?? null;
+                        $placeholderPath = $processedPaths['placeholder'] ?? null;
+                    }
+                }
+                
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,
                     'filename' => $file->getClientOriginalName(),
@@ -1163,11 +1211,11 @@ class DropboxWorkflowService
                     'dropbox_path' => $dropboxPath,
                     'dropbox_file_id' => $fileData['id'] ?? null,
                     'metadata' => !empty($metadata) ? $metadata : null,
+                    'thumbnail_path' => $thumbnailPath,
+                    'web_path' => $webPath,
+                    'placeholder_path' => $placeholderPath,
+                    'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
                 ]);
-
-                if ($this->shouldProcessImage($file)) {
-                    ProcessImageJob::dispatch($shootFile);
-                }
 
                 // Update extra photo count
                 $shoot->extra_photo_count = $shoot->files()

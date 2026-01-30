@@ -34,6 +34,60 @@ class ImageProcessingService
     }
     
     /**
+     * Process an image directly from a file path and return generated paths
+     * Used during upload when the temp file is still available
+     */
+    public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
+    {
+        try {
+            $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+            
+            if (!file_exists($sourcePath)) {
+                Log::error("processImageFromPath: File not found: {$sourcePath}");
+                return [];
+            }
+
+            // Determine if it's a RAW file
+            $isRaw = in_array($extension, self::RAW_FORMATS);
+            
+            // Extract preview from RAW or read regular image
+            $image = $this->extractImagePreview($sourcePath, $isRaw);
+            
+            if (!$image) {
+                Log::error("processImageFromPath: Failed to process image: {$fileName}");
+                return [];
+            }
+            
+            // Generate different sizes
+            $generatedPaths = [];
+            foreach (self::SIZES as $sizeName => $config) {
+                $generatedPath = $this->generateSize($image, $shootId, $fileName, $sizeName, $config);
+                if ($generatedPath) {
+                    $generatedPaths[$sizeName] = $generatedPath;
+                }
+            }
+            
+            // Clean up
+            if (is_resource($image)) {
+                imagedestroy($image);
+            }
+            
+            Log::info("processImageFromPath: Successfully processed image: {$fileName}", [
+                'paths' => $generatedPaths
+            ]);
+            
+            return $generatedPaths;
+            
+        } catch (Exception $e) {
+            Log::error("processImageFromPath: Error processing image: " . $e->getMessage(), [
+                'fileName' => $fileName,
+                'trace' => $e->getTraceAsString()
+            ]);
+            return [];
+        }
+    }
+    
+    /**
      * Process an uploaded image file
      */
     public function processImage(ShootFile $shootFile, ?string $sourcePath = null): bool
