@@ -5034,6 +5034,16 @@ class ShootController extends Controller
                         ?? $file->placeholder_path
                 );
                 $largeUrl = $mediumUrl;
+
+                // Fallback: if thumbnail is missing, use medium/original to keep previews visible
+                if (!$thumbUrl) {
+                    $thumbUrl = $mediumUrl ?? $originalUrl;
+                }
+
+                if (!$mediumUrl) {
+                    $mediumUrl = $thumbUrl ?? $originalUrl;
+                    $largeUrl = $mediumUrl;
+                }
             }
 
             // Build response
