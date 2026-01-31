@@ -709,6 +709,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
 // Public read-only endpoints for client-facing pages
 Route::prefix('public/shoots')->group(function () {
+    // Address-based routes (address, city, state, zip query params)
+    Route::get('branded', [ShootController::class, 'publicBranded']);
+    Route::get('mls', [ShootController::class, 'publicMls']);
+    Route::get('g-mls', [ShootController::class, 'publicGenericMls']);
+
     Route::get('{shoot}/branded', [ShootController::class, 'publicBranded']);
     Route::get('{shoot}/mls', [ShootController::class, 'publicMls']);
     Route::get('{shoot}/g-mls', [ShootController::class, 'publicGenericMls']);

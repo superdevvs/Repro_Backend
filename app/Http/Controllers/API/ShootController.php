@@ -4107,9 +4107,41 @@ class ShootController extends Controller
         ];
     }
 
-    public function publicBranded($shootId)
+    private function resolvePublicShoot(Request $request, $shootId = null): ?Shoot
     {
-        $shoot = \App\Models\Shoot::with(['files','client'])->findOrFail($shootId);
+        if ($shootId) {
+            return Shoot::with(['files', 'client'])->find($shootId);
+        }
+
+        $address = trim((string) $request->query('address', ''));
+        $city = trim((string) $request->query('city', ''));
+        $state = trim((string) $request->query('state', ''));
+        $zip = trim((string) $request->query('zip', ''));
+
+        if ($address === '' || $city === '' || $state === '') {
+            return null;
+        }
+
+        $query = Shoot::with(['files', 'client'])
+            ->whereRaw('LOWER(address) = ?', [strtolower($address)])
+            ->whereRaw('LOWER(city) = ?', [strtolower($city)])
+            ->whereRaw('LOWER(state) = ?', [strtolower($state)]);
+
+        if ($zip !== '') {
+            $query->where('zip', $zip);
+        }
+
+        return $query->orderByDesc('scheduled_date')
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    public function publicBranded(Request $request, $shootId = null)
+    {
+        $shoot = $this->resolvePublicShoot($request, $shootId);
+        if (!$shoot) {
+            return response()->json(['message' => 'Shoot not found'], 404);
+        }
         $assets = $this->buildPublicAssets($shoot);
         $assets['type'] = 'branded';
         // Include integration data
@@ -4132,9 +4164,12 @@ class ShootController extends Controller
         return response()->json($assets);
     }
 
-    public function publicMls($shootId)
+    public function publicMls(Request $request, $shootId = null)
     {
-        $shoot = \App\Models\Shoot::with(['files','client'])->findOrFail($shootId);
+        $shoot = $this->resolvePublicShoot($request, $shootId);
+        if (!$shoot) {
+            return response()->json(['message' => 'Shoot not found'], 404);
+        }
         $assets = $this->buildPublicAssets($shoot);
         $assets['type'] = 'mls';
         // Include integration data
@@ -4157,9 +4192,12 @@ class ShootController extends Controller
         return response()->json($assets);
     }
 
-    public function publicGenericMls($shootId)
+    public function publicGenericMls(Request $request, $shootId = null)
     {
-        $shoot = \App\Models\Shoot::with(['files','client'])->findOrFail($shootId);
+        $shoot = $this->resolvePublicShoot($request, $shootId);
+        if (!$shoot) {
+            return response()->json(['message' => 'Shoot not found'], 404);
+        }
         $assets = $this->buildPublicAssets($shoot);
         $assets['type'] = 'generic-mls';
         // Include integration data (no branding/address for generic MLS)
