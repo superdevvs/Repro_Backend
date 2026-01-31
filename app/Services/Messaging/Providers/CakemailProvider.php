@@ -62,8 +62,8 @@ class CakemailProvider implements EmailProviderInterface
             ],
         ];
 
-        // Only include list_id for marketing emails (transactional sends should avoid list footer)
-        if ($listId && $contentType === 'marketing') {
+        // Always include list_id when available (Cakemail API requires it)
+        if ($listId) {
             $emailPayload['list_id'] = (int) $listId;
         }
 
