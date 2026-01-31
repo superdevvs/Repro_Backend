@@ -7,24 +7,32 @@ return [
     | Default Mailer
     |--------------------------------------------------------------------------
     |
-    | CakeMail is the only mail provider for this application.
-    | All emails are sent through CakeMail.
+    | Choose the mailer via MAIL_MAILER. Defaults to CakeMail.
     |
     */
 
-    'default' => 'cakemail',
+    'default' => env('MAIL_MAILER', 'cakemail'),
 
     /*
     |--------------------------------------------------------------------------
-    | CakeMail Configuration
+    | Mailer Configuration
     |--------------------------------------------------------------------------
     |
-    | CakeMail mailer configuration. This is the only mailer used by the
-    | application. Configure credentials in .env file.
+    | Configure mailers in .env. CakeMail remains the default provider.
     |
     */
 
     'mailers' => [
+
+        'smtp' => [
+            'transport' => 'smtp',
+            'host' => env('MAIL_HOST', 'smtp.mailgun.org'),
+            'port' => env('MAIL_PORT', 587),
+            'encryption' => env('MAIL_ENCRYPTION', 'tls'),
+            'username' => env('MAIL_USERNAME'),
+            'password' => env('MAIL_PASSWORD'),
+            'timeout' => null,
+        ],
 
         'cakemail' => [
             'transport' => 'smtp',

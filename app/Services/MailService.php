@@ -94,6 +94,7 @@ class MailService
     public function sendShootUpdatedEmail(User $user, Shoot $shoot): bool
     {
         try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             
             // Send to client

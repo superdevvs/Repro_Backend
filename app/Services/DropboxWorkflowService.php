@@ -317,7 +317,8 @@ class DropboxWorkflowService
                 }
 
                 // Update shoot workflow status if this is the first photo upload
-                if ($shoot->workflow_status === Shoot::STATUS_SCHEDULED) {
+                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+                if (in_array($currentStatus, [Shoot::STATUS_SCHEDULED, 'booked', 'raw_upload_pending'], true)) {
                     $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
 
                     $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
@@ -436,17 +437,42 @@ class DropboxWorkflowService
         }
 
         // When photos are uploaded, auto-transition from scheduled to uploaded
-        if ($stage === ShootFile::STAGE_TODO && $shoot->workflow_status === Shoot::STATUS_SCHEDULED) {
-            $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
+        if ($stage === ShootFile::STAGE_TODO) {
+            $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+            if (in_array($currentStatus, [Shoot::STATUS_SCHEDULED, 'booked', 'raw_upload_pending'], true)) {
+                $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
 
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-            $automationService = app(AutomationService::class);
-            $context = $automationService->buildShootContext($shoot);
-            if ($shoot->rep) {
-                $context['rep'] = $shoot->rep;
+                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+                $automationService = app(AutomationService::class);
+                $context = $automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $automationService->handleEvent('PHOTO_UPLOADED', $context);
+                $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
             }
-            $automationService->handleEvent('PHOTO_UPLOADED', $context);
-            $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
+        } elseif ($stage === ShootFile::STAGE_COMPLETED) {
+            // Edited files uploaded locally - mark shoot as delivered/ready
+            $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+            $deliveredStatuses = [
+                Shoot::STATUS_DELIVERED,
+                'ready',
+                'ready_for_client',
+                'admin_verified',
+                'workflow_completed',
+                'client_delivered',
+            ];
+            if (!in_array($currentStatus, $deliveredStatuses, true)) {
+                $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $userId);
+
+                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+                $automationService = app(AutomationService::class);
+                $context = $automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $automationService->handleEvent('SHOOT_COMPLETED', $context);
+            }
         }
 
         Log::info('Stored file locally as Dropbox fallback', [
@@ -999,9 +1025,26 @@ class DropboxWorkflowService
                     ProcessImageJob::dispatch($shootFile);
                 }
 
-                // Update shoot workflow status if needed
-                if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOADED, Shoot::WORKFLOW_EDITING])) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_EDITING_UPLOADED, $userId);
+                // Update shoot workflow status if edited files are uploaded (ready for client)
+                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+                $deliveredStatuses = [
+                    Shoot::STATUS_DELIVERED,
+                    'ready',
+                    'ready_for_client',
+                    'admin_verified',
+                    'workflow_completed',
+                    'client_delivered',
+                ];
+                if (!in_array($currentStatus, $deliveredStatuses, true)) {
+                    $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $userId);
+
+                    $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+                    $automationService = app(AutomationService::class);
+                    $context = $automationService->buildShootContext($shoot);
+                    if ($shoot->rep) {
+                        $context['rep'] = $shoot->rep;
+                    }
+                    $automationService->handleEvent('SHOOT_COMPLETED', $context);
                 }
 
                 Log::info("File uploaded directly to Dropbox Completed folder", [
@@ -1099,8 +1142,9 @@ class DropboxWorkflowService
                 }
 
                 // Update shoot workflow status if this is the first photo upload
-                if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOAD_PENDING])) {
-                    $shoot->updateWorkflowStatus(Shoot::WORKFLOW_RAW_UPLOADED, $userId);
+                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
+                if (in_array($currentStatus, [Shoot::STATUS_SCHEDULED, 'booked', 'raw_upload_pending'], true)) {
+                    $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
                 }
 
                 Log::info("File copied from Dropbox to ToDo folder", [

@@ -1402,7 +1402,7 @@ class ShootController extends Controller
 
             // 12b. Trigger booking automation for non-client requests
             if (!$treatAsClientRequest) {
-                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+                $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
                 $context = $this->automationService->buildShootContext($shoot);
                 if ($shoot->rep) {
                     $context['rep'] = $shoot->rep;
@@ -2469,6 +2469,10 @@ class ShootController extends Controller
         $originalScheduledDate = $shoot->scheduled_date?->toDateString();
         $originalTime = $shoot->time;
         $originalPhotographerId = $shoot->photographer_id;
+        $invoiceNeedsRefresh = false;
+        $paymentFieldsProvided = array_key_exists('base_quote', $validated)
+            || array_key_exists('tax_amount', $validated)
+            || array_key_exists('total_quote', $validated);
 
         if (array_key_exists('is_private_listing', $validated)) {
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
@@ -2523,12 +2527,9 @@ class ShootController extends Controller
         // Update services if provided
         if (array_key_exists('services', $validated) && is_array($validated['services'])) {
             $this->attachServices($shoot, $validated['services']);
+            $invoiceNeedsRefresh = true;
 
             // If payment fields not explicitly provided, recalculate from services
-            $paymentFieldsProvided = array_key_exists('base_quote', $validated)
-                || array_key_exists('tax_amount', $validated)
-                || array_key_exists('total_quote', $validated);
-
             if (!$paymentFieldsProvided) {
                 $serviceIds = collect($validated['services'])->pluck('id');
                 $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
@@ -2586,6 +2587,9 @@ class ShootController extends Controller
         if (array_key_exists('total_quote', $validated)) {
             $shoot->total_quote = $validated['total_quote'];
         }
+        if ($paymentFieldsProvided) {
+            $invoiceNeedsRefresh = true;
+        }
 
         // Update property details (all stored in property_details JSON column)
         $pd = $shoot->property_details ?? [];
@@ -2617,6 +2621,7 @@ class ShootController extends Controller
         
         if ($propertyDetailsUpdated) {
             $shoot->property_details = $pd;
+            $invoiceNeedsRefresh = true;
         }
 
         // Update tour_links if provided
@@ -2644,6 +2649,20 @@ class ShootController extends Controller
         }
 
         $shoot->save();
+
+        if ($invoiceNeedsRefresh) {
+            try {
+                $hasInvoice = Invoice::where('shoot_id', $shoot->id)->exists();
+                if ($hasInvoice) {
+                    $this->invoiceService->generateForShoot($shoot->fresh());
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to refresh invoice after shoot update', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         if ($previousPrivateListing !== (bool) ($shoot->is_private_listing ?? false)) {
             try {
@@ -2929,21 +2948,21 @@ class ShootController extends Controller
             $shoot = $this->refreshMediaCounters($shoot->fresh());
             $this->clearShootFilesCache($shoot);
 
-            // If admin/superadmin uploads edited files directly and shoot is not already delivered,
-            // move shoot to delivered status
-            if ($uploadType === 'edited' && $isAdmin && count($uploadedFiles) > 0) {
+            // If edited files are uploaded by admin/editor, move shoot to delivered/ready status
+            if ($uploadType === 'edited' && count($uploadedFiles) > 0 && $user && in_array($user->role, ['admin', 'superadmin', 'editor', 'editing_manager'], true)) {
                 $shoot->load('files');
                 $hasEditedFiles = $shoot->files()
                     ->whereIn('workflow_stage', ['completed', 'verified'])
                     ->exists();
                 
-                if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_DELIVERED, 'ready', 'ready_for_client', 'admin_verified'])) {
+                if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_DELIVERED, 'ready', 'ready_for_client', 'admin_verified'], true)) {
                     $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $user->id);
                     $shoot->save();
                     
-                    Log::info('Shoot moved to delivered after admin edited upload', [
+                    Log::info('Shoot moved to delivered after edited upload', [
                         'shoot_id' => $shoot->id,
                         'user_id' => $user->id,
+                        'user_role' => $user->role,
                         'uploaded_count' => count($uploadedFiles),
                     ]);
                 }
@@ -3032,7 +3051,7 @@ class ShootController extends Controller
             $this->dropboxService->moveToFinal($file, auth()->id());
             
             // Dispatch watermarking job if needed (for verified image files when payment not complete)
-            if (($file->media_type === 'image' || $file->media_type === 'raw') && $file->shouldBeWatermarked()) {
+            if (in_array($file->media_type, ['image', 'raw', 'edited'], true) && $file->shouldBeWatermarked()) {
                 \App\Jobs\GenerateWatermarkedImageJob::dispatch($file->fresh());
             }
             
@@ -3300,6 +3319,182 @@ class ShootController extends Controller
             'count' => $urls->count(),
             'urls' => $urls,
         ]);
+    }
+
+    /**
+     * Download selected files as a ZIP (used by ShootDetailsMediaTab)
+     */
+    public function downloadSelectedFiles(Request $request, Shoot $shoot)
+    {
+        $request->validate([
+            'file_ids' => 'nullable|array',
+            'file_ids.*' => 'integer',
+            'ids' => 'nullable|array',
+            'ids.*' => 'integer',
+            'size' => 'nullable|in:original,small',
+        ]);
+
+        $fileIds = $request->input('file_ids', $request->input('ids', []));
+        if (!is_array($fileIds) || count($fileIds) === 0) {
+            return response()->json(['error' => 'No file IDs provided'], 422);
+        }
+
+        $size = $request->input('size', 'original');
+        $files = $shoot->files()->whereIn('id', $fileIds)->get();
+
+        if ($files->isEmpty()) {
+            return response()->json(['error' => 'No files found for selected IDs'], 404);
+        }
+
+        $user = $request->user();
+        $paymentStatus = $shoot->payment_status;
+        if (!$paymentStatus || $paymentStatus === 'pending') {
+            $totalPaid = $shoot->total_paid ?? 0;
+            $totalQuote = $shoot->total_quote ?? 0;
+            $paymentStatus = $this->calculatePaymentStatus($totalPaid, $totalQuote);
+        }
+
+        $isClient = $user && $user->role === 'client';
+        $needsWatermark = $isClient && !$shoot->bypass_paywall && $paymentStatus !== 'paid';
+        $dropboxEnabled = $this->dropboxService->isEnabled();
+
+        $resolveLocalPath = function (?string $path): ?string {
+            if (!$path) {
+                return null;
+            }
+            if (preg_match('/^https?:\/\//i', $path)) {
+                return null;
+            }
+
+            $clean = ltrim($path, '/');
+            if (Str::startsWith($clean, 'storage/')) {
+                $clean = Str::after($clean, 'storage/');
+            }
+
+            if (Storage::disk('public')->exists($clean)) {
+                return Storage::disk('public')->path($clean);
+            }
+
+            if (Storage::disk('local')->exists($clean)) {
+                return Storage::disk('local')->path($clean);
+            }
+
+            $storagePath = storage_path('app/' . $clean);
+            if (file_exists($storagePath)) {
+                return $storagePath;
+            }
+
+            $publicPath = storage_path('app/public/' . $clean);
+            if (file_exists($publicPath)) {
+                return $publicPath;
+            }
+
+            return file_exists($path) ? $path : null;
+        };
+
+        $downloadFromDropboxPath = function (string $dropboxPath, string $filename): ?string {
+            try {
+                $tempPath = storage_path('app/temp/download-' . uniqid() . '-' . $filename);
+                if (!file_exists(dirname($tempPath))) {
+                    mkdir(dirname($tempPath), 0755, true);
+                }
+                $contents = $this->dropboxService->downloadFile($dropboxPath);
+                if ($contents) {
+                    file_put_contents($tempPath, $contents);
+                    return $tempPath;
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to download file from Dropbox for ZIP', [
+                    'dropbox_path' => $dropboxPath,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            return null;
+        };
+
+        $zipPath = storage_path('app/temp/shoot-' . $shoot->id . '-download-' . time() . '.zip');
+        if (!file_exists(dirname($zipPath))) {
+            mkdir(dirname($zipPath), 0755, true);
+        }
+
+        $zip = new \ZipArchive();
+        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            return response()->json(['error' => 'Failed to create ZIP file'], 500);
+        }
+
+        $addedFiles = 0;
+        $tempFiles = [];
+        $pendingWatermarks = [];
+
+        foreach ($files as $file) {
+            $downloadPath = null;
+
+            if ($needsWatermark) {
+                $downloadPath = $size === 'small'
+                    ? ($file->watermarked_web_path
+                        ?? $file->watermarked_thumbnail_path
+                        ?? $file->watermarked_placeholder_path)
+                    : ($file->watermarked_storage_path
+                        ?? $file->watermarked_web_path
+                        ?? $file->watermarked_thumbnail_path
+                        ?? $file->watermarked_placeholder_path);
+
+                if (!$downloadPath && $file->shouldBeWatermarked()) {
+                    \App\Jobs\GenerateWatermarkedImageJob::dispatch($file->fresh());
+                    $pendingWatermarks[] = $file->id;
+                    continue;
+                }
+            } else {
+                if ($size === 'small') {
+                    $downloadPath = $file->web_path
+                        ?? $file->thumbnail_path
+                        ?? $file->placeholder_path
+                        ?? $file->storage_path
+                        ?? $file->path
+                        ?? $file->dropbox_path;
+                } else {
+                    $downloadPath = $file->storage_path
+                        ?? $file->path
+                        ?? $file->dropbox_path
+                        ?? $file->web_path
+                        ?? $file->thumbnail_path;
+                }
+            }
+
+            $localPath = $resolveLocalPath($downloadPath);
+            if (!$localPath && $dropboxEnabled && $downloadPath) {
+                $downloaded = $downloadFromDropboxPath($downloadPath, $file->stored_filename ?? $file->filename ?? 'file');
+                if ($downloaded) {
+                    $localPath = $downloaded;
+                    $tempFiles[] = $downloaded;
+                }
+            }
+
+            if ($localPath && file_exists($localPath)) {
+                $filename = $file->original_name ?? $file->filename ?? basename($localPath);
+                $zip->addFile($localPath, $filename);
+                $addedFiles++;
+            }
+        }
+
+        $zip->close();
+
+        foreach ($tempFiles as $tempFile) {
+            @unlink($tempFile);
+        }
+
+        if ($addedFiles === 0) {
+            @unlink($zipPath);
+            if (!empty($pendingWatermarks)) {
+                return response()->json([
+                    'error' => 'Watermarked files are being generated. Please retry in a few minutes.',
+                    'pending' => $pendingWatermarks,
+                ], 409);
+            }
+            return response()->json(['error' => 'No downloadable files available'], 404);
+        }
+
+        return response()->download($zipPath, 'shoot-' . $shoot->id . '-selected.zip')->deleteFileAfterSend(true);
     }
 
     public function bulkDeleteMedia(Request $request, Shoot $shoot)

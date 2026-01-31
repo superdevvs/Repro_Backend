@@ -215,6 +215,7 @@ class TemplateVariableResolver
                 ?? $shoot->admin_verified_at?->format('M j, Y'),
             'photo_count' => $shoot->edited_photo_count ?? $shoot->expected_final_count ?? null,
             'mls_tour_link' => $shoot->iguide_tour_url ?? null,
+            'pay_link' => $paymentLink,
             'payment_link' => $paymentLink,
             'cancellation_reason' => $shoot->cancellation_reason ?? null,
             'decline_reason' => $shoot->declined_reason ?? null,

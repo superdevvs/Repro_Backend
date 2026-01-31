@@ -396,6 +396,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/upload', [ShootController::class, 'uploadFiles']);
     Route::post('/shoots/{shoot}/upload-extra', [ShootController::class, 'uploadExtra']);
     Route::get('/shoots/{shoot}/files', [ShootController::class, 'getFiles']);
+    Route::post('/shoots/{shoot}/files/download', [ShootController::class, 'downloadSelectedFiles']);
     Route::get('/shoots/{shoot}/files/{file}/preview', [ShootController::class, 'previewFile']);
     Route::get('/shoots/{shoot}/media', [ShootController::class, 'listMedia']);
     Route::get('/shoots/{shoot}/media/download-zip', [ShootController::class, 'downloadMediaZip']);
