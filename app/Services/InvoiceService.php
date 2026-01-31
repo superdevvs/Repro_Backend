@@ -176,67 +176,71 @@ class InvoiceService
         // Check if invoice already exists for this shoot
         $existingInvoice = Invoice::where('shoot_id', $shoot->id)->first();
         if ($existingInvoice) {
-            // Regenerate items if the invoice has no items but the shoot has services
+            // Always refresh items/totals to reflect current services
             $shoot->load(['services', 'payments' => function ($query) {
                 $query->where('status', Payment::STATUS_COMPLETED);
             }]);
-            
-            if ($existingInvoice->items()->count() === 0 && $shoot->services->isNotEmpty()) {
-                foreach ($shoot->services as $service) {
-                    $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
-                    $quantity = (int) ($service->pivot->quantity ?? 1);
-                    $description = $service->name ?? $service->service_name ?? 'Service';
-                    
-                    if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
-                        $description .= ' (1-2999 SQFT)';
-                    } elseif (stripos($description, 'hdr') !== false || stripos($description, 'photo') !== false) {
-                        $propertyDetails = is_array($shoot->property_details) ? $shoot->property_details : (is_string($shoot->property_details) ? json_decode($shoot->property_details, true) : []);
-                        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? 0;
-                        if ($sqft >= 1501 && $sqft <= 3000) {
-                            $description .= ' (1501-3000 SQFT)';
-                        } elseif ($sqft >= 3001 && $sqft <= 5000) {
-                            $description .= ' (3001-5000 SQFT)';
-                        } elseif ($sqft >= 5001 && $sqft <= 7000) {
-                            $description .= ' (5001-7000 SQFT)';
-                        } elseif ($sqft >= 7001 && $sqft <= 10000) {
-                            $description .= ' (7001-10000 SQFT)';
-                        } else {
-                            $description .= ' (1-1500 SQFT)';
-                        }
-                    }
 
-                    $existingInvoice->items()->create([
-                        'shoot_id' => $shoot->id,
-                        'type' => InvoiceItem::TYPE_CHARGE,
-                        'description' => $description,
-                        'quantity' => $quantity,
-                        'unit_amount' => $servicePrice,
-                        'total_amount' => $servicePrice * $quantity,
-                        'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
-                        'meta' => [
-                            'service_id' => $service->id,
-                            'service_name' => $service->name ?? $service->service_name,
-                        ],
-                    ]);
+            // Remove existing charge items for this shoot
+            $existingInvoice->items()
+                ->where('type', InvoiceItem::TYPE_CHARGE)
+                ->where('shoot_id', $shoot->id)
+                ->delete();
+
+            foreach ($shoot->services as $service) {
+                $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
+                $quantity = (int) ($service->pivot->quantity ?? 1);
+                $description = $service->name ?? $service->service_name ?? 'Service';
+
+                if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
+                    $description .= ' (1-2999 SQFT)';
+                } elseif (stripos($description, 'hdr') !== false || stripos($description, 'photo') !== false) {
+                    $propertyDetails = is_array($shoot->property_details) ? $shoot->property_details : (is_string($shoot->property_details) ? json_decode($shoot->property_details, true) : []);
+                    $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? 0;
+                    if ($sqft >= 1501 && $sqft <= 3000) {
+                        $description .= ' (1501-3000 SQFT)';
+                    } elseif ($sqft >= 3001 && $sqft <= 5000) {
+                        $description .= ' (3001-5000 SQFT)';
+                    } elseif ($sqft >= 5001 && $sqft <= 7000) {
+                        $description .= ' (5001-7000 SQFT)';
+                    } elseif ($sqft >= 7001 && $sqft <= 10000) {
+                        $description .= ' (7001-10000 SQFT)';
+                    } else {
+                        $description .= ' (1-1500 SQFT)';
+                    }
                 }
-                
-                // Update invoice totals
-                $subtotal = (float) ($shoot->base_quote ?? 0);
-                $taxAmount = (float) ($shoot->tax_amount ?? 0);
-                $total = (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
-                $totalPaid = (float) $shoot->payments->where('status', Payment::STATUS_COMPLETED)->sum('amount');
-                
-                $existingInvoice->update([
-                    'subtotal' => $subtotal,
-                    'tax' => $taxAmount,
-                    'total' => $total,
-                    'total_amount' => $total,
-                    'amount_paid' => $totalPaid,
-                    'is_paid' => $total > 0 ? $totalPaid >= $total : false,
-                    'status' => $totalPaid >= $total ? Invoice::STATUS_PAID : $existingInvoice->status,
+
+                $existingInvoice->items()->create([
+                    'shoot_id' => $shoot->id,
+                    'type' => InvoiceItem::TYPE_CHARGE,
+                    'description' => $description,
+                    'quantity' => $quantity,
+                    'unit_amount' => $servicePrice,
+                    'total_amount' => $servicePrice * $quantity,
+                    'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
+                    'meta' => [
+                        'service_id' => $service->id,
+                        'service_name' => $service->name ?? $service->service_name,
+                    ],
                 ]);
             }
-            
+
+            // Update invoice totals
+            $subtotal = (float) ($shoot->base_quote ?? 0);
+            $taxAmount = (float) ($shoot->tax_amount ?? 0);
+            $total = (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
+            $totalPaid = (float) $shoot->payments->where('status', Payment::STATUS_COMPLETED)->sum('amount');
+
+            $existingInvoice->update([
+                'subtotal' => $subtotal,
+                'tax' => $taxAmount,
+                'total' => $total,
+                'total_amount' => $total,
+                'amount_paid' => $totalPaid,
+                'is_paid' => $total > 0 ? $totalPaid >= $total : false,
+                'status' => $totalPaid >= $total ? Invoice::STATUS_PAID : ($existingInvoice->status ?? Invoice::STATUS_SENT),
+            ]);
+
             return $existingInvoice->fresh(['shoot', 'client', 'photographer', 'items']);
         }
 
