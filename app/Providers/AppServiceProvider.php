@@ -2,9 +2,11 @@
 
 namespace App\Providers;
 
-use Illuminate\Support\ServiceProvider;
-use Illuminate\Support\Facades\Route;
 use App\Models\ShootFile;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -23,5 +25,41 @@ class AppServiceProvider extends ServiceProvider
     {
         // Explicit route model binding for ShootFile
         Route::model('file', ShootFile::class);
+
+        if (!app()->environment('production') || app()->runningInConsole()) {
+            return;
+        }
+
+        $publicStorage = public_path('storage');
+        $storageTarget = storage_path('app/public');
+
+        if (!file_exists($publicStorage)) {
+            try {
+                Artisan::call('storage:link');
+
+                if (!file_exists($publicStorage)) {
+                    Log::error('public/storage symlink missing after storage:link', [
+                        'public_path' => $publicStorage,
+                        'target_path' => $storageTarget,
+                    ]);
+                } else {
+                    Log::info('public/storage symlink created automatically', [
+                        'public_path' => $publicStorage,
+                        'target_path' => $storageTarget,
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                Log::error('Failed to create public/storage symlink', [
+                    'error' => $e->getMessage(),
+                    'public_path' => $publicStorage,
+                    'target_path' => $storageTarget,
+                ]);
+            }
+        } elseif (!is_link($publicStorage)) {
+            Log::warning('public/storage exists but is not a symlink', [
+                'public_path' => $publicStorage,
+                'target_path' => $storageTarget,
+            ]);
+        }
     }
 }
