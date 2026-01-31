@@ -312,6 +312,10 @@ class DropboxWorkflowService
                     'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
                 ]);
 
+                if ($this->shouldProcessImage($file)) {
+                    ProcessImageJob::dispatch($shootFile);
+                }
+
                 // Update shoot workflow status if this is the first photo upload
                 if ($shoot->workflow_status === Shoot::STATUS_SCHEDULED) {
                     $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
@@ -361,30 +365,52 @@ class DropboxWorkflowService
         $defaultMediaType = $stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw';
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
 
-        Storage::disk('public')->putFileAs($dir, $file, $filename);
-
-        // Generate thumbnail for RAW files at upload time
-        $thumbnailPath = null;
-        $originalFilename = $file->getClientOriginalName();
-        
-        if ($this->rawThumbnailService->isRawFile($originalFilename)) {
-            $absolutePath = storage_path('app/public/' . $serverPath);
-            $thumbnailDir = "shoots/{$shoot->id}/thumbnails";
-            $thumbnailPath = $this->rawThumbnailService->generateThumbnail(
-                $absolutePath,
-                $thumbnailDir,
-                pathinfo($filename, PATHINFO_FILENAME) . '_thumb.jpg'
-            );
-            
-            Log::info('RAW thumbnail generation attempted', [
-                'shoot_id' => $shoot->id,
-                'filename' => $originalFilename,
-                'thumbnail_path' => $thumbnailPath,
-            ]);
-        }
-
         // Extract image metadata (dimensions, EXIF)
         $metadata = $this->extractImageMetadata($file);
+
+        // Process image for thumbnails BEFORE storing (while temp file is still available)
+        $thumbnailPath = null;
+        $webPath = null;
+        $placeholderPath = null;
+        $originalFilename = $file->getClientOriginalName();
+        
+        if ($this->shouldProcessImage($file)) {
+            $tempPath = $file->getRealPath();
+            if ($tempPath && file_exists($tempPath)) {
+                $imageService = app(\App\Services\ImageProcessingService::class);
+                $processedPaths = $imageService->processImageFromPath($shoot->id, $originalFilename, $tempPath);
+                $thumbnailPath = $processedPaths['thumbnail'] ?? null;
+                $webPath = $processedPaths['web'] ?? null;
+                $placeholderPath = $processedPaths['placeholder'] ?? null;
+                
+                Log::info('Local storage thumbnail generation', [
+                    'shoot_id' => $shoot->id,
+                    'filename' => $originalFilename,
+                    'thumbnail_path' => $thumbnailPath,
+                    'web_path' => $webPath,
+                ]);
+            }
+        } elseif ($this->rawThumbnailService->isRawFile($originalFilename)) {
+            // For RAW files, use the RAW thumbnail service
+            $tempPath = $file->getRealPath();
+            if ($tempPath && file_exists($tempPath)) {
+                $thumbnailDir = "shoots/{$shoot->id}/thumbnails";
+                $thumbnailPath = $this->rawThumbnailService->generateThumbnail(
+                    $tempPath,
+                    $thumbnailDir,
+                    pathinfo($filename, PATHINFO_FILENAME) . '_thumb.jpg'
+                );
+                
+                Log::info('RAW thumbnail generation attempted', [
+                    'shoot_id' => $shoot->id,
+                    'filename' => $originalFilename,
+                    'thumbnail_path' => $thumbnailPath,
+                ]);
+            }
+        }
+
+        // Now store the file (this may move the temp file)
+        Storage::disk('public')->putFileAs($dir, $file, $filename);
 
         $shootFile = ShootFile::create([
             'shoot_id' => $shoot->id,
@@ -399,11 +425,14 @@ class DropboxWorkflowService
             'dropbox_path' => null,
             'dropbox_file_id' => null,
             'thumbnail_path' => $thumbnailPath,
+            'web_path' => $webPath,
+            'placeholder_path' => $placeholderPath,
+            'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
             'metadata' => !empty($metadata) ? $metadata : null,
         ]);
 
         if ($this->shouldProcessImage($file)) {
-            ProcessImageJob::dispatchSync($shootFile);
+            ProcessImageJob::dispatch($shootFile);
         }
 
         // When photos are uploaded, auto-transition from scheduled to uploaded
@@ -965,6 +994,10 @@ class DropboxWorkflowService
                     'placeholder_path' => $placeholderPath,
                     'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
                 ]);
+
+                if ($this->shouldProcessImage($file)) {
+                    ProcessImageJob::dispatch($shootFile);
+                }
 
                 // Update shoot workflow status if needed
                 if (in_array($shoot->workflow_status, [Shoot::WORKFLOW_BOOKED, Shoot::WORKFLOW_RAW_UPLOADED, Shoot::WORKFLOW_EDITING])) {

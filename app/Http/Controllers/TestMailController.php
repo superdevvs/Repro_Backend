@@ -202,8 +202,8 @@ class TestMailController extends Controller
     {
         return response()->json([
             'mailer' => config('mail.default'),
-            'host' => config('mail.mailers.smtp.host'),
-            'port' => config('mail.mailers.smtp.port'),
+            'host' => config('mail.mailers.cakemail.host'),
+            'port' => config('mail.mailers.cakemail.port'),
             'from_address' => config('mail.from.address'),
             'from_name' => config('mail.from.name'),
             'log_channel' => config('logging.default')

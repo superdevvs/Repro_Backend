@@ -15,6 +15,22 @@ class MessagingSettingsController extends Controller
     {
         $channels = MessageChannel::ofType('EMAIL')->orderBy('display_name')->get();
 
+        if ($channels->isEmpty()) {
+            $defaultName = config('mail.from.name', 'Cakemail');
+            $defaultEmail = config('mail.from.address', 'noreply@reprophotos.com');
+
+            MessageChannel::create([
+                'type' => 'EMAIL',
+                'provider' => 'CAKEMAIL',
+                'display_name' => $defaultName,
+                'from_email' => $defaultEmail,
+                'is_default' => true,
+                'owner_scope' => 'GLOBAL',
+            ]);
+
+            $channels = MessageChannel::ofType('EMAIL')->orderBy('display_name')->get();
+        }
+
         return response()->json([
             'channels' => $channels,
         ]);
@@ -27,7 +43,7 @@ class MessagingSettingsController extends Controller
             'channels.*.id' => ['nullable', 'integer', 'exists:message_channels,id'],
             'channels.*.display_name' => ['required', 'string'],
             'channels.*.from_email' => ['nullable', 'email'],
-            'channels.*.provider' => ['required', 'string'],
+            'channels.*.provider' => ['required', 'in:CAKEMAIL'],
             'channels.*.is_default' => ['boolean'],
             'channels.*.config_json' => ['nullable', 'array'],
             'channels.*.label' => ['nullable', 'string'],
@@ -60,6 +76,26 @@ class MessagingSettingsController extends Controller
         $numbers = SmsNumber::orderByDesc('is_default')
             ->orderBy('created_at')
             ->get();
+
+        if ($numbers->isEmpty()) {
+            $defaultNumber = config('services.mightycall.default_number');
+            $defaultLabel = config('services.mightycall.default_label', 'MightyCall');
+            $defaultUserKey = config('services.mightycall.default_user_key');
+
+            if (!empty($defaultNumber)) {
+                SmsNumber::create([
+                    'phone_number' => $defaultNumber,
+                    'label' => $defaultLabel,
+                    'mighty_call_key' => $defaultUserKey,
+                    'owner_type' => 'GLOBAL',
+                    'is_default' => true,
+                ]);
+
+                $numbers = SmsNumber::orderByDesc('is_default')
+                    ->orderBy('created_at')
+                    ->get();
+            }
+        }
 
         \Log::info('SMS Settings requested', [
             'count' => $numbers->count(),
@@ -136,7 +172,7 @@ class MessagingSettingsController extends Controller
     {
         $data = $request->validate([
             'type' => ['required', 'in:EMAIL'],
-            'provider' => ['required', 'string'],
+            'provider' => ['required', 'in:CAKEMAIL'],
             'display_name' => ['required', 'string'],
             'from_email' => ['required', 'email'],
             'reply_to_email' => ['nullable', 'email'],

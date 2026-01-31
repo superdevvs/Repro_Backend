@@ -345,16 +345,17 @@ class AutomationService
     public function buildShootContext(Shoot $shoot): array
     {
         $propertyDetails = $shoot->property_details ?? [];
-        
+
         return [
             'shoot' => $shoot,
             'shoot_id' => $shoot->id,
-            'shoot_date' => $shoot->scheduled_date?->format('Y-m-d'),
-            'shoot_time' => $shoot->scheduled_date?->format('H:i'),
-            'shoot_datetime' => $shoot->scheduled_date,
+            'shoot_date' => $shoot->scheduled_date?->format('M j, Y')
+                ?? $shoot->scheduled_at?->format('M j, Y'),
+            'shoot_time' => $this->formatShootTime($shoot),
+            'shoot_datetime' => $shoot->scheduled_at ?? $shoot->scheduled_date,
             'shoot_address' => $shoot->address ?? 'N/A',
             'shoot_services' => $shoot->service?->name ?? 'Photography',
-            'shoot_notes' => $shoot->notes ?? '',
+            'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
             'photographer' => $shoot->photographer,
             'account_id' => $shoot->client_id,
@@ -363,6 +364,51 @@ class AutomationService
             'has_contact_details' => !empty($propertyDetails['accessContactName']) && !empty($propertyDetails['accessContactPhone']),
             'has_lockbox_details' => !empty($propertyDetails['lockboxCode']) && !empty($propertyDetails['lockboxLocation']),
         ];
+    }
+
+    private function formatShootTime(Shoot $shoot): string
+    {
+        $time = $shoot->time;
+        if (!empty($time)) {
+            try {
+                return Carbon::parse($time)->format('g:i A');
+            } catch (\Exception $e) {
+                return $time;
+            }
+        }
+
+        if ($shoot->scheduled_at) {
+            return $shoot->scheduled_at->format('g:i A');
+        }
+
+        if ($shoot->scheduled_date && $shoot->scheduled_date->format('H:i') !== '00:00') {
+            return $shoot->scheduled_date->format('g:i A');
+        }
+
+        return 'TBD';
+    }
+
+    private function formatShootNotes(Shoot $shoot): string
+    {
+        $notes = [];
+
+        if (!empty($shoot->shoot_notes)) {
+            $notes[] = $shoot->shoot_notes;
+        }
+
+        if (!$shoot->relationLoaded('notes')) {
+            $shoot->load('notes');
+        }
+
+        foreach ($shoot->notes ?? [] as $note) {
+            if (!empty($note->content) && $note->visibility === 'client_visible') {
+                $notes[] = $note->content;
+            }
+        }
+
+        $notes = array_filter($notes, fn($note) => trim((string) $note) !== '');
+
+        return $notes ? implode("\n", $notes) : 'N/A';
     }
 }
 

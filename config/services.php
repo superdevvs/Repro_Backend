@@ -106,6 +106,9 @@ return [
         'secret_key' => env('MIGHTYCALL_SECRET_KEY'),
         'base_url' => env('MIGHTYCALL_BASE_URL', 'https://ccapi.mightycall.com/v4'),
         'webhook_secret' => env('MIGHTYCALL_WEBHOOK_SECRET'),
+        'default_number' => env('MIGHTYCALL_DEFAULT_NUMBER'),
+        'default_label' => env('MIGHTYCALL_DEFAULT_LABEL', 'MightyCall'),
+        'default_user_key' => env('MIGHTYCALL_DEFAULT_USER_KEY'),
     ],
 
     // Bright MLS Integration

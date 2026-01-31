@@ -17,10 +17,8 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        $middleware->api(prepend: [
-            \Illuminate\Http\Middleware\HandleCors::class,
-        ]);
-        
+        $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
+
         // Append impersonation middleware to run after auth
         $middleware->api(append: [
             ImpersonationMiddleware::class,

@@ -2891,6 +2891,16 @@ class ShootController extends Controller
                         $shootFile->save();
                     }
 
+                    // Build thumbnail URL
+                    $thumbUrl = null;
+                    if ($shootFile->thumbnail_path) {
+                        $thumbUrl = Storage::disk('public')->url($shootFile->thumbnail_path);
+                    }
+                    $webUrl = null;
+                    if ($shootFile->web_path) {
+                        $webUrl = Storage::disk('public')->url($shootFile->web_path);
+                    }
+
                     $uploadedFiles[] = [
                         'id' => $shootFile->id,
                         'filename' => $shootFile->filename,
@@ -2899,6 +2909,14 @@ class ShootController extends Controller
                         'file_size' => $shootFile->file_size,
                         'uploaded_at' => $shootFile->created_at,
                         'is_extra' => $shootFile->media_type === 'extra',
+                        'thumbnail_path' => $shootFile->thumbnail_path,
+                        'web_path' => $shootFile->web_path,
+                        'placeholder_path' => $shootFile->placeholder_path,
+                        'thumb' => $thumbUrl,
+                        'thumb_url' => $thumbUrl,
+                        'thumbnail_url' => $thumbUrl,
+                        'medium' => $webUrl,
+                        'web_url' => $webUrl,
                     ];
                 } catch (\Exception $e) {
                     $errors[] = [
@@ -2909,6 +2927,7 @@ class ShootController extends Controller
             }
 
             $shoot = $this->refreshMediaCounters($shoot->fresh());
+            $this->clearShootFilesCache($shoot);
 
             // If admin/superadmin uploads edited files directly and shoot is not already delivered,
             // move shoot to delivered status
@@ -3317,6 +3336,18 @@ class ShootController extends Controller
         }
     }
 
+    protected function clearShootFilesCache(Shoot $shoot, ?User $user = null): void
+    {
+        $user = $user ?? auth()->user();
+        $userId = $user ? $user->id : 'guest';
+        $userRole = $user ? $user->role : 'guest';
+
+        foreach (['', 'raw', 'edited', 'all'] as $type) {
+            $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole;
+            Cache::forget($cacheKey);
+        }
+    }
+
     protected function performFileDeletion(Shoot $shoot, ShootFile $file, bool $suppressResponse = false)
     {
         try {
@@ -3325,6 +3356,7 @@ class ShootController extends Controller
             }
             $file->delete();
             $shoot = $this->refreshMediaCounters($shoot->fresh());
+            $this->clearShootFilesCache($shoot);
 
             if ($suppressResponse) {
                 return null;
@@ -5265,6 +5297,7 @@ class ShootController extends Controller
 
         // Update photo counts
         $shoot->updatePhotoCounts();
+        $this->clearShootFilesCache($shoot);
 
         return response()->json([
             'message' => 'Files uploaded successfully',

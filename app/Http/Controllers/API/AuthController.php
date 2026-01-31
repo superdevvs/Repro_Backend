@@ -196,9 +196,13 @@ class AuthController extends Controller
         
         // Generate the reset link and send email
         $resetLink = $this->mailService->generatePasswordResetLink($user, $token);
-        $this->mailService->sendPasswordResetEmail($user, $resetLink);
+        $sent = $this->mailService->sendPasswordResetEmail($user, $resetLink);
 
-        Log::info('[Auth] Password reset link sent', ['email' => $email]);
+        if ($sent) {
+            Log::info('[Auth] Password reset link sent successfully', ['email' => $email]);
+        } else {
+            Log::error('[Auth] Failed to send password reset email', ['email' => $email]);
+        }
 
         return response()->json([
             'message' => 'If your email is registered, you will receive a password reset link.',

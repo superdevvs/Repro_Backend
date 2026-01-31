@@ -62,7 +62,7 @@ class CakemailProvider implements EmailProviderInterface
             ],
         ];
 
-        // Add list_id if available
+        // Cakemail requires list_id on send requests
         if ($listId) {
             $emailPayload['list_id'] = (int) $listId;
         }

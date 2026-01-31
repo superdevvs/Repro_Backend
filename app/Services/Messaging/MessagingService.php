@@ -26,9 +26,6 @@ class MessagingService
 {
     public function __construct(
         private readonly TemplateRenderer $renderer,
-        private readonly Providers\LocalSmtpProvider $localSmtpProvider,
-        private readonly Providers\GoogleOAuthProvider $googleOAuthProvider,
-        private readonly Providers\MailchimpProvider $mailchimpProvider,
         private readonly Providers\MightyCallSmsProvider $mightyCallProvider,
         private readonly Providers\CakemailProvider $cakemailProvider,
     ) {
@@ -345,6 +342,20 @@ class MessagingService
         $channel = $query->first();
 
         if (!$channel) {
+            $defaultName = config('mail.from.name', 'Cakemail');
+            $defaultEmail = config('mail.from.address', 'noreply@reprophotos.com');
+
+            $channel = MessageChannel::create([
+                'type' => 'EMAIL',
+                'provider' => 'CAKEMAIL',
+                'display_name' => $defaultName,
+                'from_email' => $defaultEmail,
+                'is_default' => true,
+                'owner_scope' => 'GLOBAL',
+            ]);
+        }
+
+        if (!$channel) {
             throw new RuntimeException('No email channels configured.');
         }
 
@@ -371,12 +382,14 @@ class MessagingService
 
     protected function getEmailProvider(MessageChannel $channel): EmailProviderInterface
     {
-        return match ($channel->provider) {
-            'GOOGLE_OAUTH' => $this->googleOAuthProvider,
-            'MAILCHIMP' => $this->mailchimpProvider,
-            'CAKEMAIL' => $this->cakemailProvider,
-            default => $this->localSmtpProvider,
-        };
+        if ($channel->provider !== 'CAKEMAIL') {
+            Log::warning('Non-CakeMail provider requested; forcing CakeMail.', [
+                'channel_id' => $channel->id,
+                'provider' => $channel->provider,
+            ]);
+        }
+
+        return $this->cakemailProvider;
     }
 
     /**

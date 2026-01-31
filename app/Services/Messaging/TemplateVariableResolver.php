@@ -14,12 +14,13 @@ class TemplateVariableResolver
      */
     public function resolve(array $context): array
     {
+        $portalUrl = $this->resolvePortalUrl();
         $derived = [
             'company_name' => config('mail.from.name', config('app.name', '')),
             'company_email' => config('mail.from.address', ''),
             'company_phone' => config('app.company_phone', ''),
             'company_address' => config('app.company_address', ''),
-            'portal_url' => config('app.frontend_url', config('app.url', '')),
+            'portal_url' => $portalUrl,
             'current_date' => now()->format('M j, Y'),
         ];
 
@@ -64,6 +65,66 @@ class TemplateVariableResolver
         }
 
         return array_merge($derived, $context);
+    }
+
+    private function resolvePortalUrl(): string
+    {
+        $portalUrl = config('app.frontend_url', config('app.url', ''));
+        if (empty($portalUrl)) {
+            return 'https://reprodashboard.com';
+        }
+
+        $lower = strtolower($portalUrl);
+        if (str_contains($lower, 'localhost') || str_contains($lower, '127.0.0.1')) {
+            return 'https://reprodashboard.com';
+        }
+
+        return $portalUrl;
+    }
+
+    private function formatShootTime(Shoot $shoot): string
+    {
+        $time = $shoot->time;
+        if (!empty($time)) {
+            try {
+                return \Carbon\Carbon::parse($time)->format('g:i A');
+            } catch (\Exception $e) {
+                return $time;
+            }
+        }
+
+        if ($shoot->scheduled_at) {
+            return $shoot->scheduled_at->format('g:i A');
+        }
+
+        if ($shoot->scheduled_date && $shoot->scheduled_date->format('H:i') !== '00:00') {
+            return $shoot->scheduled_date->format('g:i A');
+        }
+
+        return 'TBD';
+    }
+
+    private function formatShootNotes(Shoot $shoot): string
+    {
+        $notes = [];
+
+        if (!empty($shoot->shoot_notes)) {
+            $notes[] = $shoot->shoot_notes;
+        }
+
+        if (!$shoot->relationLoaded('notes')) {
+            $shoot->load('notes');
+        }
+
+        foreach ($shoot->notes ?? [] as $note) {
+            if (!empty($note->content) && $note->visibility === 'client_visible') {
+                $notes[] = $note->content;
+            }
+        }
+
+        $notes = array_filter($notes, fn($note) => trim((string) $note) !== '');
+
+        return $notes ? implode("\n", $notes) : 'N/A';
     }
 
     /**
@@ -128,10 +189,10 @@ class TemplateVariableResolver
         $shootDate = $shoot->scheduled_date
             ? $shoot->scheduled_date->format('M j, Y')
             : ($shoot->scheduled_at?->format('M j, Y'));
-        $shootTime = $shoot->time ?? ($shoot->scheduled_at?->format('g:i A') ?? '');
+        $shootTime = $this->formatShootTime($shoot);
         $total = $shoot->total_quote ?? $shoot->base_quote ?? null;
         $paymentLink = $shoot->id
-            ? rtrim(config('app.frontend_url', config('app.url', '')), '/') . "/payment/{$shoot->id}"
+            ? rtrim($this->resolvePortalUrl(), '/') . "/payment/{$shoot->id}"
             : null;
 
         $servicesProvided = $shoot->package_services_included
@@ -148,7 +209,7 @@ class TemplateVariableResolver
             'services_provided' => $servicesProvided,
             'shoot_total' => $total,
             'shoot_quote' => $total,
-            'shoot_notes' => $shoot->notes ?? $shoot->shoot_notes ?? '',
+            'shoot_notes' => $this->formatShootNotes($shoot),
             'shoot_completed_date' => $shoot->completed_at?->format('M j, Y')
                 ?? $shoot->editing_completed_at?->format('M j, Y')
                 ?? $shoot->admin_verified_at?->format('M j, Y'),

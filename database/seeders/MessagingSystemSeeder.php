@@ -12,7 +12,7 @@ class MessagingSystemSeeder extends Seeder
     private const BRAND_PHONE = '202-868-1663';
     private const BRAND_EMAIL = 'contact@reprophotos.com';
     private const BRAND_SITE = 'https://reprophotos.com';
-    private const BRAND_PORTAL = 'https://reprophotos.com';
+    private const BRAND_PORTAL = 'https://reprodashboard.com';
 
     private array $tokenMap = [
         '[greeting]' => '{{greeting}}',
@@ -151,7 +151,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Scheduled for [shoot_location]',
                 'body_html' => $this->getShootScheduledTemplate(),
                 'body_text' => $this->getShootScheduledPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -167,7 +167,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Photo Shoot Requested (PENDING) - [shoot_location]',
                 'body_html' => $this->getShootRequestedTemplate(),
                 'body_text' => $this->getShootRequestedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'company_email', 'portal_url'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -183,7 +183,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Scheduled (REQUEST APPROVED) - [shoot_location]',
                 'body_html' => $this->getShootRequestApprovedTemplate(),
                 'body_text' => $this->getShootRequestApprovedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -199,7 +199,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Scheduled (REQUEST APPROVED) - [shoot_location]',
                 'body_html' => $this->getShootRequestModifiedTemplate(),
                 'body_text' => $this->getShootRequestModifiedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -215,7 +215,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Request (DECLINED) - [shoot_location]',
                 'body_html' => $this->getShootRequestDeclinedTemplate(),
                 'body_text' => $this->getShootRequestDeclinedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -231,7 +231,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Shoot Reminder - [shoot_location]',
                 'body_html' => $this->getShootReminderTemplate(),
                 'body_text' => $this->getShootReminderPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -247,7 +247,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Scheduled Photo Shoot for [shoot_location] Updated',
                 'body_html' => $this->getShootUpdatedTemplate(),
                 'body_text' => $this->getShootUpdatedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email', 'portal_url'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -263,7 +263,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => '[shoot_location] - Photos Ready!',
                 'body_html' => $this->getShootReadyTemplate(),
                 'body_text' => $this->getShootReadyPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -279,7 +279,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => '[shoot_location] - Payment Due Reminder',
                 'body_html' => $this->getPaymentDueReminderTemplate(),
                 'body_text' => $this->getPaymentDueReminderPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_quote', 'shoot_completeddate', 'shoot_packages', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_quote', 'shoot_completeddate', 'shoot_packages', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -425,7 +425,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_BOOKED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Shoot Reminder',
@@ -434,7 +434,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
                 'scope' => 'SYSTEM',
                 'schedule_json' => ['offset' => '-24h'],
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Payment Confirmation',
@@ -506,7 +506,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REQUESTED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Shoot Request Approved',
@@ -514,7 +514,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REQUEST_APPROVED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Shoot Request Declined',
@@ -522,7 +522,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REQUEST_DECLINED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Shoot Updated Notification',
@@ -530,7 +530,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_UPDATED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Photos Ready Notification',
@@ -538,15 +538,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_COMPLETED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
-            ],
-            [
-                'name' => 'Media Upload Complete Notification',
-                'description' => 'Notify client when media upload is complete',
-                'trigger_type' => 'MEDIA_UPLOAD_COMPLETE',
-                'is_active' => true,
-                'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Shoot Cancelled Notification',
@@ -554,7 +546,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_CANCELED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Shoot Removed Notification',
@@ -562,7 +554,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REMOVED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client'],
+                'recipients_json' => ['client', 'photographer'],
             ],
             [
                 'name' => 'Refund Notification',
@@ -578,15 +570,6 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'PHOTOGRAPHER_ASSIGNED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['photographer'],
-            ],
-            [
-                'name' => 'Photographer Shoot Reminder',
-                'description' => 'Remind photographer before shoot',
-                'trigger_type' => 'SHOOT_REMINDER',
-                'is_active' => true,
-                'scope' => 'SYSTEM',
-                'schedule_json' => ['offset' => '-24h'],
                 'recipients_json' => ['photographer'],
             ],
         ];
@@ -740,6 +723,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Scheduled Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
@@ -795,6 +781,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Requested Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Requested Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
                     <span class="info-label">Services:</span> [shoot_packages]
                 </div>
                 <div class="info-row">
@@ -833,6 +822,9 @@ class MessagingSystemSeeder extends Seeder
                 </div>
                 <div class="info-row">
                     <span class="info-label">Scheduled Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
@@ -888,6 +880,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Scheduled Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
@@ -933,6 +928,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Requested Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Requested Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
@@ -964,6 +962,9 @@ class MessagingSystemSeeder extends Seeder
                 </div>
                 <div class="info-row">
                     <span class="info-label">Scheduled Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
@@ -1007,6 +1008,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Scheduled Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
@@ -1017,7 +1021,7 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>Visit <a href="https://pro.reprohq.com">https://pro.reprohq.com</a> to manage your shoots.</p>
+            <p>Visit <a href="[portal_url]">[portal_url]</a> to manage your shoots.</p>
             
             <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
             
@@ -1305,6 +1309,7 @@ Here is a summary of the shoot that was scheduled:
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 Shoot total: [shoot_quote]
@@ -1332,6 +1337,7 @@ NOTE: This shoot is in PENDING status. You will receive a confirmation email onc
 
 Location: [shoot_location]
 Requested Shoot Date: [shoot_date]
+Requested Shoot Time: [shoot_time]
 [shoot_packages]
 Total: [shoot_quote]
 
@@ -1348,6 +1354,7 @@ One of your requested photo shoots has been APPROVED and scheduled under your ac
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 Total: [shoot_quote]
@@ -1369,6 +1376,7 @@ NOTE: Please review the below shoot information carefully as some details may ha
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 Total: [shoot_quote]
@@ -1385,7 +1393,8 @@ Thanks for scheduling, your business is appreciated!';
 Unfortunately one of your requested shoots has been declined.
 
 Location: [shoot_location]
-Scheduled Shoot Date: [shoot_date]
+Requested Shoot Date: [shoot_date]
+Requested Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 
@@ -1404,6 +1413,7 @@ You have a scheduled shoot coming up!
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 
@@ -1422,12 +1432,13 @@ One of your scheduled photo shoots has been updated.
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 
 [shoot_notes]
 
-Visit https://pro.reprohq.com to manage your shoots.
+Visit [portal_url] to manage your shoots.
 
 Thank you!';
     }
