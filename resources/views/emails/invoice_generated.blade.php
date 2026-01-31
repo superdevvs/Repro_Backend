@@ -5,8 +5,6 @@
     <title>Weekly Invoice - {{ $period }}</title>
 </head>
 <body>
-    <p>Subject: Weekly Invoice - {{ $period }}</p>
-
     <p>Hello, {{ $photographer->name }}!</p>
 
     <p>Your weekly invoice for {{ $period }} has been generated.</p>
@@ -39,7 +37,7 @@
 
     <p>
         You can review and manage your invoice by logging into your dashboard at 
-        <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>
@@ -48,9 +46,8 @@
     </p>
 
     <p>
-        Customer Service Team <br>
-        R/E Pro Photos <br>
-        202-868-1663 <br>
+        Customer Service Team<br>
+        202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
 </body>

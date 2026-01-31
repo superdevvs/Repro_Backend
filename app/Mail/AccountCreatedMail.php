@@ -32,7 +32,7 @@ class AccountCreatedMail extends Mailable
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: 'R/E Pro Photos New Account Information',
+            subject: 'New Account Information',
         );
     }
 

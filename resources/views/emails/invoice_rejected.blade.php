@@ -5,8 +5,6 @@
     <title>Invoice Rejected</title>
 </head>
 <body>
-    <p>Subject: Invoice Rejected - {{ $period }}</p>
-
     <p>Hello, {{ $photographer->name }}!</p>
 
     <p>Your invoice for {{ $period }} has been rejected.</p>
@@ -24,7 +22,7 @@
 
     <p>
         You can review the rejection reason and make necessary changes by logging into your dashboard at 
-        <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>
@@ -33,9 +31,8 @@
     </p>
 
     <p>
-        Customer Service Team <br>
-        R/E Pro Photos <br>
-        202-868-1663 <br>
+        Customer Service Team<br>
+        202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
 </body>

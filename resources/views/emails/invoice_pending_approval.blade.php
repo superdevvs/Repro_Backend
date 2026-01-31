@@ -5,8 +5,6 @@
     <title>Invoice Requires Approval</title>
 </head>
 <body>
-    <p>Subject: Invoice Requires Approval - {{ $photographer->name }} - {{ $period }}</p>
-
     <p>Hello, {{ $admin->name }}!</p>
 
     <p>An invoice has been modified by a photographer and requires your approval.</p>
@@ -25,12 +23,13 @@
 
     <p>
         Please review and approve or reject this invoice by logging into the admin dashboard at 
-        <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>
-        Customer Service Team <br>
-        R/E Pro Photos
+        Customer Service Team<br>
+        202-868-1663<br>
+        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
 </body>
 </html>

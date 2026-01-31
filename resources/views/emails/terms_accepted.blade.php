@@ -5,9 +5,7 @@
     <title>Terms/Conditions Accepted</title>
 </head>
 <body>
-    <p>Subject: Terms/Conditions Accepted</p>
-
-    <p>{{ $user->firstname }} {{ $user->lastname }},</p>
+    <p>Hello, {{ $user->name }},</p>
 
     <p>
         Thank you for accepting the Terms/Conditions! A copy for your records appears below:
@@ -113,12 +111,11 @@
     </p>
 
     <p>
-        Customer Service Team <br>
-        R/E Pro Photos <br>
-        202-868-1663 <br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> <br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a> <br>
-        Pro Dashboard: <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        Customer Service Team<br>
+        202-868-1663<br>
+        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
+        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
+        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>

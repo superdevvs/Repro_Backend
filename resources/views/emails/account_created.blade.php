@@ -2,16 +2,14 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>R/E Pro Photos New Account Information</title>
+    <title>New Account Information</title>
 </head>
 <body>
-    <p>Subject: R/E Pro Photos New Account Information</p>
-
     <p>Hello, {{ $user->name }}!</p>
 
     <p>
-        A new account has been created on the R/E Pro Photos client website: 
-        <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        A new account has been created on the RE Pro Dashboard: 
+        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>
@@ -19,7 +17,7 @@
         <a href="{{ $resetLink }}">Create a Password</a>
     </p>
 
-    <p>To login to your account, visit our client login page at any time.</p>
+    <p>To login to your account, visit <a href="https://reprodashboard.com">https://reprodashboard.com</a> at any time.</p>
 
     <p>For future reference, the information you have submitted to create your account is listed below:</p>
 
@@ -38,12 +36,11 @@
     <p>Thanks for the opportunity to provide you with outstanding real estate marketing services!</p>
 
     <p>
-        Customer Service Team <br>
-        R/E Pro Photos <br>
-        202-868-1663 <br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> <br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a> <br>
-        Pro Dashboard: <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        Customer Service Team<br>
+        202-868-1663<br>
+        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
+        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
+        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>

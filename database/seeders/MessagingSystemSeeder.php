@@ -603,7 +603,7 @@ class MessagingSystemSeeder extends Seeder
                 'SHOOT_REQUEST_DECLINED' => 'shoot-request-declined',
                 'SHOOT_UPDATED' => 'shoot-updated',
                 'SHOOT_COMPLETED' => 'shoot-ready',
-                'MEDIA_UPLOAD_COMPLETE' => 'shoot-ready',
+                // MEDIA_UPLOAD_COMPLETE removed - Photos Ready should only trigger on SHOOT_COMPLETED (finalize)
                 'SHOOT_CANCELED' => 'shoot-deleted',
                 'SHOOT_REMOVED' => 'shoot-deleted',
                 'PAYMENT_REFUNDED' => 'refund-submitted',

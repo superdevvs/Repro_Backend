@@ -5,8 +5,6 @@
     <title>Invoice Approved</title>
 </head>
 <body>
-    <p>Subject: Invoice Approved - {{ $period }}</p>
-
     <p>Hello, {{ $photographer->name }}!</p>
 
     <p>Your invoice for {{ $period }} has been approved by an administrator.</p>
@@ -21,13 +19,12 @@
 
     <p>
         You can view your invoice by logging into your dashboard at 
-        <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
+        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
     <p>
-        Customer Service Team <br>
-        R/E Pro Photos <br>
-        202-868-1663 <br>
+        Customer Service Team<br>
+        202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
 </body>

@@ -2909,6 +2909,27 @@ class ShootController extends Controller
             }
 
             $shoot = $this->refreshMediaCounters($shoot->fresh());
+
+            // If admin/superadmin uploads edited files directly and shoot is not already delivered,
+            // move shoot to delivered status
+            if ($uploadType === 'edited' && $isAdmin && count($uploadedFiles) > 0) {
+                $shoot->load('files');
+                $hasEditedFiles = $shoot->files()
+                    ->whereIn('workflow_stage', ['completed', 'verified'])
+                    ->exists();
+                
+                if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_DELIVERED, 'ready', 'ready_for_client', 'admin_verified'])) {
+                    $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $user->id);
+                    $shoot->save();
+                    
+                    Log::info('Shoot moved to delivered after admin edited upload', [
+                        'shoot_id' => $shoot->id,
+                        'user_id' => $user->id,
+                        'uploaded_count' => count($uploadedFiles),
+                    ]);
+                }
+            }
+
             DB::commit();
 
             return response()->json([
@@ -5732,6 +5753,18 @@ class ShootController extends Controller
                 ]);
             }
 
+            // Send shoot paid email to client
+            try {
+                if ($shoot->client) {
+                    $this->mailService->sendShootPaidEmail($shoot->client, $shoot, $amount);
+                }
+            } catch (\Exception $emailError) {
+                Log::warning('Failed to send shoot paid email', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $emailError->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'message' => 'Shoot marked as paid successfully',
                 'data' => [
@@ -6372,5 +6405,44 @@ class ShootController extends Controller
         $zip->close();
         
         return $zipPath;
+    }
+
+    /**
+     * Get shoot payment details for public payment page
+     * GET /api/shoots/{shoot}/payment-details
+     */
+    public function getPaymentDetails(Shoot $shoot)
+    {
+        $shoot->load(['client', 'services', 'payments']);
+
+        return response()->json([
+            'data' => [
+                'id' => $shoot->id,
+                'address' => $shoot->address,
+                'city' => $shoot->city,
+                'state' => $shoot->state,
+                'zip' => $shoot->zip,
+                'scheduled_date' => $shoot->scheduled_date?->toISOString(),
+                'time' => $shoot->time,
+                'total_quote' => (float) ($shoot->total_quote ?? 0),
+                'base_quote' => (float) ($shoot->base_quote ?? 0),
+                'tax_amount' => (float) ($shoot->tax_amount ?? 0),
+                'services' => $shoot->services->map(fn($s) => [
+                    'name' => $s->name,
+                    'pivot' => [
+                        'price' => (float) ($s->pivot->price ?? $s->price ?? 0),
+                        'quantity' => (int) ($s->pivot->quantity ?? 1),
+                    ],
+                ]),
+                'client' => $shoot->client ? [
+                    'name' => $shoot->client->name,
+                    'email' => $shoot->client->email,
+                ] : null,
+                'payments' => $shoot->payments->map(fn($p) => [
+                    'amount' => (float) $p->amount,
+                    'status' => $p->status,
+                ]),
+            ],
+        ]);
     }
 }

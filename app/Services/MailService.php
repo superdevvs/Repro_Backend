@@ -56,6 +56,7 @@ class MailService
         try {
             $shootData = $this->formatShootData($shoot);
             
+            // Send to client
             Mail::to($user->email)->send(new ShootScheduledMail($user, $shootData, $paymentLink));
             
             Log::info('Shoot scheduled email sent', [
@@ -63,6 +64,16 @@ class MailService
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new ShootScheduledMail($shoot->photographer, $shootData, $paymentLink));
+                Log::info('Shoot scheduled email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
             
             return true;
         } catch (\Exception $e) {
@@ -85,6 +96,7 @@ class MailService
         try {
             $shootData = $this->formatShootData($shoot);
             
+            // Send to client
             Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData));
             
             Log::info('Shoot updated email sent', [
@@ -92,6 +104,16 @@ class MailService
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData));
+                Log::info('Shoot updated email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
             
             return true;
         } catch (\Exception $e) {
@@ -114,6 +136,7 @@ class MailService
         try {
             $shootData = $this->formatShootData($shoot);
             
+            // Send to client
             Mail::to($user->email)->send(new ShootRemovedMail($user, $shootData));
             
             Log::info('Shoot removed email sent', [
@@ -121,6 +144,16 @@ class MailService
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new ShootRemovedMail($shoot->photographer, $shootData));
+                Log::info('Shoot removed email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
             
             return true;
         } catch (\Exception $e) {
@@ -143,6 +176,7 @@ class MailService
         try {
             $shootData = $this->formatShootData($shoot);
             
+            // Send to client
             Mail::to($user->email)->send(new ShootReadyMail($user, $shootData));
             
             Log::info('Shoot ready email sent', [
@@ -150,6 +184,16 @@ class MailService
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new ShootReadyMail($shoot->photographer, $shootData));
+                Log::info('Shoot ready email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
             
             return true;
         } catch (\Exception $e) {
@@ -173,6 +217,7 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $paymentData = $this->formatPaymentData($payment);
             
+            // Send to client
             Mail::to($user->email)->send(new PaymentConfirmationMail($user, $shootData, $paymentData));
             
             Log::info('Payment confirmation email sent', [
@@ -181,6 +226,16 @@ class MailService
                 'payment_id' => $payment->id,
                 'email' => $user->email
             ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new PaymentConfirmationMail($shoot->photographer, $shootData, $paymentData));
+                Log::info('Payment confirmation email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
             
             return true;
         } catch (\Exception $e) {
@@ -238,21 +293,67 @@ class MailService
             $fullAddress .= ' ' . $shoot->zip;
         }
 
+        // Format date with time
+        $dateStr = 'TBD';
+        if ($shoot->scheduled_date) {
+            $dateStr = $shoot->scheduled_date->format('M j, Y');
+            if ($shoot->time) {
+                $dateStr .= ' at ' . $shoot->time;
+            }
+        }
+
+        // Format notes - extract only content from notes relationship or shoot_notes field
+        $notesText = $this->formatNotes($shoot);
+
         return (object) [
             'id' => $shoot->id,
             'location' => $fullAddress ?: 'TBD',
-            'date' => $shoot->scheduled_date ? $shoot->scheduled_date->format('M j, Y') : 'TBD',
+            'date' => $dateStr,
             'time' => $shoot->time ?? 'TBD',
             'photographer' => $shoot->photographer ? $shoot->photographer->name : 'TBD',
-            'notes' => $shoot->notes,
+            'notes' => $notesText,
             'status' => $shoot->status,
             'total' => $shoot->base_quote ?? 0,
             'tax' => $shoot->tax_amount ?? 0,
-            'tax_rate' => 0, // Calculate if needed
+            'tax_rate' => $shoot->tax_percent ?? 0,
             'grand_total' => $shoot->total_quote ?? 0,
             'packages' => $this->formatPackages($shoot),
             'service_category' => $shoot->service_category ?? 'Standard'
         ];
+    }
+
+    /**
+     * Format notes for email display - extract content only
+     */
+    private function formatNotes(Shoot $shoot): string
+    {
+        $noteContents = [];
+
+        // Check shoot_notes field first
+        if (!empty($shoot->shoot_notes)) {
+            $noteContents[] = $shoot->shoot_notes;
+        }
+
+        // Check notes relationship
+        if ($shoot->relationLoaded('notes') && $shoot->notes) {
+            foreach ($shoot->notes as $note) {
+                if (!empty($note->content) && $note->visibility === 'client_visible') {
+                    $noteContents[] = $note->content;
+                }
+            }
+        } elseif (!$shoot->relationLoaded('notes')) {
+            // Load notes if not loaded
+            $shoot->load('notes');
+            if ($shoot->notes) {
+                foreach ($shoot->notes as $note) {
+                    if (!empty($note->content) && $note->visibility === 'client_visible') {
+                        $noteContents[] = $note->content;
+                    }
+                }
+            }
+        }
+
+        return !empty($noteContents) ? implode("\n", $noteContents) : '';
     }
 
     /**
@@ -336,12 +437,12 @@ class MailService
 
     /**
      * Generate payment link for shoot
-     * Points to shoot details page with payment action parameter
+     * Points to public payment page
      */
     public function generatePaymentLink(Shoot $shoot): string
     {
-        $frontendUrl = config('app.frontend_url', 'https://pro.reprophotos.com');
-        return "{$frontendUrl}/shoots/{$shoot->id}?action=pay";
+        $frontendUrl = config('app.frontend_url', 'https://reprodashboard.com');
+        return "{$frontendUrl}/payment/{$shoot->id}";
     }
 
     /**
@@ -534,6 +635,87 @@ class MailService
         } catch (\Exception $e) {
             Log::error('Failed to send invoice rejected email', [
                 'invoice_id' => $invoice->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
+    /**
+     * Send shoot paid email (when admin marks as paid)
+     */
+    public function sendShootPaidEmail(User $user, Shoot $shoot, float $amount): bool
+    {
+        try {
+            $shootData = $this->formatShootData($shoot);
+            
+            // Send to client
+            Mail::to($user->email)->send(new \App\Mail\ShootPaidMail($user, $shootData, $amount));
+            
+            Log::info('Shoot paid email sent', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'amount' => $amount
+            ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new \App\Mail\ShootPaidMail($shoot->photographer, $shootData, $amount));
+                Log::info('Shoot paid email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send shoot paid email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
+    /**
+     * Send shoot cancelled/deleted email
+     */
+    public function sendShootCancelledEmail(User $user, Shoot $shoot): bool
+    {
+        try {
+            $shootData = $this->formatShootData($shoot);
+            
+            // Send to client
+            Mail::to($user->email)->send(new ShootRemovedMail($user, $shootData));
+            
+            Log::info('Shoot cancelled email sent', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email
+            ]);
+
+            // Also send to photographer if assigned
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Mail::to($shoot->photographer->email)->send(new ShootRemovedMail($shoot->photographer, $shootData));
+                Log::info('Shoot cancelled email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send shoot cancelled email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
                 'error' => $e->getMessage()
             ]);
             

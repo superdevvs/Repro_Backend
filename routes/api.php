@@ -169,6 +169,10 @@ Route::get('test/square-locations', [App\Http\Controllers\TestSquareController::
 Route::middleware('auth:sanctum')->get('square/config', [App\Http\Controllers\TestSquareController::class, 'getConfig'])
     ->name('api.square.config');
 
+// Public payment page endpoint (no auth required - for email payment links)
+Route::get('shoots/{shoot}/payment-details', [App\Http\Controllers\API\ShootController::class, 'getPaymentDetails'])
+    ->name('api.shoots.payment-details');
+
 // Address lookup endpoints
 Route::prefix('address')->group(function () {
     Route::get('search', [App\Http\Controllers\AddressLookupController::class, 'searchAddresses']);
