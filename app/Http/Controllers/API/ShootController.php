@@ -3117,10 +3117,15 @@ class ShootController extends Controller
         $file->is_cover = true;
         $file->save();
 
+        // Save hero_image URL to the Shoot model for faster retrieval
+        $heroImageUrl = $this->resolveFileUrl($file->fresh());
+        $shoot->hero_image = $heroImageUrl;
+        $shoot->save();
+
         return response()->json([
             'message' => 'Cover updated',
             'file' => $file->fresh(),
-            'hero_image' => $this->resolveFileUrl($file->fresh()),
+            'hero_image' => $heroImageUrl,
         ]);
     }
 
