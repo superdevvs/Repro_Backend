@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\AccountLink;
 use App\Services\Messaging\AutomationService;
+use App\Services\MailService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 
@@ -523,6 +525,48 @@ class UserController extends Controller
         return response()->json([
             'message' => 'Password updated successfully.',
             'user_id' => $user->id,
+        ]);
+    }
+
+    /**
+     * Admin-only: send password reset link to user
+     */
+    public function sendResetLink(Request $request, $id)
+    {
+        $admin = $request->user();
+        if (!$admin || !in_array($admin->role, ['admin', 'superadmin'])) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $user = User::findOrFail($id);
+        
+        // Generate a password reset token
+        $token = Str::random(64);
+        
+        // Store the token in password_reset_tokens table
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $user->email],
+            [
+                'token' => Hash::make($token),
+                'created_at' => now(),
+            ]
+        );
+        
+        // Generate the reset link and send email
+        $mailService = app(MailService::class);
+        $resetLink = $mailService->generatePasswordResetLink($user, $token);
+        $sent = $mailService->sendPasswordResetEmail($user, $resetLink);
+        
+        if (!$sent) {
+            return response()->json([
+                'message' => 'Failed to send password reset email. Please try again.',
+            ], 500);
+        }
+
+        return response()->json([
+            'message' => 'Password reset link sent successfully.',
+            'user_id' => $user->id,
+            'email' => $user->email,
         ]);
     }
 

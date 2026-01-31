@@ -224,6 +224,10 @@ Route::post('/register', [AuthController::class, 'register']);
 
 Route::post('/login', [AuthController::class, 'login']);
 
+// Password Reset Routes (public)
+Route::post('/password/forgot', [AuthController::class, 'forgotPassword']);
+Route::post('/password/reset', [AuthController::class, 'resetPasswordWithToken']);
+
 Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 
 // Self profile update (authenticated user updates their own profile)
@@ -246,6 +250,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesR
 
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->put('/admin/users/{id}', [UserController::class, 'update']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
 Route::middleware(['auth:sanctum'])->post('/admin/users', [UserController::class, 'store']);

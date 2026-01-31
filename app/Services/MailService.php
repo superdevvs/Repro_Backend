@@ -19,6 +19,7 @@ use App\Mail\InvoiceGeneratedMail;
 use App\Mail\InvoicePendingApprovalMail;
 use App\Mail\InvoiceApprovedMail;
 use App\Mail\InvoiceRejectedMail;
+use App\Mail\PasswordResetMail;
 
 class MailService
 {
@@ -344,13 +345,40 @@ class MailService
     }
 
     /**
-     * Generate password reset link
+     * Generate password reset link with token
      */
-    public function generatePasswordResetLink(User $user): string
+    public function generatePasswordResetLink(User $user, ?string $token = null): string
     {
-        // This would typically use Laravel's password reset functionality
-        $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
-        return "{$frontendUrl}/reset-password?email={$user->email}";
+        $frontendUrl = config('app.frontend_url', 'https://reprodashboard.com');
+        if (!$token) {
+            $token = \Illuminate\Support\Str::random(64);
+        }
+        return "{$frontendUrl}/reset-password?token={$token}&email=" . urlencode($user->email);
+    }
+
+    /**
+     * Send password reset email
+     */
+    public function sendPasswordResetEmail(User $user, string $resetLink): bool
+    {
+        try {
+            Mail::to($user->email)->send(new PasswordResetMail($user, $resetLink));
+            
+            Log::info('Password reset email sent', [
+                'user_id' => $user->id,
+                'email' => $user->email
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send password reset email', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
     }
 
     /**
