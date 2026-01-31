@@ -30,8 +30,8 @@ class ProcessImageJob implements ShouldQueue
     {
         $this->shootFile = $shootFile;
         
-        // Set queue name for image processing
-        $this->onQueue('image-processing');
+        // Use default queue (matches running workers)
+        $this->onQueue('default');
     }
 
     /**
