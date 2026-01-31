@@ -2523,6 +2523,33 @@ class ShootController extends Controller
         // Update services if provided
         if (array_key_exists('services', $validated) && is_array($validated['services'])) {
             $this->attachServices($shoot, $validated['services']);
+
+            // If payment fields not explicitly provided, recalculate from services
+            $paymentFieldsProvided = array_key_exists('base_quote', $validated)
+                || array_key_exists('tax_amount', $validated)
+                || array_key_exists('total_quote', $validated);
+
+            if (!$paymentFieldsProvided) {
+                $serviceIds = collect($validated['services'])->pluck('id');
+                $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
+
+                $baseQuote = collect($validated['services'])->reduce(function ($sum, $service) use ($serviceModels) {
+                    $serviceModel = $serviceModels->get($service['id']);
+                    $price = $service['price'] ?? ($serviceModel?->price ?? 0);
+                    $quantity = $service['quantity'] ?? 1;
+                    return $sum + ((float) $price * (int) $quantity);
+                }, 0.0);
+
+                $baseQuote = round($baseQuote, 2);
+                $taxRegion = $shoot->tax_region ?: $this->taxService->determineTaxRegion($shoot->state ?? '');
+                $taxCalculation = $this->taxService->calculateTotal($baseQuote, $taxRegion);
+
+                $shoot->base_quote = $taxCalculation['base_quote'];
+                $shoot->tax_region = $taxCalculation['tax_region'];
+                $shoot->tax_percent = $taxCalculation['tax_percent'];
+                $shoot->tax_amount = $taxCalculation['tax_amount'];
+                $shoot->total_quote = $taxCalculation['total_quote'];
+            }
         }
 
         // Update location fields
