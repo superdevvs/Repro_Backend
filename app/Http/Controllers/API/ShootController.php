@@ -4795,7 +4795,15 @@ class ShootController extends Controller
             return $this->resolveFileUrl($cover, $allowDropboxCalls);
         }
 
-        // Second priority: first displayable image (JPG, PNG, WEBP, GIF)
+        // Second priority: first file with a thumbnail_path (for RAW files)
+        $withThumbnail = $shoot->files->first(function ($file) {
+            return !empty($file->thumbnail_path);
+        });
+        if ($withThumbnail && $withThumbnail->thumbnail_path) {
+            return Storage::disk('public')->url($withThumbnail->thumbnail_path);
+        }
+
+        // Third priority: first displayable image (JPG, PNG, WEBP, GIF)
         $displayableExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
         $displayable = $shoot->files->first(function ($file) use ($displayableExtensions) {
             $filename = $file->filename ?? $file->path ?? '';
