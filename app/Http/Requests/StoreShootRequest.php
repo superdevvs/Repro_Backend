@@ -67,10 +67,11 @@ class StoreShootRequest extends FormRequest
             'state' => 'required|string|max:2',
             'zip' => 'required|string|max:10',
 
-            // Services: required array with service_id and quantity
+            // Services: required array with service_id, quantity, and price
             'services' => 'required|array|min:1',
             'services.*.id' => 'required|exists:services,id',
             'services.*.quantity' => 'nullable|integer|min:1',
+            'services.*.price' => 'nullable|numeric|min:0',
 
             // Scheduling: optional (becomes Hold-On if missing)
             'scheduled_at' => 'nullable|date',
