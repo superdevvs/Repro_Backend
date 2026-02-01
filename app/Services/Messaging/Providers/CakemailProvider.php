@@ -45,7 +45,7 @@ class CakemailProvider implements EmailProviderInterface
         $emailPayload = [
             'sender' => [
                 'id' => $senderId,
-                'name' => $channel->display_name ?? config('mail.from.name', 'R/E Pro Photos'),
+                'name' => $payload['sender_name'] ?? $channel->display_name ?? config('mail.from.name', 'R/E Pro Photos'),
             ],
             'content' => [
                 'type' => $contentType,

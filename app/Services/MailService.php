@@ -475,11 +475,12 @@ class MailService
             $messagingService = app(MessagingService::class);
             $messagingService->sendEmail([
                 'to' => $user->email,
-                'subject' => 'Reset Your Password - REPro Photos',
+                'subject' => 'Reset Your Password - R/E Pro Photos',
                 'body_html' => $html,
                 'body_text' => $text,
                 'send_source' => 'PASSWORD_RESET',
                 'tags' => ['password_reset'],
+                'sender_name' => 'R/E Pro Photos',
             ]);
             
             Log::info('Password reset email sent', [

@@ -80,7 +80,7 @@
         <p>We received a request to reset your password for your REPro Photos account. Click the button below to create a new password:</p>
         
         <p style="text-align: center;">
-            <a href="{{ $resetLink }}" class="button">Reset Password</a>
+            <a href="{!! $resetLink !!}" class="button">Reset Password</a>
         </p>
         
         <p>This link will expire in 60 minutes for security reasons.</p>
@@ -89,11 +89,11 @@
         
         <div class="link-text">
             <strong>Can't click the button?</strong> Copy and paste this link into your browser:<br>
-            {{ $resetLink }}
+            {!! $resetLink !!}
         </div>
         
         <div class="footer">
-            <p>This email was sent by REPro Photos.<br>
+            <p>This email was sent by R/E Pro Photos.<br>
             If you have any questions, please contact us at <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a></p>
         </div>
     </div>
