@@ -7,6 +7,7 @@ use App\Models\Message;
 use App\Models\PhotographerAvailability;
 use App\Models\Shoot;
 use App\Models\ShootActivityLog;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Models\WorkflowLog;
 use Carbon\Carbon;
@@ -14,6 +15,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class DashboardController extends Controller
 {
@@ -39,7 +42,7 @@ class DashboardController extends Controller
             Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'address', 'city', 'state', 'zip', 
                          'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                          'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
-                         'photographer_notes', 'editor_notes', 'property_details', 'created_by')
+                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                 ->with([
                     'client:id,name,company_name',
                     'photographer:id,name,avatar',
@@ -118,7 +121,7 @@ class DashboardController extends Controller
             Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'address', 'city', 'state', 'zip', 
                          'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                          'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
-                         'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by')
+                         'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                 ->with([
                     'client:id,name,company_name',
                     'photographer:id,name,avatar',
@@ -151,13 +154,36 @@ class DashboardController extends Controller
     /**
      * Normalize shoot records for the dashboard cards.
      */
-    protected function formatShoots(Collection $shoots, Carbon $today): Collection
+    protected function formatShoots(Collection $shoots, Carbon $today, bool $includeMedia = false): Collection
     {
-        return $shoots->map(function (Shoot $shoot) use ($today) {
+        if ($includeMedia && $shoots->isNotEmpty()) {
+            $shoots->loadMissing(['files' => function ($query) {
+                $query->select(
+                    'id',
+                    'shoot_id',
+                    'workflow_stage',
+                    'is_cover',
+                    'url',
+                    'path',
+                    'dropbox_path',
+                    'thumbnail_path',
+                    'web_path',
+                    'placeholder_path',
+                    'file_type',
+                    'mime_type',
+                    'filename',
+                    'stored_filename'
+                )
+                ->orderBy('sort_order', 'asc')
+                ->orderBy('created_at', 'desc');
+            }]);
+        }
+
+        return $shoots->map(function (Shoot $shoot) use ($today, $includeMedia) {
             $date = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date) : null;
             $dateTime = $this->combineDateAndTime($shoot->scheduled_date, $shoot->time);
 
-            return [
+            $summary = [
                 'id' => $shoot->id,
                 'day_label' => $this->getDayLabel($date, $today),
                 'time_label' => $dateTime ? $dateTime->format('h:i A') : null,
@@ -188,7 +214,112 @@ class DashboardController extends Controller
                 // Property details
                 'property_details' => $shoot->property_details,
             ];
+
+            if ($includeMedia) {
+                $previewImages = $this->buildShootPreviewImages($shoot);
+                $heroImage = $this->resolveMediaUrl($shoot->hero_image) ?? ($previewImages[0] ?? null);
+                $summary['hero_image'] = $heroImage;
+                $summary['preview_images'] = $previewImages;
+            }
+            return $summary;
         })->values();
+    }
+
+    protected function buildShootPreviewImages(Shoot $shoot): array
+    {
+        if (!$shoot->relationLoaded('files') || $shoot->files->isEmpty()) {
+            return [];
+        }
+
+        $editedFiles = $shoot->files->filter(function (ShootFile $file) {
+            return in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true);
+        });
+
+        $renderable = $editedFiles->filter(function (ShootFile $file) {
+            return $this->isRenderableImage($file);
+        });
+
+        if ($renderable->isEmpty()) {
+            $renderable = $shoot->files->filter(function (ShootFile $file) {
+                return $this->isRenderableImage($file);
+            });
+        }
+
+        if ($renderable->isEmpty()) {
+            return [];
+        }
+
+        $cover = $renderable->firstWhere('is_cover', true);
+        if ($cover) {
+            $renderable = $renderable
+                ->reject(fn (ShootFile $file) => $file->id === $cover->id)
+                ->prepend($cover);
+        }
+
+        return $renderable
+            ->map(function (ShootFile $file) {
+                return $this->resolveFilePreviewUrl($file);
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->take(6)
+            ->all();
+    }
+
+    protected function isRenderableImage(ShootFile $file): bool
+    {
+        $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        if ($mime && Str::startsWith($mime, 'image/')) {
+            return true;
+        }
+
+        $filename = strtolower((string) ($file->filename ?? $file->stored_filename ?? $file->path ?? ''));
+        return Str::endsWith($filename, ['.jpg', '.jpeg', '.png', '.webp', '.gif']);
+    }
+
+    protected function resolveFilePreviewUrl(ShootFile $file): ?string
+    {
+        if ($file->url) {
+            return $this->resolveMediaUrl($file->url);
+        }
+
+        $path = $file->thumbnail_path
+            ?: $file->web_path
+            ?: $file->placeholder_path
+            ?: $file->path;
+
+        if ($path) {
+            return $this->resolveMediaUrl($path);
+        }
+
+        if ($file->dropbox_path) {
+            return url('/api/shoots/' . $file->shoot_id . '/files/' . $file->id . '/preview');
+        }
+
+        return null;
+    }
+
+    protected function resolveMediaUrl(?string $path): ?string
+    {
+        if (!$path) {
+            return null;
+        }
+
+        if (Str::startsWith($path, ['http://', 'https://'])) {
+            return $path;
+        }
+
+        $clean = ltrim($path, '/');
+        if (Str::startsWith($clean, ['storage/', 'api/'])) {
+            return url($clean);
+        }
+
+        if (Storage::disk('public')->exists($clean)) {
+            return Storage::disk('public')->url($clean);
+        }
+
+        return url('storage/' . $clean);
     }
 
     /**
@@ -326,7 +457,7 @@ class DashboardController extends Controller
             $query = Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'address', 'city', 'state', 'zip', 
                              'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                              'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
-                             'photographer_notes', 'editor_notes', 'property_details', 'created_by')
+                             'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                     ->with([
                         'client:id,name,company_name',
                         'photographer:id,name,avatar',
@@ -353,7 +484,8 @@ class DashboardController extends Controller
             
             $shoots = $this->formatShoots(
                 $query->limit(15)->get(),
-                $today
+                $today,
+                $column['key'] === 'ready'
             );
 
             return [
