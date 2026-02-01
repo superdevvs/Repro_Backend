@@ -20,6 +20,7 @@ use App\Mail\InvoicePendingApprovalMail;
 use App\Mail\InvoiceApprovedMail;
 use App\Mail\InvoiceRejectedMail;
 use App\Mail\PasswordResetMail;
+use App\Services\Messaging\MessagingService;
 
 class MailService
 {
@@ -464,7 +465,22 @@ class MailService
     public function sendPasswordResetEmail(User $user, string $resetLink): bool
     {
         try {
-            Mail::to($user->email)->send(new PasswordResetMail($user, $resetLink));
+            $html = view('emails.password_reset', [
+                'user' => $user,
+                'resetLink' => $resetLink,
+            ])->render();
+
+            $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
+
+            $messagingService = app(MessagingService::class);
+            $messagingService->sendEmail([
+                'to' => $user->email,
+                'subject' => 'Reset Your Password - REPro Photos',
+                'body_html' => $html,
+                'body_text' => $text,
+                'send_source' => 'PASSWORD_RESET',
+                'tags' => ['password_reset'],
+            ]);
             
             Log::info('Password reset email sent', [
                 'user_id' => $user->id,
