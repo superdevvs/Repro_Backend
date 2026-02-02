@@ -735,7 +735,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
-            
+
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
@@ -747,7 +747,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p style="font-size: 13px; color: #666;">Payment may be made at any time throughout the shoot process. Although the image proofs will be posted to your account prior to payment being made, your final images will not be accessible until payment has been received in full.</p>
             
-            <p>If you have any questions about this photo shoot please feel free to contact us, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
+            <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
             <div class="note">
                 <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
@@ -836,6 +836,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
+
+            <p><strong>Updated Details:</strong></p>
+            <p>[shoot_changes_html]</p>
             
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
@@ -892,6 +895,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
+
+            <p><strong>Updated Details:</strong></p>
+            <p>[shoot_changes_html]</p>
             
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
@@ -973,7 +979,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Services:</span> [shoot_packages]
                 </div>
             </div>
-            
+
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
@@ -1017,6 +1023,9 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Services:</span> [shoot_packages]
                 </div>
             </div>
+
+            <p><strong>Updated Details:</strong></p>
+            <p>[shoot_changes_html]</p>
             
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
@@ -1359,6 +1368,9 @@ Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 Total: [shoot_quote]
 
+Updated Details:
+[shoot_changes]
+
 [shoot_notes]
 
 Payment link: [pay_link]
@@ -1380,6 +1392,9 @@ Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
 Total: [shoot_quote]
+
+Updated Details:
+[shoot_changes]
 
 [shoot_notes]
 
@@ -1435,6 +1450,9 @@ Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [shoot_packages]
+
+Updated Details:
+[shoot_changes]
 
 [shoot_notes]
 

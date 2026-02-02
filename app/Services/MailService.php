@@ -92,14 +92,14 @@ class MailService
     /**
      * Send shoot updated email
      */
-    public function sendShootUpdatedEmail(User $user, Shoot $shoot): bool
+    public function sendShootUpdatedEmail(User $user, Shoot $shoot, ?string $changesSummary = null): bool
     {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             
             // Send to client
-            Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData));
+            Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData, $changesSummary));
             
             Log::info('Shoot updated email sent', [
                 'user_id' => $user->id,
@@ -109,7 +109,7 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData));
+                Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData, $changesSummary));
                 Log::info('Shoot updated email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,

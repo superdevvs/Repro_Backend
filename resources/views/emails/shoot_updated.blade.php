@@ -20,6 +20,13 @@
         Total: {{ number_format($shoot->grand_total, 2) }}
     </p>
 
+    @if(!empty($changesSummary))
+    <p>
+        <strong>Updated Details:</strong><br>
+        {!! nl2br(e($changesSummary)) !!}
+    </p>
+    @endif
+
     @if($shoot->notes)
     <p>
         <strong>Notes:</strong><br>

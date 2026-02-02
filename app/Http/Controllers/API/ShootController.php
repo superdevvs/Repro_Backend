@@ -1394,6 +1394,16 @@ class ShootController extends Controller
                 $user
             );
 
+            // 11b. Trigger automation for client-requested shoots
+            if ($treatAsClientRequest) {
+                $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
+                $context = $this->automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $this->automationService->handleEvent('SHOOT_REQUESTED', $context);
+            }
+
             // 12. Create Dropbox folders if scheduled (only for non-client shoots)
             // For client requests, folders are created when the shoot is approved
             if (!$treatAsClientRequest && $scheduledAt) {
@@ -1742,6 +1752,15 @@ class ShootController extends Controller
                 $context['rep'] = $shoot->rep;
             }
             $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
+            $scheduledLabel = $scheduledAt
+                ? \Carbon\Carbon::instance($scheduledAt)->format('M j, Y g:i A')
+                : 'TBD';
+            $scheduledServices = $shoot->services->pluck('name')->filter()->values()->all();
+            $scheduledServicesLabel = $scheduledServices ? implode(', ', $scheduledServices) : 'N/A';
+            $scheduledTotal = number_format((float) ($shoot->total_quote ?? 0), 2);
+            $scheduledSummary = "Scheduled for {$scheduledLabel}\nServices: {$scheduledServicesLabel}\nQuote: \${$scheduledTotal}";
+            $context['shoot_changes'] = $scheduledSummary;
+            $context['shoot_changes_html'] = str_replace("\n", '<br>', $scheduledSummary);
             $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
             $this->automationService->handleEvent('SHOOT_UPDATED', $context);
 
@@ -1751,7 +1770,7 @@ class ShootController extends Controller
             }
 
             if ($shoot->client) {
-                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot);
+                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $scheduledSummary);
             }
             
             // Send notification to photographer when assigned
@@ -2012,6 +2031,8 @@ class ShootController extends Controller
             return response()->json(['message' => 'Only requested shoots can be approved'], 422);
         }
 
+        $wasRequested = $shoot->status === Shoot::STATUS_REQUESTED || $shoot->workflow_status === Shoot::STATUS_REQUESTED;
+
         $validated = $request->validate([
             'photographer_id' => 'nullable|exists:users,id',
             'scheduled_at' => 'nullable|date',
@@ -2054,17 +2075,29 @@ class ShootController extends Controller
                 }
             }
 
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+            $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
             $context = $this->automationService->buildShootContext($shoot);
             if ($shoot->rep) {
                 $context['rep'] = $shoot->rep;
             }
             $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
+            $approvedSchedule = $scheduledAt
+                ? \Carbon\Carbon::instance($scheduledAt)->format('M j, Y g:i A')
+                : 'TBD';
+            $approvedServices = $shoot->services->pluck('name')->filter()->values()->all();
+            $approvedServicesLabel = $approvedServices ? implode(', ', $approvedServices) : 'N/A';
+            $approvedTotal = number_format((float) ($shoot->total_quote ?? 0), 2);
+            $approvedSummary = "Approved and scheduled for {$approvedSchedule}\nServices: {$approvedServicesLabel}\nQuote: \${$approvedTotal}";
+            $context['shoot_changes'] = $approvedSummary;
+            $context['shoot_changes_html'] = str_replace("\n", '<br>', $approvedSummary);
+            if ($wasRequested) {
+                $this->automationService->handleEvent('SHOOT_REQUEST_APPROVED', $context);
+            }
             $this->automationService->handleEvent('SHOOT_BOOKED', $context);
             $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
 
             if ($shoot->client) {
-                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot);
+                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $approvedSummary);
             }
             
             // Send notification to photographer when shoot is approved/scheduled
@@ -2405,6 +2438,13 @@ class ShootController extends Controller
         if (!$shoot instanceof Shoot) {
             $shoot = Shoot::findOrFail($shoot);
         }
+        $shoot->loadMissing('services');
+        $originalServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
+        $originalServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
+        $originalAddress = $this->formatFullAddress($shoot);
+        $originalBaseQuote = (float) $shoot->base_quote;
+        $originalTaxAmount = (float) $shoot->tax_amount;
+        $originalTotalQuote = (float) $shoot->total_quote;
         $isAdmin = in_array($user->role, ['admin', 'superadmin', 'superadmin']);
         $isClient = $user->role === 'client';
         $isRep = $user->role === 'salesRep';
@@ -2502,8 +2542,9 @@ class ShootController extends Controller
         if (array_key_exists('scheduled_at', $validated) && $validated['scheduled_at']) {
             $scheduledAt = new \DateTime($validated['scheduled_at']);
             $shoot->scheduled_at = $scheduledAt;
-            $shoot->scheduled_date = $scheduledAt->format('Y-m-d');
-            $shoot->time = $scheduledAt->format('H:i');
+            $newDateLabel = $shoot->scheduled_date
+                ? \Carbon\Carbon::parse($shoot->scheduled_date)->format('M j, Y')
+                : ($shoot->scheduled_at?->format('M j, Y') ?? 'TBD');
         }
         
         if (array_key_exists('scheduled_date', $validated)) {
@@ -2699,10 +2740,12 @@ class ShootController extends Controller
         if ($shoot->rep) {
             $context['rep'] = $shoot->rep;
         }
+        $context['shoot_changes'] = $changesSummary;
+        $context['shoot_changes_html'] = $changesHtml;
 
         $client = $shoot->client;
         if ($client) {
-            $this->mailService->sendShootUpdatedEmail($client, $shoot);
+            $this->mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary);
         }
 
         $this->automationService->handleEvent('SHOOT_UPDATED', $context);

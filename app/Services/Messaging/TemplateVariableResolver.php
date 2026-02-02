@@ -51,6 +51,27 @@ class TemplateVariableResolver
             $derived = array_merge($derived, $this->resolveShootVariables($shoot));
         }
 
+        if (!empty($derived['client_first_name'])) {
+            $derived['realtor_first'] = $derived['client_first_name'];
+        }
+        if (!empty($derived['client_last_name'])) {
+            $derived['realtor_last'] = $derived['client_last_name'];
+        }
+        if (!empty($derived['client_company'])) {
+            $derived['realtor_company'] = $derived['client_company'];
+        }
+        if (!empty($derived['client_email'])) {
+            $derived['realtor_email'] = $derived['client_email'];
+        }
+        if (!empty($derived['client_phone'])) {
+            $derived['phone_number'] = $derived['client_phone'];
+        }
+
+        $derived['shoot_changes'] = $context['shoot_changes']
+            ?? 'Please review updated details in the dashboard.';
+        $derived['shoot_changes_html'] = $context['shoot_changes_html']
+            ?? str_replace("\n", '<br>', (string) $derived['shoot_changes']);
+
         $invoice = $this->resolveInvoice($context);
         if ($invoice) {
             $derived = array_merge($derived, $this->resolveInvoiceVariables($invoice));

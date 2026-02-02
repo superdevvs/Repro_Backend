@@ -38,9 +38,16 @@ return Application::configure(basePath: dirname(__DIR__))
         $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
             // Only handle API routes
             if ($request->is('api/*')) {
-                $origin = $request->headers->get('Origin', '*');
-                if (!in_array($origin, ['http://localhost:5173', 'http://localhost:5174', 'http://127.0.0.1:5173'])) {
-                    $origin = '*';
+                $allowedOrigins = config('cors.allowed_origins', []);
+                $originHeader = $request->headers->get('Origin');
+                $origin = '*';
+
+                if ($originHeader && in_array($originHeader, $allowedOrigins, true)) {
+                    $origin = $originHeader;
+                } elseif (!empty($allowedOrigins)) {
+                    $origin = $allowedOrigins[0];
+                } elseif (config('app.frontend_url')) {
+                    $origin = config('app.frontend_url');
                 }
                 
                 $status = method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500;
