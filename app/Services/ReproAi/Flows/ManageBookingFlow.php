@@ -498,6 +498,69 @@ class ManageBookingFlow
     }
 
     /**
+     * Show shoots with late RAW uploads (past scheduled date, no photos uploaded).
+     */
+    protected function showLateRawUploads(AiChatSession $session, User $user): array
+    {
+        $role = $user->role;
+        $cutoff = now()->subHours(24); // Shoots older than 24 hours past scheduled date
+
+        $query = $this->getShootsForUser($user)
+            ->whereNull('photos_uploaded_at')
+            ->where('scheduled_date', '<', $cutoff)
+            ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
+            ->orderBy('scheduled_date', 'asc')
+            ->limit(10);
+
+        $shoots = $query->get();
+
+        if ($shoots->isEmpty()) {
+            return [
+                'assistant_messages' => [[
+                    'content' => "✅ No shoots with late RAW uploads. All photographers are on track!",
+                    'metadata' => ['type' => 'late_raw_uploads', 'count' => 0],
+                ]],
+                'suggestions' => ['Show today\'s shoots', 'Check editing queue', 'View flagged shoots'],
+            ];
+        }
+
+        $actions = $shoots->take(3)->flatMap(function ($shoot) use ($role) {
+            $items = [[
+                'type' => 'open_shoot',
+                'label' => "Open #{$shoot->id}",
+                'shootId' => $shoot->id,
+            ]];
+
+            if (in_array($role, ['admin', 'superadmin'], true)) {
+                $items[] = [
+                    'type' => 'notify_photographer',
+                    'label' => "Remind #{$shoot->id}",
+                    'shootId' => $shoot->id,
+                ];
+            }
+
+            return $items;
+        })->all();
+
+        $content = "⚠️ **Shoots with Late RAW Uploads** ({$shoots->count()}):\n\n";
+        foreach ($shoots as $shoot) {
+            $date = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->format('M d, Y') : 'TBD';
+            $hoursLate = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->diffInHours(now()) : 0;
+            $photographer = $shoot->photographer ? $shoot->photographer->name : 'Unassigned';
+            $content .= "• **#{$shoot->id}** - {$shoot->address}, {$shoot->city}\n";
+            $content .= "  📅 Shot on: {$date} | ⏰ {$hoursLate}h late | 📷 {$photographer}\n\n";
+        }
+
+        return [
+            'assistant_messages' => [[
+                'content' => $content,
+                'metadata' => ['type' => 'late_raw_uploads', 'count' => $shoots->count(), 'actions' => $actions],
+            ]],
+            'suggestions' => ['Notify photographer', 'View shoot details', 'Escalate to admin'],
+        ];
+    }
+
+    /**
      * Show shoots needing RAW upload (photographer/admin).
      */
     protected function showShootsNeedingUpload(AiChatSession $session, User $user): array
