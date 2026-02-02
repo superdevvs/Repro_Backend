@@ -545,7 +545,7 @@ class ManageBookingFlow
         $content = "⚠️ **Shoots with Late RAW Uploads** ({$shoots->count()}):\n\n";
         foreach ($shoots as $shoot) {
             $date = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->format('M d, Y') : 'TBD';
-            $hoursLate = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->diffInHours(now()) : 0;
+            $hoursLate = $shoot->scheduled_date ? (int) Carbon::parse($shoot->scheduled_date)->diffInHours(now()) : 0;
             $photographer = $shoot->photographer ? $shoot->photographer->name : 'Unassigned';
             $content .= "• **#{$shoot->id}** - {$shoot->address}, {$shoot->city}\n";
             $content .= "  📅 Shot on: {$date} | ⏰ {$hoursLate}h late | 📷 {$photographer}\n\n";
