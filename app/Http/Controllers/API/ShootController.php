@@ -2037,6 +2037,7 @@ class ShootController extends Controller
             'photographer_id' => 'nullable|exists:users,id',
             'scheduled_at' => 'nullable|date',
             'notes' => 'nullable|string|max:2000',
+            'skip_availability_check' => 'nullable|boolean',
         ]);
 
         // Use existing scheduled_at if not provided
@@ -2047,11 +2048,14 @@ class ShootController extends Controller
         try {
             // Assign photographer if provided
             if (!empty($validated['photographer_id'])) {
-                // Check photographer availability
-                $durationMinutes = $this->calculateShootDurationFromServices(
-                    $shoot->services->map(fn($s) => ['id' => $s->id])->toArray()
-                );
-                $this->checkPhotographerAvailability($validated['photographer_id'], $scheduledAt, $durationMinutes);
+                // Check photographer availability (skip for admins if requested or by default)
+                $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
+                if (!$skipAvailabilityCheck) {
+                    $durationMinutes = $this->calculateShootDurationFromServices(
+                        $shoot->services->map(fn($s) => ['id' => $s->id])->toArray()
+                    );
+                    $this->checkPhotographerAvailability($validated['photographer_id'], $scheduledAt, $durationMinutes);
+                }
                 $shoot->photographer_id = $validated['photographer_id'];
                 $shoot->save();
             }

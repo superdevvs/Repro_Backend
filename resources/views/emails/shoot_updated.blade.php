@@ -20,7 +20,7 @@
         Total: {{ number_format($shoot->grand_total, 2) }}
     </p>
 
-    @if(!empty($changesSummary))
+    @if(isset($changesSummary) && !empty($changesSummary))
     <p>
         <strong>Updated Details:</strong><br>
         {!! nl2br(e($changesSummary)) !!}
