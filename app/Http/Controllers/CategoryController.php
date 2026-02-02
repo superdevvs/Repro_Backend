@@ -53,7 +53,7 @@ class CategoryController extends Controller
         
         // Prevent deletion of default categories (Photo, Video)
         // Check both is_default flag and name as fallback
-        $defaultNames = ['photo', 'video'];
+        $defaultNames = ['photo', 'photos', 'video'];
         $isDefaultByName = in_array(strtolower($category->name), $defaultNames);
         
         if ($category->is_default || $isDefaultByName) {

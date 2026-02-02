@@ -2739,7 +2739,35 @@ class ShootController extends Controller
             }
         }
 
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
+        
+        // Build changes summary for email notifications
+        $changes = [];
+        $newServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
+        $newServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
+        if ($originalServiceIds !== $newServiceIds) {
+            $changes[] = 'Services: ' . (empty($newServiceNames) ? 'None' : implode(', ', $newServiceNames));
+        }
+        $newAddress = $this->formatFullAddress($shoot);
+        if ($originalAddress !== $newAddress) {
+            $changes[] = 'Location: ' . ($newAddress ?: 'TBD');
+        }
+        if ($originalBaseQuote !== (float) $shoot->base_quote || $originalTotalQuote !== (float) $shoot->total_quote) {
+            $changes[] = 'Quote: $' . number_format((float) $shoot->total_quote, 2);
+        }
+        if ($originalScheduledAt !== $shoot->scheduled_at?->toISOString() || $originalScheduledDate !== $shoot->scheduled_date?->toDateString() || $originalTime !== $shoot->time) {
+            $newDateLabel = $shoot->scheduled_date
+                ? \Carbon\Carbon::parse($shoot->scheduled_date)->format('M j, Y')
+                : ($shoot->scheduled_at?->format('M j, Y') ?? 'TBD');
+            $newTimeLabel = $shoot->time ?? ($shoot->scheduled_at?->format('g:i A') ?? 'TBD');
+            $changes[] = 'Scheduled: ' . $newDateLabel . ' at ' . $newTimeLabel;
+        }
+        if ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer) {
+            $changes[] = 'Photographer: ' . $shoot->photographer->name;
+        }
+        $changesSummary = !empty($changes) ? implode("\n", $changes) : null;
+        $changesHtml = !empty($changes) ? implode('<br>', array_map('e', $changes)) : null;
+        
         $context = $this->automationService->buildShootContext($shoot);
         if ($shoot->rep) {
             $context['rep'] = $shoot->rep;

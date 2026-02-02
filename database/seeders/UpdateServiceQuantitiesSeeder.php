@@ -16,7 +16,7 @@ class UpdateServiceQuantitiesSeeder extends Seeder
     public function run(): void
     {
         // Get or create categories
-        $photoCategory = Category::firstOrCreate(['name' => 'Photo'], ['icon' => 'Camera']);
+        $photoCategory = Category::firstOrCreate(['name' => 'Photos'], ['icon' => 'Camera']);
         $videoCategory = Category::firstOrCreate(['name' => 'Video'], ['icon' => 'Video']);
         $droneCategory = Category::firstOrCreate(['name' => 'Drone'], ['icon' => 'Plane']);
         
