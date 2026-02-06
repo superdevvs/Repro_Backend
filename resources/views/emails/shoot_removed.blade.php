@@ -5,7 +5,7 @@
     <title>Photo Shoot Cancelled</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>
         One of your photo shoots has been cancelled or removed from the schedule.

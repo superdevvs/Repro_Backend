@@ -5,7 +5,7 @@
     <title>Your Shoot Has Been Marked as Paid</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>Great news! Your photo shoot has been marked as paid.</p>
 

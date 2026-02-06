@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Models\Service;
 use App\Models\Payment;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Services\InvoiceService;
 use App\Services\DropboxWorkflowService;
 use App\Services\MailService;
@@ -368,6 +369,127 @@ class ShootController extends Controller
                 ],
             ], 500);
         }
+    }
+
+    /**
+     * Client requests a hold for their shoot
+     * POST /api/shoots/{shoot}/request-hold
+     */
+    public function requestHold(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        // Only the client who owns the shoot can request a hold
+        if ($shoot->client_id !== $user->id && $user->role !== 'client') {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $currentStatus = $shoot->workflow_status ?? $shoot->status;
+
+        if (in_array($currentStatus, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_ON_HOLD], true)) {
+            return response()->json(['message' => 'This shoot cannot be placed on hold'], 422);
+        }
+
+        if ($shoot->hold_requested_at) {
+            return response()->json(['message' => 'A hold request is already pending for this shoot'], 422);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'required|string|max:1000',
+        ]);
+
+        $shoot->hold_requested_at = now();
+        $shoot->hold_requested_by = $user->id;
+        $shoot->hold_reason = $validated['reason'];
+        $shoot->save();
+
+        $this->activityLogger->log(
+            $shoot,
+            'hold_requested',
+            [
+                'by' => $user->name,
+                'reason' => $validated['reason'],
+            ],
+            $user
+        );
+
+        return response()->json([
+            'message' => 'Hold request submitted. Pending approval.',
+            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+        ]);
+    }
+
+    /**
+     * Admin/rep/editing manager approves hold request
+     * POST /api/shoots/{shoot}/approve-hold
+     */
+    public function approveHold(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$shoot->hold_requested_at) {
+            return response()->json(['message' => 'No hold request pending for this shoot'], 422);
+        }
+
+        try {
+            $this->workflowService->putOnHold($shoot, $user, $shoot->hold_reason, 'hold_approved');
+
+            $shoot->hold_requested_at = null;
+            $shoot->hold_requested_by = null;
+            $shoot->save();
+
+            return response()->json([
+                'message' => 'Hold request approved. Shoot has been placed on hold.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Admin/rep/editing manager rejects hold request
+     * POST /api/shoots/{shoot}/reject-hold
+     */
+    public function rejectHold(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$shoot->hold_requested_at) {
+            return response()->json(['message' => 'No hold request pending for this shoot'], 422);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:1000',
+        ]);
+
+        $shoot->hold_requested_at = null;
+        $shoot->hold_requested_by = null;
+        $shoot->hold_reason = null;
+        $shoot->save();
+
+        $this->activityLogger->log(
+            $shoot,
+            'hold_rejected',
+            [
+                'by' => $user->name,
+                'rejection_reason' => $validated['reason'] ?? 'No reason provided',
+            ],
+            $user
+        );
+
+        return response()->json([
+            'message' => 'Hold request rejected.',
+            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+        ]);
     }
 
     /**
@@ -999,6 +1121,13 @@ class ShootController extends Controller
         $shoot->loadMissing(['client', 'photographer', 'services', 'payments']);
         $client = $shoot->client;
         $services = $shoot->services->pluck('name')->filter()->values()->all();
+
+        // Append invoice misc items (admin_misc expenses) so they appear alongside services
+        $miscItems = $this->getInvoiceMiscItemNames($shoot);
+        if (!empty($miscItems)) {
+            $services = array_merge($services, $miscItems);
+        }
+
         $completedDate = $this->resolveCompletedDate($shoot);
         $payments = $this->resolvePaymentsSummary($shoot);
 
@@ -1097,6 +1226,29 @@ class ShootController extends Controller
                 ? $lastPayment->processed_at->toDateString()
                 : null,
         ];
+    }
+
+    /**
+     * Get descriptions of invoice misc items (admin_misc expenses) for a shoot.
+     */
+    protected function getInvoiceMiscItemNames(Shoot $shoot): array
+    {
+        $invoice = Invoice::where('shoot_id', $shoot->id)->first();
+        if (!$invoice) {
+            return [];
+        }
+
+        return $invoice->items()
+            ->where('type', InvoiceItem::TYPE_EXPENSE)
+            ->get()
+            ->filter(function ($item) {
+                $meta = is_array($item->meta) ? $item->meta : [];
+                return ($meta['source'] ?? null) === 'admin_misc';
+            })
+            ->pluck('description')
+            ->filter()
+            ->values()
+            ->all();
     }
 
     protected function determineTourPurchased(Shoot $shoot): bool
@@ -1815,6 +1967,17 @@ class ShootController extends Controller
 
             $this->workflowService->startEditing($shoot, $user);
 
+            if (!$shoot->activeShareLinks()->exists()) {
+                try {
+                    $this->createShootShareLink($shoot->fresh(), $user);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to auto-generate share link on start editing', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             return response()->json([
                 'message' => 'Editing started successfully',
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
@@ -1889,12 +2052,8 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        // Admin, super admin, rep, or assigned photographer can put on hold
-        if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'rep', 'representative', 'photographer'])) {
+        // Admin, super admin, editing manager, or rep can put on hold
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -2504,6 +2663,8 @@ class ShootController extends Controller
             'company_notes' => 'nullable|string',
             'photographer_notes' => 'nullable|string',
             'editor_notes' => 'nullable|string',
+            'notify_client' => 'nullable|boolean',
+            'notify_photographer' => 'nullable|boolean',
         ]);
 
         $previousPrivateListing = (bool) ($shoot->is_private_listing ?? false);
@@ -2775,9 +2936,16 @@ class ShootController extends Controller
         $context['shoot_changes'] = $changesSummary;
         $context['shoot_changes_html'] = $changesHtml;
 
+        $notifyClient = array_key_exists('notify_client', $validated)
+            ? (bool) $validated['notify_client']
+            : null;
+        $notifyPhotographer = array_key_exists('notify_photographer', $validated)
+            ? (bool) $validated['notify_photographer']
+            : null;
+
         $client = $shoot->client;
         if ($client) {
-            $this->mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary);
+            $this->mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary, $notifyClient, $notifyPhotographer);
         }
 
         $this->automationService->handleEvent('SHOOT_UPDATED', $context);
@@ -5032,6 +5200,12 @@ class ShootController extends Controller
         // Explicitly include services as an array of names for frontend compatibility
         // Ensure services relationship is loaded and has data
         $servicesArray = $shoot->services->pluck('name')->filter()->values()->all();
+
+        // Append invoice misc items (admin_misc expenses) so they appear alongside services in shoot tiles
+        $miscItems = $this->getInvoiceMiscItemNames($shoot);
+        if (!empty($miscItems)) {
+            $servicesArray = array_merge($servicesArray, $miscItems);
+        }
         
         // Set as attribute so it's included in JSON serialization
         $shoot->setAttribute('services_list', $servicesArray);
@@ -5561,7 +5735,7 @@ class ShootController extends Controller
 
         $validated = $request->validate([
             'files' => 'required|array',
-            'files.*' => 'required|file|mimes:jpg,jpeg,png,raw,cr2,nef,arw,dng|max:51200',
+            'files.*' => 'required|file|mimes:jpg,jpeg,png,raw,cr2,cr3,nef,arw,dng|max:51200',
         ]);
 
         $uploadedFiles = [];
@@ -5683,7 +5857,7 @@ class ShootController extends Controller
 
         $validated = $request->validate([
             'files' => 'required|array|min:1',
-            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,nef,arw,tiff,bmp,heic,heif,zip',
+            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,cr3,nef,arw,tiff,bmp,heic,heif,zip',
             'album_id' => 'nullable|exists:shoot_media_albums,id',
             'type' => 'required|in:raw,edited,video,iguide,other',
             'photographer_note' => 'nullable|string|max:1000',
@@ -5997,12 +6171,52 @@ class ShootController extends Controller
     {
         $validated = $request->validate([
             'amount' => 'nullable|numeric|min:0',
-            'payment_type' => 'nullable|string|in:manual,square,check,cash,bank_transfer',
+            'payment_type' => 'nullable|string|in:manual,square,check,cash,bank_transfer,zelle,ach,other',
+            'payment_details' => 'nullable|array',
+            'payment_date' => 'nullable|date',
         ]);
 
         try {
             $amount = $validated['amount'] ?? $shoot->total_quote ?? 0;
             $paymentType = $validated['payment_type'] ?? 'manual';
+            $paymentDetails = $validated['payment_details'] ?? null;
+            $paymentDate = $validated['payment_date'] ?? null;
+
+            $paymentMethod = match ($paymentType) {
+                'bank_transfer' => 'ach',
+                'manual' => 'other',
+                default => $paymentType,
+            };
+
+            if ($paymentMethod === 'other') {
+                $notes = is_array($paymentDetails) ? ($paymentDetails['notes'] ?? null) : null;
+                if (!$notes) {
+                    if ($paymentType === 'manual') {
+                        $paymentDetails = ['notes' => 'Legacy manual payment'];
+                    } else {
+                        return response()->json([
+                            'message' => 'Payment notes are required for Other payments',
+                        ], 422);
+                    }
+                }
+            }
+
+            if ($paymentMethod === 'check') {
+                $checkNumber = is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null;
+                if (!$checkNumber) {
+                    return response()->json([
+                        'message' => 'Check number is required for check payments',
+                    ], 422);
+                }
+            }
+
+            if (in_array($paymentMethod, ['check', 'ach'], true) && !$paymentDate) {
+                return response()->json([
+                    'message' => 'Payment date is required for check and ACH payments',
+                ], 422);
+            }
+
+            $processedAt = $paymentDate ? \Carbon\Carbon::parse($paymentDate) : now();
 
             // If amount is 0 or null, use the outstanding balance
             if ($amount <= 0) {
@@ -6028,8 +6242,10 @@ class ShootController extends Controller
                 'shoot_id' => $shoot->id,
                 'amount' => $amount,
                 'currency' => 'USD',
+                'payment_method' => $paymentMethod,
+                'payment_details' => $paymentDetails,
                 'status' => Payment::STATUS_COMPLETED,
-                'processed_at' => now(),
+                'processed_at' => $processedAt,
             ]);
 
             // Calculate new total paid
@@ -6041,6 +6257,7 @@ class ShootController extends Controller
             $oldPaymentStatus = $shoot->payment_status;
             $newPaymentStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote ?? 0);
             $shoot->payment_status = $newPaymentStatus;
+            $shoot->payment_type = $paymentMethod;
             $shoot->save();
 
             // Log activity (wrapped in try-catch to not fail the main operation)
@@ -6052,7 +6269,7 @@ class ShootController extends Controller
                         [
                             'payment_id' => $payment->id,
                             'amount' => $amount,
-                            'payment_method' => $paymentType,
+                            'payment_method' => $paymentMethod,
                             'total_paid' => $totalPaid,
                             'total_quote' => $shoot->total_quote,
                             'old_status' => $oldPaymentStatus,
@@ -6432,6 +6649,116 @@ class ShootController extends Controller
         return $zipPath;
     }
 
+    private function createShootShareLink(Shoot $shoot, User $user, array $fileIds = []): array
+    {
+        $filesQuery = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO);
+        if (!empty($fileIds)) {
+            $filesQuery->whereIn('id', $fileIds);
+        }
+        $files = $filesQuery->get();
+        $fileCount = $files->count();
+
+        if (!empty($fileIds) && $fileCount === 0) {
+            throw new \InvalidArgumentException('No raw files found for selected IDs');
+        }
+
+        $dropboxEnabled = $this->dropboxService->isEnabled();
+        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
+        if ($dropboxEnabled && !$folderPath) {
+            $this->dropboxService->createShootFolders($shoot);
+            $shoot->refresh();
+            $folderPath = $shoot->getDropboxFolderForType('raw');
+        }
+
+        $shareLink = null;
+        $shareLinkSourcePath = null;
+
+        try {
+            if ($dropboxEnabled && empty($fileIds) && $folderPath) {
+                $shareLink = $this->dropboxService->createSharedLink($folderPath);
+                $shareLinkSourcePath = $folderPath;
+            }
+        } catch (\Exception $dropboxError) {
+            Log::warning('Failed to create Dropbox share link, falling back to local ZIP', [
+                'error' => $dropboxError->getMessage(),
+                'shoot_id' => $shoot->id,
+            ]);
+        }
+
+        if (!$shareLink) {
+            if ($files->isEmpty()) {
+                throw new \InvalidArgumentException('No raw files found to share');
+            }
+            $zipPath = $this->generateFilesZipWithDropboxFallback($shoot, $files);
+            if (!$zipPath || !file_exists($zipPath)) {
+                throw new \RuntimeException('Failed to generate shareable ZIP file');
+            }
+            $publicDir = "share-links/{$shoot->id}";
+            Storage::disk('public')->makeDirectory($publicDir);
+            $zipFilename = 'share-link-' . Str::uuid()->toString() . '.zip';
+            $publicPath = $publicDir . '/' . $zipFilename;
+
+            $stream = fopen($zipPath, 'r');
+            if ($stream === false) {
+                throw new \RuntimeException('Failed to read shareable ZIP file');
+            }
+
+            $stored = Storage::disk('public')->put($publicPath, $stream);
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+            @unlink($zipPath);
+
+            if (!$stored) {
+                throw new \RuntimeException('Failed to store shareable ZIP file');
+            }
+
+            $shareLink = Storage::disk('public')->url($publicPath);
+            $shareLinkSourcePath = $publicPath;
+        }
+
+        if (!$shareLink) {
+            throw new \RuntimeException('Could not create share link. Dropbox may be unavailable or the ZIP could not be generated.');
+        }
+
+        try {
+            $shareLinkRecord = \App\Models\ShootShareLink::create([
+                'shoot_id' => $shoot->id,
+                'created_by' => $user->id,
+                'share_url' => $shareLink,
+                'dropbox_path' => $shareLinkSourcePath,
+                'download_count' => 0,
+                'expires_at' => null,
+            ]);
+            $shareLinkId = $shareLinkRecord->id;
+            $expiresAt = $shareLinkRecord->expires_at?->toIso8601String();
+        } catch (\Exception $dbError) {
+            Log::warning('Could not save share link to database', ['error' => $dbError->getMessage()]);
+            $shareLinkId = null;
+            $expiresAt = null;
+        }
+
+        $this->activityLogger->log(
+            $shoot,
+            'share_link_generated',
+            [
+                'editor_id' => $user->id,
+                'editor_name' => $user->name,
+                'file_count' => $fileCount,
+                'expires_in_hours' => null,
+            ],
+            $user
+        );
+
+        return [
+            'share_link' => $shareLink,
+            'share_link_id' => $shareLinkId,
+            'file_count' => $fileCount,
+            'expires_in_hours' => null,
+            'expires_at' => $expiresAt,
+        ];
+    }
+
     /**
      * Generate shareable ZIP link for editor
      * POST /api/shoots/{shoot}/generate-share-link
@@ -6445,121 +6772,19 @@ class ShootController extends Controller
             return response()->json(['error' => 'Only editors can generate share links'], 403);
         }
 
-        $expiresInHours = $request->input('expires_in_hours', 72); // Default 72 hours
-        
         $fileIdsParam = $request->input('file_ids', []);
         if (is_string($fileIdsParam)) {
             $fileIdsParam = array_filter(explode(',', $fileIdsParam));
         }
 
-        $filesQuery = $shoot->files()->where('workflow_stage', 'todo');
-        if (!empty($fileIdsParam)) {
-            $filesQuery->whereIn('id', $fileIdsParam);
-        }
-        $files = $filesQuery->get();
-        $fileCount = $files->count();
-
-        if (!empty($fileIdsParam) && $fileCount === 0) {
-            return response()->json(['error' => 'No raw files found for selected IDs'], 404);
-        }
-
-        $dropboxEnabled = $this->dropboxService->isEnabled();
-        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
-        $shareLink = null;
-        $shareLinkSourcePath = null;
-
         try {
-            if ($dropboxEnabled && empty($fileIdsParam) && $folderPath) {
-                try {
-                    // Use Dropbox folder link for sharing all files
-                    $shareLink = $this->dropboxService->createSharedLink($folderPath, $expiresInHours);
-                    $shareLinkSourcePath = $folderPath;
-                } catch (\Exception $dropboxError) {
-                    Log::warning('Failed to create Dropbox share link, falling back to local ZIP', [
-                        'error' => $dropboxError->getMessage(),
-                        'shoot_id' => $shoot->id,
-                    ]);
-                }
-            }
+            $payload = $this->createShootShareLink($shoot, $user, $fileIdsParam);
 
-            if (!$shareLink) {
-                // Generate ZIP and host locally for selected files (or when Dropbox is unavailable)
-                if ($files->isEmpty()) {
-                    return response()->json(['error' => 'No raw files found to share'], 404);
-                }
-                $zipPath = $this->generateFilesZipWithDropboxFallback($shoot, $files);
-                if (!$zipPath || !file_exists($zipPath)) {
-                    return response()->json(['error' => 'Failed to generate shareable ZIP file'], 500);
-                }
-                $publicDir = "share-links/{$shoot->id}";
-                Storage::disk('public')->makeDirectory($publicDir);
-                $zipFilename = 'share-link-' . Str::uuid()->toString() . '.zip';
-                $publicPath = $publicDir . '/' . $zipFilename;
-
-                $stream = fopen($zipPath, 'r');
-                if ($stream === false) {
-                    return response()->json(['error' => 'Failed to read shareable ZIP file'], 500);
-                }
-
-                $stored = Storage::disk('public')->put($publicPath, $stream);
-                if (is_resource($stream)) {
-                    fclose($stream);
-                }
-                @unlink($zipPath);
-
-                if (!$stored) {
-                    return response()->json(['error' => 'Failed to store shareable ZIP file'], 500);
-                }
-
-                $shareLink = Storage::disk('public')->url($publicPath);
-                $shareLinkSourcePath = $publicPath;
-            }
-
-            if (!$shareLink) {
-                return response()->json([
-                    'error' => 'Could not create share link. Dropbox may be unavailable or the ZIP could not be generated.',
-                ], 500);
-            }
-
-            // Store share link in database for tracking (skip if table doesn't exist yet)
-            try {
-                $shareLinkRecord = \App\Models\ShootShareLink::create([
-                    'shoot_id' => $shoot->id,
-                    'created_by' => $user->id,
-                    'share_url' => $shareLink,
-                    'dropbox_path' => $shareLinkSourcePath,
-                    'download_count' => 0,
-                    'expires_at' => now()->addHours($expiresInHours),
-                ]);
-                $shareLinkId = $shareLinkRecord->id;
-                $expiresAt = $shareLinkRecord->expires_at->toIso8601String();
-            } catch (\Exception $dbError) {
-                Log::warning('Could not save share link to database', ['error' => $dbError->getMessage()]);
-                $shareLinkId = null;
-                $expiresAt = now()->addHours($expiresInHours)->toIso8601String();
-            }
-
-            // Log activity
-            $this->activityLogger->log(
-                $shoot,
-                'share_link_generated',
-                [
-                    'editor_id' => $user->id,
-                    'editor_name' => $user->name,
-                    'file_count' => $fileCount,
-                    'expires_in_hours' => $expiresInHours,
-                ],
-                $user
-            );
-
-            return response()->json([
-                'share_link' => $shareLink,
-                'share_link_id' => $shareLinkId,
-                'file_count' => $fileCount,
-                'expires_in_hours' => $expiresInHours,
-                'expires_at' => $expiresAt,
+            return response()->json(array_merge($payload, [
                 'message' => 'Share link generated successfully',
-            ]);
+            ]));
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['error' => $e->getMessage()], 404);
         } catch (\Exception $e) {
             Log::error('Failed to generate share link', ['error' => $e->getMessage(), 'shoot_id' => $shoot->id]);
             return response()->json(['error' => 'Failed to generate share link: ' . $e->getMessage()], 500);
@@ -6576,11 +6801,7 @@ class ShootController extends Controller
         
         // Editors can only see their own links, admins can see all
         $query = $shoot->shareLinks()->with('creator:id,name');
-        
-        if ($user->role === 'editor') {
-            $query->where('created_by', $user->id);
-        }
-        
+
         $links = $query->orderBy('created_at', 'desc')->get();
         
         return response()->json([

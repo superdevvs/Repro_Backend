@@ -10,9 +10,9 @@ Broadcast::channel('sms.thread.{threadId}', function ($user, $threadId) {
     return !is_null($user);
 });
 
-// Admin notifications channel - only admins/superadmins can subscribe
+// Admin notifications channel - admins, superadmins, editing managers, and sales reps can subscribe
 Broadcast::channel('admin.notifications', function ($user) {
-    return $user && in_array($user->role, ['admin', 'superadmin']);
+    return $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep']);
 });
 
 // Individual shoot channel - authenticated users with access to the shoot

@@ -104,9 +104,77 @@ if ($response.meta.actions -and $response.meta.actions[0].shoot_id) {
     Write-Host "⚠ No shoot_id in actions (might be expected if services are missing)" -ForegroundColor Yellow
 }
 
+# Test 7: Manage booking (if shootId exists)
+if ($shootId) {
+    Write-Host "Test 7: Manage booking" -ForegroundColor Blue
+    $body = @{
+        message = "Manage a booking"
+    } | ConvertTo-Json
+
+    $manageResponse = Invoke-RestMethod -Uri "$ApiUrl/ai/chat" -Method Post -Headers $headers -Body $body
+    $manageSessionId = $manageResponse.sessionId
+    Write-Host "✓ Manage session created: $manageSessionId" -ForegroundColor Green
+    Write-Host $manageResponse.messages[-1].content
+    Write-Host ""
+
+    $body = @{
+        sessionId = $manageSessionId
+        message = "#$shootId"
+    } | ConvertTo-Json
+
+    $manageResponse = Invoke-RestMethod -Uri "$ApiUrl/ai/chat" -Method Post -Headers $headers -Body $body
+    Write-Host $manageResponse.messages[-1].content
+    Write-Host ""
+} else {
+    Write-Host "⚠ Skipping manage booking test (no shoot_id)" -ForegroundColor Yellow
+}
+
+# Test 8: Check availability
+Write-Host "Test 8: Check availability (date-first + not-found)" -ForegroundColor Blue
+$body = @{
+    message = "Check availability"
+} | ConvertTo-Json
+
+$availabilityResponse = Invoke-RestMethod -Uri "$ApiUrl/ai/chat" -Method Post -Headers $headers -Body $body
+$availabilitySessionId = $availabilityResponse.sessionId
+Write-Host "✓ Availability session created: $availabilitySessionId" -ForegroundColor Green
+Write-Host $availabilityResponse.messages[-1].content
+Write-Host ""
+
+$body = @{
+    sessionId = $availabilitySessionId
+    message = "Tomorrow"
+} | ConvertTo-Json
+
+$availabilityResponse = Invoke-RestMethod -Uri "$ApiUrl/ai/chat" -Method Post -Headers $headers -Body $body
+Write-Host $availabilityResponse.messages[-1].content
+Write-Host ""
+
+$body = @{
+    sessionId = $availabilitySessionId
+    message = "Nonexistent Photographer"
+} | ConvertTo-Json
+
+$availabilityResponse = Invoke-RestMethod -Uri "$ApiUrl/ai/chat" -Method Post -Headers $headers -Body $body
+Write-Host $availabilityResponse.messages[-1].content
+Write-Host ""
+
+$body = @{
+    sessionId = $availabilitySessionId
+    message = "All photographers"
+} | ConvertTo-Json
+
+$availabilityResponse = Invoke-RestMethod -Uri "$ApiUrl/ai/chat" -Method Post -Headers $headers -Body $body
+Write-Host $availabilityResponse.messages[-1].content
+Write-Host ""
+
 Write-Host ""
 Write-Host "✅ All tests completed!" -ForegroundColor Green
-Write-Host "Session ID: $sessionId"
+Write-Host "Booking Session ID: $sessionId"
+if ($manageSessionId) {
+    Write-Host "Manage Session ID: $manageSessionId"
+}
+Write-Host "Availability Session ID: $availabilitySessionId"
 Write-Host ""
 Write-Host "View session messages:"
 Write-Host "Invoke-RestMethod -Uri `"$ApiUrl/ai/sessions/$sessionId`" -Headers @{Authorization=`"Bearer $Token`"}"

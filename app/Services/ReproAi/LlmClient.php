@@ -15,8 +15,8 @@ class LlmClient
 
     public function __construct()
     {
-        $this->apiKey = config('services.openai.api_key') ?: env('OPENAI_API_KEY');
-        $this->model = config('services.openai.model', env('OPENAI_MODEL', 'gpt-4o'));
+        $this->apiKey = config('services.openai.api_key');
+        $this->model = config('services.openai.model', 'gpt-4o');
         
         // Log if API key is missing (but don't throw yet, let chatCompletion handle it)
         if (empty($this->apiKey)) {
@@ -71,20 +71,29 @@ class LlmClient
      * @param array $messages Array of message objects with 'role' and 'content'
      * @param array $tools Array of tool definitions for function calling
      * @param bool $stream Whether to stream the response
+     * @param array $options Override options (model, temperature, max_tokens)
      * @return array|string Response from OpenAI (array for non-streaming, string for streaming chunks)
      * @throws \Exception
      */
-    public function chatCompletion(array $messages, array $tools = [], bool $stream = true): array|string
+    public function chatCompletion(array $messages, array $tools = [], bool $stream = true, array $options = []): array|string
     {
         if (empty($this->apiKey)) {
             throw new \Exception('OpenAI API key is not configured. Please set OPENAI_API_KEY in your .env file.');
         }
 
+        $model = $options['model'] ?? $this->model;
+        $temperature = isset($options['temperature']) && is_numeric($options['temperature'])
+            ? (float) $options['temperature']
+            : 0.7;
+        $maxTokens = isset($options['max_tokens']) && is_numeric($options['max_tokens'])
+            ? (int) $options['max_tokens']
+            : 2000;
+
         $payload = [
-            'model' => $this->model,
+            'model' => $model,
             'messages' => $messages,
-            'temperature' => 0.7,
-            'max_tokens' => 2000,
+            'temperature' => $temperature,
+            'max_tokens' => $maxTokens,
         ];
 
         if (!empty($tools)) {

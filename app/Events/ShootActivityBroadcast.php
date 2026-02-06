@@ -33,6 +33,9 @@ class ShootActivityBroadcast implements ShouldBroadcast
         'shoot_completed',
         'shoot_cancelled',
         'shoot_put_on_hold',
+        'hold_requested',
+        'hold_approved',
+        'hold_rejected',
         'shoot_submitted_for_review',
         'payment_done',
         'media_uploaded',
@@ -49,6 +52,7 @@ class ShootActivityBroadcast implements ShouldBroadcast
         'shoot_completed',
         'shoot_cancelled',
         'shoot_put_on_hold',
+        'hold_approved',
         'media_uploaded',
     ];
 
@@ -59,6 +63,7 @@ class ShootActivityBroadcast implements ShouldBroadcast
         'shoot_editing_started',
         'shoot_submitted_for_review',
         'media_uploaded',
+        'hold_approved',
     ];
 
     public function __construct(

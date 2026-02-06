@@ -5,7 +5,7 @@
     <title>Thank You for Your Payment!</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>Thank you for paying for your photo shoot!</p>
 

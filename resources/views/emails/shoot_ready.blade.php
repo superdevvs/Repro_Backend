@@ -5,7 +5,7 @@
     <title>Your Photos Are Ready!</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>
         Your real estate photos have been completed and are now available for download. 

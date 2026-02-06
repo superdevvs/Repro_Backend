@@ -27,7 +27,7 @@ class FileUploadController extends Controller
         $request->validate([
             'files' => 'required|array',
             // Allow up to ~1 GiB per file (max in KB), plus common photo/video mimes
-            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,nef,arw,tiff,bmp,heic,heif,zip',
+            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,cr3,nef,arw,tiff,bmp,heic,heif,zip',
             'service_category' => 'nullable|string|in:P,iGuide,Video',
             'upload_type' => 'nullable|string|in:raw,edited'
         ]);
@@ -214,7 +214,7 @@ class FileUploadController extends Controller
                     if ($entry['.tag'] === 'file') {
                         // Check if it's an image or video file
                         $extension = strtolower(pathinfo($entry['name'], PATHINFO_EXTENSION));
-                        $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'avi', 'raw', 'cr2', 'nef', 'arw', 'tiff', 'bmp'];
+                        $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'avi', 'raw', 'cr2', 'cr3', 'nef', 'arw', 'tiff', 'bmp'];
                         
                         if (in_array($extension, $allowedExtensions)) {
                             $files[] = [
@@ -338,7 +338,7 @@ class FileUploadController extends Controller
      */
     private function getFileType($extension)
     {
-        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'raw', 'cr2', 'nef', 'arw', 'tiff', 'bmp'];
+        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'raw', 'cr2', 'cr3', 'nef', 'arw', 'tiff', 'bmp'];
         $videoExtensions = ['mp4', 'mov', 'avi'];
 
         if (in_array($extension, $imageExtensions)) {

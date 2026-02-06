@@ -75,7 +75,7 @@
         
         <h1>Reset Your Password</h1>
         
-        <p>Hi {{ $user->name }},</p>
+        <p>Hi {{ $user->first_name }},</p>
         
         <p>We received a request to reset your password for your REPro Photos account. Click the button below to create a new password:</p>
         

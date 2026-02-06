@@ -321,12 +321,12 @@ class UserController extends Controller
         ]);
     }
 
-    // Lightweight public list (id + name + email) for UI dropdowns
+    // Lightweight public list (id + name + email + avatar) for UI dropdowns
     public function simplePhotographers()
     {
-        $photographers = \Illuminate\Support\Facades\Cache::remember('photographers_list', 300, function () {
+        $photographers = \Illuminate\Support\Facades\Cache::remember('photographers_list_v2', 300, function () {
             return User::where('role', 'photographer')
-                ->select('id', 'name', 'email')
+                ->select('id', 'name', 'email', 'avatar')
                 ->orderBy('name')
                 ->get();
         });

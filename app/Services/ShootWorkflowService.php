@@ -205,11 +205,16 @@ class ShootWorkflowService
     /**
      * Put shoot on hold
      */
-    public function putOnHold(Shoot $shoot, ?User $user = null, ?string $reason = null): void
+    public function putOnHold(
+        Shoot $shoot,
+        ?User $user = null,
+        ?string $reason = null,
+        string $activityType = 'shoot_put_on_hold'
+    ): void
     {
         $this->validateTransition($shoot, self::STATUS_ON_HOLD);
 
-        DB::transaction(function () use ($shoot, $user, $reason) {
+        DB::transaction(function () use ($shoot, $user, $reason, $activityType) {
             $shoot->status = self::STATUS_ON_HOLD;
             $shoot->workflow_status = self::STATUS_ON_HOLD;
             $shoot->updated_by = $user?->id ?? auth()->id();
@@ -217,7 +222,7 @@ class ShootWorkflowService
 
             $this->activityLogger->log(
                 $shoot,
-                'shoot_put_on_hold',
+                $activityType,
                 [
                     'by' => $user?->name ?? auth()->user()?->name,
                     'reason' => $reason,

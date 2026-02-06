@@ -20,6 +20,17 @@ class TemplateRenderer
             $availableKeys->push('shoot_changes_html');
         }
 
+        $placeholderKeys = $this->extractPlaceholderKeys([
+            $template->subject ?? '',
+            $template->body_html ?? '',
+            $template->body_text ?? '',
+        ]);
+        foreach ($placeholderKeys as $key) {
+            if (!$availableKeys->contains($key)) {
+                $availableKeys->push($key);
+            }
+        }
+
         $available = $availableKeys
             ->mapWithKeys(fn ($var) => [$var => Arr::get($variables, $var, '')]);
 
@@ -77,6 +88,32 @@ class TemplateRenderer
             'https://reprodashboard.com',
             $content
         );
+    }
+
+    /**
+     * @param  string[]  $contents
+     * @return string[]
+     */
+    protected function extractPlaceholderKeys(array $contents): array
+    {
+        $keys = [];
+
+        foreach ($contents as $content) {
+            if (!is_string($content) || $content === '') {
+                continue;
+            }
+
+            if (!preg_match_all('/{{\s*([a-zA-Z0-9_]+)\s*}}|\[([a-zA-Z0-9_]+)\]/', $content, $matches)) {
+                continue;
+            }
+
+            $found = array_filter(array_merge($matches[1] ?? [], $matches[2] ?? []));
+            foreach ($found as $key) {
+                $keys[] = $key;
+            }
+        }
+
+        return array_values(array_unique($keys));
     }
 }
 

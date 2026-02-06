@@ -243,7 +243,7 @@ class AddressLookupService
     public function getDistance(array $origin, array $destination): ?array
     {
         if (empty($this->googleApiKey)) {
-            throw new \Exception('Google Places API key not configured');
+            return $this->approxDistanceFromAddresses($origin, $destination);
         }
 
         try {
@@ -289,7 +289,65 @@ class AddressLookupService
                 'error' => $e->getMessage()
             ]);
             // Fallback: approximate great-circle distance (no routing)
-            return $this->approxDistanceByCoordinates($origin, $destination);
+            return $this->approxDistanceFromAddresses($origin, $destination)
+                ?? $this->approxDistanceByCoordinates($origin, $destination);
+        }
+    }
+
+    private function approxDistanceFromAddresses(array $origin, array $destination): ?array
+    {
+        $originCoords = $this->geocodeNominatim($origin);
+        $destinationCoords = $this->geocodeNominatim($destination);
+        if (!$originCoords || !$destinationCoords) {
+            return null;
+        }
+
+        return $this->approxDistanceByCoordinates(
+            ['latitude' => $originCoords['latitude'], 'longitude' => $originCoords['longitude']],
+            ['latitude' => $destinationCoords['latitude'], 'longitude' => $destinationCoords['longitude']]
+        );
+    }
+
+    private function geocodeNominatim(array $address): ?array
+    {
+        $query = $this->formatAddressForApi($address);
+        if (!$query) {
+            return null;
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'User-Agent' => 'REPRO Dashboard App/1.0 (contact@repro.com)'
+            ])->timeout(5)->get('https://nominatim.openstreetmap.org/search', [
+                'format' => 'json',
+                'q' => $query,
+                'limit' => 1,
+            ]);
+
+            if (!$response->successful()) {
+                return null;
+            }
+
+            $data = $response->json();
+            if (!is_array($data) || empty($data)) {
+                return null;
+            }
+
+            $result = $data[0] ?? null;
+            if (!$result || !isset($result['lat'], $result['lon'])) {
+                return null;
+            }
+
+            return [
+                'latitude' => (float) $result['lat'],
+                'longitude' => (float) $result['lon'],
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('Nominatim geocode failed', [
+                'query' => $query,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
         }
     }
 

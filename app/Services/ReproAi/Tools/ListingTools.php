@@ -19,17 +19,18 @@ class ListingTools
     {
         try {
             $listingId = $params['listing_id'] ?? null;
+            $address = $params['address'] ?? null;
             
-            if (!$listingId) {
+            if (!$listingId && !$address) {
                 return [
                     'success' => false,
-                    'error' => 'Listing ID is required',
+                    'error' => 'Listing ID or address is required',
                 ];
             }
 
             // For now, use Shoot model as listing representation
             // In a real system, you'd have a separate Listing model
-            $shoot = Shoot::with(['client', 'services'])->find($listingId);
+            $shoot = $this->resolveListing($params, ['client', 'services']);
             
             if (!$shoot) {
                 return [
@@ -74,15 +75,16 @@ class ListingTools
     {
         try {
             $listingId = $params['listing_id'] ?? null;
+            $address = $params['address'] ?? null;
             
-            if (!$listingId) {
+            if (!$listingId && !$address) {
                 return [
                     'success' => false,
-                    'error' => 'Listing ID is required',
+                    'error' => 'Listing ID or address is required',
                 ];
             }
 
-            $shoot = Shoot::find($listingId);
+            $shoot = $this->resolveListing($params);
             
             if (!$shoot) {
                 return [
@@ -167,6 +169,91 @@ class ListingTools
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    private function resolveListing(array $params, array $relations = []): ?Shoot
+    {
+        $listingId = $params['listing_id'] ?? null;
+        $address = $params['address'] ?? null;
+
+        $baseQuery = Shoot::query();
+        if (!empty($relations)) {
+            $baseQuery->with($relations);
+        }
+
+        if ($listingId) {
+            return $baseQuery->find($listingId);
+        }
+
+        if (!$address) {
+            return null;
+        }
+
+        $parts = $this->parseAddressParts($address);
+        $query = Shoot::query();
+        if (!empty($relations)) {
+            $query->with($relations);
+        }
+
+        if (!empty($parts['street'])) {
+            $query->where('address', 'like', '%' . $parts['street'] . '%');
+        }
+        if (!empty($parts['city'])) {
+            $query->where('city', 'like', '%' . $parts['city'] . '%');
+        }
+        if (!empty($parts['state'])) {
+            $query->where('state', 'like', '%' . $parts['state'] . '%');
+        }
+        if (!empty($parts['zip'])) {
+            $query->where('zip', 'like', '%' . $parts['zip'] . '%');
+        }
+
+        $shoot = $query->orderBy('created_at', 'desc')->first();
+        if ($shoot) {
+            return $shoot;
+        }
+
+        $fallbackQuery = Shoot::query();
+        if (!empty($relations)) {
+            $fallbackQuery->with($relations);
+        }
+        $raw = $parts['raw'] ?? $address;
+
+        return $fallbackQuery
+            ->where(function ($builder) use ($raw) {
+                $builder->where('address', 'like', '%' . $raw . '%')
+                    ->orWhere('city', 'like', '%' . $raw . '%')
+                    ->orWhere('state', 'like', '%' . $raw . '%');
+            })
+            ->orderBy('created_at', 'desc')
+            ->first();
+    }
+
+    private function parseAddressParts(string $address): array
+    {
+        $cleaned = trim(preg_replace('/\*+/', '', $address));
+        $cleaned = trim(preg_replace('/\s+/', ' ', $cleaned));
+        $parts = array_values(array_filter(array_map('trim', explode(',', $cleaned))));
+
+        $street = $parts[0] ?? null;
+        $city = $parts[1] ?? null;
+        $state = null;
+        $zip = null;
+
+        if (!empty($parts[2])) {
+            $stateZip = preg_replace('/[^a-z0-9\s]/i', '', $parts[2]);
+            $tokens = preg_split('/\s+/', trim($stateZip));
+            $state = !empty($tokens[0]) ? strtoupper($tokens[0]) : null;
+            $zip = $tokens[1] ?? null;
+        }
+
+        return [
+            'raw' => $cleaned,
+            'street' => $street,
+            'city' => $city,
+            'state' => $state,
+            'zip' => $zip,
+        ];
     }
 }
 

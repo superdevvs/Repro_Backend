@@ -14,6 +14,8 @@ class Payment extends Model
         'invoice_id',
         'amount',
         'currency',
+        'payment_method',
+        'payment_details',
         'square_payment_id',
         'square_order_id',
         'status',
@@ -23,6 +25,7 @@ class Payment extends Model
     protected $casts = [
         'amount' => 'decimal:2',
         'processed_at' => 'datetime',
+        'payment_details' => 'array',
     ];
 
     // Status constants

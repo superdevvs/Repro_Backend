@@ -51,33 +51,33 @@ class PaymentTools
             }
 
             // Create payment link using Square API directly
-            $squareClient = new \Square\SquareClient([
+            $squareClient = new \Square\Legacy\SquareClient([
                 'accessToken' => config('services.square.access_token'),
                 'environment' => config('services.square.environment', 'sandbox'),
             ]);
             
             $amountInCents = (int) ($amountToPay * 100);
-            $money = new \Square\Models\Money();
+            $money = new \Square\Legacy\Models\Money();
             $money->setAmount($amountInCents);
             $money->setCurrency(config('services.square.currency', 'USD'));
 
-            $lineItem = new \Square\Models\OrderLineItem('1');
+            $lineItem = new \Square\Legacy\Models\OrderLineItem('1');
             $lineItem->setName('Payment for Shoot at ' . $shoot->address);
             $lineItem->setBasePriceMoney($money);
             $lineItem->setMetadata(['shoot_id' => (string)$shoot->id]);
 
-            $order = new \Square\Models\Order(config('services.square.location_id'));
+            $order = new \Square\Legacy\Models\Order(config('services.square.location_id'));
             $order->setLineItems([$lineItem]);
             $order->setReferenceId((string)$shoot->id);
 
-            $createOrderRequest = new \Square\Models\CreateOrderRequest();
+            $createOrderRequest = new \Square\Legacy\Models\CreateOrderRequest();
             $createOrderRequest->setOrder($order);
             $createOrderRequest->setIdempotencyKey(\Illuminate\Support\Str::uuid()->toString());
 
             $orderResponse = $squareClient->getOrdersApi()->createOrder($createOrderRequest);
             $createdOrder = $orderResponse->getResult()->getOrder();
 
-            $checkoutRequest = new \Square\Models\CreateCheckoutRequest(
+            $checkoutRequest = new \Square\Legacy\Models\CreateCheckoutRequest(
                 \Illuminate\Support\Str::uuid()->toString(),
                 ['order' => $createdOrder]
             );

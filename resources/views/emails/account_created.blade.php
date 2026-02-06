@@ -5,7 +5,7 @@
     <title>New Account Information</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>
         A new account has been created on the RE Pro Dashboard: 

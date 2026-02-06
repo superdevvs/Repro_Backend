@@ -92,25 +92,52 @@ class MailService
     /**
      * Send shoot updated email
      */
-    public function sendShootUpdatedEmail(User $user, Shoot $shoot, ?string $changesSummary = null): bool
+    public function sendShootUpdatedEmail(
+        User $user,
+        Shoot $shoot,
+        ?string $changesSummary = null,
+        ?bool $notifyClient = null,
+        ?bool $notifyPhotographer = null
+    ): bool
     {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
+            $shouldNotifyClient = $notifyClient !== false;
+            $shouldNotifyPhotographer = $notifyPhotographer !== false;
             
-            // Send to client
-            Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData, $changesSummary));
-            
-            Log::info('Shoot updated email sent', [
-                'user_id' => $user->id,
-                'shoot_id' => $shoot->id,
-                'email' => $user->email
-            ]);
+            if ($shouldNotifyClient) {
+                // Send to client
+                Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData, $changesSummary));
+                
+                Log::info('Shoot updated email sent', [
+                    'user_id' => $user->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $user->email
+                ]);
+            } else {
+                Log::info('Shoot updated email skipped for client', [
+                    'user_id' => $user->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $user->email
+                ]);
+            }
 
             // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+            if (
+                $shouldNotifyPhotographer
+                && $shoot->photographer
+                && $shoot->photographer->email
+                && $shoot->photographer->id !== $user->id
+            ) {
                 Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData, $changesSummary));
                 Log::info('Shoot updated email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            } elseif ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                Log::info('Shoot updated email skipped for photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
                     'email' => $shoot->photographer->email

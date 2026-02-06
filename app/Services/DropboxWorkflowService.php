@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\DropboxFolder;
 use App\Jobs\ProcessImageJob;
+use App\Jobs\SyncShootFileToDropboxJob;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -223,129 +224,9 @@ class DropboxWorkflowService
      */
     public function uploadToTodo(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null)
     {
-        // Check if Dropbox is enabled - if not, use local storage
-        if (!$this->isEnabled()) {
-            Log::info('Dropbox disabled, using local storage for upload', ['shoot_id' => $shoot->id]);
-            $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
-        }
-
-        // Find (or create) the ToDo folder for this shoot
-        $todoFolder = $shoot->dropboxFolders()
-            ->where('folder_type', DropboxFolder::TYPE_TODO)
-            ->first();
-        
-        if (!$todoFolder) {
-            $this->createShootFolders($shoot);
-            $todoFolder = $shoot->dropboxFolders()
-                ->where('folder_type', DropboxFolder::TYPE_TODO)
-                ->first();
-        }
-
-        if (!$todoFolder) {
-            Log::warning('ToDo Dropbox folder not found, falling back to local storage', [
-                'shoot_id' => $shoot->id,
-            ]);
-            $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
-        }
-
-        $filename = 'TODO_' . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
-        $dropboxPath = $todoFolder->dropbox_path . '/' . $filename;
         $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
 
-        try {
-            $fileContent = $file->get();
-            
-            $apiArgs = json_encode([
-                'path' => $dropboxPath,
-                'mode' => 'add',
-                'autorename' => true,
-                'mute' => false,
-            ]);
-
-            $response = Http::withToken($this->getAccessToken())
-                ->withOptions($this->httpOptions)
-                ->withBody($fileContent, 'application/octet-stream')
-                ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                ->post($this->dropboxContentUrl . '/files/upload');
-
-            if ($response->successful()) {
-                $fileData = $response->json();
-                
-                // Extract image metadata (dimensions, EXIF)
-                $metadata = $this->extractImageMetadata($file);
-                
-                // Process image for thumbnails BEFORE creating record (while file is still available)
-                $thumbnailPath = null;
-                $webPath = null;
-                $placeholderPath = null;
-                
-                if ($this->shouldProcessImage($file)) {
-                    $tempPath = $file->getRealPath();
-                    if ($tempPath && file_exists($tempPath)) {
-                        $imageService = app(\App\Services\ImageProcessingService::class);
-                        $processedPaths = $imageService->processImageFromPath($shoot->id, $file->getClientOriginalName(), $tempPath);
-                        $thumbnailPath = $processedPaths['thumbnail'] ?? null;
-                        $webPath = $processedPaths['web'] ?? null;
-                        $placeholderPath = $processedPaths['placeholder'] ?? null;
-                    }
-                }
-                
-                // Store file record in database
-                $shootFile = ShootFile::create([
-                    'shoot_id' => $shoot->id,
-                    'filename' => $file->getClientOriginalName(),
-                    'stored_filename' => $filename,
-                    'path' => $dropboxPath,
-                    'file_type' => $file->getMimeType(),
-                    'file_size' => $file->getSize(),
-                    'media_type' => $mediaType,
-                    'uploaded_by' => $userId,
-                    'workflow_stage' => ShootFile::STAGE_TODO,
-                    'dropbox_path' => $dropboxPath,
-                    'dropbox_file_id' => $fileData['id'] ?? null,
-                    'metadata' => !empty($metadata) ? $metadata : null,
-                    'thumbnail_path' => $thumbnailPath,
-                    'web_path' => $webPath,
-                    'placeholder_path' => $placeholderPath,
-                    'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
-                ]);
-
-                if ($this->shouldProcessImage($file)) {
-                    ProcessImageJob::dispatch($shootFile);
-                }
-
-                // Update shoot workflow status if this is the first photo upload
-                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-                if (in_array($currentStatus, [Shoot::STATUS_SCHEDULED, 'booked', 'raw_upload_pending'], true)) {
-                    $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
-
-                    $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-                    $automationService = app(AutomationService::class);
-                    $context = $automationService->buildShootContext($shoot);
-                    if ($shoot->rep) {
-                        $context['rep'] = $shoot->rep;
-                    }
-                    $automationService->handleEvent('PHOTO_UPLOADED', $context);
-                    $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
-                }
-
-                Log::info("File uploaded to Dropbox ToDo folder", [
-                    'shoot_id' => $shoot->id,
-                    'filename' => $filename,
-                    'dropbox_path' => $dropboxPath,
-                ]);
-
-                return $shootFile;
-            } else {
-                Log::error("Failed to upload file to Dropbox, falling back to local", $response->json() ?: []);
-                return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
-            }
-        } catch (\Exception $e) {
-            Log::error("Exception uploading file to Dropbox, falling back to local", ['error' => $e->getMessage()]);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
-        }
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
     }
 
     /**
@@ -359,11 +240,18 @@ class DropboxWorkflowService
         ?string $mediaTypeOverride = null
     ): ShootFile
     {
-        $prefix = $stage === ShootFile::STAGE_COMPLETED ? 'LOCAL_COMPLETED_' : 'LOCAL_TODO_';
+        $isExtra = $mediaTypeOverride === 'extra';
+        $prefix = $isExtra
+            ? 'EXTRA_'
+            : ($stage === ShootFile::STAGE_COMPLETED ? 'COMPLETED_' : 'TODO_');
         $filename = $prefix . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
-        $dir = "shoots/{$shoot->id}/" . ($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo');
+        $dir = $isExtra
+            ? "shoots/{$shoot->id}/extra"
+            : "shoots/{$shoot->id}/" . ($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo');
         $serverPath = $dir . '/' . $filename;
-        $defaultMediaType = $stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw';
+        $defaultMediaType = $isExtra
+            ? 'extra'
+            : ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
 
         // Extract image metadata (dimensions, EXIF)
@@ -434,6 +322,10 @@ class DropboxWorkflowService
 
         if ($this->shouldProcessImage($file)) {
             ProcessImageJob::dispatch($shootFile);
+        }
+
+        if ($this->isEnabled()) {
+            SyncShootFileToDropboxJob::dispatch($shootFile->id);
         }
 
         // When photos are uploaded, auto-transition from scheduled to uploaded
@@ -930,138 +822,9 @@ class DropboxWorkflowService
      */
     public function uploadToCompleted(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null)
     {
-        // Check if Dropbox is enabled - if not, use local storage
-        if (!$this->isEnabled()) {
-            Log::info('Dropbox disabled, using local storage for edited upload', ['shoot_id' => $shoot->id]);
-            $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
-        }
-
-        // Find (or create) the Completed folder for this shoot
-        $completedFolder = $shoot->dropboxFolders()
-            ->where('folder_type', DropboxFolder::TYPE_COMPLETED)
-            ->first();
-        
-        if (!$completedFolder) {
-            $this->createShootFolders($shoot);
-            $completedFolder = $shoot->dropboxFolders()
-                ->where('folder_type', DropboxFolder::TYPE_COMPLETED)
-                ->first();
-        }
-
-        if (!$completedFolder) {
-            // Fallback to local storage when Dropbox Completed folder is absent
-            Log::warning('Dropbox Completed folder missing; falling back to local storage for edited upload', [
-                'shoot_id' => $shoot->id,
-                'service_category' => $serviceCategory,
-            ]);
-            $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
-        }
-
-        $filename = 'COMPLETED_' . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
-        $dropboxPath = $completedFolder->dropbox_path . '/' . $filename;
         $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
 
-        try {
-            $fileContent = $file->get();
-            
-            $apiArgs = json_encode([
-                'path' => $dropboxPath,
-                'mode' => 'add',
-                'autorename' => true,
-                'mute' => false,
-            ]);
-
-            $response = Http::withToken($this->getAccessToken())
-                ->withOptions($this->httpOptions)
-                ->withBody($fileContent, 'application/octet-stream')
-                ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                ->post($this->dropboxContentUrl . '/files/upload');
-
-            if ($response->successful()) {
-                $fileData = $response->json();
-                
-                // Extract image metadata (dimensions, EXIF)
-                $metadata = $this->extractImageMetadata($file);
-                
-                // Process image for thumbnails BEFORE creating record (while file is still available)
-                $thumbnailPath = null;
-                $webPath = null;
-                $placeholderPath = null;
-                
-                if ($this->shouldProcessImage($file)) {
-                    $tempPath = $file->getRealPath();
-                    if ($tempPath && file_exists($tempPath)) {
-                        $imageService = app(\App\Services\ImageProcessingService::class);
-                        $processedPaths = $imageService->processImageFromPath($shoot->id, $file->getClientOriginalName(), $tempPath);
-                        $thumbnailPath = $processedPaths['thumbnail'] ?? null;
-                        $webPath = $processedPaths['web'] ?? null;
-                        $placeholderPath = $processedPaths['placeholder'] ?? null;
-                    }
-                }
-                
-                // Store file record in database
-                $shootFile = ShootFile::create([
-                    'shoot_id' => $shoot->id,
-                    'filename' => $file->getClientOriginalName(),
-                    'stored_filename' => $filename,
-                    'path' => $dropboxPath,
-                    'file_type' => $file->getMimeType(),
-                    'file_size' => $file->getSize(),
-                    'media_type' => $mediaType,
-                    'uploaded_by' => $userId,
-                    'workflow_stage' => ShootFile::STAGE_COMPLETED, // Directly to completed
-                    'dropbox_path' => $dropboxPath,
-                    'dropbox_file_id' => $fileData['id'] ?? null,
-                    'metadata' => !empty($metadata) ? $metadata : null,
-                    'thumbnail_path' => $thumbnailPath,
-                    'web_path' => $webPath,
-                    'placeholder_path' => $placeholderPath,
-                    'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
-                ]);
-
-                if ($this->shouldProcessImage($file)) {
-                    ProcessImageJob::dispatch($shootFile);
-                }
-
-                // Update shoot workflow status if edited files are uploaded (ready for client)
-                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-                $deliveredStatuses = [
-                    Shoot::STATUS_DELIVERED,
-                    'ready',
-                    'ready_for_client',
-                    'admin_verified',
-                    'workflow_completed',
-                    'client_delivered',
-                ];
-                if (!in_array($currentStatus, $deliveredStatuses, true)) {
-                    $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $userId);
-
-                    $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-                    $automationService = app(AutomationService::class);
-                    $context = $automationService->buildShootContext($shoot);
-                    if ($shoot->rep) {
-                        $context['rep'] = $shoot->rep;
-                    }
-                    $automationService->handleEvent('SHOOT_COMPLETED', $context);
-                }
-
-                Log::info("File uploaded directly to Dropbox Completed folder", [
-                    'shoot_id' => $shoot->id,
-                    'filename' => $filename,
-                    'path' => $dropboxPath
-                ]);
-
-                return $shootFile;
-            } else {
-                Log::error("Failed to upload file to Dropbox Completed folder, falling back to local", $response->json() ?: []);
-                return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
-            }
-        } catch (\Exception $e) {
-            Log::error("Exception uploading file to Dropbox Completed folder, falling back to local", ['error' => $e->getMessage()]);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
-        }
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
     }
 
     /**
@@ -1181,6 +944,7 @@ class DropboxWorkflowService
             'tiff' => 'image/tiff',
             'raw' => 'image/x-canon-raw',
             'cr2' => 'image/x-canon-cr2',
+            'cr3' => 'image/x-canon-cr3',
             'nef' => 'image/x-nikon-nef',
             'arw' => 'image/x-sony-arw',
             'mp4' => 'video/mp4',
@@ -1221,101 +985,7 @@ class DropboxWorkflowService
      */
     public function uploadToExtra(Shoot $shoot, UploadedFile $file, $userId)
     {
-        // Ensure extra folder exists
-        if (!$shoot->dropbox_extra_folder) {
-            $this->createShootFolders($shoot);
-            $shoot->refresh();
-        }
-
-        if (!$shoot->dropbox_extra_folder) {
-            Log::warning('Extra Dropbox folder not found, falling back to local storage', [
-                'shoot_id' => $shoot->id,
-            ]);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, 'extra');
-        }
-
-        $filename = 'EXTRA_' . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
-        $dropboxPath = $shoot->dropbox_extra_folder . '/' . $filename;
-
-        try {
-            $fileContent = $file->get();
-            
-            $apiArgs = json_encode([
-                'path' => $dropboxPath,
-                'mode' => 'add',
-                'autorename' => true,
-                'mute' => false,
-            ]);
-
-            $response = Http::withToken($this->getAccessToken())
-                ->withOptions($this->httpOptions)
-                ->withBody($fileContent, 'application/octet-stream')
-                ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                ->post($this->dropboxContentUrl . '/files/upload');
-
-            if ($response->successful()) {
-                $fileData = $response->json();
-
-                // Extract image metadata (dimensions, EXIF)
-                $metadata = $this->extractImageMetadata($file);
-                
-                // Process image for thumbnails BEFORE creating record (while file is still available)
-                $thumbnailPath = null;
-                $webPath = null;
-                $placeholderPath = null;
-                
-                if ($this->shouldProcessImage($file)) {
-                    $tempPath = $file->getRealPath();
-                    if ($tempPath && file_exists($tempPath)) {
-                        $imageService = app(\App\Services\ImageProcessingService::class);
-                        $processedPaths = $imageService->processImageFromPath($shoot->id, $file->getClientOriginalName(), $tempPath);
-                        $thumbnailPath = $processedPaths['thumbnail'] ?? null;
-                        $webPath = $processedPaths['web'] ?? null;
-                        $placeholderPath = $processedPaths['placeholder'] ?? null;
-                    }
-                }
-                
-                $shootFile = ShootFile::create([
-                    'shoot_id' => $shoot->id,
-                    'filename' => $file->getClientOriginalName(),
-                    'stored_filename' => $filename,
-                    'path' => $dropboxPath,
-                    'file_type' => $file->getMimeType(),
-                    'file_size' => $file->getSize(),
-                    'media_type' => 'extra',
-                    'uploaded_by' => $userId,
-                    'workflow_stage' => ShootFile::STAGE_TODO,
-                    'dropbox_path' => $dropboxPath,
-                    'dropbox_file_id' => $fileData['id'] ?? null,
-                    'metadata' => !empty($metadata) ? $metadata : null,
-                    'thumbnail_path' => $thumbnailPath,
-                    'web_path' => $webPath,
-                    'placeholder_path' => $placeholderPath,
-                    'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
-                ]);
-
-                // Update extra photo count
-                $shoot->extra_photo_count = $shoot->files()
-                    ->where('workflow_stage', ShootFile::STAGE_TODO)
-                    ->where('path', 'like', '%/extra/%')
-                    ->count();
-                $shoot->save();
-
-                Log::info("File uploaded to Dropbox Extra folder", [
-                    'shoot_id' => $shoot->id,
-                    'filename' => $filename,
-                    'path' => $dropboxPath
-                ]);
-
-                return $shootFile;
-            } else {
-                Log::error("Failed to upload file to Dropbox Extra folder, falling back to local", $response->json() ?: []);
-                return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, 'extra');
-            }
-        } catch (\Exception $e) {
-            Log::error("Exception uploading file to Dropbox Extra folder, falling back to local", ['error' => $e->getMessage()]);
-            return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, 'extra');
-        }
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, 'extra');
     }
 
     /**

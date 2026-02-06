@@ -5,7 +5,7 @@
     <title>Scheduled Photo Shoot Updated</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>
         One of your scheduled photo shoots has been updated. 

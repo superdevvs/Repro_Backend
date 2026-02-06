@@ -5,15 +5,24 @@ namespace App\Services\ReproAi\Flows;
 use App\Models\AiChatSession;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\ReproAi\FlowEngine\FlowEngine;
+use App\Services\ReproAi\FlowEngine\FlowHandlerInterface;
+use App\Services\ReproAi\FlowEngine\FlowState;
+use App\Services\ReproAi\FlowEngine\FlowTransition;
 use App\Services\ReproAi\ShootService;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 
-class ManageBookingFlow
+class ManageBookingFlow implements FlowHandlerInterface
 {
     public function __construct(
         protected ShootService $shootService,
-    ) {}
+        ?FlowEngine $flowEngine = null,
+    ) {
+        $this->flowEngine = $flowEngine ?? app(FlowEngine::class);
+    }
+
+    protected FlowEngine $flowEngine;
     /**
      * @return array{
      *   assistant_messages: array<int,array{content:string,metadata?:array}>,
@@ -23,29 +32,29 @@ class ManageBookingFlow
      */
     public function handle(AiChatSession $session, string $message, array $context = []): array
     {
-        $step = $session->step ?? 'ask_booking';
-        $data = $session->state_data ?? [];
-
-        if ($step === 'ask_booking' && empty($data['shoot_id']) && ($context['entityType'] ?? null) === 'shoot' && !empty($context['entityId'])) {
-            $data['shoot_id'] = $context['entityId'];
-            $this->setStepAndData($session, 'show_options', $data);
-            $session->save();
-            return $this->showOptions($session, $message, $data);
-        }
-
         // Check if this is an insight query from Robbie strip (handle first, before normal flow)
         if ($this->isInsightQuery($message, $context)) {
             return $this->handleInsightQuery($session, $message, $context);
         }
 
-        return match($step) {
-            'ask_booking' => $this->askBooking($session, $message, $data),
-            'show_options' => $this->showOptions($session, $message, $data),
-            'reschedule' => $this->handleReschedule($session, $message, $data),
-            'change_services' => $this->handleChangeServices($session, $message, $data),
-            'confirm_cancel' => $this->handleConfirmCancel($session, $message, $data),
-            'confirm_change' => $this->confirmChange($session, $message, $data),
-            default => $this->askBooking($session, $message, $data),
+        return $this->flowEngine->handle($session, $message, $context, $this);
+    }
+
+    public function defaultStep(): string
+    {
+        return 'ask_booking';
+    }
+
+    public function handleStep(string $step, FlowState $state): FlowTransition
+    {
+        return match ($step) {
+            'ask_booking' => $this->askBooking($state),
+            'show_options' => $this->showOptions($state),
+            'reschedule' => $this->handleReschedule($state),
+            'change_services' => $this->handleChangeServices($state),
+            'confirm_cancel' => $this->handleConfirmCancel($state),
+            'confirm_change' => $this->confirmChange($state),
+            default => $this->askBooking($state),
         };
     }
 
@@ -75,6 +84,8 @@ class ManageBookingFlow
             'overload', 'imbalance', 'editor load',
             'awaiting payment', 'payment required', 'unpaid',
             'in progress', 'shoot status',
+            'recent shoots', 'recent shoot', 'show my shoots', 'show shoots', 'list shoots', 'my shoots',
+            'recent bookings', 'recent booking', 'show my bookings', 'show bookings', 'list bookings', 'my bookings',
         ];
 
         foreach ($insightKeywords as $keyword) {
@@ -104,7 +115,6 @@ class ManageBookingFlow
         $insightId = $context['insightId'] ?? null;
         $insightType = $context['insightType'] ?? null;
         $filters = is_array($context['filters'] ?? null) ? $context['filters'] : [];
-        $intent = $context['intent'] ?? null;
 
         if ($insightId) {
             switch ($insightId) {
@@ -156,10 +166,6 @@ class ManageBookingFlow
                 case 'editor_imbalance':
                     return $this->showEditorImbalance($session, $user);
             }
-        }
-
-        if ($intent === 'accounting') {
-            return $this->showShootsAwaitingPayment($session, $user);
         }
 
         $m = strtolower($message);
@@ -590,6 +596,17 @@ class ManageBookingFlow
             'shootId' => $shoot->id,
         ])->all();
 
+        $suggestedShootIds = $shoots->pluck('id')->values()->all();
+        if (Schema::hasColumn('ai_chat_sessions', 'step')) {
+            $session->step = 'ask_booking';
+        }
+        if (Schema::hasColumn('ai_chat_sessions', 'state_data')) {
+            $stateData = is_array($session->state_data ?? null) ? $session->state_data : [];
+            $stateData['suggested_shoot_ids'] = $suggestedShootIds;
+            $session->state_data = $stateData;
+        }
+        $session->save();
+
         $content = "📤 **Shoots Needing RAW Upload** ({$shoots->count()}):\n\n";
         foreach ($shoots as $shoot) {
             $date = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->format('M d, Y') : 'TBD';
@@ -978,6 +995,14 @@ class ManageBookingFlow
         $shoots = $query->get();
 
         if ($shoots->isEmpty()) {
+            if (Schema::hasColumn('ai_chat_sessions', 'step')) {
+                $session->step = null;
+            }
+            if (Schema::hasColumn('ai_chat_sessions', 'state_data')) {
+                $session->state_data = [];
+            }
+            $session->save();
+
             return [
                 'assistant_messages' => [[
                     'content' => "You don't have any shoots yet. Ready to book your first shoot?",
@@ -1044,14 +1069,71 @@ class ManageBookingFlow
         return $query;
     }
 
-    private function askBooking(AiChatSession $session, string $message, array $data): array
+    protected function getUpcomingShootsForUser(User $user, int $limit = 10): \Illuminate\Database\Eloquent\Collection
     {
+        return $this->getShootsForUser($user)
+            ->where('scheduled_at', '>=', now())
+            ->where('scheduled_at', '<=', now()->addDays(30))
+            ->whereNotIn('status', ['cancelled', 'completed'])
+            ->orderBy('scheduled_at', 'asc')
+            ->limit($limit)
+            ->get();
+    }
+
+    private function askBooking(FlowState $state): FlowTransition
+    {
+        $session = $state->session;
+        $data = $state->data;
+        $message = $state->message;
+        $context = $state->context;
+
+        $user = User::find($session->user_id);
+        if (!$user) {
+            return FlowTransition::stay([
+                'assistant_messages' => [[
+                    'content' => "I couldn't identify your account. Please try again.",
+                    'metadata' => ['step' => 'ask_booking', 'error' => 'user_not_found'],
+                ]],
+                'suggestions' => [
+                    'Book a new shoot',
+                    'Check availability',
+                ],
+            ], $data);
+        }
+
+        if (empty($data['shoot_id']) && ($context['entityType'] ?? null) === 'shoot' && !empty($context['entityId'])) {
+            $data['shoot_id'] = $context['entityId'];
+            $transition = $this->showOptions($state->withData($data));
+
+            return $transition->nextStep || $transition->clearStep
+                ? $transition
+                : FlowTransition::next('show_options', $transition->response, $transition->data ?? $data);
+        }
+
         // Check if message matches a shoot from suggestions
         if (empty($data['shoot_id'])) {
-            $upcomingShoots = $this->shootService->listUpcomingForUser($session->user_id, 10);
+            $upcomingShoots = $this->getUpcomingShootsForUser($user, 10);
             
             // Try to match message to a shoot - improved matching
             $messageLower = strtolower(trim($message));
+            $messageNormalized = trim(preg_replace('/[^a-z0-9]+/', ' ', $messageLower));
+
+            if (!empty($data['suggested_shoot_ids']) && preg_match('/^\s*(\d{1,2})\s*$/', $message, $matches)) {
+                $index = (int) $matches[1];
+                $suggestedShootIds = array_values($data['suggested_shoot_ids']);
+                if ($index >= 1 && $index <= count($suggestedShootIds)) {
+                    $data['shoot_id'] = $suggestedShootIds[$index - 1];
+                }
+            }
+
+            if (!empty($data['shoot_id'])) {
+                $transition = $this->showOptions($state->withData($data));
+
+                return $transition->nextStep || $transition->clearStep
+                    ? $transition
+                    : FlowTransition::next('show_options', $transition->response, $transition->data ?? $data);
+            }
+
             foreach ($upcomingShoots as $shoot) {
                 // Match by ID (e.g., "#123" or "123")
                 if (preg_match('/#?(\d+)/', $message, $matches)) {
@@ -1070,63 +1152,79 @@ class ManageBookingFlow
                     $data['shoot_id'] = $shoot->id;
                     break;
                 }
+
+                $addressNormalized = trim(preg_replace('/[^a-z0-9]+/', ' ', strtolower($shoot->address ?? '')));
+                $cityNormalized = trim(preg_replace('/[^a-z0-9]+/', ' ', strtolower($shoot->city ?? '')));
+                $fullNormalized = trim($addressNormalized . ' ' . $cityNormalized);
+
+                if ($addressNormalized && str_contains($messageNormalized, $addressNormalized)) {
+                    $data['shoot_id'] = $shoot->id;
+                    break;
+                }
+                if ($fullNormalized && str_contains($messageNormalized, $fullNormalized)) {
+                    $data['shoot_id'] = $shoot->id;
+                    break;
+                }
             }
         }
 
         if (!empty($data['shoot_id'])) {
-            $this->setStepAndData($session, 'show_options', $data);
-            $session->save();
-            return $this->showOptions($session, $message, $data);
+            $transition = $this->showOptions($state->withData($data));
+
+            return $transition->nextStep || $transition->clearStep
+                ? $transition
+                : FlowTransition::next('show_options', $transition->response, $transition->data ?? $data);
         }
 
         // First time asking - show upcoming shoots
-        $upcomingShoots = $this->shootService->listUpcomingForUser($session->user_id, 10);
+        $upcomingShoots = $this->getUpcomingShootsForUser($user, 10);
         
         if ($upcomingShoots->isEmpty()) {
-            // Also check for past shoots to manage
-            $allShoots = Shoot::where(function ($query) use ($session) {
-                $query->where('client_id', $session->user_id)
-                      ->orWhere('rep_id', $session->user_id);
-            })
-            ->whereNotIn('status', ['cancelled'])
-            ->orderBy('scheduled_at', 'desc')
-            ->limit(10)
-            ->get();
+            // Also check for recent shoots to manage
+            $allShoots = $this->getShootsForUser($user)
+                ->whereNotIn('status', ['cancelled'])
+                ->orderBy('scheduled_at', 'desc')
+                ->limit(10)
+                ->get();
             
             if ($allShoots->isEmpty()) {
-                return [
+                $noBookingsMessage = in_array($user->role, ['admin', 'superadmin'], true)
+                    ? 'No bookings found yet.'
+                    : "You don't have any bookings to manage.";
+
+                $data['suggested_shoot_ids'] = [];
+
+                return FlowTransition::next('ask_booking', [
                     'assistant_messages' => [[
-                        'content' => "You don't have any bookings to manage.",
+                        'content' => $noBookingsMessage,
                         'metadata' => ['step' => 'ask_booking'],
                     ]],
                     'suggestions' => [
                         'Book a new shoot',
                         'Check availability',
                     ],
-                ];
+                ], $data);
             }
             
             $suggestions = [];
             foreach ($allShoots as $shoot) {
-                $dateStr = $shoot->scheduled_at ? $shoot->scheduled_at->format('M d, Y') : 'TBD';
+                $dateStr = $shoot->scheduled_at
+                    ? $shoot->scheduled_at->format('M d, Y')
+                    : ($shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->format('M d, Y') : 'TBD');
                 $label = "#{$shoot->id} - {$shoot->address}, {$shoot->city} - {$dateStr}";
                 $suggestions[] = $label;
             }
-            
-            $this->setStepAndData($session, 'ask_booking', $data);
-            $session->save();
-            
-            return [
+
+            $data['suggested_shoot_ids'] = $allShoots->pluck('id')->values()->all();
+
+            return FlowTransition::next('ask_booking', [
                 'assistant_messages' => [[
-                    'content' => "Which booking would you like to manage?",
+                    'content' => 'No upcoming bookings found. Which booking would you like to manage from recent shoots?',
                     'metadata' => ['step' => 'ask_booking'],
                 ]],
                 'suggestions' => $suggestions,
-            ];
+            ], $data);
         }
-
-        $this->setStepAndData($session, 'ask_booking', $data);
-        $session->save();
 
         $suggestions = [];
         foreach ($upcomingShoots as $shoot) {
@@ -1135,7 +1233,9 @@ class ManageBookingFlow
             $suggestions[] = $label;
         }
 
-        return [
+        $data['suggested_shoot_ids'] = $upcomingShoots->pluck('id')->values()->all();
+
+        return FlowTransition::next('ask_booking', [
             'assistant_messages' => [[
                 'content' => "Which booking would you like to manage? (Next 30 days)",
                 'metadata' => ['step' => 'ask_booking'],
@@ -1149,61 +1249,70 @@ class ManageBookingFlow
                     'scheduled_at' => $s->scheduled_at?->toIso8601String(),
                 ])->toArray(),
             ],
-        ];
+        ], $data);
     }
 
-    private function showOptions(AiChatSession $session, string $message, array $data): array
+    private function showOptions(FlowState $state): FlowTransition
     {
+        $session = $state->session;
+        $data = $state->data;
+        $message = $state->message;
         $shootId = $data['shoot_id'] ?? null;
         if (!$shootId) {
-            return $this->askBooking($session, $message, $data);
+            return $this->askBooking($state);
         }
 
         $user = User::find($session->user_id);
         if (!$user) {
-            return [
+            return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content' => "I couldn't identify your account. Please try again.",
                     'metadata' => ['error' => 'user_not_found'],
                 ]],
-            ];
+            ], $data);
         }
 
         $shoot = $this->getShootsForUser($user)
             ->where('shoots.id', $shootId)
             ->first();
         if (!$shoot) {
-            return [
+            return FlowTransition::next('ask_booking', [
                 'assistant_messages' => [[
                     'content' => "I couldn't find that booking. Let's try again.",
                     'metadata' => ['step' => 'ask_booking'],
                 ]],
                 'suggestions' => ['Show my bookings'],
-            ];
+            ], $data);
         }
 
         // Check if user selected an action
         $m = strtolower($message);
         if (str_contains($m, 'reschedule')) {
-            $this->setStepAndData($session, 'reschedule', $data);
-            return $this->handleReschedule($session, $message, $data);
-        } elseif (str_contains($m, 'cancel')) {
-            $this->setStepAndData($session, 'confirm_cancel', $data);
-            return $this->handleConfirmCancel($session, $message, $data);
-        } elseif (str_contains($m, 'change') && (str_contains($m, 'service') || str_contains($m, 'services'))) {
-            $this->setStepAndData($session, 'change_services', $data);
-            return $this->handleChangeServices($session, $message, $data);
-        }
+            $transition = $this->handleReschedule($state->withData($data));
 
-        // First time showing options
-        $this->setStepAndData($session, 'show_options', $data);
+            return $transition->nextStep || $transition->clearStep
+                ? $transition
+                : FlowTransition::next('reschedule', $transition->response, $transition->data ?? $data);
+        } elseif (str_contains($m, 'cancel')) {
+            $transition = $this->handleConfirmCancel($state->withData($data));
+
+            return $transition->nextStep || $transition->clearStep
+                ? $transition
+                : FlowTransition::next('confirm_cancel', $transition->response, $transition->data ?? $data);
+        } elseif (str_contains($m, 'change') && (str_contains($m, 'service') || str_contains($m, 'services'))) {
+            $transition = $this->handleChangeServices($state->withData($data));
+
+            return $transition->nextStep || $transition->clearStep
+                ? $transition
+                : FlowTransition::next('change_services', $transition->response, $transition->data ?? $data);
+        }
 
         $shootInfo = "Booking #{$shoot->id}\n";
         $shootInfo .= "Property: {$shoot->address}, {$shoot->city}\n";
         $shootInfo .= "Date: " . ($shoot->scheduled_at ? $shoot->scheduled_at->format('M d, Y g:i A') : 'TBD') . "\n";
         $shootInfo .= "Status: {$shoot->status}";
 
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content' => "Here's the booking:\n\n{$shootInfo}\n\nWhat would you like to do?",
                 'metadata' => ['step' => 'show_options', 'shoot_id' => $shoot->id],
@@ -1214,24 +1323,27 @@ class ManageBookingFlow
                 'Change services',
                 'View details',
             ],
-        ];
+        ], $data);
     }
 
-    private function handleReschedule(AiChatSession $session, string $message, array $data): array
+    private function handleReschedule(FlowState $state): FlowTransition
     {
+        $session = $state->session;
+        $data = $state->data;
+        $message = $state->message;
         $shootId = $data['shoot_id'] ?? null;
         if (!$shootId) {
-            return $this->askBooking($session, $message, $data);
+            return $this->askBooking($state);
         }
 
         $shoot = Shoot::find($shootId);
         if (!$shoot) {
-            return [
+            return FlowTransition::next('ask_booking', [
                 'assistant_messages' => [[
                     'content' => "I couldn't find that booking.",
                     'metadata' => ['step' => 'ask_booking'],
                 ]],
-            ];
+            ], $data);
         }
 
         // If we have both date and time, update the shoot
@@ -1245,11 +1357,8 @@ class ManageBookingFlow
             try {
                 $this->shootService->updateFromAiConversation($shoot, $updateData, $user);
                 
-                $this->setStepAndData($session, null, []);
-                $session->save();
-                
                 $formattedDate = Carbon::parse($data['new_date'])->format('M d, Y');
-                return [
+                return FlowTransition::clear([
                     'assistant_messages' => [[
                         'content' => "✅ I've rescheduled the shoot to **{$formattedDate}** at **{$data['new_time']}**.",
                         'metadata' => ['step' => 'done', 'shoot_id' => $shoot->id],
@@ -1258,9 +1367,9 @@ class ManageBookingFlow
                         'Manage another booking',
                         'Book a new shoot',
                     ],
-                ];
+                ], []);
             } catch (\Exception $e) {
-                return [
+                return FlowTransition::stay([
                     'assistant_messages' => [[
                         'content' => "❌ Failed to reschedule: " . $e->getMessage(),
                         'metadata' => ['step' => 'reschedule', 'error' => $e->getMessage()],
@@ -1269,7 +1378,7 @@ class ManageBookingFlow
                         'Try again',
                         'Go back',
                     ],
-                ];
+                ], $data);
             }
         }
 
@@ -1285,18 +1394,15 @@ class ManageBookingFlow
                 // If time was also in the message, apply it directly
                 if ($parsedTime) {
                     $data['new_time'] = $parsedTime;
-                    $this->setStepAndData($session, 'reschedule', $data);
-                    $session->save();
-                    
-                    // Recurse to apply the update
-                    return $this->handleReschedule($session, '', $data);
+                    $transition = $this->handleReschedule($state->withData($data));
+
+                    return $transition->nextStep || $transition->clearStep
+                        ? $transition
+                        : FlowTransition::next('reschedule', $transition->response, $transition->data ?? $data);
                 }
                 
-                $this->setStepAndData($session, 'reschedule', $data);
-                $session->save();
-                
                 $formattedDate = Carbon::parse($parsedDate)->format('M d, Y');
-                return [
+                return FlowTransition::stay([
                     'assistant_messages' => [[
                         'content' => "What time works best on **{$formattedDate}**?",
                         'metadata' => ['step' => 'reschedule'],
@@ -1307,25 +1413,22 @@ class ManageBookingFlow
                         'Evening (5 PM)',
                         'Flexible',
                     ],
-                ];
+                ], $data);
             }
         }
 
         // If we have date but not time, capture time
         if (!empty($data['new_date']) && empty($data['new_time']) && !empty(trim($message))) {
             $data['new_time'] = $message;
-            $this->setStepAndData($session, 'reschedule', $data);
-            $session->save();
-            
-            // Recurse to apply the update
-            return $this->handleReschedule($session, '', $data);
+            $transition = $this->handleReschedule($state->withData($data));
+
+            return $transition->nextStep || $transition->clearStep
+                ? $transition
+                : FlowTransition::next('reschedule', $transition->response, $transition->data ?? $data);
         }
 
         // First time asking for reschedule
-        $this->setStepAndData($session, 'reschedule', $data);
-        $session->save();
-        
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content' => "What date would you like to reschedule to?",
                 'metadata' => ['step' => 'reschedule'],
@@ -1335,7 +1438,7 @@ class ManageBookingFlow
                 'Next week',
                 'This weekend',
             ],
-        ];
+        ], $data);
     }
 
     private function parseDateFromMessage(string $message): ?string
@@ -1409,21 +1512,24 @@ class ManageBookingFlow
         return null;
     }
 
-    private function handleChangeServices(AiChatSession $session, string $message, array $data): array
+    private function handleChangeServices(FlowState $state): FlowTransition
     {
+        $session = $state->session;
+        $data = $state->data;
+        $message = $state->message;
         $shootId = $data['shoot_id'] ?? null;
         if (!$shootId) {
-            return $this->askBooking($session, $message, $data);
+            return $this->askBooking($state);
         }
 
         $shoot = Shoot::find($shootId);
         if (!$shoot) {
-            return [
+            return FlowTransition::next('ask_booking', [
                 'assistant_messages' => [[
                     'content' => "I couldn't find that booking.",
                     'metadata' => ['step' => 'ask_booking'],
                 ]],
-            ];
+            ], $data);
         }
 
         // If we have new services, update
@@ -1433,8 +1539,7 @@ class ManageBookingFlow
             
             $this->shootService->updateFromAiConversation($shoot, $updateData, $user);
             
-            $this->setStepAndData($session, null, null);
-            return [
+            return FlowTransition::clear([
                 'assistant_messages' => [[
                     'content' => "✅ I've updated the services for this booking.",
                     'metadata' => ['step' => 'done', 'shoot_id' => $shoot->id],
@@ -1443,7 +1548,7 @@ class ManageBookingFlow
                     'Manage another booking',
                     'Book a new shoot',
                 ],
-            ];
+            ], []);
         }
 
         // Parse services from message if provided
@@ -1456,8 +1561,7 @@ class ManageBookingFlow
                 
                 $this->shootService->updateFromAiConversation($shoot, $updateData, $user);
                 
-                $this->setStepAndData($session, null, null);
-                return [
+                return FlowTransition::clear([
                     'assistant_messages' => [[
                         'content' => "✅ I've updated the services for this booking.",
                         'metadata' => ['step' => 'done', 'shoot_id' => $shoot->id],
@@ -1466,13 +1570,12 @@ class ManageBookingFlow
                         'Manage another booking',
                         'Book a new shoot',
                     ],
-                ];
+                ], []);
             }
         }
 
         // Ask for new services
-        $this->setStepAndData($session, 'change_services', $data);
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content' => "What services would you like for this booking?",
                 'metadata' => ['step' => 'change_services'],
@@ -1483,7 +1586,7 @@ class ManageBookingFlow
                 'Photos + video + drone',
                 'Full package',
             ],
-        ];
+        ], $data);
     }
 
     private function inferServiceIdsFromText(string $text): array
@@ -1518,21 +1621,24 @@ class ManageBookingFlow
         return $serviceIds;
     }
 
-    private function handleConfirmCancel(AiChatSession $session, string $message, array $data): array
+    private function handleConfirmCancel(FlowState $state): FlowTransition
     {
+        $session = $state->session;
+        $data = $state->data;
+        $message = $state->message;
         $shootId = $data['shoot_id'] ?? null;
         if (!$shootId) {
-            return $this->askBooking($session, $message, $data);
+            return $this->askBooking($state);
         }
 
         $shoot = Shoot::find($shootId);
         if (!$shoot) {
-            return [
+            return FlowTransition::next('ask_booking', [
                 'assistant_messages' => [[
                     'content' => "I couldn't find that booking.",
                     'metadata' => ['step' => 'ask_booking'],
                 ]],
-            ];
+            ], $data);
         }
 
         $m = strtolower($message);
@@ -1540,8 +1646,7 @@ class ManageBookingFlow
             $user = User::find($session->user_id);
             $this->shootService->cancelShoot($shoot, $user);
             
-            $this->setStepAndData($session, null, null);
-            return [
+            return FlowTransition::clear([
                 'assistant_messages' => [[
                     'content' => "✅ I've cancelled the booking for {$shoot->address}, {$shoot->city}.",
                     'metadata' => ['step' => 'done', 'shoot_id' => $shoot->id],
@@ -1550,12 +1655,11 @@ class ManageBookingFlow
                     'Manage another booking',
                     'Book a new shoot',
                 ],
-            ];
+            ], []);
         }
 
         // Ask for confirmation
-        $this->setStepAndData($session, 'confirm_cancel', $data);
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content' => "Are you sure you want to cancel the booking for {$shoot->address}, {$shoot->city} on " . ($shoot->scheduled_at ? $shoot->scheduled_at->format('M d, Y') : 'TBD') . "?",
                 'metadata' => ['step' => 'confirm_cancel'],
@@ -1564,12 +1668,12 @@ class ManageBookingFlow
                 'Yes, cancel it',
                 'No, keep it',
             ],
-        ];
+        ], $data);
     }
 
-    private function confirmChange(AiChatSession $session, string $message, array $data): array
+    private function confirmChange(FlowState $state): FlowTransition
     {
-        return [
+        return FlowTransition::clear([
             'assistant_messages' => [[
                 'content' => "I've noted your request. This feature is coming soon!",
                 'metadata' => ['step' => 'confirm_change'],
@@ -1578,17 +1682,7 @@ class ManageBookingFlow
                 'Book a new shoot',
                 'Check availability',
             ],
-        ];
-    }
-
-    protected function setStepAndData(AiChatSession $session, ?string $step = null, ?array $data = null): void
-    {
-        if ($step !== null && Schema::hasColumn('ai_chat_sessions', 'step')) {
-            $session->step = $step;
-        }
-        if ($data !== null && Schema::hasColumn('ai_chat_sessions', 'state_data')) {
-            $session->state_data = $data;
-        }
+        ], []);
     }
 }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\PhotographerAvailability;
 use App\Services\PhotographerAvailabilityService;
+use App\Services\AddressLookupService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -116,6 +117,147 @@ class PhotographerAvailabilityController extends Controller
         return (int)$hours * 60 + (int)$minutes;
     }
 
+    private function minutesToTime(int $minutes): string
+    {
+        $hours = (int) floor($minutes / 60);
+        $mins = $minutes % 60;
+        return sprintf('%02d:%02d', $hours, $mins);
+    }
+
+    private function splitAvailableSlotsForUnavailable(
+        int $photographerId,
+        string $startTime,
+        string $endTime,
+        ?string $date = null,
+        ?string $dayOfWeek = null,
+        ?int $preserveSlotId = null
+    ): void {
+        if (!$startTime || !$endTime) {
+            return;
+        }
+
+        $blockStart = $this->timeToMinutes($startTime);
+        $blockEnd = $this->timeToMinutes($endTime);
+
+        if ($blockEnd <= $blockStart) {
+            return;
+        }
+
+        $slots = null;
+        $useRecurringAsBase = false;
+        $effectiveDayOfWeek = $dayOfWeek;
+
+        if ($date) {
+            $effectiveDayOfWeek = strtolower(date('l', strtotime($date)));
+            $specificAvailable = PhotographerAvailability::where('photographer_id', $photographerId)
+                ->whereDate('date', $date)
+                ->where('status', 'available')
+                ->get();
+
+            if ($specificAvailable->isEmpty()) {
+                $useRecurringAsBase = true;
+                $slots = PhotographerAvailability::where('photographer_id', $photographerId)
+                    ->whereNull('date')
+                    ->where('day_of_week', $effectiveDayOfWeek)
+                    ->where('status', 'available')
+                    ->get();
+            } else {
+                $slots = $specificAvailable;
+            }
+        } elseif ($dayOfWeek) {
+            $slots = PhotographerAvailability::where('photographer_id', $photographerId)
+                ->whereNull('date')
+                ->where('day_of_week', $dayOfWeek)
+                ->where('status', 'available')
+                ->get();
+        }
+
+        if (!$slots || $slots->isEmpty()) {
+            return;
+        }
+
+        foreach ($slots as $slot) {
+            $slotStart = $this->timeToMinutes($slot->start_time);
+            $slotEnd = $this->timeToMinutes($slot->end_time);
+            $hasOverlap = $this->timesOverlap($startTime, $endTime, $slot->start_time, $slot->end_time);
+            $createOnly = $useRecurringAsBase || ($preserveSlotId && (int) $slot->id === (int) $preserveSlotId);
+
+            if ($createOnly) {
+                $segments = [];
+                if ($hasOverlap) {
+                    if ($blockStart > $slotStart) {
+                        $segments[] = [$slotStart, min($blockStart, $slotEnd)];
+                    }
+                    if ($blockEnd < $slotEnd) {
+                        $segments[] = [max($blockEnd, $slotStart), $slotEnd];
+                    }
+                } else {
+                    $segments[] = [$slotStart, $slotEnd];
+                }
+
+                foreach ($segments as $segment) {
+                    [$segmentStart, $segmentEnd] = $segment;
+                    if ($segmentEnd <= $segmentStart) {
+                        continue;
+                    }
+
+                    $targetDate = $useRecurringAsBase ? $date : $slot->date;
+                    $targetDayOfWeek = $useRecurringAsBase
+                        ? $effectiveDayOfWeek
+                        : ($slot->day_of_week ?: ($targetDate ? strtolower(date('l', strtotime($targetDate))) : $dayOfWeek));
+
+                    PhotographerAvailability::create([
+                        'photographer_id' => $photographerId,
+                        'date' => $targetDate,
+                        'day_of_week' => $targetDayOfWeek,
+                        'start_time' => $this->minutesToTime($segmentStart),
+                        'end_time' => $this->minutesToTime($segmentEnd),
+                        'status' => 'available',
+                    ]);
+                }
+
+                continue;
+            }
+
+            if (!$hasOverlap) {
+                continue;
+            }
+
+            $segments = [];
+            if ($blockStart > $slotStart) {
+                $segments[] = [$slotStart, min($blockStart, $slotEnd)];
+            }
+            if ($blockEnd < $slotEnd) {
+                $segments[] = [max($blockEnd, $slotStart), $slotEnd];
+            }
+
+            if (count($segments) === 0) {
+                $slot->delete();
+                continue;
+            }
+
+            $firstSegment = $segments[0];
+            $slot->update([
+                'start_time' => $this->minutesToTime($firstSegment[0]),
+                'end_time' => $this->minutesToTime($firstSegment[1]),
+            ]);
+
+            if (count($segments) > 1) {
+                $secondSegment = $segments[1];
+                if ($secondSegment[1] > $secondSegment[0]) {
+                    PhotographerAvailability::create([
+                        'photographer_id' => $photographerId,
+                        'date' => $slot->date,
+                        'day_of_week' => $slot->day_of_week,
+                        'start_time' => $this->minutesToTime($secondSegment[0]),
+                        'end_time' => $this->minutesToTime($secondSegment[1]),
+                        'status' => 'available',
+                    ]);
+                }
+            }
+        }
+    }
+
     public function index($photographerId)
     {
         $availabilities = PhotographerAvailability::where('photographer_id', $photographerId)->get();
@@ -139,18 +281,29 @@ class PhotographerAvailabilityController extends Controller
             $data['day_of_week'] = strtolower(date('l', strtotime($data['date'])));
         }
 
-        // Check for overlaps
-        if ($this->hasOverlap(
-            $data['photographer_id'],
-            $data['start_time'],
-            $data['end_time'],
-            $data['date'] ?? null,
-            $data['day_of_week'] ?? null
-        )) {
-            return response()->json([
-                'message' => 'This availability overlaps with an existing time slot. Please choose a different time.',
-                'error' => 'overlap'
-            ], 422);
+        $status = $data['status'] ?? 'available';
+        if ($status === 'unavailable') {
+            $this->splitAvailableSlotsForUnavailable(
+                $data['photographer_id'],
+                $data['start_time'],
+                $data['end_time'],
+                $data['date'] ?? null,
+                $data['day_of_week'] ?? null
+            );
+        } else {
+            // Check for overlaps
+            if ($this->hasOverlap(
+                $data['photographer_id'],
+                $data['start_time'],
+                $data['end_time'],
+                $data['date'] ?? null,
+                $data['day_of_week'] ?? null
+            )) {
+                return response()->json([
+                    'message' => 'This availability overlaps with an existing time slot. Please choose a different time.',
+                    'error' => 'overlap'
+                ], 422);
+            }
         }
 
         $availability = PhotographerAvailability::create($data);
@@ -283,19 +436,31 @@ class PhotographerAvailabilityController extends Controller
             $finalData['day_of_week'] = strtolower(date('l', strtotime($finalData['date'])));
         }
 
-        // Check for overlaps (excluding the current record)
-        if ($this->hasOverlap(
-            $finalData['photographer_id'],
-            $finalData['start_time'],
-            $finalData['end_time'],
-            $finalData['date'] ?? null,
-            $finalData['day_of_week'] ?? null,
-            $id
-        )) {
-            return response()->json([
-                'message' => 'This availability overlaps with an existing time slot. Please choose a different time.',
-                'error' => 'overlap'
-            ], 422);
+        $newStatus = $validated['status'] ?? $availability->status ?? 'available';
+        if ($newStatus === 'unavailable' && $availability->status !== 'unavailable') {
+            $this->splitAvailableSlotsForUnavailable(
+                $finalData['photographer_id'],
+                $finalData['start_time'],
+                $finalData['end_time'],
+                $finalData['date'] ?? null,
+                $finalData['day_of_week'] ?? null,
+                $id
+            );
+        } else {
+            // Check for overlaps (excluding the current record)
+            if ($this->hasOverlap(
+                $finalData['photographer_id'],
+                $finalData['start_time'],
+                $finalData['end_time'],
+                $finalData['date'] ?? null,
+                $finalData['day_of_week'] ?? null,
+                $id
+            )) {
+                return response()->json([
+                    'message' => 'This availability overlaps with an existing time slot. Please choose a different time.',
+                    'error' => 'overlap'
+                ], 422);
+            }
         }
 
         $availability->update($validated);
@@ -323,6 +488,10 @@ class PhotographerAvailabilityController extends Controller
 
         // First, check all slots for overlaps with existing slots
         foreach ($validated['availabilities'] as $index => $availability) {
+            $slotStatus = $availability['status'] ?? 'available';
+            if ($slotStatus === 'unavailable') {
+                continue;
+            }
             $day = $availability['day_of_week'] ?? (isset($availability['date']) ? strtolower(date('l', strtotime($availability['date']))) : null);
             
             if ($this->hasOverlap(
@@ -342,6 +511,12 @@ class PhotographerAvailabilityController extends Controller
             for ($j = $i + 1; $j < count($validated['availabilities']); $j++) {
                 $slot1 = $validated['availabilities'][$i];
                 $slot2 = $validated['availabilities'][$j];
+                $slot1Status = $slot1['status'] ?? 'available';
+                $slot2Status = $slot2['status'] ?? 'available';
+
+                if ($slot1Status === 'unavailable' || $slot2Status === 'unavailable') {
+                    continue;
+                }
                 
                 $slot1Date = $slot1['date'] ?? null;
                 $slot2Date = $slot2['date'] ?? null;
@@ -384,6 +559,17 @@ class PhotographerAvailabilityController extends Controller
         // All checks passed, create all slots
         foreach ($validated['availabilities'] as $availability) {
             $day = $availability['day_of_week'] ?? (isset($availability['date']) ? strtolower(date('l', strtotime($availability['date']))) : null);
+            $slotStatus = $availability['status'] ?? 'available';
+
+            if ($slotStatus === 'unavailable') {
+                $this->splitAvailableSlotsForUnavailable(
+                    $validated['photographer_id'],
+                    $availability['start_time'],
+                    $availability['end_time'],
+                    $availability['date'] ?? null,
+                    $day
+                );
+            }
             $created[] = PhotographerAvailability::create([
                 'photographer_id' => $validated['photographer_id'],
                 'date' => $availability['date'] ?? null,
@@ -606,7 +792,7 @@ class PhotographerAvailabilityController extends Controller
 
         // Get photographers
         $query = \App\Models\User::where('role', 'photographer')
-            ->select('id', 'name', 'email', 'metadata');
+            ->select('id', 'name', 'email', 'metadata', 'address', 'city', 'state', 'zip');
         
         if ($photographerIds) {
             $query->whereIn('id', $photographerIds);
@@ -623,10 +809,20 @@ class PhotographerAvailabilityController extends Controller
                 : ($photographer->metadata ?? []);
 
             // Get photographer's home address
-            $homeAddress = $metadata['address'] ?? $metadata['homeAddress'] ?? '';
-            $homeCity = $metadata['city'] ?? '';
-            $homeState = $metadata['state'] ?? '';
-            $homeZip = $metadata['zip'] ?? $metadata['zipcode'] ?? '';
+            $homeAddress = $photographer->address
+                ?? $metadata['address']
+                ?? $metadata['homeAddress']
+                ?? '';
+            $homeCity = $photographer->city
+                ?? $metadata['city']
+                ?? '';
+            $homeState = $photographer->state
+                ?? $metadata['state']
+                ?? '';
+            $homeZip = $photographer->zip
+                ?? $metadata['zip']
+                ?? $metadata['zipcode']
+                ?? '';
 
             // Get photographer's shoots on this date (to determine origin for distance)
             $shootsOnDate = \App\Models\Shoot::where('photographer_id', $photographerId)
@@ -675,6 +871,58 @@ class PhotographerAvailabilityController extends Controller
                     $originZip = $lastShoot->zip ?? $homeZip;
                     $distanceFrom = 'previous_shoot';
                     $previousShootId = $lastShoot->id;
+                }
+            }
+
+            $distanceMiles = null;
+            $hasOrigin = $originAddress || ($originCity && $originState);
+            $hasShoot = $shootAddress && $shootCity && $shootState;
+            if ($hasOrigin && $hasShoot) {
+                try {
+                    $distanceData = app(AddressLookupService::class)->getDistance(
+                        [
+                            'address' => $originAddress,
+                            'city' => $originCity,
+                            'state' => $originState,
+                            'zip' => $originZip,
+                        ],
+                        [
+                            'address' => $shootAddress,
+                            'city' => $shootCity,
+                            'state' => $shootState,
+                            'zip' => $shootZip,
+                        ]
+                    );
+
+                    if (is_array($distanceData)) {
+                        if (isset($distanceData['distance_value'])) {
+                            $distanceMiles = round(((float) $distanceData['distance_value']) / 1609.34, 1);
+                        } elseif (isset($distanceData['distance'])) {
+                            $distanceMiles = (float) preg_replace('/[^0-9.]/', '', (string) $distanceData['distance']);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $distanceMiles = null;
+                }
+            }
+
+            if ($distanceMiles === null) {
+                // Token-based comparison: extract unique alphanumeric tokens, sort, compare
+                // This handles cases where address field contains embedded city/state/zip
+                $extractTokens = function ($address, $city, $state, $zip) {
+                    $raw = strtolower(implode(' ', array_filter([
+                        $address, $city, $state, $zip,
+                    ], function ($v) { return is_string($v) && trim($v) !== ''; })));
+                    // Split into tokens, keep only alphanumeric
+                    $tokens = preg_split('/[^a-z0-9]+/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+                    $tokens = array_unique($tokens);
+                    sort($tokens);
+                    return $tokens;
+                };
+                $originTokens = $extractTokens($originAddress, $originCity, $originState, $originZip);
+                $shootTokens = $extractTokens($shootAddress, $shootCity, $shootState, $shootZip);
+                if (!empty($originTokens) && !empty($shootTokens) && $originTokens === $shootTokens) {
+                    $distanceMiles = 0.0;
                 }
             }
 
@@ -783,6 +1031,7 @@ class PhotographerAvailabilityController extends Controller
                 'id' => $photographerId,
                 'name' => $photographer->name,
                 'email' => $photographer->email,
+                'distance' => $distanceMiles,
                 'home_address' => [
                     'address' => $homeAddress,
                     'city' => $homeCity,

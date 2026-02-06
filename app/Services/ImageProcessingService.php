@@ -15,7 +15,7 @@ class ImageProcessingService
     
     // Supported RAW formats
     protected const RAW_FORMATS = [
-        'cr2', 'nef', 'arw', 'dng', 'orf', 'rw2', 'pef', 'srw', 
+        'cr2', 'cr3', 'nef', 'arw', 'dng', 'orf', 'rw2', 'pef', 'srw', 
         'mos', 'mrw', 'erf', '3fr', 'fff', 'iiq', 'kdc', 'mef', 
         'nrw', 'ptx', 'pxn', 'r3d', 'raf', 'raw', 'rwl', 'sr2', 
         'srf', 'x3f'

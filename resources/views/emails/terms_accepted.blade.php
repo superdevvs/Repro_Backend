@@ -5,7 +5,7 @@
     <title>Terms/Conditions Accepted</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }},</p>
+    <p>Hi {{ $user->first_name }},</p>
 
     <p>
         Thank you for accepting the Terms/Conditions! A copy for your records appears below:

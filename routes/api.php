@@ -165,8 +165,8 @@ Route::get('dropbox/setup-long-lived-token', [App\Http\Controllers\TestDropboxCo
 Route::get('test/square-connection', [App\Http\Controllers\TestSquareController::class, 'testConnection']);
 Route::get('test/square-locations', [App\Http\Controllers\TestSquareController::class, 'listLocations']);
 
-// Square configuration endpoint (for frontend) - requires authentication
-Route::middleware('auth:sanctum')->get('square/config', [App\Http\Controllers\TestSquareController::class, 'getConfig'])
+// Square configuration endpoint (for frontend) - public, non-sensitive data
+Route::get('square/config', [App\Http\Controllers\TestSquareController::class, 'getConfig'])
     ->name('api.square.config');
 
 // Public payment page endpoint (no auth required - for email payment links)
@@ -320,6 +320,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin')->g
     Route::post('invoices/generate', [InvoiceController::class, 'generate']);
     Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
     Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
+    Route::post('invoices/{invoice}/misc-items', [InvoiceController::class, 'addMiscItem']);
+    Route::delete('invoices/{invoice}/misc-items/{item}', [InvoiceController::class, 'removeMiscItem']);
     
     // Invoice approval endpoints
     Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
@@ -372,6 +374,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/approve-cancellation', [ShootController::class, 'approveCancellation']);
     Route::post('/shoots/{shoot}/reject-cancellation', [ShootController::class, 'rejectCancellation']);
     Route::get('/shoots/pending-cancellations', [ShootController::class, 'pendingCancellations']);
+    // Hold request endpoints
+    Route::post('/shoots/{shoot}/request-hold', [ShootController::class, 'requestHold']);
+    Route::post('/shoots/{shoot}/approve-hold', [ShootController::class, 'approveHold']);
+    Route::post('/shoots/{shoot}/reject-hold', [ShootController::class, 'rejectHold']);
     // Direct cancel endpoint for admin use
     Route::post('/shoots/{shoot}/cancel', [ShootController::class, 'cancel'])->middleware('role:admin,superadmin');
     
@@ -549,6 +555,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/regenerate', [App\Http\Controllers\API\WatermarkSettingsController::class, 'regenerate']);
         Route::get('/regeneration-progress/{regenerationId}', [App\Http\Controllers\API\WatermarkSettingsController::class, 'regenerationProgress']);
         Route::get('/debug-files', [App\Http\Controllers\API\WatermarkSettingsController::class, 'debugFiles']);
+    });
+
+    // Robbie settings (superadmin only)
+    Route::middleware(['auth:sanctum', 'role:superadmin'])->prefix('admin/robbie-settings')->group(function () {
+        Route::get('/', [App\Http\Controllers\API\RobbieSettingsController::class, 'index']);
+        Route::post('/', [App\Http\Controllers\API\RobbieSettingsController::class, 'store']);
     });
 });
 

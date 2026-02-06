@@ -4,8 +4,8 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Square\SquareClient;
-use Square\Exceptions\ApiException;
+use Square\Legacy\SquareClient;
+use Square\Legacy\Exceptions\ApiException;
 
 class TestSquareController extends Controller
 {
@@ -44,7 +44,10 @@ class TestSquareController extends Controller
 
         try {
             // Initialize Square client
-            $client = new SquareClient($accessToken);
+            $client = new SquareClient([
+                'accessToken' => $accessToken,
+                'environment' => $environment,
+            ]);
             
             // Test 1: Get merchant information
             $merchantsApi = $client->getMerchantsApi();
@@ -175,7 +178,10 @@ class TestSquareController extends Controller
         }
 
         try {
-            $client = new SquareClient($accessToken);
+            $client = new SquareClient([
+                'accessToken' => $accessToken,
+                'environment' => config('services.square.environment', 'sandbox'),
+            ]);
             $locationsApi = $client->getLocationsApi();
             $response = $locationsApi->listLocations();
 

@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Carbon;
 
 class InvoiceController extends Controller
@@ -91,9 +94,55 @@ class InvoiceController extends Controller
     {
         $data = $request->validate([
             'paid_at' => ['nullable', 'date'],
+            'payment_method' => ['nullable', 'string', 'in:square,zelle,cash,check,ach,other,manual,bank_transfer'],
+            'payment_details' => ['nullable', 'array'],
         ]);
 
+        $paymentType = $data['payment_method'] ?? null;
+        $paymentDetails = $data['payment_details'] ?? null;
+        $paymentMethod = $paymentType
+            ? match ($paymentType) {
+                'bank_transfer' => 'ach',
+                'manual' => 'other',
+                default => $paymentType,
+            }
+            : null;
+
+        if ($paymentMethod === 'other') {
+            $notes = is_array($paymentDetails) ? ($paymentDetails['notes'] ?? null) : null;
+            if (!$notes) {
+                if ($paymentType === 'manual') {
+                    $paymentDetails = ['notes' => 'Legacy manual payment'];
+                } else {
+                    return response()->json([
+                        'message' => 'Payment notes are required for Other payments',
+                    ], 422);
+                }
+            }
+        }
+
+        if ($paymentMethod === 'check') {
+            $checkNumber = is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null;
+            if (!$checkNumber) {
+                return response()->json([
+                    'message' => 'Check number is required for check payments',
+                ], 422);
+            }
+        }
+
+        if ($paymentMethod && in_array($paymentMethod, ['check', 'ach'], true) && empty($data['paid_at'])) {
+            return response()->json([
+                'message' => 'Payment date is required for check and ACH payments',
+            ], 422);
+        }
+
         $invoice->markPaid(isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : null);
+
+        if ($paymentMethod !== null) {
+            $invoice->payment_method = $paymentMethod;
+            $invoice->payment_details = $paymentDetails;
+            $invoice->save();
+        }
 
         $invoice->loadMissing(['client', 'photographer']);
         $context = [
@@ -113,5 +162,97 @@ class InvoiceController extends Controller
             'message' => 'Invoice marked as paid.',
             'data' => $invoice->fresh(['items', 'user']),
         ]);
+    }
+
+    public function addMiscItem(Request $request, Invoice $invoice)
+    {
+        $data = $request->validate([
+            'description' => ['required', 'string', 'max:500'],
+            'amount' => ['required', 'numeric', 'min:0'],
+            'quantity' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $item = $invoice->items()->create([
+                'type' => InvoiceItem::TYPE_EXPENSE,
+                'description' => $data['description'],
+                'quantity' => $data['quantity'] ?? 1,
+                'unit_amount' => $data['amount'],
+                'total_amount' => ($data['quantity'] ?? 1) * $data['amount'],
+                'recorded_at' => now(),
+                'meta' => [
+                    'source' => 'admin_misc',
+                ],
+            ]);
+
+            $invoice->refreshTotals();
+            $invoice->update([
+                'modified_by' => $request->user()?->id,
+                'modified_at' => now(),
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Misc item added successfully',
+                'item' => $item,
+                'invoice' => $invoice->fresh(['items', 'user']),
+            ], 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to add misc item to invoice', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to add misc item',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function removeMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
+    {
+        if ($item->invoice_id !== $invoice->id) {
+            return response()->json(['message' => 'Item does not belong to this invoice'], 422);
+        }
+
+        $source = is_array($item->meta) ? ($item->meta['source'] ?? null) : null;
+        if ($item->type !== InvoiceItem::TYPE_EXPENSE || $source !== 'admin_misc') {
+            return response()->json(['message' => 'Item is not an admin misc item'], 422);
+        }
+
+        try {
+            DB::beginTransaction();
+
+            $item->delete();
+            $invoice->refreshTotals();
+            $invoice->update([
+                'modified_by' => $request->user()?->id,
+                'modified_at' => now(),
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Misc item removed successfully',
+                'invoice' => $invoice->fresh(['items', 'user']),
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to remove misc item from invoice', [
+                'invoice_id' => $invoice->id,
+                'item_id' => $item->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to remove misc item',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
     }
 }

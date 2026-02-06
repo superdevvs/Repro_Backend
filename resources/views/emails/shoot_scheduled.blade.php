@@ -5,7 +5,7 @@
     <title>New Shoot Scheduled</title>
 </head>
 <body>
-    <p>Hello, {{ $user->name }}!</p>
+    <p>Hi {{ $user->first_name }}!</p>
 
     <p>A new photo shoot has been scheduled under your account!</p>
 

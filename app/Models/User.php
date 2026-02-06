@@ -68,6 +68,22 @@ class User extends Authenticatable
         ];
     }
 
+    public function getFirstNameAttribute(): string
+    {
+        $attributeFirstName = $this->attributes['first_name'] ?? null;
+        if (is_string($attributeFirstName) && trim($attributeFirstName) !== '') {
+            return trim($attributeFirstName);
+        }
+
+        $name = trim((string) ($this->attributes['name'] ?? ''));
+        if ($name === '') {
+            return '';
+        }
+
+        $parts = preg_split('/\s+/', $name) ?: [];
+        return $parts[0] ?? $name;
+    }
+
     /**
      * Get shoots where this user is the client
      */

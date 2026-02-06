@@ -5,32 +5,28 @@ namespace App\Services\ReproAi\Flows;
 use App\Models\AiChatSession;
 use App\Models\Shoot;
 use App\Models\Service;
+use App\Services\ReproAi\FlowEngine\FlowEngine;
+use App\Services\ReproAi\FlowEngine\FlowHandlerInterface;
+use App\Services\ReproAi\FlowEngine\FlowState;
+use App\Services\ReproAi\FlowEngine\FlowTransition;
 use App\Services\ReproAi\ShootService;
 use App\Services\ReproAi\Tools\PaymentTools;
-use Illuminate\Support\Facades\Schema;
 
-class BookShootFlow
+class BookShootFlow implements FlowHandlerInterface
 {
     protected ShootService $shootService;
     protected PaymentTools $paymentTools;
+    protected FlowEngine $flowEngine;
 
-    public function __construct(?ShootService $shootService = null, ?PaymentTools $paymentTools = null)
+    public function __construct(
+        ?ShootService $shootService = null,
+        ?PaymentTools $paymentTools = null,
+        ?FlowEngine $flowEngine = null,
+    )
     {
         $this->shootService = $shootService ?? app(ShootService::class);
         $this->paymentTools = $paymentTools ?? app(PaymentTools::class);
-    }
-
-    /**
-     * Safely set step and state_data only if columns exist
-     */
-    protected function setStepAndData(AiChatSession $session, ?string $step = null, ?array $data = null): void
-    {
-        if ($step !== null && Schema::hasColumn('ai_chat_sessions', 'step')) {
-            $session->step = $step;
-        }
-        if ($data !== null && Schema::hasColumn('ai_chat_sessions', 'state_data')) {
-            $session->state_data = $data;
-        }
+        $this->flowEngine = $flowEngine ?? app(FlowEngine::class);
     }
 
     /**
@@ -43,46 +39,50 @@ class BookShootFlow
      */
     public function handle(AiChatSession $session, string $message, array $context = []): array
     {
-        $step = $session->step ?? 'ask_property';
-        $data = $session->state_data ?? [];
+        return $this->flowEngine->handle($session, $message, $context, $this);
+    }
 
+    public function defaultStep(): string
+    {
+        return 'ask_property';
+    }
+
+    public function handleStep(string $step, FlowState $state): FlowTransition
+    {
         return match ($step) {
-            'ask_property'   => $this->askProperty($session, $message, $context, $data),
-            'ask_date'       => $this->askDate($session, $message, $context, $data),
-            'ask_time'       => $this->askTime($session, $message, $context, $data),
-            'ask_services'   => $this->askServices($session, $message, $context, $data),
-            'confirm'        => $this->confirm($session, $message, $context, $data),
-            'done'           => $this->done($session, $data),
-            default          => $this->reset($session),
+            'ask_property'   => $this->askProperty($state),
+            'ask_date'       => $this->askDate($state),
+            'ask_time'       => $this->askTime($state),
+            'ask_services'   => $this->askServices($state),
+            'confirm'        => $this->confirm($state),
+            'done'           => $this->done($state),
+            default          => $this->reset($state),
         };
     }
 
-    protected function reset(AiChatSession $session): array
+    protected function reset(FlowState $state): FlowTransition
     {
-        if (Schema::hasColumn('ai_chat_sessions', 'step')) {
-            $session->step = 'ask_property';
-        }
-        if (Schema::hasColumn('ai_chat_sessions', 'state_data')) {
-            $session->state_data = [];
-        }
-        $session->save();
-
-        $suggestions = $this->recentPropertySuggestions($session->user_id);
+        $suggestions = $this->recentPropertySuggestions($state->session->user_id);
         if (empty($suggestions)) {
             $suggestions = ['Enter new address'];
         }
 
-        return [
+        return FlowTransition::next('ask_property', [
             'assistant_messages' => [[
                 'content' => "Great! Let's book a new shoot. Which property is this for?",
                 'metadata' => ['step' => 'ask_property'],
             ]],
             'suggestions' => $suggestions,
-        ];
+        ], []);
     }
 
-    protected function askProperty(AiChatSession $session, string $message, array $context, array $data): array
+    protected function askProperty(FlowState $state): FlowTransition
     {
+        $data = $state->data;
+        $context = $state->context;
+        $message = $state->message;
+        $session = $state->session;
+
         // if UI sends property info in context (button click)
         if (!empty($context['propertyAddress']) || !empty($context['property_id'])) {
             $data['property_address'] = $context['propertyAddress'] ?? null;
@@ -92,10 +92,8 @@ class BookShootFlow
             
             if (!empty($data['property_address']) && !empty($data['property_city'])) {
                 $data['property_label'] = $this->formatPropertyLabel($data);
-                $this->setStepAndData($session, 'ask_date', $data);
-                $session->save();
 
-                return [
+                return FlowTransition::next('ask_date', [
                     'assistant_messages' => [[
                         'content'  => "Great, we'll shoot **{$data['property_label']}**.\n\nWhat date works best?",
                         'metadata' => ['step' => 'ask_date'],
@@ -105,7 +103,7 @@ class BookShootFlow
                         'This weekend',
                         'Next available slot',
                     ],
-                ];
+                ], $data);
             }
         }
 
@@ -160,11 +158,8 @@ class BookShootFlow
                     $data['property_address'] = $message;
                 }
             }
-            
-            $this->setStepAndData($session, 'ask_date', $data);
-            $session->save();
 
-            return [
+            return FlowTransition::next('ask_date', [
                 'assistant_messages' => [[
                     'content'  => "Got it. When would you like the shoot for **{$data['property_label']}**?",
                     'metadata' => ['step' => 'ask_date'],
@@ -174,24 +169,24 @@ class BookShootFlow
                     'This week',
                     'Next week',
                 ],
-            ];
+            ], $data);
         }
 
         // If property already set but user is changing it
-        $this->setStepAndData($session, 'ask_property');
-        $session->save();
-
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content'  => "Sure, let's book a new shoot. Which property is this for?",
                 'metadata' => ['step' => 'ask_property'],
             ]],
             'suggestions' => $this->recentPropertySuggestions($session->user_id),
-        ];
+        ], $data);
     }
 
-    protected function askDate(AiChatSession $session, string $message, array $context, array $data): array
+    protected function askDate(FlowState $state): FlowTransition
     {
+        $data = $state->data;
+        $message = $state->message;
+
         // Treat user entry as label, but only persist a parsed value if valid
         $trimmed = trim($message);
         if (!empty($trimmed)) {
@@ -209,12 +204,9 @@ class BookShootFlow
             if ($parsedTime) {
                 $data['time_label'] = $parsedTime;
                 $data['time_window'] = $parsedTime;
-                
-                // Skip time step, go directly to services
-                $this->setStepAndData($session, 'ask_services', $data);
-                $session->save();
 
-                return [
+                // Skip time step, go directly to services
+                return FlowTransition::next('ask_services', [
                     'assistant_messages' => [[
                         'content'  => "Got it, {$message}. What services would you like?",
                         'metadata' => ['step' => 'ask_services'],
@@ -225,13 +217,10 @@ class BookShootFlow
                         'Photos + drone',
                         'Full package (photos, video, drone, floorplan)',
                     ],
-                ];
+                ], $data);
             }
 
-            $this->setStepAndData($session, 'ask_time', $data);
-            $session->save();
-
-            return [
+            return FlowTransition::next('ask_time', [
                 'assistant_messages' => [[
                     'content'  => "What time of day works best?",
                     'metadata' => ['step' => 'ask_time'],
@@ -241,11 +230,11 @@ class BookShootFlow
                     'Afternoon',
                     'Golden hour',
                 ],
-            ];
+            ], $data);
         }
 
         // re-ask if empty
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content'  => "I didn't catch the date. What date should we book?",
                 'metadata' => ['step' => 'ask_date'],
@@ -255,19 +244,19 @@ class BookShootFlow
                 'This week',
                 'Next week',
             ],
-        ];
+        ], $data);
     }
 
-    protected function askTime(AiChatSession $session, string $message, array $context, array $data): array
+    protected function askTime(FlowState $state): FlowTransition
     {
+        $data = $state->data;
+        $message = $state->message;
+
         if (!empty(trim($message))) {
             $data['time_label'] = $message;
             $data['time_window'] = $message;
 
-            $this->setStepAndData($session, 'ask_services', $data);
-            $session->save();
-
-            return [
+            return FlowTransition::next('ask_services', [
                 'assistant_messages' => [[
                     'content'  => "What would you like us to capture?",
                     'metadata' => ['step' => 'ask_services'],
@@ -278,10 +267,10 @@ class BookShootFlow
                     'Photos + drone',
                     'Full package (photos, video, drone, floorplan)',
                 ],
-            ];
+            ], $data);
         }
 
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content'  => "What time of day should we aim for?",
                 'metadata' => ['step' => 'ask_time'],
@@ -291,18 +280,18 @@ class BookShootFlow
                 'Afternoon',
                 'Golden hour',
             ],
-        ];
+        ], $data);
     }
 
-    protected function askServices(AiChatSession $session, string $message, array $context, array $data): array
+    protected function askServices(FlowState $state): FlowTransition
     {
+        $data = $state->data;
+        $message = $state->message;
+
         if (!empty(trim($message))) {
             $data['services_label'] = $message;
             // Map label → internal service IDs
             $data['service_ids'] = $this->inferServiceIdsFromText($message);
-
-            $this->setStepAndData($session, 'confirm', $data);
-            $session->save();
 
             // Build a detailed summary
             $propertyLabel = $data['property_label'] ?? ($data['property_address'] ?? 'Unknown property');
@@ -329,7 +318,7 @@ class BookShootFlow
             
             $summary .= "\nPlease review the details above. Ready to confirm this booking?";
 
-            return [
+            return FlowTransition::next('confirm', [
                 'assistant_messages' => [[
                     'content'  => $summary,
                     'metadata' => [
@@ -349,10 +338,10 @@ class BookShootFlow
                     'Change the services',
                     'Change the property',
                 ],
-            ];
+            ], $data);
         }
 
-        return [
+        return FlowTransition::stay([
             'assistant_messages' => [[
                 'content'  => "What services do you want for this shoot?",
                 'metadata' => ['step' => 'ask_services'],
@@ -363,17 +352,18 @@ class BookShootFlow
                 'Photos + drone',
                 'Full package (photos, video, drone, floorplan)',
             ],
-        ];
+        ], $data);
     }
 
-    protected function confirm(AiChatSession $session, string $message, array $context, array $data): array
+    protected function confirm(FlowState $state): FlowTransition
     {
+        $data = $state->data;
+        $message = $state->message;
+        $session = $state->session;
         $m = strtolower($message);
-        if (str_contains($m, 'change date') || (str_contains($m, 'change') && str_contains($m, 'date'))) {
-            $this->setStepAndData($session, 'ask_date', $data);
-            $session->save();
 
-            return [
+        if (str_contains($m, 'change date') || (str_contains($m, 'change') && str_contains($m, 'date'))) {
+            return FlowTransition::next('ask_date', [
                 'assistant_messages' => [[
                     'content'  => "No problem. What date works better?",
                     'metadata' => ['step' => 'ask_date'],
@@ -383,14 +373,11 @@ class BookShootFlow
                     'This week',
                     'Next week',
                 ],
-            ];
+            ], $data);
         }
 
         if (str_contains($m, 'change') && (str_contains($m, 'service') || str_contains($m, 'services'))) {
-            $this->setStepAndData($session, 'ask_services', $data);
-            $session->save();
-
-            return [
+            return FlowTransition::next('ask_services', [
                 'assistant_messages' => [[
                     'content'  => "Sure, what services should we switch to?",
                     'metadata' => ['step' => 'ask_services'],
@@ -401,20 +388,17 @@ class BookShootFlow
                     'Photos + drone',
                     'Full package (photos, video, drone, floorplan)',
                 ],
-            ];
+            ], $data);
         }
         
         if (str_contains($m, 'change') && (str_contains($m, 'property') || str_contains($m, 'address'))) {
-            $this->setStepAndData($session, 'ask_property', $data);
-            $session->save();
-
-            return [
+            return FlowTransition::next('ask_property', [
                 'assistant_messages' => [[
                     'content'  => "Sure, which property should we use instead?",
                     'metadata' => ['step' => 'ask_property'],
                 ]],
                 'suggestions' => $this->recentPropertySuggestions($session->user_id),
-            ];
+            ], $data);
         }
 
         // Handle retry/start over from error state
@@ -424,7 +408,7 @@ class BookShootFlow
             $timeLabel = $data['time_label'] ?? 'TBD';
             $servicesLabel = $data['services_label'] ?? 'TBD';
             
-            return [
+            return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content'  => "Let's try again. Ready to confirm this booking?\n\n📍 {$propertyLabel}\n📅 {$dateLabel}\n⏰ {$timeLabel}\n📸 {$servicesLabel}",
                     'metadata' => ['step' => 'confirm'],
@@ -434,11 +418,11 @@ class BookShootFlow
                     'Change the date',
                     'Change the services',
                 ],
-            ];
+            ], $data);
         }
         
         if (str_contains($m, 'start over') || str_contains($m, 'nevermind') || str_contains($m, 'never mind')) {
-            return $this->reset($session);
+            return $this->reset($state->withData([]));
         }
 
         // Check for confirmation
@@ -454,7 +438,7 @@ class BookShootFlow
         
         if (!$isConfirmed) {
             // user is unsure; gently re-ask with better suggestions
-            return [
+            return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content'  => "Would you like me to go ahead and confirm this booking?",
                     'metadata' => ['step' => 'confirm'],
@@ -465,15 +449,13 @@ class BookShootFlow
                     'Change the services',
                     'Change the property',
                 ],
-            ];
+            ], $data);
         }
 
         // We "book" the shoot using your existing service
         try {
             $booking = $this->shootService->createFromReproAi($session->user_id, $data);
-
-            $this->setStepAndData($session, 'done', array_merge($data, ['shoot_id' => $booking->id]));
-            $session->save();
+            $dataWithBooking = array_merge($data, ['shoot_id' => $booking->id]);
 
             // Create payment link if shoot has a total quote
             $paymentLink = null;
@@ -532,7 +514,7 @@ class BookShootFlow
                 ];
             }
 
-            return [
+            return FlowTransition::next('done', [
                 'assistant_messages' => [[
                     'content'  => $content,
                     'metadata' => [
@@ -544,21 +526,21 @@ class BookShootFlow
                 ]],
                 'suggestions' => $suggestions,
                 'actions' => $actions,
-            ];
+            ], $dataWithBooking);
         } catch (\Exception $e) {
-            return [
+            return FlowTransition::stay([
                 'assistant_messages' => [[
                     'content'  => "I encountered an error: " . $e->getMessage() . ". Would you like to try again?",
                     'metadata' => ['step' => 'confirm', 'error' => $e->getMessage()],
                 ]],
                 'suggestions' => ['Try again', 'Start over'],
-            ];
+            ], $data);
         }
     }
 
-    protected function done(AiChatSession $session, array $data): array
+    protected function done(FlowState $state): FlowTransition
     {
-        return [
+        return FlowTransition::clear([
             'assistant_messages' => [[
                 'content'  => "Anything else you want to do with your bookings?",
                 'metadata' => ['step' => 'done'],
@@ -568,7 +550,7 @@ class BookShootFlow
                 'Manage an existing booking',
                 'Check photographer availability',
             ],
-        ];
+        ], []);
     }
 
     // Helpers -------------------------------------------------------------

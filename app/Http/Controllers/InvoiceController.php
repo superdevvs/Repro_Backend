@@ -169,13 +169,58 @@ class InvoiceController extends Controller
             'paid_at' => ['nullable', 'date'],
             'amount_paid' => ['nullable', 'numeric', 'min:0'],
             'is_sent' => ['nullable', 'boolean'],
+            'payment_method' => ['nullable', 'string', 'in:square,zelle,cash,check,ach,other,manual,bank_transfer'],
+            'payment_details' => ['nullable', 'array'],
         ]);
+
+        $paymentType = $data['payment_method'] ?? null;
+        $paymentDetails = $data['payment_details'] ?? null;
+        $paymentMethod = $paymentType
+            ? match ($paymentType) {
+                'bank_transfer' => 'ach',
+                'manual' => 'other',
+                default => $paymentType,
+            }
+            : null;
+
+        if ($paymentMethod === 'other') {
+            $notes = is_array($paymentDetails) ? ($paymentDetails['notes'] ?? null) : null;
+            if (!$notes) {
+                if ($paymentType === 'manual') {
+                    $paymentDetails = ['notes' => 'Legacy manual payment'];
+                } else {
+                    return response()->json([
+                        'message' => 'Payment notes are required for Other payments',
+                    ], 422);
+                }
+            }
+        }
+
+        if ($paymentMethod === 'check') {
+            $checkNumber = is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null;
+            if (!$checkNumber) {
+                return response()->json([
+                    'message' => 'Check number is required for check payments',
+                ], 422);
+            }
+        }
+
+        if ($paymentMethod && in_array($paymentMethod, ['check', 'ach'], true) && empty($data['paid_at'])) {
+            return response()->json([
+                'message' => 'Payment date is required for check and ACH payments',
+            ], 422);
+        }
 
         $invoice->fill([
             'is_paid' => true,
             'amount_paid' => $data['amount_paid'] ?? $invoice->total_amount,
             'paid_at' => isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now(),
         ]);
+
+        if ($paymentMethod !== null) {
+            $invoice->payment_method = $paymentMethod;
+            $invoice->payment_details = $paymentDetails;
+        }
 
         if (array_key_exists('is_sent', $data)) {
             $invoice->is_sent = $data['is_sent'];

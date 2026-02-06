@@ -8,6 +8,9 @@ use App\Models\AiMessage;
 use App\Services\ReproAi\RuleBasedOrchestrator;
 use App\Services\ReproAi\ReproAiOrchestrator;
 use App\Services\ReproAi\LlmClient;
+use App\Services\ReproAi\IntentScorer;
+use App\Services\ReproAi\IntentPolicy;
+use App\Services\RobbieConfigService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -18,10 +21,16 @@ class AiChatController extends Controller
 {
     private ?RuleBasedOrchestrator $ruleOrchestrator = null;
     private ?ReproAiOrchestrator $openAiOrchestrator = null;
+    private RobbieConfigService $robbieConfigService;
+    private IntentScorer $intentScorer;
+    private IntentPolicy $intentPolicy;
 
     public function __construct(?RuleBasedOrchestrator $ruleOrchestrator = null, ?ReproAiOrchestrator $openAiOrchestrator = null)
     {
         $this->ruleOrchestrator = $ruleOrchestrator ?? app(RuleBasedOrchestrator::class);
+        $this->robbieConfigService = app(RobbieConfigService::class);
+        $this->intentScorer = app(IntentScorer::class);
+        $this->intentPolicy = app(IntentPolicy::class);
         // Initialize OpenAI orchestrator with LlmClient
         try {
             $llmClient = app(LlmClient::class);
@@ -59,6 +68,8 @@ class AiChatController extends Controller
                 'message'   => ['required', 'string'],
                 'context'   => ['nullable', 'array'],
             ]);
+
+            $clientContext = $validated['context'] ?? [];
 
             $user = $request->user();
             if (!$user) {
@@ -105,12 +116,12 @@ class AiChatController extends Controller
 
             // Persist user message
             try {
-                DB::transaction(function () use ($session, $validated) {
+                DB::transaction(function () use ($session, $validated, $clientContext) {
                     AiMessage::create([
                         'chat_session_id' => $session->id,
                         'sender'           => 'user',
                         'content'          => $validated['message'],
-                        'metadata'         => $validated['context'] ?? null,
+                        'metadata'         => $clientContext ?: null,
                     ]);
                 });
             } catch (\Exception $e) {
@@ -139,26 +150,24 @@ class AiChatController extends Controller
                 }
             }
             
-            // Detect intent early - if it's a clear booking/manage intent, use rule-based directly
-            $detectedIntent = $this->detectIntent($validated['message'], $validated['context'] ?? []);
-            $shouldUseRuleBased = in_array($detectedIntent, [
-                'book_shoot', 
-                'manage_booking', 
-                'availability', 
-                'client_stats', 
-                'accounting', 
-                'greeting',
-                'photographer_management',
-                'invoice_billing',
-                'media_delivery',
-                'client_crm',
-                'support_faq',
+            // Detect intent early - only use rule-based for very specific intents
+            $detected = $this->detectIntent($validated['message'], $clientContext);
+            $detectedIntent = $detected['intent'] ?? 'general';
+            $detectedSource = $detected['source'] ?? 'legacy';
+            $detectedConfidence = $detected['confidence'] ?? null;
+            Log::info('AI intent detected', [
+                'intent' => $detectedIntent,
+                'source' => $detectedSource,
+                'confidence' => $detectedConfidence,
+                'matched' => $detected['matched'] ?? [],
+                'session_id' => $session->id,
+                'user_id' => $user->id,
             ]);
-            
-            // For greetings, always use rule-based to show proper welcome with suggestions
-            if ($detectedIntent === 'greeting') {
-                $shouldUseRuleBased = true;
-            }
+            // Strict policy: rule-based only for explicit transactional intents
+            $shouldUseRuleBased = $this->intentPolicy->isRuleBased(
+                $detectedIntent,
+                $detectedConfidence ?? 0.0
+            );
             
             // If we're already in a rule-based flow, always continue with rule-based
             if ($isInRuleBasedFlow) {
@@ -177,13 +186,28 @@ class AiChatController extends Controller
             $result = null;
             
             // Try OpenAI orchestrator first if available and not a rule-based intent
+            $serverContext = $clientContext;
+            $serverContext['user_id'] = $user->id;
+            $serverContext['user_role'] = $user->role;
+            try {
+                $serverContext['robbie_config'] = $this->robbieConfigService
+                    ->getMergedConfigForRole($user->role);
+            } catch (\Exception $configError) {
+                Log::warning('Failed to load Robbie config, using defaults', [
+                    'error' => $configError->getMessage(),
+                    'user_id' => $user->id,
+                ]);
+                $serverContext['robbie_config'] = $this->robbieConfigService->getDefaultConfig();
+            }
+
+            $openAiFailed = false;
             if ($useOpenAI && $this->openAiOrchestrator && !$shouldUseRuleBased) {
                 try {
                     // Get assistant messages from OpenAI orchestrator
                     $assistantMessages = $this->openAiOrchestrator->handle(
                         $session,
                         $validated['message'],
-                        $validated['context'] ?? []
+                        $serverContext
                     );
                     
                     // Persist assistant messages
@@ -227,6 +251,7 @@ class AiChatController extends Controller
                     // Fall through to rule-based orchestrator
                     $useOpenAI = false;
                     $shouldUseRuleBased = true; // Force rule-based on OpenAI failure
+                    $openAiFailed = true;
                 }
             }
             
@@ -247,16 +272,73 @@ class AiChatController extends Controller
                     }
                     
                     // Pass detected intent in context if available
-                    $ruleContext = $validated['context'] ?? [];
+                    $ruleContext = $serverContext;
                     if ($detectedIntent && $detectedIntent !== 'general') {
                         $ruleContext['intent'] = $detectedIntent;
                     }
+                    $ruleContext['allow_handoff'] = !$openAiFailed && $this->openAiOrchestrator !== null;
                     
                     $result = $this->ruleOrchestrator->handle(
                         $session,
                         $validated['message'],
                         $ruleContext
                     );
+
+                    if (is_array($result) && ($result['handoff'] ?? false) && $this->openAiOrchestrator) {
+                        $handoffContext = $result['handoff_context'] ?? [];
+                        $openAiContext = $serverContext;
+                        $openAiContext['handoff'] = $handoffContext;
+                        try {
+                            $assistantMessages = $this->openAiOrchestrator->handle(
+                                $session,
+                                $validated['message'],
+                                $openAiContext
+                            );
+
+                            DB::transaction(function () use ($session, $assistantMessages) {
+                                foreach ($assistantMessages ?? [] as $msg) {
+                                    AiMessage::create([
+                                        'chat_session_id' => $session->id,
+                                        'sender'          => $msg['sender'] ?? 'assistant',
+                                        'content'         => $msg['content'] ?? '',
+                                        'metadata'        => $msg['metadata'] ?? null,
+                                    ]);
+                                }
+                            });
+                        } catch (\Exception $handoffError) {
+                            Log::warning('OpenAI handoff failed, returning fallback response', [
+                                'error' => $handoffError->getMessage(),
+                                'session_id' => $session->id,
+                            ]);
+
+                            AiMessage::create([
+                                'chat_session_id' => $session->id,
+                                'sender'          => 'assistant',
+                                'content'         => "I'm having trouble completing that right now. Please try again.",
+                                'metadata'        => ['error' => 'handoff_failed'],
+                            ]);
+                        }
+
+                        $messages = $session->messages()
+                            ->orderBy('created_at')
+                            ->get()
+                            ->map(fn (AiMessage $m) => [
+                                'id'        => (string) $m->id,
+                                'sender'    => $m->sender,
+                                'content'   => $m->content,
+                                'createdAt' => $m->created_at->toIso8601String(),
+                                'metadata'  => $m->metadata,
+                            ])->all();
+
+                        $result = [
+                            'sessionId' => (string) $session->id,
+                            'messages'  => $messages,
+                            'meta'      => [
+                                'suggestions' => [],
+                                'actions'     => [],
+                            ],
+                        ];
+                    }
                 } catch (\Exception $ruleError) {
                     Log::error('Rule-based orchestrator also failed', [
                         'error' => $ruleError->getMessage(),
@@ -320,153 +402,60 @@ class AiChatController extends Controller
      * Detect intent from message and context
      * This allows us to route certain intents directly to rule-based flows
      */
-    private function detectIntent(string $message, array $context): string
+    private function detectIntent(string $message, array $context): array
     {
         // Check context first (from UI buttons/cards)
         if (isset($context['intent']) && !empty($context['intent'])) {
-            return $context['intent'];
+            return [
+                'intent' => $context['intent'],
+                'score' => 1.0,
+                'confidence' => 1.0,
+                'matched' => ['context'],
+                'source' => 'context',
+            ];
         }
-        
-        // Detect from message content
-        $m = strtolower(trim($message));
-        
-        // Exact matches for common suggestions (highest priority)
-        $exactMatches = [
-            'book a new shoot' => 'book_shoot',
-            'book a shoot' => 'book_shoot',
-            'manage an existing booking' => 'manage_booking',
-            'check photographer availability' => 'availability',
-            'view client stats' => 'client_stats',
-            'see accounting summary' => 'accounting',
-            'assign photographer' => 'photographer_management',
-            'view photographer schedule' => 'photographer_management',
-            'view photographer earnings' => 'photographer_management',
-            'create invoice' => 'invoice_billing',
-            'send invoice' => 'invoice_billing',
-            'view outstanding invoices' => 'invoice_billing',
-            'outstanding invoices' => 'invoice_billing',
-            'apply discount' => 'invoice_billing',
-            'check delivery status' => 'media_delivery',
-            'share gallery' => 'media_delivery',
-            'request reshoot' => 'media_delivery',
-            'download all photos' => 'media_delivery',
-            'view client history' => 'client_crm',
-            'send follow-up' => 'client_crm',
-            'add client note' => 'client_crm',
-            'view at-risk clients' => 'client_crm',
-            'help & faq' => 'support_faq',
-            'faq' => 'support_faq',
-            'help' => 'support_faq',
+
+        $normalized = strtolower(trim($message));
+        $normalized = preg_replace('/\s+/', ' ', $normalized) ?? '';
+        $recentShootTriggers = [
+            'recent shoots',
+            'recent shoot',
+            'previous shoots',
+            'past shoots',
+            'show my shoots',
+            'show my recent shoots',
+            'show shoots',
+            'list shoots',
+            'my shoots',
+            'recent bookings',
+            'recent booking',
+            'show my bookings',
+            'show bookings',
+            'list bookings',
+            'my bookings',
         ];
-        
-        if (isset($exactMatches[$m])) {
-            return $exactMatches[$m];
+
+        foreach ($recentShootTriggers as $trigger) {
+            if ($trigger !== '' && str_contains($normalized, $trigger)) {
+                return [
+                    'intent' => 'manage_booking',
+                    'score' => 1.2,
+                    'confidence' => 1.0,
+                    'matched' => [$trigger],
+                    'source' => 'heuristic',
+                ];
+            }
         }
-        
-        // Photographer Management
-        if (str_contains($m, 'assign') && str_contains($m, 'photographer')) {
-            return 'photographer_management';
-        }
-        if (str_contains($m, 'photographer') && (str_contains($m, 'schedule') || str_contains($m, 'earning') || str_contains($m, 'payout'))) {
-            return 'photographer_management';
-        }
-        
-        // Invoice & Billing (before accounting to catch invoice-specific queries)
-        if (str_contains($m, 'invoice')) {
-            return 'invoice_billing';
-        }
-        if (str_contains($m, 'outstanding') || str_contains($m, 'unpaid')) {
-            return 'invoice_billing';
-        }
-        if (str_contains($m, 'discount')) {
-            return 'invoice_billing';
-        }
-        if (str_contains($m, 'billing')) {
-            return 'invoice_billing';
-        }
-        
-        // Media Delivery
-        if (str_contains($m, 'gallery')) {
-            return 'media_delivery';
-        }
-        if (str_contains($m, 'delivery') || str_contains($m, 'photos ready')) {
-            return 'media_delivery';
-        }
-        if (str_contains($m, 'reshoot') || str_contains($m, 're-shoot')) {
-            return 'media_delivery';
-        }
-        if (str_contains($m, 'download') && (str_contains($m, 'photo') || str_contains($m, 'all'))) {
-            return 'media_delivery';
-        }
-        
-        // Client CRM
-        if (str_contains($m, 'client') && str_contains($m, 'history')) {
-            return 'client_crm';
-        }
-        if (str_contains($m, 'follow-up') || str_contains($m, 'follow up')) {
-            return 'client_crm';
-        }
-        if (str_contains($m, 'client') && str_contains($m, 'note')) {
-            return 'client_crm';
-        }
-        if (str_contains($m, 'at-risk') || str_contains($m, 'at risk')) {
-            return 'client_crm';
-        }
-        
-        // Support & FAQ
-        if (str_contains($m, 'faq')) {
-            return 'support_faq';
-        }
-        if (str_contains($m, 'how much') || str_contains($m, 'pricing') || str_contains($m, 'turnaround')) {
-            return 'support_faq';
-        }
-        if (str_contains($m, 'ticket') || str_contains($m, 'support')) {
-            return 'support_faq';
-        }
-        if (str_contains($m, 'human') || str_contains($m, 'representative')) {
-            return 'support_faq';
-        }
-        
-        // Booking intents
-        if (str_contains($m, 'book') && (str_contains($m, 'shoot') || str_contains($m, 'new'))) {
-            return 'book_shoot';
-        }
-        if (str_contains($m, 'schedule') && !str_contains($m, 'reschedule') && !str_contains($m, 'photographer')) {
-            return 'book_shoot';
-        }
-        if (str_contains($m, 'new shoot')) {
-            return 'book_shoot';
-        }
-        
-        // Management intents
-        if (str_contains($m, 'cancel') || str_contains($m, 'reschedule') || str_contains($m, 'change booking')) {
-            return 'manage_booking';
-        }
-        if (str_contains($m, 'manage') && (str_contains($m, 'booking') || str_contains($m, 'shoot'))) {
-            return 'manage_booking';
-        }
-        
-        // Availability
-        if (str_contains($m, 'availability') || str_contains($m, 'available')) {
-            return 'availability';
-        }
-        
-        // Client stats
-        if (str_contains($m, 'stats')) {
-            return 'client_stats';
-        }
-        
-        // Accounting (after invoice_billing to avoid conflicts)
-        if (str_contains($m, 'revenue') || str_contains($m, 'accounting')) {
-            return 'accounting';
-        }
-        
-        // Greetings
-        if ($m === 'hi' || $m === 'hello' || $m === 'hey') {
-            return 'greeting';
-        }
-        
-        return 'general';
+
+        $scored = $this->intentScorer->score($message);
+
+        return [
+            'intent' => $scored['name'] ?? 'general',
+            'score' => $scored['score'] ?? 0.0,
+            'confidence' => $scored['confidence'] ?? 0.0,
+            'matched' => $scored['matched'] ?? [],
+            'source' => 'registry',
+        ];
     }
 
     /**

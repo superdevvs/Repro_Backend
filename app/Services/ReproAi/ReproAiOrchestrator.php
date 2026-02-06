@@ -27,6 +27,7 @@ class ReproAiOrchestrator
     {
         // Store user message for error handling
         $currentUserMessage = $userMessage;
+        $chatOptions = $this->getChatOptions($context);
         
         // Build conversation history
         $messages = $this->buildMessageHistory($session);
@@ -44,11 +45,11 @@ class ReproAiOrchestrator
         ];
 
         // Get available tools
-        $tools = $this->getAvailableTools();
+        $tools = $this->getAvailableTools($context);
 
         // Call LLM
         try {
-            $response = $this->llmClient->chatCompletion($messages, $tools, stream: false);
+            $response = $this->llmClient->chatCompletion($messages, $tools, stream: false, options: $chatOptions);
             
             // Handle tool calls if present
             $assistantMessages = $this->processResponse($response, $session, $context);
@@ -136,6 +137,44 @@ class ReproAiOrchestrator
         $prompt .= "User Context:\n";
         $prompt .= "- User: {$userName}\n";
         $prompt .= "- Role: {$userRole}\n\n";
+
+        $config = $context['robbie_config'] ?? [];
+        if (!empty($config)) {
+            $features = $config['features'] ?? [];
+            $voiceEnabled = $features['voice']['enabled'] ?? false;
+            $mediaLinksEnabled = $features['media_links']['enabled'] ?? false;
+            $toolsConfig = $config['tools'] ?? [];
+
+            $prompt .= "Robbie Configuration:\n";
+            $prompt .= "- Voice features: " . ($voiceEnabled ? 'enabled' : 'disabled') . "\n";
+            $prompt .= "- Media link uploads: " . ($mediaLinksEnabled ? 'enabled' : 'disabled') . "\n";
+
+            if (array_key_exists('enabled', $toolsConfig) && $toolsConfig['enabled'] === false) {
+                $prompt .= "- Tool access: disabled\n";
+            } elseif (!empty($toolsConfig['allow'])) {
+                $prompt .= "- Tool access: limited to " . implode(', ', $toolsConfig['allow']) . "\n";
+            } elseif (!empty($toolsConfig['deny'])) {
+                $prompt .= "- Tool access: all except " . implode(', ', $toolsConfig['deny']) . "\n";
+            }
+
+            $prompt .= "\n";
+        }
+
+        if (!empty($context['handoff']) && is_array($context['handoff'])) {
+            $handoff = $context['handoff'];
+            $prompt .= "Rule-based handoff context:\n";
+            $prompt .= "- Reason: " . ($handoff['reason'] ?? 'unknown') . "\n";
+            if (!empty($handoff['intent'])) {
+                $prompt .= "- Intent: " . $handoff['intent'] . "\n";
+            }
+            if (!empty($handoff['step'])) {
+                $prompt .= "- Step: " . $handoff['step'] . "\n";
+            }
+            if (!empty($handoff['state_data']) && is_array($handoff['state_data'])) {
+                $prompt .= "- State data: " . json_encode($handoff['state_data'], JSON_UNESCAPED_SLASHES) . "\n";
+            }
+            $prompt .= "\n";
+        }
         
         $prompt .= "Your Comprehensive Capabilities:\n";
         $prompt .= "1. BOOKING MANAGEMENT:\n";
@@ -188,6 +227,9 @@ class ReproAiOrchestrator
         $prompt .= "- For payments: Always check current status before creating payment links\n";
         $prompt .= "- For dashboard: Provide clear, actionable insights\n";
         $prompt .= "- When showing data, format it clearly with bullet points or structured lists\n";
+        $prompt .= "- When listing shoots or properties, include the shoot ID and invite the user to reply with the number or ID\n";
+        $prompt .= "- If the user replies with just a number after a numbered list, treat it as selecting that item\n";
+        $prompt .= "- For listing updates, accept a listing ID or full address; use address lookups when provided\n";
         $prompt .= "- If information is missing, ask clarifying questions\n";
         $prompt .= "- Always confirm important actions (bookings, cancellations, payments) before executing\n";
         $prompt .= "- Provide helpful suggestions and next steps after completing actions\n";
@@ -206,6 +248,10 @@ class ReproAiOrchestrator
 
         if (!empty($context['mode'])) {
             $prompt .= "Current context: " . $context['mode'] . " mode\n";
+        }
+
+        if (!empty($config['system_prompt'])) {
+            $prompt .= "\nAdditional system instructions:\n" . trim($config['system_prompt']) . "\n";
         }
 
         return $prompt;
@@ -243,9 +289,9 @@ class ReproAiOrchestrator
     /**
      * Get available tools for function calling
      */
-    private function getAvailableTools(): array
+    private function getAvailableTools(array $context): array
     {
-        return [
+        $tools = [
             // Property & Listing Tools
             [
                 'type' => 'function',
@@ -265,13 +311,13 @@ class ReproAiOrchestrator
                 'type' => 'function',
                 'function' => [
                     'name' => 'get_listing',
-                    'description' => 'Get listing details by listing ID',
+                    'description' => 'Get listing details by listing ID or address',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => [
                             'listing_id' => ['type' => 'string', 'description' => 'The listing ID'],
+                            'address' => ['type' => 'string', 'description' => 'Full property address'],
                         ],
-                        'required' => ['listing_id'],
                     ],
                 ],
             ],
@@ -284,11 +330,11 @@ class ReproAiOrchestrator
                         'type' => 'object',
                         'properties' => [
                             'listing_id' => ['type' => 'string', 'description' => 'The listing ID'],
+                            'address' => ['type' => 'string', 'description' => 'Full property address'],
                             'title' => ['type' => 'string', 'description' => 'New listing title'],
                             'description' => ['type' => 'string', 'description' => 'New listing description'],
                             'highlights' => ['type' => 'array', 'description' => 'Array of highlight strings', 'items' => ['type' => 'string']],
                         ],
-                        'required' => ['listing_id'],
                     ],
                 ],
             ],
@@ -491,13 +537,95 @@ class ReproAiOrchestrator
                 'function' => [
                     'name' => 'get_editing_types',
                     'description' => 'Get list of available AI editing types and their descriptions',
-                    'parameters' => [
+                    'parameters' => (object) [
                         'type' => 'object',
-                        'properties' => [],
+                        'properties' => (object) [],
                     ],
                 ],
             ],
         ];
+
+        return $this->filterTools($tools, $context);
+    }
+
+    private function getChatOptions(array $context): array
+    {
+        $config = $context['robbie_config'] ?? [];
+        $options = [];
+
+        if (!empty($config['model']) && is_string($config['model'])) {
+            $options['model'] = $config['model'];
+        }
+
+        if (isset($config['temperature']) && is_numeric($config['temperature'])) {
+            $options['temperature'] = (float) $config['temperature'];
+        }
+
+        if (isset($config['max_tokens']) && is_numeric($config['max_tokens'])) {
+            $options['max_tokens'] = (int) $config['max_tokens'];
+        }
+
+        return $options;
+    }
+
+    private function filterTools(array $tools, array $context): array
+    {
+        $toolsConfig = $this->getToolsConfig($context);
+
+        if (!($toolsConfig['enabled'] ?? true)) {
+            return [];
+        }
+
+        $allow = $toolsConfig['allow'] ?? [];
+        $deny = $toolsConfig['deny'] ?? [];
+
+        if (!empty($allow)) {
+            return array_values(array_filter($tools, function (array $tool) use ($allow) {
+                $toolName = $tool['function']['name'] ?? null;
+                return $toolName && in_array($toolName, $allow, true);
+            }));
+        }
+
+        if (!empty($deny)) {
+            return array_values(array_filter($tools, function (array $tool) use ($deny) {
+                $toolName = $tool['function']['name'] ?? null;
+                return !$toolName || !in_array($toolName, $deny, true);
+            }));
+        }
+
+        return $tools;
+    }
+
+    private function getToolsConfig(array $context): array
+    {
+        $config = $context['robbie_config']['tools'] ?? [];
+
+        return [
+            'enabled' => $config['enabled'] ?? true,
+            'allow' => array_values(array_filter($config['allow'] ?? [])),
+            'deny' => array_values(array_filter($config['deny'] ?? [])),
+        ];
+    }
+
+    private function isToolAllowed(string $toolName, array $context): bool
+    {
+        $toolsConfig = $this->getToolsConfig($context);
+
+        if (!($toolsConfig['enabled'] ?? true)) {
+            return false;
+        }
+
+        $allow = $toolsConfig['allow'] ?? [];
+        if (!empty($allow)) {
+            return in_array($toolName, $allow, true);
+        }
+
+        $deny = $toolsConfig['deny'] ?? [];
+        if (!empty($deny)) {
+            return !in_array($toolName, $deny, true);
+        }
+
+        return true;
     }
 
     /**
@@ -548,15 +676,28 @@ class ReproAiOrchestrator
                 }
             }
 
-            // Add tool call messages
-            $assistantMessages[] = [
-                'sender' => 'assistant',
-                'content' => $message['content'] ?? '',
-                'metadata' => [
-                    'tool_calls' => $toolCalls,
-                    'tool_results' => $toolResults,
-                ],
-            ];
+            $toolStatusOk = true;
+            foreach ($toolResults as $toolResult) {
+                $result = $toolResult['result'] ?? null;
+                if (is_array($result)) {
+                    if (!empty($result['error']) || (($result['success'] ?? true) === false)) {
+                        $toolStatusOk = false;
+                        break;
+                    }
+                }
+            }
+
+            $toolCallContent = trim((string) ($message['content'] ?? ''));
+            if ($toolCallContent !== '') {
+                $assistantMessages[] = [
+                    'sender' => 'assistant',
+                    'content' => $toolCallContent,
+                    'metadata' => [
+                        'tool_calls' => $toolCalls,
+                        'tool_results' => $toolResults,
+                    ],
+                ];
+            }
 
             // Make a follow-up call with tool results
             $followUpMessages = $this->buildMessageHistory($session);
@@ -582,7 +723,8 @@ class ReproAiOrchestrator
             }
 
             // Get final response
-            $finalResponse = $this->llmClient->chatCompletion($followUpMessages, [], stream: false);
+            $chatOptions = $this->getChatOptions($context);
+            $finalResponse = $this->llmClient->chatCompletion($followUpMessages, [], stream: false, options: $chatOptions);
             $finalChoice = $finalResponse['choices'][0] ?? null;
             
             if ($finalChoice) {
@@ -590,7 +732,9 @@ class ReproAiOrchestrator
                 $assistantMessages[] = [
                     'sender' => 'assistant',
                     'content' => $finalMessage['content'] ?? '',
-                    'metadata' => [],
+                    'metadata' => [
+                        'tool_status' => $toolStatusOk ? 'success' : 'error',
+                    ],
                 ];
             }
         } else {
@@ -610,6 +754,14 @@ class ReproAiOrchestrator
      */
     private function executeTool(string $toolName, array $params, AiChatSession $session, array $context): array
     {
+        if (!$this->isToolAllowed($toolName, $context)) {
+            Log::warning('Tool execution blocked by Robbie config', [
+                'tool' => $toolName,
+                'session_id' => $session->id,
+            ]);
+            return ['error' => 'Tool access is not permitted for this role.'];
+        }
+
         // Map tool names to their classes and methods
         $toolMapping = [
             // Property & Listing Tools

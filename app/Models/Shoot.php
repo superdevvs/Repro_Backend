@@ -104,6 +104,10 @@ class Shoot extends Model
         'cancellation_requested_at',
         'cancellation_requested_by',
         'cancellation_reason',
+        // Hold request fields
+        'hold_requested_at',
+        'hold_requested_by',
+        'hold_reason',
     ];
 
     protected $casts = [
@@ -143,6 +147,7 @@ class Shoot extends Model
         'declined_at' => 'datetime',
         'tour_links' => 'array',
         'cancellation_requested_at' => 'datetime',
+        'hold_requested_at' => 'datetime',
     ];
 
     // Unified workflow status constants

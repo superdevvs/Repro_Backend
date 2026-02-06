@@ -736,6 +736,9 @@ class DashboardController extends Controller
             'shoot_delivered',
             'shoot_cancelled',
             'shoot_put_on_hold',
+            'hold_requested',
+            'hold_approved',
+            'hold_rejected',
             'shoot_submitted_for_review',
             'payment_done',
             'media_uploaded',
@@ -749,6 +752,7 @@ class DashboardController extends Controller
             'shoot_completed',
             'shoot_cancelled',
             'shoot_put_on_hold',
+            'hold_approved',
             'media_uploaded',
         ];
 
@@ -756,10 +760,11 @@ class DashboardController extends Controller
             'shoot_editing_started',
             'shoot_submitted_for_review',
             'media_uploaded',
+            'hold_approved',
         ];
 
         // Build the query based on role
-        if (in_array($role, ['admin', 'superadmin', 'salesRep'])) {
+        if (in_array($role, ['admin', 'superadmin', 'salesRep', 'editing_manager'])) {
             // Admins and sales reps see all activity logs
             $shootActivityLogs = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->latest()

@@ -10,17 +10,17 @@ use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Support\Facades\DB;
-use Square\SquareClient;
-use Square\Models\CreateCheckoutRequest;
-use Square\Models\CreateOrderRequest;
-use Square\Models\Order;
-use Square\Models\OrderLineItem;
-use Square\Models\Money;
-use Square\Models\CreateRefundRequest;
-use Square\Models\CreatePaymentRequest;
+use Square\Legacy\SquareClient;
+use Square\Legacy\Models\CreateCheckoutRequest;
+use Square\Legacy\Models\CreateOrderRequest;
+use Square\Legacy\Models\Order;
+use Square\Legacy\Models\OrderLineItem;
+use Square\Legacy\Models\Money;
+use Square\Legacy\Models\CreateRefundRequest;
+use Square\Legacy\Models\CreatePaymentRequest;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Log;
-use Square\Exceptions\ApiException;
+use Square\Legacy\Exceptions\ApiException;
 
 class PaymentController extends Controller
 {
@@ -55,7 +55,10 @@ class PaymentController extends Controller
                 );
             }
             
-            $this->squareClient = new SquareClient($accessToken);
+            $this->squareClient = new SquareClient([
+                'accessToken' => $accessToken,
+                'environment' => config('services.square.environment', 'sandbox'),
+            ]);
         }
         
         return $this->squareClient;
@@ -281,6 +284,7 @@ class PaymentController extends Controller
                             'shoot_id' => $shoot->id,
                             'amount' => $amount,
                             'currency' => $currency,
+                            'payment_method' => 'square',
                             'square_payment_id' => $paymentId,
                             'square_order_id' => $orderId,
                             'status' => Payment::STATUS_COMPLETED,
@@ -297,6 +301,7 @@ class PaymentController extends Controller
 
                 // Update shoot payment status
                 $shoot->payment_status = $newPaymentStatus;
+                $shoot->payment_type = 'square';
                             $shoot->save();
 
                 // Log payment activity
@@ -514,6 +519,7 @@ class PaymentController extends Controller
                             'shoot_id' => $shoot->id,
                             'amount' => $amount,
                             'currency' => $currency,
+                            'payment_method' => 'square',
                             'square_payment_id' => $squarePaymentId,
                             'square_order_id' => $payment->getOrderId(),
                             'status' => Payment::STATUS_COMPLETED,
@@ -528,6 +534,7 @@ class PaymentController extends Controller
                         $oldPaymentStatus = $shoot->payment_status;
                         $newPaymentStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote);
                         $shoot->payment_status = $newPaymentStatus;
+                        $shoot->payment_type = 'square';
                         $shoot->save();
 
                         // Log payment activity
