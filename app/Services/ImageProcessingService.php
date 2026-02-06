@@ -177,7 +177,18 @@ class ImageProcessingService
                 Log::warning("RAW preview extraction failed: " . $e->getMessage());
             }
             
-            // Fallback: Create a placeholder for RAW files that don't have extractable previews
+            // Fallback: Try exiftool for formats like CR3 (BMFF container) where byte scanning fails
+            try {
+                $image = $this->extractWithExiftool($filePath);
+                if ($image) {
+                    Log::info("Successfully extracted RAW preview using exiftool");
+                    return $image;
+                }
+            } catch (Exception $e) {
+                Log::warning("ExifTool RAW extraction failed: " . $e->getMessage());
+            }
+            
+            // Last resort: Create a placeholder for RAW files that don't have extractable previews
             Log::warning("Could not extract preview from RAW file, using placeholder");
             return $this->createRawPlaceholder();
             
@@ -202,6 +213,60 @@ class ImageProcessingService
         }
     }
     
+    /**
+     * Extract embedded JPEG from RAW file using exiftool (handles CR3/BMFF and all modern RAW formats)
+     * Returns a GD image resource or null
+     */
+    protected function extractWithExiftool(string $filePath)
+    {
+        // Check if exiftool is available
+        $check = PHP_OS_FAMILY === 'Windows' ? 'where' : 'which';
+        exec("$check exiftool 2>&1", $output, $code);
+        if ($code !== 0) {
+            Log::debug('ImageProcessingService: exiftool not available');
+            return null;
+        }
+
+        // Try tags in order: JpgFromRaw (full-size), PreviewImage (medium), ThumbnailImage (small)
+        $tags = ['JpgFromRaw', 'PreviewImage', 'ThumbnailImage'];
+
+        foreach ($tags as $tag) {
+            $cmd = sprintf(
+                'exiftool -b -%s %s',
+                $tag,
+                escapeshellarg($filePath)
+            );
+
+            $descriptorspec = [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ];
+
+            $process = proc_open($cmd, $descriptorspec, $pipes);
+
+            if (is_resource($process)) {
+                $jpegData = stream_get_contents($pipes[1]);
+                fclose($pipes[0]);
+                fclose($pipes[1]);
+                fclose($pipes[2]);
+                proc_close($process);
+
+                if ($jpegData && strlen($jpegData) >= 10000) {
+                    $image = @imagecreatefromstring($jpegData);
+                    if ($image !== false) {
+                        $w = imagesx($image);
+                        $h = imagesy($image);
+                        Log::info("Extracted RAW preview via exiftool -{$tag}: {$w}x{$h}, " . strlen($jpegData) . ' bytes');
+                        return $image;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Extract embedded JPEG preview from RAW file using pure PHP
      * Most RAW files contain embedded JPEG previews that can be extracted

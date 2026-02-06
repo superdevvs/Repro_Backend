@@ -320,8 +320,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin')->g
     Route::post('invoices/generate', [InvoiceController::class, 'generate']);
     Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
     Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
-    Route::post('invoices/{invoice}/misc-items', [InvoiceController::class, 'addMiscItem']);
-    Route::delete('invoices/{invoice}/misc-items/{item}', [InvoiceController::class, 'removeMiscItem']);
+    Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
+    Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
     
     // Invoice approval endpoints
     Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
