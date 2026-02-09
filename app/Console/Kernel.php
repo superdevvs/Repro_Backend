@@ -42,8 +42,8 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Weekly automated invoicing - Monday at 1:00 AM
-        $schedule->command('invoices:generate --weekly')->weeklyOn(1, '01:00');
+        // Weekly automated invoicing - Sunday at 9:00 AM (covers previous Sun-Sat)
+        $schedule->command('invoices:generate --weekly')->weeklyOn(0, '09:00');
         
         // Weekly sales reports - Monday at 2:00 AM (after invoices are generated)
         $schedule->command('reports:sales:weekly')->weeklyOn(1, '02:00');

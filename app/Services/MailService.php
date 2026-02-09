@@ -57,18 +57,22 @@ class MailService
         try {
             $shootData = $this->formatShootData($shoot);
             
-            // Send to client
-            Mail::to($user->email)->send(new ShootScheduledMail($user, $shootData, $paymentLink));
+            // Determine if this call is sending directly to the photographer
+            $isDirectPhotographer = $shoot->photographer && $user->id === $shoot->photographer->id;
+
+            // Send to primary recipient
+            Mail::to($user->email)->send(new ShootScheduledMail($user, $shootData, $paymentLink, $isDirectPhotographer));
             
             Log::info('Shoot scheduled email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
-                'email' => $user->email
+                'email' => $user->email,
+                'is_photographer' => $isDirectPhotographer,
             ]);
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new ShootScheduledMail($shoot->photographer, $shootData, $paymentLink));
+                Mail::to($shoot->photographer->email)->send(new ShootScheduledMail($shoot->photographer, $shootData, $paymentLink, true));
                 Log::info('Shoot scheduled email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -108,7 +112,7 @@ class MailService
             
             if ($shouldNotifyClient) {
                 // Send to client
-                Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData, $changesSummary));
+                Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData, $changesSummary, false));
                 
                 Log::info('Shoot updated email sent', [
                     'user_id' => $user->id,
@@ -130,7 +134,7 @@ class MailService
                 && $shoot->photographer->email
                 && $shoot->photographer->id !== $user->id
             ) {
-                Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData, $changesSummary));
+                Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData, $changesSummary, true));
                 Log::info('Shoot updated email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -340,6 +344,7 @@ class MailService
             'date' => $dateStr,
             'time' => $shoot->time ?? 'TBD',
             'photographer' => $shoot->photographer ? $shoot->photographer->name : 'TBD',
+            'client_name' => $shoot->client ? $shoot->client->name : 'N/A',
             'notes' => $notesText,
             'status' => $shoot->status,
             'total' => $shoot->base_quote ?? 0,

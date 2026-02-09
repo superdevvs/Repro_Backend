@@ -105,6 +105,10 @@ class ShootResource extends JsonResource
             'iguide_property_id' => $this->iguide_property_id,
             'is_private_listing' => (bool) ($this->is_private_listing ?? false),
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
+            'photographerPaidAt' => $this->photographer_paid_at?->toIso8601String(),
+            'photographerPaidInvoiceId' => $this->photographer_paid_invoice_id,
+            'salesRepPaidAt' => $this->sales_rep_paid_at?->toIso8601String(),
+            'salesRepPaidInvoiceId' => $this->sales_rep_paid_invoice_id,
         ];
     }
 }

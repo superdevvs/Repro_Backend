@@ -155,14 +155,140 @@ class InvoiceService
     }
 
     /**
+     * Generate sales rep invoices for the provided billing period.
+     */
+    public function generateSalesRepInvoicesForPeriod(Carbon $start, Carbon $end, bool $sendEmails = false): Collection
+    {
+        $start = $start->copy()->startOfDay();
+        $end = $end->copy()->endOfDay();
+
+        $shoots = Shoot::with(['services', 'rep:id,name,email,role,metadata'])
+            ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+            ->whereNotNull('rep_id')
+            ->whereIn('workflow_status', [
+                Shoot::WORKFLOW_COMPLETED,
+                Shoot::WORKFLOW_ADMIN_VERIFIED,
+            ])
+            ->get();
+
+        if ($shoots->isEmpty()) {
+            return collect();
+        }
+
+        $grouped = $shoots->groupBy('rep_id');
+
+        return DB::transaction(function () use ($grouped, $start, $end, $sendEmails) {
+            $invoices = collect();
+
+            foreach ($grouped as $repId => $repShoots) {
+                $rep = $repShoots->first()->rep ?: User::find($repId);
+                if (!$rep || $rep->role !== 'salesRep') {
+                    continue;
+                }
+
+                // Check if invoice already exists
+                $existingInvoice = Invoice::where('sales_rep_id', $repId)
+                    ->whereNull('photographer_id')
+                    ->where('billing_period_start', $start->toDateString())
+                    ->where('billing_period_end', $end->toDateString())
+                    ->first();
+
+                if ($existingInvoice) {
+                    $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
+                    continue;
+                }
+
+                // Calculate commission
+                $commissionRate = (float) data_get($rep->metadata, 'repDetails.commissionPercentage', 0);
+                $grossTotal = (float) $repShoots->sum('total_quote');
+                $commissionTotal = $commissionRate > 0 ? round($grossTotal * ($commissionRate / 100), 2) : 0;
+
+                // Create invoice
+                $invoice = Invoice::create([
+                    'sales_rep_id' => $repId,
+                    'user_id' => $repId,
+                    'role' => 'salesRep',
+                    'period_start' => $start->toDateString(),
+                    'period_end' => $end->toDateString(),
+                    'billing_period_start' => $start->toDateString(),
+                    'billing_period_end' => $end->toDateString(),
+                    'status' => Invoice::STATUS_DRAFT,
+                    'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
+                    'total_amount' => $commissionTotal,
+                    'notes' => $commissionRate > 0
+                        ? sprintf('Commission rate: %s%% on $%s gross', $commissionRate, number_format($grossTotal, 2))
+                        : null,
+                ]);
+
+                // Create invoice items for each shoot
+                foreach ($repShoots as $shoot) {
+                    $shootTotal = (float) ($shoot->total_quote ?? 0);
+                    $shootCommission = $commissionRate > 0
+                        ? round($shootTotal * ($commissionRate / 100), 2)
+                        : 0;
+
+                    $invoice->items()->create([
+                        'shoot_id' => $shoot->id,
+                        'type' => InvoiceItem::TYPE_CHARGE,
+                        'description' => sprintf(
+                            'Shoot #%d - %s (Commission %s%% on $%s)',
+                            $shoot->id,
+                            $shoot->address ?? 'Location TBD',
+                            $commissionRate,
+                            number_format($shootTotal, 2)
+                        ),
+                        'quantity' => 1,
+                        'unit_amount' => $shootCommission,
+                        'total_amount' => $shootCommission,
+                        'recorded_at' => $shoot->scheduled_date,
+                        'meta' => [
+                            'workflow_status' => $shoot->workflow_status,
+                            'gross_amount' => $shootTotal,
+                            'commission_rate' => $commissionRate,
+                        ],
+                    ]);
+                }
+
+                // Sync shoots
+                $invoice->shoots()->sync($repShoots->pluck('id')->all());
+
+                // Refresh totals
+                $invoice->refreshTotals();
+
+                $invoice = $invoice->fresh(['salesRep', 'items', 'shoots']);
+
+                // Send email notification if requested
+                if ($sendEmails && $rep->email) {
+                    try {
+                        $this->mailService->sendInvoiceGeneratedEmail($invoice);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to send sales rep invoice email', [
+                            'invoice_id' => $invoice->id,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                }
+
+                $invoices->push($invoice);
+            }
+
+            return $invoices;
+        });
+    }
+
+    /**
      * Generate invoices for the last completed calendar week.
+     * Generates both photographer and sales rep invoices.
      */
     public function generateForLastCompletedWeek(bool $sendEmails = false): Collection
     {
         $end = now()->startOfWeek()->subDay()->endOfDay();
         $start = $end->copy()->startOfWeek();
 
-        return $this->generateForPeriod($start, $end, $sendEmails);
+        $photographerInvoices = $this->generateForPeriod($start, $end, $sendEmails);
+        $salesRepInvoices = $this->generateSalesRepInvoicesForPeriod($start, $end, $sendEmails);
+
+        return $photographerInvoices->merge($salesRepInvoices);
     }
 
     /**

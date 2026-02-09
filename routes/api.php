@@ -313,7 +313,7 @@ Route::middleware('auth:sanctum')->prefix('invoices')->group(function () {
     Route::get('{invoice}/download', [InvoiceController::class, 'download']);
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin')->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin')->group(function () {
     Route::get('invoices', [InvoiceController::class, 'index']);
     Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
     Route::get('invoices/{invoice}', [InvoiceController::class, 'show']);
@@ -327,6 +327,10 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin')->g
     Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
     Route::post('invoices/{invoice}/approve', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'approve']);
     Route::post('invoices/{invoice}/reject', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reject']);
+    
+    // Payout report endpoints
+    Route::get('payout-report', [App\Http\Controllers\PayoutReportController::class, 'index']);
+    Route::get('payout-report/download', [App\Http\Controllers\PayoutReportController::class, 'download']);
     
     // Sales report endpoints
     Route::get('sales-reports/{salesRepId}', [App\Http\Controllers\SalesReportController::class, 'salesRepReport']);
@@ -587,6 +591,16 @@ Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/i
     Route::delete('{invoice}/expenses/{item}', [App\Http\Controllers\PhotographerInvoiceController::class, 'removeExpense']);
     Route::post('{invoice}/reject', [App\Http\Controllers\PhotographerInvoiceController::class, 'reject']);
     Route::post('{invoice}/submit-for-approval', [App\Http\Controllers\PhotographerInvoiceController::class, 'submitForApproval']);
+});
+
+// Sales rep invoice management
+Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('salesrep/invoices')->group(function () {
+    Route::get('/', [App\Http\Controllers\SalesRepInvoiceController::class, 'index']);
+    Route::get('{invoice}', [App\Http\Controllers\SalesRepInvoiceController::class, 'show']);
+    Route::post('{invoice}/expenses', [App\Http\Controllers\SalesRepInvoiceController::class, 'addExpense']);
+    Route::delete('{invoice}/expenses/{item}', [App\Http\Controllers\SalesRepInvoiceController::class, 'removeExpense']);
+    Route::post('{invoice}/reject', [App\Http\Controllers\SalesRepInvoiceController::class, 'reject']);
+    Route::post('{invoice}/submit-for-approval', [App\Http\Controllers\SalesRepInvoiceController::class, 'submitForApproval']);
 });
 
 Route::get('/services', [ServiceController::class, 'index']);

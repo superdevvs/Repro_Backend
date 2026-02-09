@@ -7,17 +7,39 @@
 <body>
     <p>Hi {{ $user->first_name }}!</p>
 
+    @if(!empty($isPhotographer))
+    <p>
+        A shoot you are assigned to has been updated.
+        Here are the latest details:
+    </p>
+    @else
     <p>
         One of your scheduled photo shoots has been updated. 
         Here is a summary of the latest information regarding the shoot:
     </p>
+    @endif
 
     <p>
         Location: {{ $shoot->location }}<br>
         Scheduled Date: {{ $shoot->date }}<br>
+        @if($shoot->time && $shoot->time !== 'TBD')
+        Time: {{ $shoot->time }}<br>
+        @endif
+        @if(!empty($isPhotographer))
+        Client: {{ $shoot->client_name ?? 'N/A' }}<br>
+        @else
         Photographer: {{ $shoot->photographer }}<br>
-        Services: @foreach($shoot->packages as $package){{ $package['name'] }}@if(!$loop->last), @endif @endforeach<br>
-        Total: {{ number_format($shoot->grand_total, 2) }}
+        @endif
+        Services:
+        @if(count($shoot->packages) > 0)
+            @foreach($shoot->packages as $package)
+                {{ $package['name'] }}{{ isset($package['price']) && $package['price'] > 0 ? ' — $' . number_format($package['price'], 2) : '' }}@if(!$loop->last), @endif
+            @endforeach
+        @else
+            N/A
+        @endif
+        <br>
+        Total: ${{ number_format($shoot->grand_total, 2) }}
     </p>
 
     @if(isset($changesSummary) && !empty($changesSummary))
@@ -38,6 +60,11 @@
         Visit <a href="https://reprodashboard.com">https://reprodashboard.com</a> to manage your shoots.
     </p>
 
+    @if(!empty($isPhotographer))
+    <p>
+        Please review the updated details and contact the office if you have any questions or conflicts.
+    </p>
+    @else
     <p>
         To ensure a smooth shoot process, please have the property ready. 
         Here is a link to getting your property ready for the shoot: 
@@ -51,6 +78,7 @@
         a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. 
         We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
     </p>
+    @endif
 
     <p>
         If you have any questions about this photo shoot please feel free to reply to this email, 
@@ -67,11 +95,13 @@
         Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 
+    @if(empty($isPhotographer))
     <p>
         We would love your feedback: 
         <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" target="_blank">
             Post a review on Google
         </a>.
     </p>
+    @endif
 </body>
 </html>

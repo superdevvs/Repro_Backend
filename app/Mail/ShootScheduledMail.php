@@ -16,12 +16,14 @@ class ShootScheduledMail extends Mailable
     public User $user;
     public object $shoot;
     public string $paymentLink;
+    public bool $isPhotographer;
 
-    public function __construct(User $user, object $shoot, string $paymentLink)
+    public function __construct(User $user, object $shoot, string $paymentLink, bool $isPhotographer = false)
     {
         $this->user = $user;
         $this->shoot = $shoot;
         $this->paymentLink = $paymentLink;
+        $this->isPhotographer = $isPhotographer;
     }
 
     public function envelope(): Envelope
@@ -39,6 +41,7 @@ class ShootScheduledMail extends Mailable
                 'user' => $this->user,
                 'shoot' => $this->shoot,
                 'paymentLink' => $this->paymentLink,
+                'isPhotographer' => $this->isPhotographer,
             ]
         );
     }

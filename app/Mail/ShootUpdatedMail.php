@@ -16,12 +16,14 @@ class ShootUpdatedMail extends Mailable
     public User $user;
     public object $shoot;
     public ?string $changesSummary;
+    public bool $isPhotographer;
 
-    public function __construct(User $user, object $shoot, ?string $changesSummary = null)
+    public function __construct(User $user, object $shoot, ?string $changesSummary = null, bool $isPhotographer = false)
     {
         $this->user = $user;
         $this->shoot = $shoot;
         $this->changesSummary = $changesSummary;
+        $this->isPhotographer = $isPhotographer;
     }
 
     public function envelope(): Envelope
@@ -39,6 +41,7 @@ class ShootUpdatedMail extends Mailable
                 'user' => $this->user,
                 'shoot' => $this->shoot,
                 'changesSummary' => $this->changesSummary,
+                'isPhotographer' => $this->isPhotographer,
             ]
         );
     }

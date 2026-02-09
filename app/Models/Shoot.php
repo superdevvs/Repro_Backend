@@ -108,6 +108,11 @@ class Shoot extends Model
         'hold_requested_at',
         'hold_requested_by',
         'hold_reason',
+        // Photographer/sales rep payment tracking
+        'photographer_paid_at',
+        'photographer_paid_invoice_id',
+        'sales_rep_paid_at',
+        'sales_rep_paid_invoice_id',
     ];
 
     protected $casts = [
@@ -148,6 +153,8 @@ class Shoot extends Model
         'tour_links' => 'array',
         'cancellation_requested_at' => 'datetime',
         'hold_requested_at' => 'datetime',
+        'photographer_paid_at' => 'datetime',
+        'sales_rep_paid_at' => 'datetime',
     ];
 
     // Unified workflow status constants

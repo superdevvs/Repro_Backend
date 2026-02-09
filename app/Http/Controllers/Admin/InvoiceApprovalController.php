@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
+use App\Models\Shoot;
 use App\Services\MailService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class InvoiceApprovalController extends Controller
@@ -24,7 +26,7 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -43,7 +45,7 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -54,20 +56,45 @@ class InvoiceApprovalController extends Controller
         }
 
         try {
+            DB::beginTransaction();
+
             $invoice->update([
                 'approval_status' => Invoice::APPROVAL_STATUS_APPROVED,
                 'approved_by' => $user->id,
                 'approved_at' => now(),
             ]);
 
-            // Notify photographer
+            // Mark linked shoots as paid
+            $invoice->loadMissing('shoots');
+            foreach ($invoice->shoots as $shoot) {
+                $updateData = [];
+
+                if ($invoice->photographer_id && !$shoot->photographer_paid_at) {
+                    $updateData['photographer_paid_at'] = now();
+                    $updateData['photographer_paid_invoice_id'] = $invoice->id;
+                }
+
+                if ($invoice->sales_rep_id && !$shoot->sales_rep_paid_at) {
+                    $updateData['sales_rep_paid_at'] = now();
+                    $updateData['sales_rep_paid_invoice_id'] = $invoice->id;
+                }
+
+                if (!empty($updateData)) {
+                    $shoot->update($updateData);
+                }
+            }
+
+            DB::commit();
+
+            // Notify photographer/sales rep
             $this->mailService->sendInvoiceApprovedEmail($invoice);
 
             return response()->json([
                 'message' => 'Invoice approved successfully',
-                'invoice' => $invoice->fresh(['items', 'photographer']),
+                'invoice' => $invoice->fresh(['items', 'photographer', 'salesRep', 'shoots']),
             ]);
         } catch (\Exception $e) {
+            DB::rollBack();
             Log::error('Failed to approve invoice', [
                 'invoice_id' => $invoice->id,
                 'error' => $e->getMessage()
@@ -87,7 +114,7 @@ class InvoiceApprovalController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 

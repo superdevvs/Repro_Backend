@@ -243,6 +243,24 @@ class UserController extends Controller
             $this->demoteOtherSuperAdmins($user);
         }
 
+        // Send account creation email with password reset link
+        try {
+            $mailService = app(MailService::class);
+            $token = Str::random(64);
+            DB::table('password_reset_tokens')->updateOrInsert(
+                ['email' => $user->email],
+                ['token' => Hash::make($token), 'created_at' => now()]
+            );
+            $resetLink = $mailService->generatePasswordResetLink($user, $token);
+            $mailService->sendAccountCreatedEmail($user, $resetLink);
+        } catch (\Exception $e) {
+            \Log::warning('Failed to send account creation email', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
         return response()->json([
             'message' => 'User created successfully.',
             'user' => $this->presentUserForViewer($user, $admin),
