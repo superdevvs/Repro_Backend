@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 class BrightMlsService
 {
     private const MAX_PHOTOS = 150;
-    private const MAX_VIRTUAL_TOURS = 20;
+    private const MAX_TOUR_URLS = 20;
 
     private $apiUrl;
     private $apiUser;
@@ -24,7 +24,7 @@ class BrightMlsService
         // Try to load from database settings first, fallback to config
         $settings = $this->loadSettings('integrations.bright_mls');
         
-        $this->apiUrl = rtrim($settings['apiUrl'] ?? config('services.bright_mls.api_url', 'https://bright-manifestservices.tst.brightmls.com'), '/');
+        $this->apiUrl = rtrim($settings['apiUrl'] ?? config('services.bright_mls.api_url', 'https://agl1paz1msaasservices.bright-solutions.co'), '/');
         $this->apiUser = $settings['apiUser'] ?? config('services.bright_mls.api_user');
         $this->apiKey = $settings['apiKey'] ?? config('services.bright_mls.api_key');
         $this->vendorId = $settings['vendorId'] ?? config('services.bright_mls.vendor_id');
@@ -44,20 +44,21 @@ class BrightMlsService
             ];
         }
 
-        if (empty($this->apiUser) || empty($this->apiKey)) {
+        if (empty($this->apiKey)) {
             return [
                 'success' => false,
                 'status' => 'config_error',
-                'error' => 'Bright MLS API credentials are missing',
+                'error' => 'Bright MLS API key is missing',
                 'response' => null,
             ];
         }
 
-        if ($manifestData && empty($this->vendorId) && empty($manifestData['vendorId'])) {
+        $effectiveVendorId = $this->vendorId ?? ($manifestData['vendorId'] ?? null);
+        if (empty($effectiveVendorId)) {
             return [
                 'success' => false,
                 'status' => 'config_error',
-                'error' => 'Bright MLS vendor ID is missing',
+                'error' => 'Bright MLS vendor ID is missing (required for X-API-USER header)',
                 'response' => null,
             ];
         }
@@ -70,7 +71,12 @@ class BrightMlsService
         try {
             $setting = DB::table('settings')->where('key', $key)->first();
             if ($setting && $setting->type === 'json') {
-                return json_decode($setting->value, true) ?? [];
+                $data = json_decode($setting->value, true) ?? [];
+                // Decrypt sensitive fields if stored encrypted
+                if (str_starts_with($key, 'integrations.')) {
+                    $data = \App\Http\Controllers\API\SettingsController::decryptSensitiveFields($data);
+                }
+                return $data;
             }
         } catch (\Exception $e) {
             Log::warning('Could not load settings from database', ['key' => $key]);
@@ -88,22 +94,13 @@ class BrightMlsService
                 return $configError;
             }
 
+            // mlsId and propertyAddress are optional per Bright MLS docs
+            // We log a warning but do not reject — let Bright MLS validate
             if (empty($manifestData['mlsId'])) {
-                return [
-                    'success' => false,
-                    'status' => 'validation_error',
-                    'error' => 'MLS ID is required to publish a manifest',
-                    'response' => null,
-                ];
+                Log::info('Bright MLS publish: mlsId is empty (optional field)');
             }
-
             if (empty($manifestData['propertyAddress'])) {
-                return [
-                    'success' => false,
-                    'status' => 'validation_error',
-                    'error' => 'Property address is required to publish a manifest',
-                    'response' => null,
-                ];
+                Log::info('Bright MLS publish: propertyAddress is empty (optional field)');
             }
 
             if (empty($manifestData['listItems'])) {
@@ -126,53 +123,101 @@ class BrightMlsService
                 ];
             }
 
-            $virtualTourCount = $listItems->where('mediaType', 'virtual_tour')->count();
-            if ($virtualTourCount > self::MAX_VIRTUAL_TOURS) {
+            $tourUrlCount = $listItems->where('mediaType', 'tour_url')->count();
+            if ($tourUrlCount > self::MAX_TOUR_URLS) {
                 return [
                     'success' => false,
                     'status' => 'validation_error',
-                    'error' => sprintf('Maximum %d virtual tours allowed per listing (received %d).', self::MAX_VIRTUAL_TOURS, $virtualTourCount),
-                    'response' => ['virtual_tour_count' => $virtualTourCount],
+                    'error' => sprintf('Maximum %d tour URLs allowed per listing (received %d).', self::MAX_TOUR_URLS, $tourUrlCount),
+                    'response' => ['tour_url_count' => $tourUrlCount],
                 ];
             }
 
+            $effectiveVendorId = $this->vendorId ?? $manifestData['vendorId'];
+
+            // Ensure each listItem has required id and lastModified fields
+            $normalizedItems = $listItems->values()->map(function ($item, $index) {
+                $item['id'] = $item['id'] ?? ($index + 1);
+                $item['lastModified'] = $item['lastModified'] ?? now()->toIso8601String();
+                return $item;
+            })->all();
+
             $payload = [
-                'propertyAddress' => $manifestData['propertyAddress'],
-                'mlsId' => $manifestData['mlsId'],
-                'vendorId' => $this->vendorId ?? $manifestData['vendorId'],
-                'vendorName' => $this->vendorName ?? $manifestData['vendorName'],
+                'vendorId' => $effectiveVendorId,
+                'vendorName' => $this->vendorName ?? ($manifestData['vendorName'] ?? 'Repro Photos'),
                 'dateFileCreated' => $manifestData['dateFileCreated'] ?? now()->toIso8601String(),
-                'listItems' => $listItems->values()->all(),
+                'listItems' => $normalizedItems,
             ];
 
-            $response = Http::withHeaders([
-                'x-api-user' => $this->apiUser ?? '',
-                'x-api-key' => $this->apiKey ?? '',
-                'Content-Type' => 'application/json',
-            ])->timeout(20)->post($this->apiUrl . '/manifests', $payload);
+            // Only include optional fields if they have values
+            if (!empty($manifestData['propertyAddress'])) {
+                $payload['propertyAddress'] = $manifestData['propertyAddress'];
+            }
+            if (!empty($manifestData['mlsId'])) {
+                $payload['mlsId'] = $manifestData['mlsId'];
+            }
+
+            // X-API-USER must match vendorId per Bright MLS docs
+            // Retry up to 2 times on 5xx server errors (with 1s delay)
+            $maxRetries = 2;
+            $response = null;
+            for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+                $response = Http::withHeaders([
+                    'X-API-USER' => $effectiveVendorId,
+                    'X-API-KEY' => $this->apiKey ?? '',
+                    'Content-Type' => 'application/json',
+                ])->timeout(20)->post($this->apiUrl . '/manifest', $payload);
+
+                if ($response->successful() || $response->status() < 500) {
+                    break; // Don't retry on success or client errors (4xx)
+                }
+
+                if ($attempt < $maxRetries) {
+                    Log::warning('Bright MLS server error, retrying', [
+                        'attempt' => $attempt + 1,
+                        'status' => $response->status(),
+                        'mls_id' => $manifestData['mlsId'] ?? null,
+                    ]);
+                    sleep(1);
+                }
+            }
 
             if (!$response->successful()) {
                 $errorBody = $response->json() ?? $response->body();
                 Log::error('Bright MLS publish failed', [
-                    'mls_id' => $manifestData['mlsId'],
+                    'mls_id' => $manifestData['mlsId'] ?? null,
                     'status' => $response->status(),
                     'response' => $errorBody,
                 ]);
 
+                // Parse Bright MLS error format: { statusCode, message, body: [{path, message}] }
+                $errorMessage = $errorBody['message'] ?? $errorBody['error'] ?? 'Unknown error';
+                $validationErrors = [];
+                if (is_array($errorBody) && !empty($errorBody['body']) && is_array($errorBody['body'])) {
+                    foreach ($errorBody['body'] as $detail) {
+                        $path = is_array($detail['path'] ?? null) ? implode('.', $detail['path']) : ($detail['path'] ?? '');
+                        $validationErrors[] = ($path ? "[{$path}] " : '') . ($detail['message'] ?? 'Validation error');
+                    }
+                }
+
                 return [
                     'success' => false,
                     'status' => 'error',
-                    'error' => $errorBody['message'] ?? $errorBody['error'] ?? 'Unknown error',
+                    'error' => $errorMessage,
+                    'validation_errors' => $validationErrors,
                     'response' => $errorBody,
                 ];
             }
 
             $data = $response->json();
 
+            $manifestId = $data['manifestId'] ?? $data['id'] ?? null;
+
             return [
                 'success' => true,
                 'status' => 'published',
-                'manifest_id' => $data['id'] ?? $data['manifestId'] ?? null,
+                'manifest_id' => $manifestId,
+                'redirect_url' => $manifestId ? $this->getRedirectUrl($manifestId) : null,
                 'response' => $data,
             ];
 
@@ -199,6 +244,8 @@ class BrightMlsService
     {
         $listItems = [];
 
+        $itemId = 1;
+
         // Add photos
         if (!empty($options['photos']) && is_array($options['photos'])) {
             foreach ($options['photos'] as $photo) {
@@ -208,45 +255,74 @@ class BrightMlsService
                         'imageUrls' => [
                             'fullSize' => $photo['url'],
                         ],
+                        'lastModified' => now()->toIso8601String(),
                         'mediaType' => 'photo',
                         'description' => $photo['description'] ?? '',
+                        'id' => $itemId++,
                         'roomType' => $photo['roomType'] ?? '',
                     ];
                 }
             }
         }
 
-        // Add iGUIDE tour
+        // Add iGUIDE tour (mediaType: tour_url per Bright MLS docs)
         if (!empty($options['iguide_tour_url'])) {
             $listItems[] = [
                 'fileName' => 'iGUIDE 3D Tour',
                 'tourUrl' => $options['iguide_tour_url'],
-                'mediaType' => 'virtual_tour',
+                'lastModified' => now()->toIso8601String(),
+                'mediaType' => 'tour_url',
                 'description' => '3D interactive tour',
+                'id' => $itemId++,
             ];
         }
 
-        // Add slideshow/video tour
+        // Add slideshow/video tour (mediaType: tour_url per Bright MLS docs)
         if (!empty($options['slideshow_url'])) {
             $listItems[] = [
                 'fileName' => 'Property Slideshow',
                 'tourUrl' => $options['slideshow_url'],
-                'mediaType' => 'virtual_tour',
+                'lastModified' => now()->toIso8601String(),
+                'mediaType' => 'tour_url',
                 'description' => 'Property slideshow',
+                'id' => $itemId++,
             ];
         }
 
-        // Add documents (floorplans, etc.)
+        // Add documents and floor plans
         if (!empty($options['documents']) && is_array($options['documents'])) {
             foreach ($options['documents'] as $doc) {
                 if (!empty($doc['url'])) {
-                    $listItems[] = [
-                        'fileName' => $doc['filename'] ?? basename($doc['url']),
-                        'docUrl' => $doc['url'],
-                        'docVisibility' => $doc['visibility'] ?? $this->defaultDocVisibility,
-                        'mediaType' => 'document',
-                        'description' => $doc['description'] ?? '',
-                    ];
+                    $fileName = $doc['filename'] ?? basename($doc['url']);
+                    $isPdf = str_ends_with(strtolower($fileName), '.pdf');
+                    $isFloorPlan = $isPdf && (
+                        ($doc['type'] ?? '') === 'floor_plan' ||
+                        stripos($fileName, 'floor') !== false ||
+                        stripos($fileName, 'floorplan') !== false
+                    );
+
+                    if ($isFloorPlan) {
+                        // Floor plans: mediaType floor_plan, requires docUrl + .pdf fileName
+                        $listItems[] = [
+                            'fileName' => $fileName,
+                            'docUrl' => $doc['url'],
+                            'lastModified' => now()->toIso8601String(),
+                            'mediaType' => 'floor_plan',
+                            'description' => $doc['description'] ?? 'Floor plan',
+                            'id' => $itemId++,
+                        ];
+                    } else {
+                        // Regular documents: requires docUrl + docVisibility
+                        $listItems[] = [
+                            'fileName' => $fileName,
+                            'docUrl' => $doc['url'],
+                            'docVisibility' => $doc['visibility'] ?? $this->defaultDocVisibility,
+                            'lastModified' => now()->toIso8601String(),
+                            'mediaType' => 'document',
+                            'description' => $doc['description'] ?? '',
+                            'id' => $itemId++,
+                        ];
+                    }
                 }
             }
         }
@@ -266,6 +342,8 @@ class BrightMlsService
 
     /**
      * Test connection to Bright MLS API
+     * Sends a minimal POST to /manifest with an empty body to verify credentials.
+     * A 400 (bad request / missing body) confirms the API is reachable and credentials are accepted.
      */
     public function testConnection(): array
     {
@@ -278,25 +356,55 @@ class BrightMlsService
                 ];
             }
 
-            if (empty($this->apiUser) || empty($this->apiKey)) {
+            if (empty($this->vendorId)) {
                 return [
                     'success' => false,
                     'status' => 'config_error',
-                    'message' => 'Bright MLS API credentials are missing',
+                    'message' => 'Bright MLS vendor ID is missing (required for X-API-USER header)',
                 ];
             }
 
-            // Try to make a minimal test request
+            if (empty($this->apiKey)) {
+                return [
+                    'success' => false,
+                    'status' => 'config_error',
+                    'message' => 'Bright MLS API key is missing',
+                ];
+            }
+
+            // Send a minimal POST to /manifest — a 400 "Missing request body" confirms
+            // the API is reachable and credentials are valid. A 401/403 means bad creds.
             $response = Http::withHeaders([
-                'x-api-user' => $this->apiUser ?? '',
-                'x-api-key' => $this->apiKey ?? '',
+                'X-API-USER' => $this->vendorId,
+                'X-API-KEY' => $this->apiKey,
                 'Content-Type' => 'application/json',
-            ])->timeout(5)->get($this->apiUrl . '/health');
+            ])->timeout(10)->post($this->apiUrl . '/manifest', []);
+
+            $status = $response->status();
+
+            // 400 = API reached, creds accepted, body validation failed (expected)
+            // 200/201 = unexpected but fine
+            if ($status === 400 || $response->successful()) {
+                return [
+                    'success' => true,
+                    'status' => $status,
+                    'message' => 'Connection successful — API is reachable and credentials are valid',
+                ];
+            }
+
+            // 401/403 = bad credentials
+            if ($status === 401 || $status === 403) {
+                return [
+                    'success' => false,
+                    'status' => $status,
+                    'message' => 'Authentication failed — check your Vendor ID and API Key',
+                ];
+            }
 
             return [
-                'success' => $response->successful(),
-                'status' => $response->status(),
-                'message' => $response->successful() ? 'Connection successful' : 'Connection failed',
+                'success' => false,
+                'status' => $status,
+                'message' => 'Unexpected response (HTTP ' . $status . ')',
             ];
         } catch (\Exception $e) {
             return [
@@ -305,6 +413,134 @@ class BrightMlsService
                 'message' => 'Connection error: ' . $e->getMessage(),
             ];
         }
+    }
+
+    /**
+     * Get the Bright MLS redirect URL for a published manifest
+     */
+    public function getRedirectUrl(string $manifestId): string
+    {
+        return $this->apiUrl . '/mlsredirect/bright/' . $manifestId;
+    }
+
+    /**
+     * Auto-publish manifest for a shoot when photos are delivered.
+     * Called automatically when a shoot transitions to 'delivered' status.
+     * Returns null if Bright MLS is disabled or shoot has no photos.
+     */
+    public function autoPublishForShoot(\App\Models\Shoot $shoot): ?array
+    {
+        try {
+            if (!$this->enabled) {
+                Log::info('Bright MLS auto-publish skipped: integration disabled', ['shoot_id' => $shoot->id]);
+                return null;
+            }
+
+            if (empty($this->vendorId) || empty($this->apiKey)) {
+                Log::info('Bright MLS auto-publish skipped: credentials not configured', ['shoot_id' => $shoot->id]);
+                return null;
+            }
+
+            // Prevent duplicate submissions — skip if already published
+            if (!empty($shoot->bright_mls_manifest_id)) {
+                Log::info('Bright MLS auto-publish skipped: manifest already exists', [
+                    'shoot_id' => $shoot->id,
+                    'existing_manifest_id' => $shoot->bright_mls_manifest_id,
+                ]);
+                return null;
+            }
+
+            // Load files if not already loaded
+            if (!$shoot->relationLoaded('files')) {
+                $shoot->load('files');
+            }
+
+            // Get completed/verified photos
+            $photos = $shoot->files
+                ->whereIn('workflow_stage', ['completed', 'verified'])
+                ->whereIn('media_type', ['image', 'edited', 'photo'])
+                ->values();
+
+            if ($photos->isEmpty()) {
+                Log::info('Bright MLS auto-publish skipped: no completed photos', ['shoot_id' => $shoot->id]);
+                return null;
+            }
+
+            // Build photo options from shoot files
+            $photoOptions = $photos->map(function ($file) {
+                $url = $file->url ?? $file->path ?? null;
+                if ($url && !str_starts_with($url, 'http')) {
+                    $url = \Illuminate\Support\Facades\Storage::disk('public')->url($url);
+                }
+                return [
+                    'url' => $url,
+                    'filename' => $file->filename ?? basename($url ?? ''),
+                    'description' => '',
+                    'roomType' => '',
+                    'selected' => true,
+                ];
+            })->filter(fn($p) => !empty($p['url']))->values()->all();
+
+            // Build document options (floorplans from iGUIDE)
+            $documentOptions = [];
+            if ($shoot->iguide_floorplans && is_array($shoot->iguide_floorplans)) {
+                foreach ($shoot->iguide_floorplans as $fp) {
+                    $fpUrl = is_array($fp) ? ($fp['url'] ?? null) : $fp;
+                    if ($fpUrl) {
+                        $documentOptions[] = [
+                            'url' => $fpUrl,
+                            'filename' => is_array($fp) ? ($fp['filename'] ?? 'floorplan.pdf') : 'floorplan.pdf',
+                            'type' => 'floor_plan',
+                            'description' => 'Floor plan',
+                        ];
+                    }
+                }
+            }
+
+            $options = [
+                'photos' => $photoOptions,
+                'iguide_tour_url' => $shoot->iguide_tour_url,
+                'slideshow_url' => null,
+                'documents' => $documentOptions,
+            ];
+
+            $manifestData = $this->buildManifestFromShoot($shoot->toArray(), $options);
+            $result = $this->publishManifest($manifestData);
+
+            // Update shoot with publish result
+            $shoot->bright_mls_publish_status = $result['status'];
+            $shoot->bright_mls_last_published_at = $result['success'] ? now() : null;
+            $shoot->bright_mls_response = json_encode($result);
+            $shoot->bright_mls_manifest_id = $result['manifest_id'] ?? null;
+            $shoot->save();
+
+            Log::info('Bright MLS auto-publish ' . ($result['success'] ? 'succeeded' : 'failed'), [
+                'shoot_id' => $shoot->id,
+                'mls_id' => $shoot->mls_id,
+                'manifest_id' => $result['manifest_id'] ?? null,
+                'success' => $result['success'],
+            ]);
+
+            return $result;
+        } catch (\Exception $e) {
+            Log::error('Bright MLS auto-publish exception', [
+                'shoot_id' => $shoot->id,
+                'error' => $e->getMessage(),
+            ]);
+            return [
+                'success' => false,
+                'status' => 'error',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
+     * Check if auto-publish is available for a shoot
+     */
+    public function isAutoPublishAvailable(): bool
+    {
+        return $this->enabled && !empty($this->vendorId) && !empty($this->apiKey);
     }
 }
 

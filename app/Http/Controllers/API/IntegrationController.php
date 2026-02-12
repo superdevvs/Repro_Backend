@@ -393,6 +393,7 @@ class IntegrationController extends Controller
             'documents.*.filename' => 'nullable|string',
             'documents.*.visibility' => 'nullable|string',
             'documents.*.description' => 'nullable|string',
+            'documents.*.type' => 'nullable|string',
         ]);
 
         try {
@@ -419,10 +420,19 @@ class IntegrationController extends Controller
             $shoot->bright_mls_manifest_id = $result['manifest_id'] ?? null;
             $shoot->save();
 
+            $message = $result['error'] ?? $result['message'] ?? ($result['success'] ? 'Published to Bright MLS' : 'Bright MLS publish failed');
+
+            // Append detailed validation errors if present
+            $validationErrors = $result['validation_errors'] ?? [];
+            if (!empty($validationErrors)) {
+                $message .= ' — Details: ' . implode('; ', $validationErrors);
+            }
+
             return response()->json([
                 'success' => $result['success'],
                 'status' => $result['status'],
-                'message' => $result['error'] ?? $result['message'] ?? ($result['success'] ? 'Published to Bright MLS' : 'Bright MLS publish failed'),
+                'message' => $message,
+                'validation_errors' => $validationErrors,
                 'data' => $result,
             ], $result['success'] ? 200 : 400);
 
@@ -465,6 +475,9 @@ class IntegrationController extends Controller
                     'status' => $shoot->bright_mls_publish_status,
                     'last_published' => $shoot->bright_mls_last_published_at,
                     'manifest_id' => $shoot->bright_mls_manifest_id,
+                    'redirect_url' => $shoot->bright_mls_manifest_id
+                        ? $this->brightMlsService->getRedirectUrl($shoot->bright_mls_manifest_id)
+                        : null,
                     'response' => $shoot->bright_mls_response ? (
                         is_string($shoot->bright_mls_response) 
                             ? json_decode($shoot->bright_mls_response, true) 
@@ -534,6 +547,26 @@ class IntegrationController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Test failed: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Get Bright MLS redirect URL for a manifest
+     */
+    public function getBrightMlsRedirectUrl($manifestId)
+    {
+        try {
+            $redirectUrl = $this->brightMlsService->getRedirectUrl($manifestId);
+
+            return response()->json([
+                'success' => true,
+                'redirect_url' => $redirectUrl,
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to generate redirect URL',
             ], 500);
         }
     }
@@ -624,6 +657,7 @@ class IntegrationController extends Controller
                         ?? $file?->filename
                         ?? basename(parse_url($resolvedUrl, PHP_URL_PATH) ?: $resolvedUrl),
                     'visibility' => $doc['visibility'] ?? null,
+                    'type' => $doc['type'] ?? null,
                     'description' => $doc['description'] ?? '',
                 ];
             })

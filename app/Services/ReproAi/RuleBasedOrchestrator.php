@@ -70,16 +70,20 @@ class RuleBasedOrchestrator
         if (isset($context['intent'])) {
             $contextIntent = $context['intent'];
             if (in_array($contextIntent, $this->allowedIntents(), true)) {
-                // Always update intent if provided in context
+                // Only reset step/state when intent actually CHANGES
+                $intentChanged = $session->intent !== $contextIntent;
+                
                 if (Schema::hasColumn('ai_chat_sessions', 'intent')) {
                     $session->intent = $contextIntent; // e.g. 'book_shoot'
                 }
-                // Reset step when intent changes from context
-                if (Schema::hasColumn('ai_chat_sessions', 'step')) {
-                    $session->step = null;
-                }
-                if (Schema::hasColumn('ai_chat_sessions', 'state_data')) {
-                    $session->state_data = [];
+                // Reset step and state only when switching to a different intent
+                if ($intentChanged) {
+                    if (Schema::hasColumn('ai_chat_sessions', 'step')) {
+                        $session->step = null;
+                    }
+                    if (Schema::hasColumn('ai_chat_sessions', 'state_data')) {
+                        $session->state_data = [];
+                    }
                 }
             }
         }

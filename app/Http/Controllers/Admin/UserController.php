@@ -22,7 +22,7 @@ class UserController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'salesRep'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -331,7 +331,10 @@ class UserController extends Controller
 
     public function getPhotographers()
     {
-        $photographers = User::where('role', 'photographer')->get();
+        $photographers = User::where(function ($q) {
+                $q->where('role', 'photographer')
+                  ->orWhereJsonContains('secondary_roles', 'photographer');
+            })->get();
 
         return response()->json([
             'status' => 'success',
@@ -342,8 +345,11 @@ class UserController extends Controller
     // Lightweight public list (id + name + email + avatar) for UI dropdowns
     public function simplePhotographers()
     {
-        $photographers = \Illuminate\Support\Facades\Cache::remember('photographers_list_v2', 300, function () {
-            return User::where('role', 'photographer')
+        $photographers = \Illuminate\Support\Facades\Cache::remember('photographers_list_v3', 300, function () {
+            return User::where(function ($q) {
+                    $q->where('role', 'photographer')
+                      ->orWhereJsonContains('secondary_roles', 'photographer');
+                })
                 ->select('id', 'name', 'email', 'avatar')
                 ->orderBy('name')
                 ->get();

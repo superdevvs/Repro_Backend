@@ -271,9 +271,11 @@ class AiChatController extends Controller
                         }
                     }
                     
-                    // Pass detected intent in context if available
+                    // Pass detected intent in context only if NOT already in a rule-based flow.
+                    // When already in a flow, the session's persisted intent should be used
+                    // to avoid mid-flow intent switches that cause loops.
                     $ruleContext = $serverContext;
-                    if ($detectedIntent && $detectedIntent !== 'general') {
+                    if (!$isInRuleBasedFlow && $detectedIntent && $detectedIntent !== 'general') {
                         $ruleContext['intent'] = $detectedIntent;
                     }
                     $ruleContext['allow_handoff'] = !$openAiFailed && $this->openAiOrchestrator !== null;

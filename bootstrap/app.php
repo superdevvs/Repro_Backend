@@ -51,6 +51,15 @@ return Application::configure(basePath: dirname(__DIR__))
                 }
                 
                 $status = method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500;
+                if ($e instanceof \Illuminate\Auth\Access\AuthorizationException) {
+                    $status = 403;
+                } elseif ($e instanceof \Illuminate\Validation\ValidationException) {
+                    $status = 422;
+                } elseif ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                    $status = 404;
+                } elseif ($e instanceof \Illuminate\Auth\AuthenticationException) {
+                    $status = 401;
+                }
                 
                 return response()->json([
                     'message' => $e->getMessage() ?: 'An error occurred',
@@ -63,7 +72,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 ], $status)
                 ->header('Access-Control-Allow-Origin', $origin)
                 ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-                ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+                ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id')
                 ->header('Access-Control-Allow-Credentials', 'true');
             }
         });

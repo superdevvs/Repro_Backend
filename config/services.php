@@ -114,7 +114,7 @@ return [
 
     // Bright MLS Integration
     'bright_mls' => [
-        'api_url' => env('BRIGHT_MLS_API_URL', 'https://bright-manifestservices.tst.brightmls.com'),
+        'api_url' => env('BRIGHT_MLS_API_URL', 'https://agl1paz1msaasservices.bright-solutions.co'),
         'api_user' => env('BRIGHT_MLS_API_USER'),
         'api_key' => env('BRIGHT_MLS_API_KEY'),
         'vendor_id' => env('BRIGHT_MLS_VENDOR_ID'),

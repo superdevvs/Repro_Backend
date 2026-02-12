@@ -7,6 +7,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Services\BrightMlsService;
 
 class ShootWorkflowService
 {
@@ -200,6 +201,25 @@ class ShootWorkflowService
         
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
+
+        // Auto-publish to Bright MLS when shoot is delivered
+        try {
+            $brightMlsService = app(BrightMlsService::class);
+            if ($brightMlsService->isAutoPublishAvailable()) {
+                $mlsResult = $brightMlsService->autoPublishForShoot($shoot->fresh());
+                if ($mlsResult && $mlsResult['success']) {
+                    Log::info('Bright MLS auto-published on markCompleted', [
+                        'shoot_id' => $shoot->id,
+                        'manifest_id' => $mlsResult['manifest_id'] ?? null,
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            Log::warning('Bright MLS auto-publish failed in markCompleted (non-blocking)', [
+                'shoot_id' => $shoot->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

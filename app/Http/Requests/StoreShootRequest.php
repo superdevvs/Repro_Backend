@@ -20,8 +20,8 @@ class StoreShootRequest extends FormRequest
 
         $userRole = strtolower($user->role ?? '');
 
-        // Admin and super admin can book for any client
-        if (in_array($userRole, ['admin', 'superadmin'])) {
+        // Admin, super admin, editing manager, and sales reps can book for any client
+        if (in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'])) {
             return true;
         }
 

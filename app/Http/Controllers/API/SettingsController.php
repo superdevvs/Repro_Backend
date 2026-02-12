@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -25,6 +26,11 @@ class SettingsController extends Controller
             }
 
             $value = $this->parseValue($setting->value, $setting->type);
+
+            // Decrypt sensitive fields in JSON integration settings after loading
+            if ($setting->type === 'json' && is_array($value) && str_starts_with($setting->key, 'integrations.')) {
+                $value = self::decryptSensitiveFields($value);
+            }
 
             return response()->json([
                 'success' => true,
@@ -62,7 +68,14 @@ class SettingsController extends Controller
 
         try {
             $type = $request->type ?? 'string';
-            $value = $this->serializeValue($request->value, $type);
+
+            // Encrypt sensitive fields in JSON integration settings before storing
+            $rawValue = $request->value;
+            if ($type === 'json' && is_array($rawValue) && str_starts_with($request->key, 'integrations.')) {
+                $rawValue = self::encryptSensitiveFields($rawValue);
+            }
+
+            $value = $this->serializeValue($rawValue, $type);
 
             DB::table('settings')->updateOrInsert(
                 ['key' => $request->key],
@@ -124,6 +137,40 @@ class SettingsController extends Controller
             default:
                 return (string) $value;
         }
+    }
+
+    // Fields that contain sensitive credentials and should be encrypted at rest
+    private const SENSITIVE_JSON_FIELDS = ['apiKey', 'apiUser', 'api_key', 'api_secret', 'access_token', 'secret_key'];
+
+    /**
+     * Encrypt sensitive fields within a JSON settings value before storing.
+     */
+    public static function encryptSensitiveFields(array $data): array
+    {
+        foreach (self::SENSITIVE_JSON_FIELDS as $field) {
+            if (isset($data[$field]) && is_string($data[$field]) && $data[$field] !== '') {
+                $data[$field] = 'enc:' . Crypt::encryptString($data[$field]);
+            }
+        }
+        return $data;
+    }
+
+    /**
+     * Decrypt sensitive fields within a JSON settings value after loading.
+     */
+    public static function decryptSensitiveFields(array $data): array
+    {
+        foreach (self::SENSITIVE_JSON_FIELDS as $field) {
+            if (isset($data[$field]) && is_string($data[$field]) && str_starts_with($data[$field], 'enc:')) {
+                try {
+                    $data[$field] = Crypt::decryptString(substr($data[$field], 4));
+                } catch (\Exception $e) {
+                    Log::warning('Failed to decrypt setting field', ['field' => $field]);
+                    $data[$field] = ''; // Clear corrupted value
+                }
+            }
+        }
+        return $data;
     }
 }
 

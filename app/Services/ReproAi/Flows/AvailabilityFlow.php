@@ -126,7 +126,7 @@ class AvailabilityFlow implements FlowHandlerInterface
         }
 
         $cleanedMessage = trim(preg_replace(
-            '/\b(check|availability|available|slots?|times?|for|photographer|photographers|please|show|me|any|all)\b/',
+            '/\b(check|availability|available|slots?|times?|for|photographer|photographers|please|show|me|any|all|today|tomorrow|this|next|week|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/',
             '',
             $messageLower
         ));
@@ -147,7 +147,7 @@ class AvailabilityFlow implements FlowHandlerInterface
         }
 
         // First time asking - show photographer list
-        $introMessage = !empty($data['check_date']) && $parsedDate
+        $introMessage = !empty($data['check_date'])
             ? 'Got it. Which photographer should I check for that date?'
             : "Which photographer's availability would you like to check?";
 

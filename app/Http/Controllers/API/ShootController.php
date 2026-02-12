@@ -21,6 +21,7 @@ use App\Services\ShootActivityLogger;
 use App\Services\ShootTaxService;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\Messaging\AutomationService;
+use App\Services\BrightMlsService;
 use App\Http\Requests\StoreShootRequest;
 use App\Http\Requests\UpdateShootStatusRequest;
 use App\Http\Resources\ShootResource;
@@ -46,6 +47,7 @@ class ShootController extends Controller
     protected $availabilityService;
     protected $invoiceService;
     protected $automationService;
+    protected $brightMlsService;
 
     protected const TAB_STATUS_MAP = [
         'scheduled' => [
@@ -83,7 +85,8 @@ class ShootController extends Controller
         ShootTaxService $taxService,
         PhotographerAvailabilityService $availabilityService,
         InvoiceService $invoiceService,
-        AutomationService $automationService
+        AutomationService $automationService,
+        BrightMlsService $brightMlsService
     ) {
         $this->dropboxService = $dropboxService;
         $this->mailService = $mailService;
@@ -93,6 +96,7 @@ class ShootController extends Controller
         $this->availabilityService = $availabilityService;
         $this->invoiceService = $invoiceService;
         $this->automationService = $automationService;
+        $this->brightMlsService = $brightMlsService;
     }
 
     public function index(Request $request)
@@ -3307,6 +3311,24 @@ class ShootController extends Controller
                 $client = User::find($shoot->client_id);
                 if ($client) {
                     $this->mailService->sendShootReadyEmail($client, $shoot);
+                }
+
+                // Auto-publish to Bright MLS when photos are ready
+                if ($this->brightMlsService->isAutoPublishAvailable()) {
+                    try {
+                        $mlsResult = $this->brightMlsService->autoPublishForShoot($shoot->fresh());
+                        if ($mlsResult && $mlsResult['success']) {
+                            Log::info('Bright MLS auto-published on delivery', [
+                                'shoot_id' => $shoot->id,
+                                'manifest_id' => $mlsResult['manifest_id'] ?? null,
+                            ]);
+                        }
+                    } catch (\Exception $mlsEx) {
+                        Log::warning('Bright MLS auto-publish failed (non-blocking)', [
+                            'shoot_id' => $shoot->id,
+                            'error' => $mlsEx->getMessage(),
+                        ]);
+                    }
                 }
             }
 

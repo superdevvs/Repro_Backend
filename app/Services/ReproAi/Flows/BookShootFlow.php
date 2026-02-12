@@ -109,6 +109,29 @@ class BookShootFlow implements FlowHandlerInterface
 
         // first time we enter this step (no property yet)
         if (empty($data['property_address'])) {
+            // Detect intent-trigger phrases that should NOT be treated as a property address
+            $intentTriggers = [
+                'book a new shoot', 'book a shoot', 'book new shoot', 'book another shoot',
+                'book shoot', 'new shoot', 'schedule a shoot', 'schedule shoot',
+                'let\'s book', 'i want to book',
+            ];
+            $messageLower = strtolower(trim($message));
+            $isIntentTrigger = in_array($messageLower, $intentTriggers, true);
+            
+            if ($isIntentTrigger) {
+                $suggestions = $this->recentPropertySuggestions($session->user_id);
+                if (empty($suggestions)) {
+                    $suggestions = ['Enter new address'];
+                }
+                return FlowTransition::stay([
+                    'assistant_messages' => [[
+                        'content'  => "Great! Let's book a new shoot. Which property is this for?",
+                        'metadata' => ['step' => 'ask_property'],
+                    ]],
+                    'suggestions' => $suggestions,
+                ], $data);
+            }
+
             // Check if message matches a suggested address
             $suggestions = $this->recentPropertySuggestions($session->user_id);
             $matchedAddress = null;

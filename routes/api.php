@@ -315,16 +315,18 @@ Route::middleware('auth:sanctum')->prefix('invoices')->group(function () {
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin')->group(function () {
     Route::get('invoices', [InvoiceController::class, 'index']);
-    Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
-    Route::get('invoices/{invoice}', [InvoiceController::class, 'show']);
+    // Static routes MUST come before the {invoice} wildcard to avoid being swallowed
     Route::post('invoices/generate', [InvoiceController::class, 'generate']);
+    Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
+    // Wildcard routes
+    Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
+    Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
     Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
     Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
     Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
     Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
-    
+
     // Invoice approval endpoints
-    Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
     Route::post('invoices/{invoice}/approve', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'approve']);
     Route::post('invoices/{invoice}/reject', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reject']);
     
@@ -532,9 +534,10 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/mmm/punchout', [IntegrationController::class, 'mmmPunchout']);
         });
 
-        // MLS Publishing Queue (admin only)
+        // MLS Publishing Queue & redirect (admin only)
         Route::middleware('role:admin,superadmin,editing_manager')->group(function () {
             Route::get('/mls-queue', [IntegrationController::class, 'getMlsQueue']);
+            Route::get('/bright-mls/redirect/{manifestId}', [IntegrationController::class, 'getBrightMlsRedirectUrl']);
         });
 
         // Test connections (admin only)
