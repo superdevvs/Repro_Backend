@@ -74,12 +74,23 @@ class BrightMlsService
                 $data = json_decode($setting->value, true) ?? [];
                 // Decrypt sensitive fields if stored encrypted
                 if (str_starts_with($key, 'integrations.')) {
-                    $data = \App\Http\Controllers\API\SettingsController::decryptSensitiveFields($data);
+                    try {
+                        $data = \App\Http\Controllers\API\SettingsController::decryptSensitiveFields($data);
+                    } catch (\Throwable $decryptErr) {
+                        Log::warning('Settings decryption failed, using raw values', [
+                            'key' => $key,
+                            'error' => $decryptErr->getMessage(),
+                        ]);
+                        // Fall through with raw data — plain-text values still work
+                    }
                 }
                 return $data;
             }
         } catch (\Exception $e) {
-            Log::warning('Could not load settings from database', ['key' => $key]);
+            Log::warning('Could not load settings from database', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
         }
         return [];
     }
