@@ -967,6 +967,9 @@ class DashboardController extends Controller
             case 'salesRep':
                 $insights = $this->getSalesRepInsights($user);
                 break;
+            case 'editing_manager':
+                $insights = $this->getEditingManagerInsights($user);
+                break;
             default:
                 $insights = [];
         }
@@ -1570,6 +1573,154 @@ class DashboardController extends Controller
                 'action' => 'New booking',
                 'insightType' => 'general_help',
                 'entity' => 'client',
+            ];
+        }
+
+        return array_slice($insights, 0, 5);
+    }
+
+    /**
+     * Get insights for editing manager users.
+     * Focuses on supervising editors and managing the editing workflow.
+     */
+    protected function getEditingManagerInsights(User $user): array
+    {
+        $insights = [];
+
+        // Unassigned editing queue (highest priority - needs immediate action)
+        $unassignedQueue = Shoot::whereNull('editor_id')
+            ->whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
+            ->count();
+        if ($unassignedQueue > 0) {
+            $insights[] = [
+                'id' => 'em-unassigned-queue',
+                'priority' => 'blocking',
+                'message' => $unassignedQueue === 1 
+                    ? "1 shoot is waiting to be assigned to an editor."
+                    : "{$unassignedQueue} shoots are waiting to be assigned to editors.",
+                'prompt' => "Show me unassigned editing queue.",
+                'intent' => 'manage_booking',
+                'action' => 'Assign editors',
+                'insightType' => 'unassigned_editing',
+                'entity' => 'shoot',
+                'filters' => [
+                    'editorId' => null,
+                    'workflowStatus' => [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING],
+                ],
+            ];
+        }
+
+        // Shoots stuck in editing for over 24 hours
+        $stuckInEditing = Shoot::where('workflow_status', Shoot::STATUS_EDITING)
+            ->where('updated_at', '<', now()->subHours(24))
+            ->count();
+        if ($stuckInEditing > 0) {
+            $insights[] = [
+                'id' => 'em-stuck-editing',
+                'priority' => 'blocking',
+                'message' => $stuckInEditing === 1 
+                    ? "1 shoot has been in editing for over 24 hours."
+                    : "{$stuckInEditing} shoots have been in editing over 24 hours — may need follow-up.",
+                'prompt' => "Show me shoots stuck in editing.",
+                'intent' => 'manage_booking',
+                'action' => 'Review editing',
+                'insightType' => 'stuck_editing',
+                'entity' => 'shoot',
+                'filters' => [
+                    'workflowStatus' => [Shoot::STATUS_EDITING],
+                    'minHours' => 24,
+                ],
+            ];
+        }
+
+        // Editor workload imbalance
+        $editorLoads = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
+            ->whereNotNull('editor_id')
+            ->select('editor_id', DB::raw('count(*) as total'))
+            ->groupBy('editor_id')
+            ->get();
+
+        if ($editorLoads->count() >= 2) {
+            $maxEditor = $editorLoads->sortByDesc('total')->first();
+            $minEditor = $editorLoads->sortBy('total')->first();
+            $diff = ($maxEditor?->total ?? 0) - ($minEditor?->total ?? 0);
+
+            if ($diff >= 3) {
+                $maxUser = User::find($maxEditor->editor_id);
+                $insights[] = [
+                    'id' => 'em-editor-imbalance',
+                    'priority' => 'attention',
+                    'message' => ($maxUser?->name ?? 'An editor') . " has {$maxEditor->total} in queue — workload may be imbalanced.",
+                    'prompt' => 'Show me editor workloads.',
+                    'intent' => 'manage_booking',
+                    'action' => 'Balance queue',
+                    'insightType' => 'editor_imbalance',
+                    'entity' => 'editor',
+                    'filters' => [
+                        'workflowStatus' => [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING],
+                        'difference' => $diff,
+                    ],
+                ];
+            }
+        }
+
+        // Total editing queue overview
+        $totalQueue = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
+            ->count();
+        if ($totalQueue > 0) {
+            $assignedCount = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
+                ->whereNotNull('editor_id')
+                ->count();
+            $insights[] = [
+                'id' => 'em-total-queue',
+                'priority' => 'insight',
+                'message' => "{$totalQueue} shoot(s) in editing queue — {$assignedCount} assigned, " . ($totalQueue - $assignedCount) . " unassigned.",
+                'prompt' => "Show me the full editing queue.",
+                'intent' => 'manage_booking',
+                'action' => 'View queue',
+                'insightType' => 'editing_queue',
+                'entity' => 'shoot',
+                'filters' => [
+                    'workflowStatus' => [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING],
+                ],
+            ];
+        }
+
+        // Shoots ready for QA/review (recently completed editing)
+        $readyForReview = Shoot::where('workflow_status', Shoot::STATUS_QA)
+            ->count();
+        if ($readyForReview > 0) {
+            $insights[] = [
+                'id' => 'em-ready-review',
+                'priority' => 'attention',
+                'message' => $readyForReview === 1 
+                    ? "1 shoot is ready for quality review."
+                    : "{$readyForReview} shoots are ready for quality review.",
+                'prompt' => "Show me shoots ready for review.",
+                'intent' => 'manage_booking',
+                'action' => 'Review edits',
+                'insightType' => 'qa_ready',
+                'entity' => 'shoot',
+                'filters' => [
+                    'workflowStatus' => [Shoot::STATUS_QA],
+                ],
+            ];
+        }
+
+        // Default insight when queue is clear
+        if (empty($insights)) {
+            $totalEditors = User::where('role', 'editor')->where('is_active', true)->count();
+            $insights[] = [
+                'id' => 'em-all-clear',
+                'priority' => 'assistive',
+                'message' => $totalEditors > 0 
+                    ? "All clear! {$totalEditors} active editor(s), no backlog."
+                    : "Editing queue is empty. Great work!",
+                'prompt' => "Show me editor performance this week.",
+                'intent' => 'manage_booking',
+                'action' => 'View stats',
+                'insightType' => 'all_clear',
+                'entity' => 'editor',
             ];
         }
 

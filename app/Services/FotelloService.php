@@ -12,6 +12,7 @@ class FotelloService
     private string $baseUrl;
     private int $timeout;
     private int $retryAttempts;
+    private bool $enabled;
 
     public function __construct()
     {
@@ -21,7 +22,8 @@ class FotelloService
             
             $this->apiKey = $settings['apiKey'] ?? config('services.fotello.api_key') ?? env('FOTELLO_API_KEY') ?? '';
             $this->baseUrl = rtrim($settings['baseUrl'] ?? config('services.fotello.base_url', 'https://app.fotello.co/api') ?? 'https://app.fotello.co/api', '/');
-            $this->timeout = $settings['timeout'] ?? config('services.fotello.timeout', 120) ?? 120;
+            $this->timeout = $settings['timeout'] ?? config('services.fotello.timeout', 10) ?? 10;
+            $this->enabled = env('FOTELLO_ENABLED', true);
             $this->retryAttempts = $settings['retryAttempts'] ?? config('services.fotello.retry_attempts', 3) ?? 3;
         } catch (\Exception $e) {
             // If constructor fails, use defaults from config/env
@@ -30,7 +32,8 @@ class FotelloService
             ]);
             $this->apiKey = config('services.fotello.api_key') ?? env('FOTELLO_API_KEY') ?? '';
             $this->baseUrl = rtrim(config('services.fotello.base_url', 'https://app.fotello.co/api'), '/');
-            $this->timeout = config('services.fotello.timeout', 120);
+            $this->timeout = config('services.fotello.timeout', 10);
+            $this->enabled = env('FOTELLO_ENABLED', true);
             $this->retryAttempts = config('services.fotello.retry_attempts', 3);
         }
     }
@@ -260,6 +263,11 @@ class FotelloService
     public function getEditingTypes(): array
     {
         try {
+            // Skip API call if disabled (for local dev performance)
+            if (!$this->enabled) {
+                return $this->getDefaultEditingTypes();
+            }
+            
             // For now, always return default types since API key might not be configured
             // Once API is configured, we can try to fetch from API
             if (!$this->apiKey) {

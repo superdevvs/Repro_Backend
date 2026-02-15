@@ -437,17 +437,21 @@ class PhotographerAvailabilityController extends Controller
         }
 
         $newStatus = $validated['status'] ?? $availability->status ?? 'available';
-        if ($newStatus === 'unavailable' && $availability->status !== 'unavailable') {
-            $this->splitAvailableSlotsForUnavailable(
-                $finalData['photographer_id'],
-                $finalData['start_time'],
-                $finalData['end_time'],
-                $finalData['date'] ?? null,
-                $finalData['day_of_week'] ?? null,
-                $id
-            );
+        if ($newStatus === 'unavailable') {
+            // For unavailable slots, split any overlapping available slots if transitioning to unavailable
+            if ($availability->status !== 'unavailable') {
+                $this->splitAvailableSlotsForUnavailable(
+                    $finalData['photographer_id'],
+                    $finalData['start_time'],
+                    $finalData['end_time'],
+                    $finalData['date'] ?? null,
+                    $finalData['day_of_week'] ?? null,
+                    $id
+                );
+            }
+            // No overlap check needed for unavailable slots - they're meant to block time
         } else {
-            // Check for overlaps (excluding the current record)
+            // Check for overlaps only for available slots (excluding the current record)
             if ($this->hasOverlap(
                 $finalData['photographer_id'],
                 $finalData['start_time'],

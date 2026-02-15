@@ -242,6 +242,24 @@ class AddressLookupService
      */
     public function getDistance(array $origin, array $destination): ?array
     {
+        // Skip external API calls in local dev for performance
+        if (env('GEOCODING_ENABLED', true) === false) {
+            return null;
+        }
+
+        // Cache distance calculations to avoid repeated API calls
+        $cacheKey = 'distance_' . md5(json_encode($origin) . json_encode($destination));
+        
+        return Cache::remember($cacheKey, 3600, function () use ($origin, $destination) {
+            return $this->calculateDistance($origin, $destination);
+        });
+    }
+
+    /**
+     * Actually calculate distance (called by getDistance with caching)
+     */
+    private function calculateDistance(array $origin, array $destination): ?array
+    {
         if (empty($this->googleApiKey)) {
             return $this->approxDistanceFromAddresses($origin, $destination);
         }
@@ -294,10 +312,22 @@ class AddressLookupService
         }
     }
 
+    /**
+     * Geocode with caching to avoid repeated external calls
+     */
+    private function geocodeWithCache(array $address): ?array
+    {
+        $cacheKey = 'geocode_' . md5(json_encode($address));
+        
+        return Cache::remember($cacheKey, 86400, function () use ($address) {
+            return $this->geocodeNominatim($address);
+        });
+    }
+
     private function approxDistanceFromAddresses(array $origin, array $destination): ?array
     {
-        $originCoords = $this->geocodeNominatim($origin);
-        $destinationCoords = $this->geocodeNominatim($destination);
+        $originCoords = $this->geocodeWithCache($origin);
+        $destinationCoords = $this->geocodeWithCache($destination);
         if (!$originCoords || !$destinationCoords) {
             return null;
         }
