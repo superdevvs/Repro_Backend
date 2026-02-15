@@ -1576,9 +1576,15 @@ class ShootController extends Controller
                 $this->automationService->handleEvent('SHOOT_BOOKED', $context);
             }
 
-            // 13. Dispatch notification job (async)
-            // TODO: Create SendShootBookedNotifications job
-            // dispatch(new SendShootBookedNotifications($shoot));
+            // 13. Send email notifications
+            if (!$treatAsClientRequest && $scheduledAt) {
+                $shoot->loadMissing(['client', 'photographer', 'services']);
+                $client = $shoot->client;
+                if ($client) {
+                    $paymentLink = $this->mailService->generatePaymentLink($shoot);
+                    $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
+                }
+            }
 
             // Return appropriate message based on role
             $message = $treatAsClientRequest 

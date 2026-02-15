@@ -22,9 +22,6 @@
     <p>
         Location: {{ $shoot->location }}<br>
         Scheduled Date: {{ $shoot->date }}<br>
-        @if($shoot->time && $shoot->time !== 'TBD')
-        Time: {{ $shoot->time }}<br>
-        @endif
         @if(!empty($isPhotographer))
         Client: {{ $shoot->client_name ?? 'N/A' }}<br>
         @else

@@ -77,15 +77,23 @@ class SettingsController extends Controller
 
             $value = $this->serializeValue($rawValue, $type);
 
+            // Check if record exists to decide whether to set created_at
+            $exists = DB::table('settings')->where('key', $request->key)->exists();
+
+            $data = [
+                'value' => $value,
+                'type' => $type,
+                'description' => $request->description,
+                'updated_at' => now(),
+            ];
+
+            if (!$exists) {
+                $data['created_at'] = now();
+            }
+
             DB::table('settings')->updateOrInsert(
                 ['key' => $request->key],
-                [
-                    'value' => $value,
-                    'type' => $type,
-                    'description' => $request->description,
-                    'updated_at' => now(),
-                    'created_at' => DB::raw('COALESCE(created_at, NOW())'),
-                ]
+                $data
             );
 
             return response()->json([

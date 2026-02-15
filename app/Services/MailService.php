@@ -314,6 +314,9 @@ class MailService
      */
     private function formatShootData(Shoot $shoot): object
     {
+        // Ensure relationships are loaded
+        $shoot->loadMissing(['client', 'photographer', 'services']);
+
         // Create full address from components
         $fullAddress = trim($shoot->address);
         if ($shoot->city) {
@@ -326,12 +329,22 @@ class MailService
             $fullAddress .= ' ' . $shoot->zip;
         }
 
+        // Format time nicely (e.g., "2:00 PM" instead of "14:00")
+        $formattedTime = null;
+        if ($shoot->time) {
+            try {
+                $formattedTime = \Carbon\Carbon::parse($shoot->time)->format('g:i A');
+            } catch (\Exception $e) {
+                $formattedTime = $shoot->time;
+            }
+        }
+
         // Format date with time
         $dateStr = 'TBD';
         if ($shoot->scheduled_date) {
             $dateStr = $shoot->scheduled_date->format('M j, Y');
-            if ($shoot->time) {
-                $dateStr .= ' at ' . $shoot->time;
+            if ($formattedTime) {
+                $dateStr .= ' at ' . $formattedTime;
             }
         }
 
@@ -342,7 +355,7 @@ class MailService
             'id' => $shoot->id,
             'location' => $fullAddress ?: 'TBD',
             'date' => $dateStr,
-            'time' => $shoot->time ?? 'TBD',
+            'time' => $formattedTime ?? 'TBD',
             'photographer' => $shoot->photographer ? $shoot->photographer->name : 'TBD',
             'client_name' => $shoot->client ? $shoot->client->name : 'N/A',
             'notes' => $notesText,
