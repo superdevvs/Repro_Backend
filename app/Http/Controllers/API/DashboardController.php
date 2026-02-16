@@ -834,25 +834,25 @@ class DashboardController extends Controller
         }
 
         // Admins see all inbound emails (messages sent TO the system)
-        if (in_array($role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             $emails = Message::where('channel', 'EMAIL')
                 ->where('direction', 'INBOUND')
                 ->whereIn('status', ['SENT', 'DELIVERED'])
                 ->latest()
                 ->limit(20)
                 ->get();
-        } else {
-            // Non-admins see emails related to them (sent to their email or from their email)
+        } elseif (in_array($role, ['photographer', 'editor'])) {
+            // Photographers/editors only see inbound emails addressed to them
             $emails = Message::where('channel', 'EMAIL')
-                ->where(function ($query) use ($user) {
-                    $query->where('to_address', $user->email)
-                        ->orWhere('from_address', $user->email)
-                        ->orWhere('sender_user_id', $user->id);
-                })
+                ->where('direction', 'INBOUND')
+                ->where('to_address', $user->email)
                 ->whereIn('status', ['SENT', 'DELIVERED'])
                 ->latest()
-                ->limit(15)
+                ->limit(10)
                 ->get();
+        } else {
+            // Clients don't need email notifications — they already receive the actual emails
+            $emails = collect([]);
         }
 
         return $emails->map(function (Message $email) {

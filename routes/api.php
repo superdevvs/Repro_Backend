@@ -358,6 +358,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // History routes must come before /shoots/{shoot} to avoid route conflict
     Route::get('/shoots/history', [ShootController::class, 'history']);
     Route::get('/shoots/history/export', [ShootController::class, 'exportHistory']);
+    // Pending cancellations must come before /shoots/{shoot} to avoid route conflict
+    Route::get('/shoots/pending-cancellations', [ShootController::class, 'pendingCancellations']);
     Route::get('/shoots/{shoot}', [ShootController::class, 'show']);
     Route::get('/shoots/{shoot}/invoice', [ShootController::class, 'getOrCreateInvoice']);
     // Minimal update endpoint for status/workflow updates
@@ -379,7 +381,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/request-cancellation', [ShootController::class, 'requestCancellation']);
     Route::post('/shoots/{shoot}/approve-cancellation', [ShootController::class, 'approveCancellation']);
     Route::post('/shoots/{shoot}/reject-cancellation', [ShootController::class, 'rejectCancellation']);
-    Route::get('/shoots/pending-cancellations', [ShootController::class, 'pendingCancellations']);
     // Hold request endpoints
     Route::post('/shoots/{shoot}/request-hold', [ShootController::class, 'requestHold']);
     Route::post('/shoots/{shoot}/approve-hold', [ShootController::class, 'approveHold']);

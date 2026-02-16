@@ -457,8 +457,13 @@ class IntegrationController extends Controller
     {
         try {
             $query = Shoot::with(['client', 'photographer'])
-                ->whereNotNull('mls_id')
-                ->orderBy('bright_mls_last_published_at', 'desc');
+                ->where(function ($q) {
+                    $q->whereNotNull('mls_id')
+                      ->where('mls_id', '!=', '')
+                      ->orWhereNotNull('bright_mls_publish_status')
+                      ->orWhereNotNull('bright_mls_manifest_id');
+                })
+                ->orderByRaw('bright_mls_last_published_at IS NULL, bright_mls_last_published_at DESC');
 
             // Filter by status if provided
             if ($request->has('status')) {
