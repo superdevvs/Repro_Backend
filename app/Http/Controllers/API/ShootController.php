@@ -22,6 +22,7 @@ use App\Services\ShootTaxService;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\Messaging\AutomationService;
 use App\Services\BrightMlsService;
+use App\Jobs\FinalizeShootJob;
 use App\Http\Requests\StoreShootRequest;
 use App\Http\Requests\UpdateShootStatusRequest;
 use App\Http\Resources\ShootResource;
@@ -3920,29 +3921,31 @@ class ShootController extends Controller
         }
 
         try {
-            foreach ($completedFiles as $file) {
-                // Move/copy to server final storage and mark verified
-                $this->dropboxService->moveToFinal($file, $user->id);
-            }
+            $shoot->workflowLogs()->create([
+                'user_id' => $user->id,
+                'action' => 'finalize_queued',
+                'details' => 'Finalize queued for background processing',
+                'metadata' => [
+                    'queued_by' => $user->id,
+                    'queued_at' => now()->toISOString(),
+                    'completed_file_count' => $completedFiles->count(),
+                    'final_status' => $request->input('final_status'),
+                ],
+            ]);
 
-            // Advance workflow status directly to delivered
-            $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $user->id);
-            $shoot->save();
-
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-            $context = $this->automationService->buildShootContext($shoot);
-            if ($shoot->rep) {
-                $context['rep'] = $shoot->rep;
-            }
-            $this->automationService->handleEvent('SHOOT_COMPLETED', $context);
+            FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'));
 
             return response()->json([
-                'message' => 'Shoot finalized successfully',
-                'data' => $shoot->fresh(['files'])
-            ]);
+                'message' => 'Finalize started in background',
+                'data' => [
+                    'id' => $shoot->id,
+                    'workflow_status' => $shoot->workflow_status,
+                    'queued' => true,
+                ],
+            ], 202);
         } catch (\Exception $e) {
             return response()->json([
-                'message' => 'Failed to finalize shoot',
+                'message' => 'Failed to queue finalize job',
                 'error' => $e->getMessage()
             ], 500);
         }
