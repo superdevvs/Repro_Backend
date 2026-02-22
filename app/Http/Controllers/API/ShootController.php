@@ -1626,6 +1626,9 @@ class ShootController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services', 'notes']))
             ], 201);
             });
+        } catch (ValidationException $e) {
+            // Re-throw validation exceptions so Laravel returns proper 422 with error messages
+            throw $e;
         } catch (\Exception $e) {
             \Log::error('Error creating shoot', [
                 'error' => $e->getMessage(),
