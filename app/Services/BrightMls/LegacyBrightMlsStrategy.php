@@ -113,12 +113,12 @@ class LegacyBrightMlsStrategy implements BrightMlsStrategyInterface
             return false;
         }
 
-        $scheme = parse_url($value, PHP_URL_SCHEME);
-        if (!in_array(strtolower((string) $scheme), ['http', 'https'], true)) {
+        $parsed = parse_url($value);
+        if (!$parsed || empty($parsed['scheme']) || empty($parsed['host'])) {
             return false;
         }
 
-        return filter_var($value, FILTER_VALIDATE_URL) !== false;
+        return in_array(strtolower($parsed['scheme']), ['http', 'https'], true);
     }
 
     private function isUnbrandedTourUrl(string $tourUrl): bool

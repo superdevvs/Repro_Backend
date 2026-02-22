@@ -725,7 +725,10 @@ class IntegrationController extends Controller
     private function storagePathToUrl(string $path): string
     {
         $path = ltrim($path, '/');
-        return url('storage/' . $path);
+        // URL-encode each path segment individually to handle spaces/special chars
+        $segments = explode('/', $path);
+        $encoded = implode('/', array_map('rawurlencode', $segments));
+        return url('storage/' . $encoded);
     }
 }
 
