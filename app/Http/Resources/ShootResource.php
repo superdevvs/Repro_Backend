@@ -60,12 +60,41 @@ class ShootResource extends JsonResource
                 'fullAddress' => "{$this->address}, {$this->city}, {$this->state} {$this->zip}",
             ],
             'services' => $this->services->map(function ($service) {
+                // FALLBACK RULE: service.photographer_id ?? shoot.photographer_id
+                $resolvedPhotographerId = $service->pivot->photographer_id ?? $this->photographer_id;
+                
+                // Resolve photographer details
+                $resolvedPhotographer = null;
+                if ($resolvedPhotographerId) {
+                    // Try service-level photographer first
+                    if ($service->pivot->photographer_id) {
+                        $photographer = \App\Models\User::find($service->pivot->photographer_id);
+                    } else {
+                        // Fallback to shoot-level photographer
+                        $photographer = $this->photographer;
+                    }
+                    
+                    if ($photographer) {
+                        $resolvedPhotographer = [
+                            'id' => (string) $photographer->id,
+                            'name' => $photographer->name,
+                            'avatar' => $photographer->avatar,
+                        ];
+                    }
+                }
+                
                 return [
                     'id' => (string) $service->id,
                     'name' => $service->name,
                     'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
                     'quantity' => (int) ($service->pivot->quantity ?? 1),
                     'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
+                    // Raw pivot value (may be null)
+                    'photographer_id' => $service->pivot->photographer_id ? (string) $service->pivot->photographer_id : null,
+                    // RESOLVED value with fallback (frontend uses this)
+                    'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
+                    // Resolved photographer details (never null if shoot has photographer)
+                    'photographer' => $resolvedPhotographer,
                 ];
             }),
             // Explicitly include services_list for frontend compatibility

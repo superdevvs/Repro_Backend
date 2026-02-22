@@ -785,4 +785,31 @@ class MailService
             return false;
         }
     }
+
+    /**
+     * Send cancellation fee invoice email to client
+     */
+    public function sendCancellationFeeInvoiceEmail(User $client, \App\Models\Invoice $invoice): bool
+    {
+        try {
+            Mail::to($client->email)->send(new \App\Mail\CancellationFeeInvoiceMail($invoice, $client));
+            
+            Log::info('Cancellation fee invoice email sent', [
+                'client_id' => $client->id,
+                'invoice_id' => $invoice->id,
+                'email' => $client->email
+            ]);
+            
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send cancellation fee invoice email', [
+                'client_id' => $client->id,
+                'invoice_id' => $invoice->id,
+                'email' => $client->email,
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
 }

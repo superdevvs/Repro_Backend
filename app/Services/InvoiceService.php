@@ -25,6 +25,9 @@ class InvoiceService
 
     /**
      * Generate invoices for the provided billing period.
+     * 
+     * REFACTORED: Now uses SERVICE-LEVEL grouping for multi-photographer support
+     * Fallback: shoot_service.photographer_id ?? shoot.photographer_id
      */
     public function generateForPeriod(Carbon $start, Carbon $end, bool $sendEmails = false): Collection
     {
@@ -36,10 +39,11 @@ class InvoiceService
                     $query->where('status', Payment::STATUS_COMPLETED);
                 },
                 'photographer',
-                'services', // Load services to calculate photographer pay
+                'services' => function ($q) {
+                    $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
+                },
             ])
             ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
-            ->whereNotNull('photographer_id')
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
                 Shoot::WORKFLOW_ADMIN_VERIFIED,
@@ -50,12 +54,44 @@ class InvoiceService
             return collect();
         }
 
-        $grouped = $shoots->groupBy('photographer_id');
+        // Flatten to service-level rows with resolved photographer
+        $serviceRows = collect();
+        foreach ($shoots as $shoot) {
+            $fallbackId = $shoot->photographer_id;
+            foreach ($shoot->services as $service) {
+                $resolvedId = $service->pivot->photographer_id ?? $fallbackId;
+                if (!$resolvedId) {
+                    \Log::warning('Unresolved photographer for invoice', [
+                        'shoot_id' => $shoot->id,
+                        'service_id' => $service->id,
+                        'service_name' => $service->name,
+                    ]);
+                    continue;
+                }
+                
+                $pay = (float) ($service->pivot->photographer_pay ?? 0);
+                $qty = (int) ($service->pivot->quantity ?? 1);
+                
+                $serviceRows->push([
+                    'shoot_id' => $shoot->id,
+                    'shoot' => $shoot,
+                    'service_id' => $service->id,
+                    'service_name' => $service->name,
+                    'resolved_photographer_id' => $resolvedId,
+                    'photographer_pay' => $pay * $qty,
+                    'scheduled_date' => $shoot->scheduled_date,
+                    'address' => $shoot->address ?? 'Location TBD',
+                ]);
+            }
+        }
 
-        return DB::transaction(function () use ($grouped, $start, $end, $sendEmails) {
+        // Group by resolved photographer
+        $grouped = $serviceRows->groupBy('resolved_photographer_id');
+
+        return DB::transaction(function () use ($grouped, $start, $end, $sendEmails, $shoots) {
             $invoices = collect();
 
-            foreach ($grouped as $photographerId => $photographerShoots) {
+            foreach ($grouped as $photographerId => $photographerServices) {
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('photographer_id', $photographerId)
                     ->where('billing_period_start', $start->toDateString())
@@ -63,7 +99,6 @@ class InvoiceService
                     ->first();
 
                 if ($existingInvoice) {
-                    // Skip if invoice already exists
                     $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
                     continue;
                 }
@@ -77,38 +112,51 @@ class InvoiceService
                     'approval_status' => Invoice::APPROVAL_STATUS_PENDING ?? 'pending',
                 ]);
 
-                // Create invoice items for each shoot
-                foreach ($photographerShoots as $shoot) {
-                    // Use photographer pay from services, fallback to total_quote if not set
-                    $amount = $shoot->total_photographer_pay ?? 0;
+                // Create invoice items for each SERVICE (not shoot)
+                // IDEMPOTENCY: Check for existing items to prevent duplicates on regeneration
+                foreach ($photographerServices as $serviceRow) {
+                    // Check if this service item already exists on the invoice
+                    $existingItem = $invoice->items()
+                        ->where('shoot_id', $serviceRow['shoot_id'])
+                        ->whereJsonContains('meta->service_id', $serviceRow['service_id'])
+                        ->first();
                     
-                    // If no photographer pay is set in services, use total_quote as fallback
-                    if ($amount == 0) {
-                        $amount = $shoot->base_quote ?? $shoot->total_quote ?? 0;
+                    if ($existingItem) {
+                        // Update existing item instead of creating duplicate
+                        $existingItem->update([
+                            'unit_amount' => $serviceRow['photographer_pay'],
+                            'total_amount' => $serviceRow['photographer_pay'],
+                        ]);
+                        continue;
                     }
                     
                     $invoice->items()->create([
-                        'shoot_id' => $shoot->id,
+                        'shoot_id' => $serviceRow['shoot_id'],
                         'type' => InvoiceItem::TYPE_CHARGE,
-                        'description' => sprintf('Shoot #%d - %s', $shoot->id, $shoot->address ?? 'Location TBD'),
+                        'description' => sprintf(
+                            'Shoot #%d - %s - %s',
+                            $serviceRow['shoot_id'],
+                            $serviceRow['address'],
+                            $serviceRow['service_name']
+                        ),
                         'quantity' => 1,
-                        'unit_amount' => $amount,
-                        'total_amount' => $amount,
-                        'recorded_at' => $shoot->scheduled_date,
+                        'unit_amount' => $serviceRow['photographer_pay'],
+                        'total_amount' => $serviceRow['photographer_pay'],
+                        'recorded_at' => $serviceRow['scheduled_date'],
                         'meta' => [
-                            'workflow_status' => $shoot->workflow_status,
-                            'photographer_pay_from_services' => $shoot->total_photographer_pay > 0,
+                            'service_id' => $serviceRow['service_id'],
+                            'service_name' => $serviceRow['service_name'],
                         ],
                     ]);
                 }
 
-                // Calculate totals using photographer pay from services
-                $totalAmount = $photographerShoots->sum(function (Shoot $shoot) {
-                    $photographerPay = $shoot->total_photographer_pay ?? 0;
-                    // Fallback to total_quote if no photographer pay is set
-                    return $photographerPay > 0 ? $photographerPay : (float) ($shoot->total_quote ?? 0);
-                });
-                $amountPaid = $photographerShoots
+                // Calculate totals from service rows
+                $totalAmount = $photographerServices->sum('photographer_pay');
+                
+                // Get payments for shoots this photographer worked on
+                $shootIds = $photographerServices->pluck('shoot_id')->unique();
+                $relatedShoots = $shoots->whereIn('id', $shootIds);
+                $amountPaid = $relatedShoots
                     ->flatMap(fn (Shoot $shoot) => $shoot->payments)
                     ->sum(fn ($payment) => (float) $payment->amount);
 
@@ -118,8 +166,8 @@ class InvoiceService
                     'is_paid' => $totalAmount > 0 ? $amountPaid >= $totalAmount : false,
                 ]);
 
-                // Sync shoots
-                $invoice->shoots()->sync($photographerShoots->pluck('id')->all());
+                // Sync shoots (use unique shoot IDs from service rows)
+                $invoice->shoots()->sync($shootIds->all());
 
                 // Refresh totals
                 $invoice->refreshTotals();
@@ -482,6 +530,87 @@ class InvoiceService
             }
 
             return $invoice->fresh(['shoot', 'client', 'photographer', 'items']);
+        });
+    }
+
+    /**
+     * Generate a cancellation fee invoice for a shoot
+     * 
+     * @param Shoot $shoot
+     * @param float $cancellationFee
+     * @return Invoice|null
+     */
+    public function generateCancellationFeeInvoice(Shoot $shoot, float $cancellationFee = 60.00): ?Invoice
+    {
+        return DB::transaction(function () use ($shoot, $cancellationFee) {
+            $shoot->load(['client']);
+
+            // Generate invoice number
+            $lastInvoice = Invoice::whereNotNull('invoice_number')
+                ->orderBy('id', 'desc')
+                ->first();
+            
+            $invoiceNumber = 'Invoice ' . str_pad(
+                $lastInvoice ? ((int) preg_replace('/\D/', '', $lastInvoice->invoice_number)) + 1 : 1,
+                5,
+                '0',
+                STR_PAD_LEFT
+            );
+
+            $userId = $this->determineInvoiceUserId($shoot);
+            $now = now();
+
+            $invoiceData = [
+                'user_id' => $userId,
+                'role' => Invoice::ROLE_CLIENT,
+                'period_start' => $now->toDateString(),
+                'period_end' => $now->toDateString(),
+                'invoice_number' => $invoiceNumber,
+                'issue_date' => $now,
+                'due_date' => $now->copy()->addDays(7), // 7 days to pay cancellation fee
+                'subtotal' => $cancellationFee,
+                'tax' => 0, // Cancellation fee is not taxed
+                'total' => $cancellationFee,
+                'total_amount' => $cancellationFee,
+                'amount_paid' => 0,
+                'is_paid' => false,
+                'is_sent' => true,
+                'status' => Invoice::STATUS_SENT,
+                'notes' => 'Cancellation fee for shoot at ' . $shoot->address,
+            ];
+
+            $optionalColumns = [
+                'billing_period_start' => $now->toDateString(),
+                'billing_period_end' => $now->toDateString(),
+                'shoot_id' => $shoot->id,
+                'client_id' => $shoot->client_id,
+            ];
+
+            foreach ($optionalColumns as $column => $value) {
+                if ($this->invoiceTableHasColumn($column)) {
+                    $invoiceData[$column] = $value;
+                }
+            }
+
+            $invoice = Invoice::create($invoiceData);
+
+            // Create invoice item for cancellation fee
+            $invoice->items()->create([
+                'shoot_id' => $shoot->id,
+                'type' => InvoiceItem::TYPE_CHARGE,
+                'description' => 'Cancellation Fee - ' . $shoot->address,
+                'quantity' => 1,
+                'unit_amount' => $cancellationFee,
+                'total_amount' => $cancellationFee,
+                'recorded_at' => $now,
+                'meta' => [
+                    'type' => 'cancellation_fee',
+                    'shoot_id' => $shoot->id,
+                    'shoot_address' => $shoot->address,
+                ],
+            ]);
+
+            return $invoice->fresh(['shoot', 'client', 'items']);
         });
     }
 

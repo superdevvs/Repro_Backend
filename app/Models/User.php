@@ -22,6 +22,7 @@ class User extends Authenticatable
         'name',
         'username',
         'email',
+        'phone',
         'phonenumber',
         'company_name',
         'address',
@@ -34,12 +35,17 @@ class User extends Authenticatable
         'secondary_roles',
         'avatar',
         'bio',
+        'about',
         'account_status',
         'password',
         'created_by_name',
         'created_by_id',
         'metadata',
         'timezone',
+        'facebook_url',
+        'twitter_url',
+        'linkedin_url',
+        'pinterest_url',
     ];
 
 
@@ -90,5 +96,63 @@ class User extends Authenticatable
     public function shoots()
     {
         return $this->hasMany(Shoot::class, 'client_id');
+    }
+
+    /**
+     * Get shoots where this user is the photographer
+     */
+    public function photographerShoots()
+    {
+        return $this->hasMany(Shoot::class, 'photographer_id');
+    }
+
+    /**
+     * Get the service capabilities (service IDs) for this photographer
+     * Stored in metadata.specialties as array of service IDs
+     */
+    public function getServiceCapabilities(): array
+    {
+        $metadata = $this->metadata ?? [];
+        $specialties = $metadata['specialties'] ?? [];
+        
+        // Ensure we return an array of strings (service IDs)
+        if (!is_array($specialties)) {
+            return [];
+        }
+        
+        return array_map('strval', $specialties);
+    }
+
+    /**
+     * Check if this photographer can perform a specific service
+     */
+    public function canPerformService(int|string $serviceId): bool
+    {
+        $capabilities = $this->getServiceCapabilities();
+        return in_array((string) $serviceId, $capabilities, true);
+    }
+
+    /**
+     * Check if this photographer can perform all given services
+     */
+    public function canPerformAllServices(array $serviceIds): bool
+    {
+        $capabilities = $this->getServiceCapabilities();
+        foreach ($serviceIds as $serviceId) {
+            if (!in_array((string) $serviceId, $capabilities, true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Set service capabilities for this photographer
+     */
+    public function setServiceCapabilities(array $serviceIds): void
+    {
+        $metadata = $this->metadata ?? [];
+        $metadata['specialties'] = array_map('strval', $serviceIds);
+        $this->metadata = $metadata;
     }
 }

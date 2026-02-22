@@ -2343,6 +2343,151 @@ class ShootController extends Controller
     }
 
     /**
+     * Assign a photographer to a specific service within a shoot
+     * POST /api/shoots/{shoot}/assign-service-photographer
+     * 
+     * This allows different photographers to be assigned to different services
+     * within the same shoot (e.g., one photographer for photos, another for drone).
+     */
+    public function assignServicePhotographer(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        // Only admin/superadmin can assign per-service photographers
+        if (!in_array($user->role, ['admin', 'superadmin'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'service_id' => 'required|exists:services,id',
+            'photographer_id' => 'nullable|exists:users,id',
+        ]);
+
+        // Verify the service is attached to this shoot
+        $serviceAttached = $shoot->services()->where('services.id', $validated['service_id'])->exists();
+        if (!$serviceAttached) {
+            return response()->json(['message' => 'Service is not part of this shoot'], 422);
+        }
+
+        // Verify the user is a photographer (if provided)
+        if ($validated['photographer_id']) {
+            $photographer = User::find($validated['photographer_id']);
+            if (!$photographer || $photographer->role !== 'photographer') {
+                return response()->json(['message' => 'Invalid photographer'], 422);
+            }
+        }
+
+        // Assign photographer to the service
+        $success = $shoot->assignPhotographerToService(
+            $validated['service_id'],
+            $validated['photographer_id']
+        );
+
+        if (!$success) {
+            return response()->json(['message' => 'Failed to assign photographer to service'], 500);
+        }
+
+        // Log activity
+        $serviceName = Service::find($validated['service_id'])->name ?? 'Unknown Service';
+        $photographerName = $validated['photographer_id'] 
+            ? (User::find($validated['photographer_id'])->name ?? 'Unknown')
+            : 'Unassigned';
+
+        $this->activityLogger->log(
+            $shoot,
+            'service_photographer_assigned',
+            [
+                'by' => $user->name,
+                'service_id' => $validated['service_id'],
+                'service_name' => $serviceName,
+                'photographer_id' => $validated['photographer_id'],
+                'photographer_name' => $photographerName,
+            ],
+            $user
+        );
+
+        return response()->json([
+            'message' => "Photographer assigned to {$serviceName}",
+            'data' => new ShootResource($shoot->fresh(['client', 'rep', 'photographer', 'services']))
+        ]);
+    }
+
+    /**
+     * Bulk assign photographers to services within a shoot
+     * POST /api/shoots/{shoot}/assign-service-photographers
+     */
+    public function assignServicePhotographers(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        // Only admin/superadmin can assign per-service photographers
+        if (!in_array($user->role, ['admin', 'superadmin'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'assignments' => 'required|array|min:1',
+            'assignments.*.service_id' => 'required|exists:services,id',
+            'assignments.*.photographer_id' => 'nullable|exists:users,id',
+        ]);
+
+        $results = [];
+        foreach ($validated['assignments'] as $assignment) {
+            // Verify the service is attached to this shoot
+            $serviceAttached = $shoot->services()->where('services.id', $assignment['service_id'])->exists();
+            if (!$serviceAttached) {
+                $results[] = [
+                    'service_id' => $assignment['service_id'],
+                    'success' => false,
+                    'message' => 'Service is not part of this shoot',
+                ];
+                continue;
+            }
+
+            // Verify photographer if provided
+            if (!empty($assignment['photographer_id'])) {
+                $photographer = User::find($assignment['photographer_id']);
+                if (!$photographer || $photographer->role !== 'photographer') {
+                    $results[] = [
+                        'service_id' => $assignment['service_id'],
+                        'success' => false,
+                        'message' => 'Invalid photographer',
+                    ];
+                    continue;
+                }
+            }
+
+            $success = $shoot->assignPhotographerToService(
+                $assignment['service_id'],
+                $assignment['photographer_id'] ?? null
+            );
+
+            $results[] = [
+                'service_id' => $assignment['service_id'],
+                'photographer_id' => $assignment['photographer_id'] ?? null,
+                'success' => $success,
+            ];
+        }
+
+        // Log activity
+        $this->activityLogger->log(
+            $shoot,
+            'service_photographers_bulk_assigned',
+            [
+                'by' => $user->name,
+                'assignments' => $results,
+            ],
+            $user
+        );
+
+        return response()->json([
+            'message' => 'Service photographer assignments updated',
+            'results' => $results,
+            'data' => new ShootResource($shoot->fresh(['client', 'rep', 'photographer', 'services']))
+        ]);
+    }
+
+    /**
      * Client requests cancellation of their shoot
      * POST /api/shoots/{shoot}/request-cancellation
      */
@@ -2518,16 +2663,25 @@ class ShootController extends Controller
             $shoot->cancellation_reason = $validated['reason'] ?? null;
             $shoot->updated_by = $user->id;
 
-            // Add cancellation fee if provided
-            $cancellationFee = $validated['cancellation_fee'] ?? 0;
-            if ($cancellationFee > 0) {
-                $currentBase = $shoot->base_quote ?? 0;
-                $currentTotal = $shoot->total_quote ?? 0;
-                $shoot->base_quote = $currentBase + $cancellationFee;
-                $shoot->total_quote = $currentTotal + $cancellationFee;
-            }
-
             $shoot->save();
+
+            // Add cancellation fee if provided - generate invoice and notify client
+            $cancellationFee = $validated['cancellation_fee'] ?? 0;
+            $cancellationInvoice = null;
+            if ($cancellationFee > 0) {
+                // Check if shoot had payments (was paid)
+                $totalPaid = $shoot->payments()
+                    ->where('status', Payment::STATUS_COMPLETED)
+                    ->sum('amount') ?? 0;
+                
+                // Generate cancellation fee invoice
+                $cancellationInvoice = $this->invoiceService->generateCancellationFeeInvoice($shoot, $cancellationFee);
+                
+                // Send cancellation fee invoice to client
+                if ($cancellationInvoice && $shoot->client) {
+                    $this->mailService->sendCancellationFeeInvoiceEmail($shoot->client, $cancellationInvoice);
+                }
+            }
 
             // Log activity
             $this->activityLogger->log(

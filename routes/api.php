@@ -377,6 +377,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/approve', [ShootController::class, 'approve']);
     Route::post('/shoots/{shoot}/decline', [ShootController::class, 'decline']);
     
+    // Per-service photographer assignment (multi-photographer per shoot)
+    Route::post('/shoots/{shoot}/assign-service-photographer', [ShootController::class, 'assignServicePhotographer']);
+    Route::post('/shoots/{shoot}/assign-service-photographers', [ShootController::class, 'assignServicePhotographers']);
+    
     // Cancellation request endpoints
     Route::post('/shoots/{shoot}/request-cancellation', [ShootController::class, 'requestCancellation']);
     Route::post('/shoots/{shoot}/approve-cancellation', [ShootController::class, 'approveCancellation']);
@@ -757,6 +761,17 @@ Route::prefix('public/shoots')->group(function () {
 // Client profile (requires authentication and authorization)
 Route::middleware('auth:sanctum')->prefix('public')->group(function () {
     Route::get('/clients/{client}/profile', [ShootController::class, 'publicClientProfile']);
+});
+
+// Public contact form submission (no auth required)
+Route::prefix('public')->group(function () {
+    Route::post('/client/{username}/contact', [App\Http\Controllers\API\ContactSubmissionController::class, 'store']);
+});
+
+// Contact submissions management (requires auth)
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/contact-submissions', [App\Http\Controllers\API\ContactSubmissionController::class, 'index']);
+    Route::post('/contact-submissions/{submission}/read', [App\Http\Controllers\API\ContactSubmissionController::class, 'markAsRead']);
 });
 
 // Image download routes

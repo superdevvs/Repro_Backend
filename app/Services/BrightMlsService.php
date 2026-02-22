@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Services\BrightMls\BrightMlsStrategyInterface;
+use App\Services\BrightMls\LegacyBrightMlsStrategy;
+use App\Services\BrightMls\NewBrightMlsStrategy;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -10,6 +13,30 @@ class BrightMlsService
 {
     private const MAX_PHOTOS = 150;
     private const MAX_TOUR_URLS = 20;
+    private const MODE_LEGACY = 'legacy';
+    private const MODE_NEW = 'new';
+    private const ENVIRONMENT_DEFAULTS = [
+        self::MODE_LEGACY => [
+            't1' => [
+                'api_url' => 'https://bright-manifestservices.tst.brightmls.com',
+                'import_url_base' => 'https://lmsedit.tst.brightmls.com',
+            ],
+            'p1' => [
+                'api_url' => 'https://bright-manifestservices.brightmls.com',
+                'import_url_base' => 'https://lmsedit.brightmls.com',
+            ],
+        ],
+        self::MODE_NEW => [
+            't1' => [
+                'api_url' => 'https://agl1paz1msaasservices.bright-solutions.co',
+                'import_url_base' => 'https://agl1paz1msaasservices.bright-solutions.co',
+            ],
+            'p1' => [
+                'api_url' => 'https://agl1paz1msaasservices.bright-solutions.co',
+                'import_url_base' => 'https://agl1paz1msaasservices.bright-solutions.co',
+            ],
+        ],
+    ];
 
     private $apiUrl;
     private $apiUser;
@@ -17,20 +44,50 @@ class BrightMlsService
     private $vendorId;
     private $vendorName;
     private $defaultDocVisibility;
+    private $mode;
+    private $environment;
+    private $importUrlBase;
     private $enabled;
+    private BrightMlsStrategyInterface $strategy;
 
     public function __construct()
     {
         // Try to load from database settings first, fallback to config
         $settings = $this->loadSettings('integrations.bright_mls');
+
+        $this->mode = strtolower((string) ($settings['apiMode'] ?? config('services.bright_mls.api_mode', self::MODE_LEGACY)));
+        if (!in_array($this->mode, [self::MODE_LEGACY, self::MODE_NEW], true)) {
+            $this->mode = self::MODE_LEGACY;
+        }
+
+        $this->environment = strtolower((string) ($settings['environment'] ?? config('services.bright_mls.environment', 't1')));
+        $defaults = $this->resolveEnvironmentDefaults($this->mode, $this->environment);
         
-        $this->apiUrl = rtrim($settings['apiUrl'] ?? config('services.bright_mls.api_url', 'https://agl1paz1msaasservices.bright-solutions.co'), '/');
+        $this->apiUrl = rtrim($settings['apiUrl'] ?? config('services.bright_mls.api_url', $defaults['api_url']), '/');
         $this->apiUser = $settings['apiUser'] ?? config('services.bright_mls.api_user');
         $this->apiKey = $settings['apiKey'] ?? config('services.bright_mls.api_key');
         $this->vendorId = $settings['vendorId'] ?? config('services.bright_mls.vendor_id');
         $this->vendorName = $settings['vendorName'] ?? config('services.bright_mls.vendor_name', 'Repro Photos');
         $this->defaultDocVisibility = $settings['defaultDocVisibility'] ?? config('services.bright_mls.default_doc_visibility', 'private');
+        $this->importUrlBase = rtrim($settings['importUrlBase'] ?? config('services.bright_mls.import_url_base', $defaults['import_url_base']), '/');
         $this->enabled = $settings['enabled'] ?? config('services.bright_mls.enabled', true);
+        $this->strategy = $this->buildStrategy();
+    }
+
+    private function buildStrategy(): BrightMlsStrategyInterface
+    {
+        if ($this->mode === self::MODE_NEW) {
+            return new NewBrightMlsStrategy($this->apiUrl);
+        }
+
+        return new LegacyBrightMlsStrategy($this->apiUrl, $this->importUrlBase);
+    }
+
+    private function resolveEnvironmentDefaults(string $mode, string $environment): array
+    {
+        return self::ENVIRONMENT_DEFAULTS[$mode][$environment]
+            ?? self::ENVIRONMENT_DEFAULTS[$mode]['t1']
+            ?? self::ENVIRONMENT_DEFAULTS[self::MODE_LEGACY]['t1'];
     }
 
     private function validateConfiguration(?array $manifestData = null): ?array
@@ -49,6 +106,24 @@ class BrightMlsService
                 'success' => false,
                 'status' => 'config_error',
                 'error' => 'Bright MLS API key is missing',
+                'response' => null,
+            ];
+        }
+
+        if (empty($this->apiUrl)) {
+            return [
+                'success' => false,
+                'status' => 'config_error',
+                'error' => 'Bright MLS API URL is missing',
+                'response' => null,
+            ];
+        }
+
+        if ($this->mode === self::MODE_LEGACY && empty($this->importUrlBase)) {
+            return [
+                'success' => false,
+                'status' => 'config_error',
+                'error' => 'Bright MLS import URL base is missing for legacy mode',
                 'response' => null,
             ];
         }
@@ -148,12 +223,10 @@ class BrightMlsService
 
             // Ensure each listItem has required id and lastModified fields
             $normalizedItems = $listItems->values()->map(function ($item, $index) {
-                $item['id'] = $item['id'] ?? ($index + 1);
-                $item['lastModified'] = $item['lastModified'] ?? now()->toIso8601String();
-                return $item;
+                return $this->normalizeListItem($item, $index + 1);
             })->all();
 
-            $payload = [
+            $manifestPayloadData = [
                 'vendorId' => $effectiveVendorId,
                 'vendorName' => $this->vendorName ?? ($manifestData['vendorName'] ?? 'Repro Photos'),
                 'dateFileCreated' => $manifestData['dateFileCreated'] ?? now()->toIso8601String(),
@@ -162,10 +235,26 @@ class BrightMlsService
 
             // Only include optional fields if they have values
             if (!empty($manifestData['propertyAddress'])) {
-                $payload['propertyAddress'] = $manifestData['propertyAddress'];
+                $manifestPayloadData['propertyAddress'] = $manifestData['propertyAddress'];
             }
             if (!empty($manifestData['mlsId'])) {
-                $payload['mlsId'] = $manifestData['mlsId'];
+                $manifestPayloadData['mlsId'] = $manifestData['mlsId'];
+            }
+
+            $payload = $this->strategy->buildManifest($manifestPayloadData);
+            $localValidationErrors = $this->strategy->validatePayload($payload);
+            if (!empty($localValidationErrors)) {
+                return [
+                    'success' => false,
+                    'status' => 'validation_error',
+                    'error' => 'Manifest validation failed',
+                    'validation_errors' => $localValidationErrors,
+                    'response' => ['payload' => $payload],
+                    'mode' => $this->mode,
+                    'environment' => $this->environment,
+                    'payload_snapshot' => $payload,
+                    'published_at' => now()->toIso8601String(),
+                ];
             }
 
             // X-API-USER must match vendorId per Bright MLS docs
@@ -217,6 +306,10 @@ class BrightMlsService
                     'error' => $errorMessage,
                     'validation_errors' => $validationErrors,
                     'response' => $errorBody,
+                    'mode' => $this->mode,
+                    'environment' => $this->environment,
+                    'payload_snapshot' => $payload,
+                    'published_at' => now()->toIso8601String(),
                 ];
             }
 
@@ -228,8 +321,13 @@ class BrightMlsService
                 'success' => true,
                 'status' => 'published',
                 'manifest_id' => $manifestId,
+                'manifest_uuid' => $manifestId,
                 'redirect_url' => $manifestId ? $this->getRedirectUrl($manifestId) : null,
                 'response' => $data,
+                'mode' => $this->mode,
+                'environment' => $this->environment,
+                'payload_snapshot' => $payload,
+                'published_at' => now()->toIso8601String(),
             ];
 
         } catch (\Exception $e) {
@@ -244,6 +342,9 @@ class BrightMlsService
                 'status' => 'error',
                 'error' => $e->getMessage(),
                 'response' => null,
+                'mode' => $this->mode,
+                'environment' => $this->environment,
+                'published_at' => now()->toIso8601String(),
             ];
         }
     }
@@ -268,7 +369,7 @@ class BrightMlsService
                         ],
                         'lastModified' => now()->toIso8601String(),
                         'mediaType' => 'photo',
-                        'description' => $photo['description'] ?? '',
+                        'description' => $this->trimText($photo['description'] ?? '', 50),
                         'id' => $itemId++,
                         'roomType' => $photo['roomType'] ?? '',
                     ];
@@ -279,11 +380,11 @@ class BrightMlsService
         // Add iGUIDE tour (mediaType: tour_url per Bright MLS docs)
         if (!empty($options['iguide_tour_url'])) {
             $listItems[] = [
-                'fileName' => 'iGUIDE 3D Tour',
+                'fileName' => $this->trimText('iGUIDE 3D Tour', 25),
                 'tourUrl' => $options['iguide_tour_url'],
                 'lastModified' => now()->toIso8601String(),
                 'mediaType' => 'tour_url',
-                'description' => '3D interactive tour',
+                'description' => $this->trimText('3D interactive tour', 50),
                 'id' => $itemId++,
             ];
         }
@@ -291,11 +392,11 @@ class BrightMlsService
         // Add slideshow/video tour (mediaType: tour_url per Bright MLS docs)
         if (!empty($options['slideshow_url'])) {
             $listItems[] = [
-                'fileName' => 'Property Slideshow',
+                'fileName' => $this->trimText('Property Slideshow', 25),
                 'tourUrl' => $options['slideshow_url'],
                 'lastModified' => now()->toIso8601String(),
                 'mediaType' => 'tour_url',
-                'description' => 'Property slideshow',
+                'description' => $this->trimText('Property slideshow', 50),
                 'id' => $itemId++,
             ];
         }
@@ -319,7 +420,7 @@ class BrightMlsService
                             'docUrl' => $doc['url'],
                             'lastModified' => now()->toIso8601String(),
                             'mediaType' => 'floor_plan',
-                            'description' => $doc['description'] ?? 'Floor plan',
+                            'description' => $this->trimText($doc['description'] ?? 'Floor plan', 50),
                             'id' => $itemId++,
                         ];
                     } else {
@@ -330,7 +431,7 @@ class BrightMlsService
                             'docVisibility' => $doc['visibility'] ?? $this->defaultDocVisibility,
                             'lastModified' => now()->toIso8601String(),
                             'mediaType' => 'document',
-                            'description' => $doc['description'] ?? '',
+                            'description' => $this->trimText($doc['description'] ?? '', 50),
                             'id' => $itemId++,
                         ];
                     }
@@ -400,6 +501,8 @@ class BrightMlsService
                     'success' => true,
                     'status' => $status,
                     'message' => 'Connection successful — API is reachable and credentials are valid',
+                    'mode' => $this->mode,
+                    'environment' => $this->environment,
                 ];
             }
 
@@ -409,6 +512,8 @@ class BrightMlsService
                     'success' => false,
                     'status' => $status,
                     'message' => 'Authentication failed — check your Vendor ID and API Key',
+                    'mode' => $this->mode,
+                    'environment' => $this->environment,
                 ];
             }
 
@@ -416,12 +521,16 @@ class BrightMlsService
                 'success' => false,
                 'status' => $status,
                 'message' => 'Unexpected response (HTTP ' . $status . ')',
+                'mode' => $this->mode,
+                'environment' => $this->environment,
             ];
         } catch (\Exception $e) {
             return [
                 'success' => false,
                 'status' => 0,
                 'message' => 'Connection error: ' . $e->getMessage(),
+                'mode' => $this->mode,
+                'environment' => $this->environment,
             ];
         }
     }
@@ -431,7 +540,39 @@ class BrightMlsService
      */
     public function getRedirectUrl(string $manifestId): string
     {
-        return $this->apiUrl . '/mlsredirect/bright/' . $manifestId;
+        return $this->strategy->buildImportUrl($manifestId);
+    }
+
+    public function getMode(): string
+    {
+        return $this->mode;
+    }
+
+    public function getEnvironment(): string
+    {
+        return $this->environment;
+    }
+
+    public function applyPublishResultToShoot(\App\Models\Shoot $shoot, array $result): void
+    {
+        $publishedAtIso = $result['published_at'] ?? now()->toIso8601String();
+
+        $shoot->bright_mls_publish_status = $result['status'] ?? ($result['success'] ? 'published' : 'error');
+        $shoot->bright_mls_last_published_at = $result['success'] ? now() : $shoot->bright_mls_last_published_at;
+        $shoot->bright_mls_response = json_encode($result);
+
+        if (!empty($result['manifest_id'])) {
+            $shoot->bright_mls_manifest_id = $result['manifest_id'];
+        }
+
+        $integrationFlags = is_array($shoot->integration_flags) ? $shoot->integration_flags : [];
+        $integrationFlags['bright_mls_mode'] = $result['mode'] ?? $this->mode;
+        $integrationFlags['bright_mls_environment'] = $result['environment'] ?? $this->environment;
+        $integrationFlags['bright_mls_last_payload_snapshot'] = $result['payload_snapshot'] ?? null;
+        $integrationFlags['bright_mls_last_uuid'] = $result['manifest_id'] ?? ($integrationFlags['bright_mls_last_uuid'] ?? null);
+        $integrationFlags['bright_mls_last_attempted_at'] = $publishedAtIso;
+        $shoot->integration_flags = $integrationFlags;
+        $shoot->save();
     }
 
     /**
@@ -519,11 +660,7 @@ class BrightMlsService
             $result = $this->publishManifest($manifestData);
 
             // Update shoot with publish result
-            $shoot->bright_mls_publish_status = $result['status'];
-            $shoot->bright_mls_last_published_at = $result['success'] ? now() : null;
-            $shoot->bright_mls_response = json_encode($result);
-            $shoot->bright_mls_manifest_id = $result['manifest_id'] ?? null;
-            $shoot->save();
+            $this->applyPublishResultToShoot($shoot, $result);
 
             Log::info('Bright MLS auto-publish ' . ($result['success'] ? 'succeeded' : 'failed'), [
                 'shoot_id' => $shoot->id,
@@ -552,6 +689,29 @@ class BrightMlsService
     public function isAutoPublishAvailable(): bool
     {
         return $this->enabled && !empty($this->vendorId) && !empty($this->apiKey);
+    }
+
+    private function normalizeListItem(array $item, int $id): array
+    {
+        $item['id'] = $item['id'] ?? $id;
+        $item['lastModified'] = $item['lastModified'] ?? now()->toIso8601String();
+        $item['description'] = $this->trimText($item['description'] ?? '', 50);
+
+        if (($item['mediaType'] ?? null) === 'tour_url') {
+            $item['fileName'] = $this->trimText($item['fileName'] ?? '', 25);
+        }
+
+        return $item;
+    }
+
+    private function trimText(?string $value, int $maxLength): string
+    {
+        $trimmed = trim((string) ($value ?? ''));
+        if (strlen($trimmed) <= $maxLength) {
+            return $trimmed;
+        }
+
+        return substr($trimmed, 0, $maxLength);
     }
 }
 

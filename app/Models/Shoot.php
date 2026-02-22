@@ -85,6 +85,7 @@ class Shoot extends Model
         'iguide_last_synced_at',
         'iguide_property_id',
         'is_private_listing',
+        'listing_type',
         // MMM Integration
         'mmm_status',
         'mmm_order_number',
@@ -146,6 +147,7 @@ class Shoot extends Model
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
+        'listing_type' => 'string',
         'mmm_last_punchout_at' => 'datetime',
         'mmm_last_order_at' => 'datetime',
         'approved_at' => 'datetime',
@@ -204,8 +206,119 @@ class Shoot extends Model
     public function services()
     {
         return $this->belongsToMany(Service::class, 'shoot_service')
-            ->withPivot(['price', 'quantity', 'photographer_pay'])
+            ->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id'])
             ->withTimestamps();
+    }
+
+    /**
+     * BelongsToMany relationship to photographers via shoot_service pivot
+     * This enables easy payout grouping by photographer
+     */
+    public function servicePhotographers()
+    {
+        return $this->belongsToMany(User::class, 'shoot_service', 'shoot_id', 'photographer_id')
+            ->withPivot(['service_id', 'price', 'quantity', 'photographer_pay'])
+            ->withTimestamps();
+    }
+
+    /**
+     * Get all unique photographers assigned to services in this shoot
+     * Returns a collection of User models
+     */
+    public function getUniqueServicePhotographers(): \Illuminate\Support\Collection
+    {
+        return User::whereIn('id', function ($query) {
+            $query->select('photographer_id')
+                ->from('shoot_service')
+                ->where('shoot_id', $this->id)
+                ->whereNotNull('photographer_id');
+        })->get();
+    }
+
+    /**
+     * Get photographer pay grouped by photographer ID
+     * Uses fallback: service.photographer_id ?? shoot.photographer_id
+     * 
+     * Returns: Collection [photographer_id => total_pay]
+     * 
+     * THIS IS THE CORRECT METHOD FOR PAYOUT CALCULATIONS
+     */
+    public function getPhotographerPayByPhotographer(): \Illuminate\Support\Collection
+    {
+        if (!$this->relationLoaded('services')) {
+            $this->load('services');
+        }
+
+        $fallbackPhotographerId = $this->photographer_id;
+
+        return $this->services->groupBy(function ($service) use ($fallbackPhotographerId) {
+            // FALLBACK RULE: service photographer_id ?? shoot photographer_id
+            return $service->pivot->photographer_id ?? $fallbackPhotographerId;
+        })->map(function ($services) {
+            return $services->sum(function ($service) {
+                $pay = $service->pivot->photographer_pay ?? 0;
+                $quantity = $service->pivot->quantity ?? 1;
+                return (float) $pay * $quantity;
+            });
+        })->filter(function ($pay, $photographerId) {
+            // Filter out null photographer entries
+            return $photographerId !== null;
+        });
+    }
+
+    /**
+     * Get resolved photographer for a service (with fallback)
+     * Returns photographer_id from pivot, or falls back to shoot.photographer_id
+     */
+    public function getResolvedPhotographerForService(int $serviceId): ?int
+    {
+        $service = $this->services->firstWhere('id', $serviceId);
+        if (!$service) {
+            return $this->photographer_id;
+        }
+        
+        return $service->pivot->photographer_id ?? $this->photographer_id;
+    }
+
+    /**
+     * Get the photographer assigned to a specific service
+     */
+    public function getPhotographerForService(int $serviceId): ?User
+    {
+        $pivot = DB::table('shoot_service')
+            ->where('shoot_id', $this->id)
+            ->where('service_id', $serviceId)
+            ->first();
+
+        if (!$pivot || !$pivot->photographer_id) {
+            return null;
+        }
+
+        return User::find($pivot->photographer_id);
+    }
+
+    /**
+     * Get service-photographer mapping for this shoot
+     * Returns array of [service_id => photographer_id]
+     */
+    public function getServicePhotographerMap(): array
+    {
+        return DB::table('shoot_service')
+            ->where('shoot_id', $this->id)
+            ->whereNotNull('photographer_id')
+            ->pluck('photographer_id', 'service_id')
+            ->toArray();
+    }
+
+    /**
+     * Assign a photographer to a specific service in this shoot
+     */
+    public function assignPhotographerToService(int $serviceId, ?int $photographerId): bool
+    {
+        return DB::table('shoot_service')
+            ->where('shoot_id', $this->id)
+            ->where('service_id', $serviceId)
+            ->update(['photographer_id' => $photographerId]) > 0;
     }
 
     public function verifiedBy()

@@ -414,11 +414,7 @@ class IntegrationController extends Controller
             $result = $this->brightMlsService->publishManifest($manifestData);
 
             // Update shoot with publish status
-            $shoot->bright_mls_publish_status = $result['status'];
-            $shoot->bright_mls_last_published_at = $result['success'] ? now() : null;
-            $shoot->bright_mls_response = json_encode($result);
-            $shoot->bright_mls_manifest_id = $result['manifest_id'] ?? null;
-            $shoot->save();
+            $this->brightMlsService->applyPublishResultToShoot($shoot, $result);
 
             $message = $result['error'] ?? $result['message'] ?? ($result['success'] ? 'Published to Bright MLS' : 'Bright MLS publish failed');
 
@@ -471,6 +467,19 @@ class IntegrationController extends Controller
             }
 
             $shoots = $query->get()->map(function ($shoot) {
+                $parsedResponse = null;
+                if ($shoot->bright_mls_response) {
+                    $parsedResponse = is_string($shoot->bright_mls_response)
+                        ? json_decode($shoot->bright_mls_response, true)
+                        : $shoot->bright_mls_response;
+                }
+
+                if (!is_array($parsedResponse)) {
+                    $parsedResponse = [];
+                }
+
+                $integrationFlags = is_array($shoot->integration_flags) ? $shoot->integration_flags : [];
+
                 return [
                     'id' => $shoot->id,
                     'address' => "{$shoot->address}, {$shoot->city}, {$shoot->state}",
@@ -480,14 +489,12 @@ class IntegrationController extends Controller
                     'status' => $shoot->bright_mls_publish_status,
                     'last_published' => $shoot->bright_mls_last_published_at,
                     'manifest_id' => $shoot->bright_mls_manifest_id,
+                    'mode' => $parsedResponse['mode'] ?? ($integrationFlags['bright_mls_mode'] ?? $this->brightMlsService->getMode()),
+                    'environment' => $parsedResponse['environment'] ?? ($integrationFlags['bright_mls_environment'] ?? $this->brightMlsService->getEnvironment()),
                     'redirect_url' => $shoot->bright_mls_manifest_id
                         ? $this->brightMlsService->getRedirectUrl($shoot->bright_mls_manifest_id)
                         : null,
-                    'response' => $shoot->bright_mls_response ? (
-                        is_string($shoot->bright_mls_response) 
-                            ? json_decode($shoot->bright_mls_response, true) 
-                            : $shoot->bright_mls_response
-                    ) : null,
+                    'response' => $parsedResponse,
                 ];
             });
 

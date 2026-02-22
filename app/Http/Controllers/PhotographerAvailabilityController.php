@@ -784,6 +784,8 @@ class PhotographerAvailabilityController extends Controller
             'shoot_state' => 'required|string',
             'shoot_zip' => 'sometimes|string',
             'photographer_ids' => 'sometimes|array',
+            'service_ids' => 'sometimes|array', // Filter by service capabilities
+            'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
         ]);
 
         $date = \Carbon\Carbon::parse($validated['date']);
@@ -793,6 +795,8 @@ class PhotographerAvailabilityController extends Controller
         $shootZip = $validated['shoot_zip'] ?? '';
         $requestedTime = $validated['time'] ?? null;
         $photographerIds = $validated['photographer_ids'] ?? null;
+        $serviceIds = $validated['service_ids'] ?? null;
+        $requireAllServices = $validated['require_all_services'] ?? true;
 
         // Get photographers
         $query = \App\Models\User::where('role', 'photographer')
@@ -803,6 +807,23 @@ class PhotographerAvailabilityController extends Controller
         }
         
         $photographers = $query->get();
+        
+        // Filter by service capabilities if specified
+        if ($serviceIds && !empty($serviceIds)) {
+            $photographers = $photographers->filter(function ($photographer) use ($serviceIds, $requireAllServices) {
+                if ($requireAllServices) {
+                    return $photographer->canPerformAllServices($serviceIds);
+                } else {
+                    // At least one service match
+                    foreach ($serviceIds as $serviceId) {
+                        if ($photographer->canPerformService($serviceId)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            });
+        }
 
         $result = [];
 

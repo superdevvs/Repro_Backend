@@ -18,10 +18,20 @@ class PayoutReportService
         return [$start, $end->endOfDay()];
     }
 
+    /**
+     * Build photographer summaries using SERVICE-LEVEL grouping
+     * 
+     * NEW LOGIC: Groups by resolved photographer per service, not per shoot
+     * Fallback: shoot_service.photographer_id ?? shoot.photographer_id
+     */
     public function buildPhotographerSummaries(Carbon $start, Carbon $end): Collection
     {
-        $shoots = Shoot::with(['photographer:id,name,email', 'services'])
-            ->whereNotNull('photographer_id')
+        $shoots = Shoot::with([
+                'photographer:id,name,email',
+                'services' => function ($q) {
+                    $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
+                },
+            ])
             ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
@@ -29,29 +39,53 @@ class PayoutReportService
             ])
             ->get();
 
-        return $shoots
-            ->groupBy('photographer_id')
-            ->map(function (Collection $group, $photographerId) {
-                $photographer = $group->first()->photographer ?: User::find($photographerId);
-                if (!$photographer) {
-                    return null;
+        // Flatten to service-level rows with resolved photographer
+        $serviceRows = collect();
+        
+        foreach ($shoots as $shoot) {
+            $fallbackId = $shoot->photographer_id;
+            
+            foreach ($shoot->services as $service) {
+                $resolvedId = $service->pivot->photographer_id ?? $fallbackId;
+                if (!$resolvedId) {
+                    \Log::warning('Unresolved photographer for payout', [
+                        'shoot_id' => $shoot->id,
+                        'service_id' => $service->id,
+                        'service_name' => $service->name,
+                    ]);
+                    continue;
                 }
+                
+                $pay = (float) ($service->pivot->photographer_pay ?? 0);
+                $qty = (int) ($service->pivot->quantity ?? 1);
+                
+                $serviceRows->push([
+                    'shoot_id' => $shoot->id,
+                    'resolved_photographer_id' => $resolvedId,
+                    'photographer_pay' => $pay * $qty,
+                ]);
+            }
+        }
 
-                // Calculate total photographer pay from services
-                $gross = (float) $group->sum(function (Shoot $shoot) {
-                    $photographerPay = $shoot->total_photographer_pay ?? 0;
-                    // Fallback to total_quote if no photographer pay is set in services
-                    return $photographerPay > 0 ? $photographerPay : (float) ($shoot->total_quote ?? 0);
-                });
+        // Group by resolved photographer
+        return $serviceRows
+            ->groupBy('resolved_photographer_id')
+            ->map(function (Collection $rows, $photographerId) {
+                $photographer = User::find($photographerId);
+                if (!$photographer) return null;
+
+                $gross = $rows->sum('photographer_pay');
+                $shootCount = $rows->pluck('shoot_id')->unique()->count();
 
                 return [
                     'id' => $photographer->id,
                     'name' => $photographer->name,
                     'email' => $photographer->email,
                     'role' => 'photographer',
-                    'shoot_count' => $group->count(),
+                    'shoot_count' => $shootCount,
+                    'service_count' => $rows->count(),
                     'gross_total' => round($gross, 2),
-                    'average_value' => round($gross / max($group->count(), 1), 2),
+                    'average_value' => round($gross / max($shootCount, 1), 2),
                     'commission_rate' => null,
                     'commission_total' => null,
                 ];
