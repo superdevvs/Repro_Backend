@@ -354,7 +354,9 @@ class AutomationService
             'shoot_time' => $this->formatShootTime($shoot),
             'shoot_datetime' => $shoot->scheduled_at ?? $shoot->scheduled_date,
             'shoot_address' => $shoot->address ?? 'N/A',
-            'shoot_services' => $shoot->service?->name ?? 'Photography',
+            'shoot_services' => $shoot->services->count() > 0
+                ? $shoot->services->pluck('name')->implode(', ')
+                : ($shoot->service?->name ?? 'Photography'),
             'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
             'photographer' => $shoot->photographer,
