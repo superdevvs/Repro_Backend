@@ -682,27 +682,30 @@ class IntegrationController extends Controller
     {
         $candidateUrl = is_string($candidateUrl) ? trim($candidateUrl) : null;
 
+        // 1. If candidate is already a full HTTP URL, use it directly
         if ($candidateUrl && Str::startsWith($candidateUrl, ['http://', 'https://'])) {
             return $candidateUrl;
         }
 
+        // 2. If we have a ShootFile record, try its fields in priority order
         if ($file) {
-            if ($file->url && Str::startsWith($file->url, ['http://', 'https://'])) {
-                return $file->url;
+            // Try fields that may already be full HTTP URLs
+            foreach (['url', 'web_path', 'storage_path', 'path'] as $field) {
+                $value = $file->{$field} ?? null;
+                if ($value && Str::startsWith($value, ['http://', 'https://'])) {
+                    return $value;
+                }
             }
 
-            if ($file->path && Str::startsWith($file->path, ['http://', 'https://'])) {
-                return $file->path;
+            // Try converting storage-relative paths to full URLs
+            foreach (['web_path', 'storage_path', 'path'] as $field) {
+                $value = $file->{$field} ?? null;
+                if ($value && !Str::startsWith($value, ['http://', 'https://'])) {
+                    return $this->storagePathToUrl($value);
+                }
             }
 
-            if ($file->path && Storage::disk('public')->exists($file->path)) {
-                return Storage::disk('public')->url($file->path);
-            }
-
-            if ($file->path && !Str::startsWith($file->path, ['http://', 'https://']) && !$file->dropbox_path) {
-                return Storage::disk('public')->url($file->path);
-            }
-
+            // Last resort: Dropbox temporary link
             if ($file->dropbox_path && $this->dropboxService->isEnabled()) {
                 $dropboxUrl = $this->dropboxService->getTemporaryLink($file->dropbox_path);
                 if ($dropboxUrl) {
@@ -711,20 +714,18 @@ class IntegrationController extends Controller
             }
         }
 
+        // 3. If candidate is a relative storage path, convert to full URL
         if ($candidateUrl) {
-            if (Storage::disk('public')->exists($candidateUrl)) {
-                return Storage::disk('public')->url($candidateUrl);
-            }
-
-            if ($this->dropboxService->isEnabled()) {
-                $dropboxUrl = $this->dropboxService->getTemporaryLink($candidateUrl);
-                if ($dropboxUrl) {
-                    return $dropboxUrl;
-                }
-            }
+            return $this->storagePathToUrl($candidateUrl);
         }
 
         return null;
+    }
+
+    private function storagePathToUrl(string $path): string
+    {
+        $path = ltrim($path, '/');
+        return url('storage/' . $path);
     }
 }
 

@@ -1553,37 +1553,66 @@ class ShootController extends Controller
 
             // 11b. Trigger automation for client-requested shoots
             if ($treatAsClientRequest) {
-                $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
-                $context = $this->automationService->buildShootContext($shoot);
-                if ($shoot->rep) {
-                    $context['rep'] = $shoot->rep;
+                try {
+                    $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
+                    $context = $this->automationService->buildShootContext($shoot);
+                    if ($shoot->rep) {
+                        $context['rep'] = $shoot->rep;
+                    }
+                    $this->automationService->handleEvent('SHOOT_REQUESTED', $context);
+                } catch (\Exception $e) {
+                    \Log::error('Failed to trigger SHOOT_REQUESTED automation', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
                 }
-                $this->automationService->handleEvent('SHOOT_REQUESTED', $context);
             }
 
             // 12. Create Dropbox folders if scheduled (only for non-client shoots)
-            // For client requests, folders are created when the shoot is approved
+            // Wrapped in try-catch so Dropbox failures don't kill the shoot creation response
             if (!$treatAsClientRequest && $scheduledAt) {
-                $this->dropboxService->createShootFolders($shoot);
+                try {
+                    $this->dropboxService->createShootFolders($shoot);
+                } catch (\Exception $e) {
+                    \Log::error('Failed to create Dropbox folders for shoot', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             // 12b. Trigger booking automation for non-client requests
             if (!$treatAsClientRequest) {
-                $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
-                $context = $this->automationService->buildShootContext($shoot);
-                if ($shoot->rep) {
-                    $context['rep'] = $shoot->rep;
+                try {
+                    $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
+                    $context = $this->automationService->buildShootContext($shoot);
+                    if ($shoot->rep) {
+                        $context['rep'] = $shoot->rep;
+                    }
+                    $this->automationService->handleEvent('SHOOT_BOOKED', $context);
+                } catch (\Exception $e) {
+                    \Log::error('Failed to trigger SHOOT_BOOKED automation', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
                 }
-                $this->automationService->handleEvent('SHOOT_BOOKED', $context);
             }
 
             // 13. Send email notifications
+            // Wrapped in try-catch so SMTP failures don't kill the shoot creation response
             if (!$treatAsClientRequest && $scheduledAt) {
-                $shoot->loadMissing(['client', 'photographer', 'services']);
-                $client = $shoot->client;
-                if ($client) {
-                    $paymentLink = $this->mailService->generatePaymentLink($shoot);
-                    $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
+                try {
+                    $shoot->loadMissing(['client', 'photographer', 'services']);
+                    $client = $shoot->client;
+                    if ($client) {
+                        $paymentLink = $this->mailService->generatePaymentLink($shoot);
+                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
+                    }
+                } catch (\Exception $e) {
+                    \Log::error('Failed to send shoot scheduled email during creation', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
                 }
             }
 
