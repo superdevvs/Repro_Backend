@@ -1516,6 +1516,18 @@ class ShootController extends Controller
             // 7. Attach services
             $this->attachServices($shoot, $validated['services']);
 
+            // 7b. Assign per-service photographers if provided
+            $servicePhotographers = $request->input('service_photographers');
+            if (is_array($servicePhotographers) && count($servicePhotographers) > 0) {
+                foreach ($servicePhotographers as $assignment) {
+                    $serviceId = $assignment['service_id'] ?? null;
+                    $assignedPhotographerId = $assignment['photographer_id'] ?? null;
+                    if ($serviceId && $assignedPhotographerId) {
+                        $shoot->assignPhotographerToService($serviceId, $assignedPhotographerId);
+                    }
+                }
+            }
+
             // 8. Auto-create invoice if shoot is scheduled (not a client request)
             if ($scheduledAt && !$treatAsClientRequest) {
                 try {

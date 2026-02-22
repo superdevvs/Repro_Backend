@@ -539,8 +539,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/mmm/punchout', [IntegrationController::class, 'mmmPunchout']);
         });
 
-        // MLS Publishing Queue & redirect (admin only)
-        Route::middleware('role:admin,superadmin,editing_manager')->group(function () {
+        // MLS Publishing Queue & redirect
+        Route::middleware('role:admin,superadmin,editing_manager,client')->group(function () {
             Route::get('/mls-queue', [IntegrationController::class, 'getMlsQueue']);
             Route::get('/bright-mls/redirect/{manifestId}', [IntegrationController::class, 'getBrightMlsRedirectUrl']);
         });

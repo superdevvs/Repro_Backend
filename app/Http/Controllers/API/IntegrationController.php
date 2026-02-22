@@ -452,6 +452,8 @@ class IntegrationController extends Controller
     public function getMlsQueue(Request $request)
     {
         try {
+            $user = $request->user();
+
             $query = Shoot::with(['client', 'photographer'])
                 ->where(function ($q) {
                     $q->whereNotNull('mls_id')
@@ -460,6 +462,11 @@ class IntegrationController extends Controller
                       ->orWhereNotNull('bright_mls_manifest_id');
                 })
                 ->orderByRaw('bright_mls_last_published_at IS NULL, bright_mls_last_published_at DESC');
+
+            // Clients can only see their own shoots
+            if ($user && strtolower($user->role) === 'client') {
+                $query->where('client_id', $user->id);
+            }
 
             // Filter by status if provided
             if ($request->has('status')) {
