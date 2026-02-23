@@ -12,9 +12,11 @@ class ShootResource extends JsonResource
      */
     protected function calculatePhotographerPay(): float
     {
-        // Ensure services are loaded
+        // Ensure services (with category) are loaded
         if (!$this->relationLoaded('services')) {
-            $this->load('services');
+            $this->load('services.category');
+        } elseif ($this->services->isNotEmpty() && !$this->services->first()->relationLoaded('category')) {
+            $this->services->load('category');
         }
         
         // Calculate total photographer pay from services
@@ -37,6 +39,13 @@ class ShootResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        // Ensure services.category is loaded for per-category grouping
+        if (!$this->relationLoaded('services')) {
+            $this->load('services.category');
+        } elseif ($this->services->isNotEmpty() && !$this->services->first()->relationLoaded('category')) {
+            $this->services->load('category');
+        }
+
         return [
             'id' => (string) $this->id,
             'client' => [
@@ -95,6 +104,12 @@ class ShootResource extends JsonResource
                     'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
                     // Resolved photographer details (never null if shoot has photographer)
                     'photographer' => $resolvedPhotographer,
+                    // Category info for per-category grouping
+                    'category' => $service->category ? [
+                        'id' => (string) $service->category->id,
+                        'name' => $service->category->name,
+                    ] : null,
+                    'category_name' => $service->category?->name,
                 ];
             }),
             // Explicitly include services_list for frontend compatibility

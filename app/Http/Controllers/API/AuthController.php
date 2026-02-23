@@ -124,6 +124,11 @@ class AuthController extends Controller
             'zip' => 'nullable|string|max:20',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|string',
+            'about' => 'nullable|string',
+            'facebook_url' => 'nullable|url|max:500',
+            'twitter_url' => 'nullable|url|max:500',
+            'linkedin_url' => 'nullable|url|max:500',
+            'pinterest_url' => 'nullable|url|max:500',
             'terms_accepted' => 'sometimes|boolean',
             'termsAccepted' => 'sometimes|boolean',
         ]);
