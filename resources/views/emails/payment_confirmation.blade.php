@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Thank You for Your Payment!</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Thank You for Your Payment!')
+@section('content')
     <p>Hi {{ $user->first_name }}!</p>
 
     <p>Thank you for paying for your photo shoot!</p>
@@ -54,5 +50,4 @@
             Post a review on Google
         </a>.
     </p>
-</body>
-</html>
+@endsection

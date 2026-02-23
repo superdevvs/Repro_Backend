@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Your Shoot Has Been Marked as Paid</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Your Shoot Has Been Marked as Paid')
+@section('content')
     <p>Hi {{ $user->first_name }}!</p>
 
     <p>Great news! Your photo shoot has been marked as paid.</p>
@@ -55,5 +51,4 @@
             Post a review on Google
         </a>.
     </p>
-</body>
-</html>
+@endsection

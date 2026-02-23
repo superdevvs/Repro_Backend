@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Invoice Approved</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Invoice Approved')
+@section('content')
     <p>Hello, {{ $photographer->name }}!</p>
 
     <p>Your invoice for {{ $period }} has been approved by an administrator.</p>
@@ -27,7 +23,6 @@
         202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
-</body>
-</html>
+@endsection
 
 

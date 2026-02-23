@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Your Photos Are Ready!</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Your Photos Are Ready!')
+@section('content')
     <p>Hi {{ $user->first_name }}!</p>
 
     <p>
@@ -55,5 +51,4 @@
             Post a review on Google
         </a>.
     </p>
-</body>
-</html>
+@endsection

@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Invoice Requires Approval</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Invoice Requires Approval')
+@section('content')
     <p>Hello, {{ $admin->name }}!</p>
 
     <p>An invoice has been modified by a photographer and requires your approval.</p>
@@ -31,7 +27,6 @@
         202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
-</body>
-</html>
+@endsection
 
 

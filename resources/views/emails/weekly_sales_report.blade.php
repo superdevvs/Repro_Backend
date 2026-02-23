@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Weekly Sales Report - {{ $weekLabel }}</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Weekly Sales Report - ' . $weekLabel)
+@section('content')
     <p>Subject: Weekly Sales Report - {{ $weekLabel }}</p>
 
     <p>Hello, {{ $salesRep->name }}!</p>
@@ -76,7 +72,6 @@
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> <br>
         <a href="https://reprophotos.com">https://reprophotos.com</a>
     </p>
-</body>
-</html>
+@endsection
 
 

@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Weekly Invoice - {{ $period }}</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Weekly Invoice - ' . $period)
+@section('content')
     <p>Hello, {{ $photographer->name }}!</p>
 
     <p>Your weekly invoice for {{ $period }} has been generated.</p>
@@ -50,7 +46,6 @@
         202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
-</body>
-</html>
+@endsection
 
 

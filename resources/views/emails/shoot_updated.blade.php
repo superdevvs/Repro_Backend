@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Scheduled Photo Shoot Updated</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Scheduled Photo Shoot Updated')
+@section('content')
     <p>Hi {{ $user->first_name }}!</p>
 
     @if(!empty($isPhotographer))
@@ -100,5 +96,4 @@
         </a>.
     </p>
     @endif
-</body>
-</html>
+@endsection

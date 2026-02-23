@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>New Account Information</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'New Account Information')
+@section('content')
     <p>Hi {{ $user->first_name }}!</p>
 
     <p>
@@ -49,5 +45,4 @@
             Post a review on Google
         </a>.
     </p>
-</body>
-</html>
+@endsection

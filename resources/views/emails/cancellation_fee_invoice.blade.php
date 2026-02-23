@@ -1,29 +1,7 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cancellation Fee Invoice</title>
+@extends('emails.layouts.master')
+@section('title', 'Cancellation Fee Invoice')
+@section('extra-styles')
     <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .header {
-            text-align: center;
-            padding-bottom: 20px;
-            border-bottom: 2px solid #e5e7eb;
-            margin-bottom: 30px;
-        }
-        .header h1 {
-            color: #1f2937;
-            margin: 0;
-            font-size: 24px;
-        }
         .invoice-details {
             background-color: #f9fafb;
             padding: 20px;
@@ -43,7 +21,7 @@
             border-radius: 8px;
             margin: 20px 0;
         }
-        .footer {
+        .cancel-footer {
             text-align: center;
             color: #6b7280;
             font-size: 14px;
@@ -51,22 +29,10 @@
             padding-top: 20px;
             border-top: 1px solid #e5e7eb;
         }
-        .btn {
-            display: inline-block;
-            padding: 12px 24px;
-            background-color: #2563eb;
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: 500;
-            margin-top: 20px;
-        }
     </style>
-</head>
-<body>
-    <div class="header">
-        <h1>Cancellation Fee Invoice</h1>
-    </div>
+@endsection
+@section('content')
+    <h1 style="margin:0 0 16px;font-size:24px;color:#1f2937;">Cancellation Fee Invoice</h1>
 
     <p>Hello {{ $client->name }},</p>
 
@@ -87,9 +53,8 @@
 
     <p>If you have any questions about this invoice, please contact our support team.</p>
 
-    <div class="footer">
+    <div class="cancel-footer">
         <p>Thank you for your business.</p>
         <p>REPRO HQ</p>
     </div>
-</body>
-</html>
+@endsection

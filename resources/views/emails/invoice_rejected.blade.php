@@ -1,10 +1,6 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Invoice Rejected</title>
-</head>
-<body>
+@extends('emails.layouts.master')
+@section('title', 'Invoice Rejected')
+@section('content')
     <p>Hello, {{ $photographer->name }}!</p>
 
     <p>Your invoice for {{ $period }} has been rejected.</p>
@@ -35,7 +31,6 @@
         202-868-1663<br>
         <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
     </p>
-</body>
-</html>
+@endsection
 
 
