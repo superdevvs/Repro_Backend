@@ -5230,6 +5230,9 @@ class ShootController extends Controller
                 ?? $tourLinks['iGuide']
                 ?? null;
 
+            // Extract property details from JSON field
+            $propDetails = $s->property_details ?? [];
+
             return [
                 'id' => $s->id,
                 'address' => $s->address,
@@ -5243,8 +5246,40 @@ class ShootController extends Controller
                 'gallery' => $gallery,
                 'iguide_tour_url' => $iguideUrl,
                 'tour_links' => $tourLinks,
+                // Property details for client portfolio
+                'listing_type' => $s->listing_type,
+                'property_status' => $propDetails['property_status'] ?? $propDetails['status'] ?? 'available',
+                'bedrooms' => $propDetails['bedrooms'] ?? $propDetails['beds'] ?? null,
+                'bathrooms' => $propDetails['bathrooms'] ?? $propDetails['baths'] ?? null,
+                'sqft' => $propDetails['sqft'] ?? $propDetails['square_feet'] ?? null,
+                'price' => $propDetails['price'] ?? null,
+                'mls_id' => $s->mls_id,
             ];
         });
+
+        // Fetch branding (banner/logo) from user_branding table
+        $branding = DB::table('user_branding')->where('user_id', $client->id)->first();
+
+        // Fetch assigned rep info from client metadata
+        $clientMeta = $client->metadata ?? [];
+        $repId = $clientMeta['accountRepId']
+            ?? $clientMeta['account_rep_id']
+            ?? $clientMeta['repId']
+            ?? $clientMeta['rep_id']
+            ?? null;
+        $repInfo = null;
+        if ($repId) {
+            $rep = \App\Models\User::find($repId);
+            if ($rep) {
+                $repInfo = [
+                    'id' => (string) $rep->id,
+                    'name' => $rep->name,
+                    'email' => $rep->email,
+                    'phone' => $rep->phone ?? $rep->phonenumber,
+                    'avatar' => $rep->avatar,
+                ];
+            }
+        }
 
         return response()->json([
             'client' => [
@@ -5261,6 +5296,9 @@ class ShootController extends Controller
                 'twitter_url' => $client->twitter_url,
                 'linkedin_url' => $client->linkedin_url,
                 'pinterest_url' => $client->pinterest_url,
+                'banner_image' => $clientMeta['banner_image'] ?? $clientMeta['cover_image'] ?? null,
+                'logo' => $branding->logo ?? null,
+                'rep' => $repInfo,
             ],
             'shoots' => $shootItems,
         ]);
