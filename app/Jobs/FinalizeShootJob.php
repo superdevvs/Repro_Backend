@@ -58,9 +58,10 @@ class FinalizeShootJob implements ShouldQueue
             $rawFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->get();
 
             $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
-            $isInEditingStatus = $shoot->workflow_status === Shoot::STATUS_EDITING;
+            $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
+            $isInAllowedStatus = in_array($shoot->workflow_status, $allowedStatuses, true);
 
-            if (!$isInEditingStatus && !$hasEditedWithoutRaw) {
+            if (!$isInAllowedStatus && !$hasEditedWithoutRaw) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
                     'action' => 'finalize_failed',

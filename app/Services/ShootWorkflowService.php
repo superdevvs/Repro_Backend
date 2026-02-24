@@ -19,27 +19,28 @@ class ShootWorkflowService
     const STATUS_UPLOADED = Shoot::STATUS_UPLOADED;     // photos uploaded by photographer/admin
     const STATUS_EDITING = Shoot::STATUS_EDITING;       // sent to editor, in progress
     const STATUS_DELIVERED = Shoot::STATUS_DELIVERED;   // finalized and delivered to client
-    const STATUS_READY = Shoot::STATUS_DELIVERED;
+    const STATUS_READY = Shoot::STATUS_READY;            // edited files uploaded, awaiting finalize
     const STATUS_BOOKED = Shoot::STATUS_SCHEDULED;
     const STATUS_RAW_UPLOAD_PENDING = Shoot::STATUS_SCHEDULED;
     const STATUS_RAW_UPLOADED = Shoot::STATUS_UPLOADED;
     const STATUS_RAW_ISSUE = Shoot::STATUS_UPLOADED;
     const STATUS_ADMIN_VERIFIED = Shoot::STATUS_DELIVERED;
-    const STATUS_READY_FOR_CLIENT = Shoot::STATUS_DELIVERED;
+    const STATUS_READY_FOR_CLIENT = Shoot::STATUS_READY;
     const STATUS_ON_HOLD = Shoot::STATUS_ON_HOLD;
     const STATUS_CANCELLED = Shoot::STATUS_CANCELLED;
     const STATUS_DECLINED = Shoot::STATUS_DECLINED;     // admin/rep declined the request
 
     // Valid transitions for the simplified pipeline
-    // requested → scheduled → uploaded → editing → delivered
+    // requested → scheduled → uploaded → editing → ready → delivered
     private const VALID_TRANSITIONS = [
         self::STATUS_REQUESTED => [self::STATUS_SCHEDULED, self::STATUS_DECLINED], // approve or decline
         self::STATUS_SCHEDULED => [self::STATUS_UPLOADED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_UPLOADED => [self::STATUS_EDITING, self::STATUS_ON_HOLD],
-        self::STATUS_EDITING => [self::STATUS_DELIVERED, self::STATUS_ON_HOLD],
+        self::STATUS_EDITING => [self::STATUS_READY, self::STATUS_DELIVERED, self::STATUS_ON_HOLD],
+        self::STATUS_READY => [self::STATUS_DELIVERED, self::STATUS_ON_HOLD], // finalize moves to delivered
         self::STATUS_DELIVERED => [],   // terminal
         // on_hold can resume back into the pipeline
-        self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_CANCELLED],
+        self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_READY, self::STATUS_CANCELLED],
         self::STATUS_CANCELLED => [],   // terminal
         self::STATUS_DECLINED => [],    // terminal
     ];

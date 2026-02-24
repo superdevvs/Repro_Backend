@@ -344,18 +344,18 @@ class DropboxWorkflowService
                 $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
             }
         } elseif ($stage === ShootFile::STAGE_COMPLETED) {
-            // Edited files uploaded locally - mark shoot as delivered/ready
+            // Edited files uploaded locally - mark shoot as ready (awaiting admin finalize)
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-            $deliveredStatuses = [
+            $alreadyReadyOrDelivered = [
+                Shoot::STATUS_READY,
                 Shoot::STATUS_DELIVERED,
-                'ready',
                 'ready_for_client',
                 'admin_verified',
                 'workflow_completed',
                 'client_delivered',
             ];
-            if (!in_array($currentStatus, $deliveredStatuses, true)) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $userId);
+            if (!in_array($currentStatus, $alreadyReadyOrDelivered, true)) {
+                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $userId);
 
                 $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
                 $automationService = app(AutomationService::class);
@@ -363,7 +363,7 @@ class DropboxWorkflowService
                 if ($shoot->rep) {
                     $context['rep'] = $shoot->rep;
                 }
-                $automationService->handleEvent('SHOOT_COMPLETED', $context);
+                $automationService->handleEvent('EDITING_COMPLETE', $context);
             }
         }
 

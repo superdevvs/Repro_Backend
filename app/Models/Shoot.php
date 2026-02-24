@@ -164,6 +164,7 @@ class Shoot extends Model
     const STATUS_SCHEDULED = 'scheduled'; // shoot is booked/approved
     const STATUS_UPLOADED = 'uploaded';   // photos uploaded by photographer/admin
     const STATUS_EDITING = 'editing';     // sent to editor, in progress
+    const STATUS_READY = 'ready';         // edited files uploaded, awaiting admin finalize
     const STATUS_DELIVERED = 'delivered'; // finalized and delivered to client
     const STATUS_ON_HOLD = 'on_hold';
     const STATUS_CANCELLED = 'cancelled';
@@ -175,7 +176,7 @@ class Shoot extends Model
     const WORKFLOW_RAW_UPLOADED = self::STATUS_UPLOADED;
     const WORKFLOW_RAW_ISSUE = self::STATUS_UPLOADED;
     const WORKFLOW_EDITING = self::STATUS_EDITING;
-    const WORKFLOW_READY_FOR_CLIENT = self::STATUS_DELIVERED;
+    const WORKFLOW_READY_FOR_CLIENT = self::STATUS_READY;
     const WORKFLOW_ON_HOLD = self::STATUS_ON_HOLD;
     const WORKFLOW_ADMIN_VERIFIED = self::STATUS_DELIVERED;
     const WORKFLOW_COMPLETED = self::STATUS_DELIVERED;
@@ -529,11 +530,16 @@ class Shoot extends Model
             case self::STATUS_UPLOADED:
                 $this->photos_uploaded_at = now();
                 break;
+            case self::STATUS_READY:
+                $this->editing_completed_at = now();
+                break;
             case self::STATUS_DELIVERED:
                 $this->admin_verified_at = now();
                 $this->verified_by = $userId;
                 $this->completed_at = now();
-                $this->editing_completed_at = now();
+                if (!$this->editing_completed_at) {
+                    $this->editing_completed_at = now();
+                }
                 break;
         }
 

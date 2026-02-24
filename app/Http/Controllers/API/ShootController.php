@@ -3424,18 +3424,18 @@ class ShootController extends Controller
             $shoot = $this->refreshMediaCounters($shoot->fresh());
             $this->clearShootFilesCache($shoot);
 
-            // If edited files are uploaded by admin/editor, move shoot to delivered/ready status
+            // If edited files are uploaded by admin/editor, move shoot to ready status (awaiting finalize)
             if ($uploadType === 'edited' && count($uploadedFiles) > 0 && $user && in_array($user->role, ['admin', 'superadmin', 'editor', 'editing_manager'], true)) {
                 $shoot->load('files');
                 $hasEditedFiles = $shoot->files()
                     ->whereIn('workflow_stage', ['completed', 'verified'])
                     ->exists();
                 
-                if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_DELIVERED, 'ready', 'ready_for_client', 'admin_verified'], true)) {
-                    $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $user->id);
+                if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_READY, Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified'], true)) {
+                    $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $user->id);
                     $shoot->save();
                     
-                    Log::info('Shoot moved to delivered after edited upload', [
+                    Log::info('Shoot moved to ready after edited upload', [
                         'shoot_id' => $shoot->id,
                         'user_id' => $user->id,
                         'user_role' => $user->role,
@@ -4124,13 +4124,16 @@ class ShootController extends Controller
 
         // Allow finalization if:
         // 1. Shoot is in editing status (normal flow)
-        // 2. OR there are edited files but no raw files (direct edited upload)
+        // 2. Shoot is in ready status (edited files uploaded, awaiting finalize)
+        // 3. Shoot is in uploaded status (admin skip-to-finalize)
+        // 4. OR there are edited files but no raw files (direct edited upload)
         $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
-        $isInEditingStatus = $shoot->workflow_status === Shoot::STATUS_EDITING;
+        $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
+        $isInAllowedStatus = in_array($shoot->workflow_status, $allowedStatuses, true);
         
-        if (!$isInEditingStatus && !$hasEditedWithoutRaw) {
+        if (!$isInAllowedStatus && !$hasEditedWithoutRaw) {
             return response()->json([
-                'message' => 'Shoot can only be finalized from editing status, or when edited files exist without raw files',
+                'message' => 'Shoot can only be finalized from editing/ready/uploaded status, or when edited files exist without raw files',
                 'current_status' => $shoot->workflow_status
             ], 400);
         }
