@@ -22,6 +22,7 @@ use App\Services\ShootTaxService;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\Messaging\AutomationService;
 use App\Services\BrightMlsService;
+use App\Services\ImageProcessingService;
 use App\Jobs\FinalizeShootJob;
 use App\Http\Requests\StoreShootRequest;
 use App\Http\Requests\UpdateShootStatusRequest;
@@ -3630,14 +3631,15 @@ class ShootController extends Controller
         $file->is_cover = true;
         $file->save();
 
-        // Save hero_image URL to the Shoot model for faster retrieval
-        $heroImageUrl = $this->resolveFileUrl($file->fresh());
+        // Save optimized hero_image URL (web/thumbnail) to avoid storing full-size URLs
+        $freshFile = $file->fresh();
+        $heroImageUrl = $this->resolveOptimizedFileUrl($freshFile);
         $shoot->hero_image = $heroImageUrl;
         $shoot->save();
 
         return response()->json([
             'message' => 'Cover updated',
-            'file' => $file->fresh(),
+            'file' => $freshFile,
             'hero_image' => $heroImageUrl,
         ]);
     }
@@ -4808,7 +4810,36 @@ class ShootController extends Controller
             $chosen = $todo; // Fallback to todo if no verified/completed
         }
 
-        $mapUrl = function($file) {
+        $resolveLocalPath = function(?string $path) {
+            if (!$path) return null;
+            if (preg_match('/^https?:\/\//i', $path)) return $path;
+            $clean = ltrim($path, '/');
+            $relative = str_starts_with($clean, 'storage/') ? substr($clean, 8) : $clean;
+            if (Storage::disk('public')->exists($relative)) {
+                $diskUrl = Storage::disk('public')->url($relative);
+                if (!preg_match('/^https?:\/\//i', $diskUrl)) {
+                    $base = rtrim(config('app.url'), '/');
+                    $diskUrl = $base . '/' . ltrim($diskUrl, '/');
+                }
+                return $diskUrl;
+            }
+            return null;
+        };
+
+        $mapUrl = function($file) use ($resolveLocalPath) {
+            // 1. Prefer optimized web-sized version (1500px)
+            if (!empty($file->web_path)) {
+                $url = $resolveLocalPath($file->web_path);
+                if ($url) return $url;
+            }
+
+            // 2. Fallback to thumbnail (300px)
+            if (!empty($file->thumbnail_path)) {
+                $url = $resolveLocalPath($file->thumbnail_path);
+                if ($url) return $url;
+            }
+
+            // 3. Final fallback: full-size path
             // Check url field first (may contain direct URL)
             $url = $file->url ?? '';
             if ($url && preg_match('/^https?:\/\//i', $url)) return $url;
@@ -5534,21 +5565,21 @@ class ShootController extends Controller
 
     protected function resolveHeroImage(Shoot $shoot, bool $allowDropboxCalls = true): ?string
     {
-        // First priority: explicitly set cover
+        // First priority: explicitly set cover — use optimized URL
         $cover = $shoot->files->firstWhere('is_cover', true);
         if ($cover) {
-            return $this->resolveFileUrl($cover, $allowDropboxCalls);
+            return $this->resolveOptimizedFileUrl($cover);
         }
 
-        // Second priority: first file with a thumbnail_path (for RAW files)
-        $withThumbnail = $shoot->files->first(function ($file) {
-            return !empty($file->thumbnail_path);
+        // Second priority: first file with a web_path or thumbnail_path
+        $withOptimized = $shoot->files->first(function ($file) {
+            return !empty($file->web_path) || !empty($file->thumbnail_path);
         });
-        if ($withThumbnail && $withThumbnail->thumbnail_path) {
-            return Storage::disk('public')->url($withThumbnail->thumbnail_path);
+        if ($withOptimized) {
+            return $this->resolveOptimizedFileUrl($withOptimized);
         }
 
-        // Third priority: first displayable image (JPG, PNG, WEBP, GIF)
+        // Third priority: first displayable image (JPG, PNG, WEBP, GIF) — generate optimized
         $displayableExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
         $displayable = $shoot->files->first(function ($file) use ($displayableExtensions) {
             $filename = $file->filename ?? $file->path ?? '';
@@ -5556,7 +5587,7 @@ class ShootController extends Controller
             return in_array($ext, $displayableExtensions);
         });
         if ($displayable) {
-            return $this->resolveFileUrl($displayable, $allowDropboxCalls);
+            return $this->resolveOptimizedFileUrl($displayable);
         }
 
         // Fallback: first file (even if not displayable)
@@ -5605,6 +5636,88 @@ class ShootController extends Controller
         }
 
         return null;
+    }
+
+    /**
+     * Resolve an optimized (smaller) URL for a file, suitable for hero_image storage.
+     * Priority: web_path (1500px) → thumbnail_path (300px) → generate web on-the-fly → full URL fallback.
+     */
+    protected function resolveOptimizedFileUrl(ShootFile $file): ?string
+    {
+        // 1. Prefer existing web-sized version (1500px)
+        if (!empty($file->web_path) && Storage::disk('public')->exists($file->web_path)) {
+            return Storage::disk('public')->url($file->web_path);
+        }
+
+        // 2. Fallback to thumbnail (300px)
+        if (!empty($file->thumbnail_path) && Storage::disk('public')->exists($file->thumbnail_path)) {
+            return Storage::disk('public')->url($file->thumbnail_path);
+        }
+
+        // 3. Try to generate optimized versions on-the-fly from the original file
+        $generated = $this->generateOptimizedVersions($file);
+        if (!empty($generated['web'])) {
+            return Storage::disk('public')->url($generated['web']);
+        }
+        if (!empty($generated['thumbnail'])) {
+            return Storage::disk('public')->url($generated['thumbnail']);
+        }
+
+        // 4. Final fallback: full-size URL
+        return $this->resolveFileUrl($file);
+    }
+
+    /**
+     * Generate optimized image versions (web + thumbnail) for a ShootFile if the source is available locally.
+     * Returns array of generated paths keyed by size name, or empty array on failure.
+     */
+    protected function generateOptimizedVersions(ShootFile $file): array
+    {
+        try {
+            $sourcePath = null;
+
+            // Resolve the local source file
+            if ($file->path && !Str::startsWith($file->path, 'http')) {
+                if (Storage::disk('public')->exists($file->path)) {
+                    $sourcePath = Storage::disk('public')->path($file->path);
+                }
+            }
+
+            if (!$sourcePath || !file_exists($sourcePath)) {
+                return [];
+            }
+
+            $imageService = app(ImageProcessingService::class);
+            $generated = $imageService->processImageFromPath(
+                $file->shoot_id,
+                $file->filename,
+                $sourcePath
+            );
+
+            // Persist the generated paths back onto the ShootFile
+            $updates = [];
+            if (!empty($generated['thumbnail'])) {
+                $updates['thumbnail_path'] = $generated['thumbnail'];
+            }
+            if (!empty($generated['web'])) {
+                $updates['web_path'] = $generated['web'];
+            }
+            if (!empty($generated['placeholder'])) {
+                $updates['placeholder_path'] = $generated['placeholder'];
+            }
+            if (!empty($updates)) {
+                $updates['processed_at'] = now();
+                $file->update($updates);
+            }
+
+            return $generated;
+        } catch (\Exception $e) {
+            Log::warning('generateOptimizedVersions failed', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+            return [];
+        }
     }
 
     protected function refreshMediaCounters(Shoot $shoot): Shoot
