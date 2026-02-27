@@ -401,6 +401,46 @@ class BrightMlsService
             ];
         }
 
+        // Add CubiCasa floor plan link (mediaType: tour_url)
+        if (!empty($options['cubicasa_url'])) {
+            $listItems[] = [
+                'fileName' => $this->trimText('CubiCasa Floor Plan', 25),
+                'tourUrl' => $options['cubicasa_url'],
+                'lastModified' => now()->toIso8601String(),
+                'mediaType' => 'tour_url',
+                'description' => $this->trimText('Interactive floor plan', 50),
+                'id' => $itemId++,
+            ];
+        }
+
+        // Add Matterport 3D tour (mediaType: tour_url)
+        if (!empty($options['matterport_url'])) {
+            $listItems[] = [
+                'fileName' => $this->trimText('Matterport 3D Tour', 25),
+                'tourUrl' => $options['matterport_url'],
+                'lastModified' => now()->toIso8601String(),
+                'mediaType' => 'tour_url',
+                'description' => $this->trimText('3D virtual tour', 50),
+                'id' => $itemId++,
+            ];
+        }
+
+        // Add any additional tour URLs (generic key-value pairs)
+        if (!empty($options['additional_tour_urls']) && is_array($options['additional_tour_urls'])) {
+            foreach ($options['additional_tour_urls'] as $label => $url) {
+                if (!empty($url) && filter_var($url, FILTER_VALIDATE_URL)) {
+                    $listItems[] = [
+                        'fileName' => $this->trimText((string) $label, 25),
+                        'tourUrl' => $url,
+                        'lastModified' => now()->toIso8601String(),
+                        'mediaType' => 'tour_url',
+                        'description' => $this->trimText((string) $label, 50),
+                        'id' => $itemId++,
+                    ];
+                }
+            }
+        }
+
         // Add documents and floor plans
         if (!empty($options['documents']) && is_array($options['documents'])) {
             foreach ($options['documents'] as $doc) {
@@ -649,10 +689,50 @@ class BrightMlsService
                 }
             }
 
+            // Extract all tour links from shoot
+            $tourLinks = $shoot->tour_links ?? [];
+            if (is_string($tourLinks)) {
+                $tourLinks = json_decode($tourLinks, true) ?? [];
+            }
+
+            // Resolve iGuide URL: dedicated field first, then tour_links variants
+            $iguideUrl = $shoot->iguide_tour_url
+                ?? $tourLinks['iguide_mls'] ?? $tourLinks['iguide_branded']
+                ?? $tourLinks['iGuide'] ?? null;
+
+            // Resolve CubiCasa URL
+            $cubicasaUrl = $tourLinks['cubicasa'] ?? $tourLinks['cubicasa_url'] ?? null;
+
+            // Resolve Matterport URL (prefer MLS variant)
+            $matterportUrl = $tourLinks['matterport_mls'] ?? $tourLinks['matterport_branded']
+                ?? $tourLinks['matterport'] ?? null;
+
+            // Resolve slideshow/NeoTour URL
+            $slideshowUrl = $tourLinks['slideshow'] ?? $tourLinks['slideshow_url']
+                ?? $tourLinks['neo_tour'] ?? $tourLinks['neotour'] ?? null;
+
+            // Collect any remaining tour URLs not already handled above
+            $handledKeys = [
+                'iguide_mls', 'iguide_branded', 'iGuide',
+                'cubicasa', 'cubicasa_url',
+                'matterport_mls', 'matterport_branded', 'matterport',
+                'slideshow', 'slideshow_url', 'neo_tour', 'neotour',
+                'embeds', 'tour_style',
+            ];
+            $additionalTourUrls = [];
+            foreach ($tourLinks as $key => $value) {
+                if (!in_array($key, $handledKeys, true) && is_string($value) && filter_var($value, FILTER_VALIDATE_URL)) {
+                    $additionalTourUrls[ucwords(str_replace(['_', '-'], ' ', $key))] = $value;
+                }
+            }
+
             $options = [
                 'photos' => $photoOptions,
-                'iguide_tour_url' => $shoot->iguide_tour_url,
-                'slideshow_url' => null,
+                'iguide_tour_url' => $iguideUrl,
+                'slideshow_url' => $slideshowUrl,
+                'cubicasa_url' => $cubicasaUrl,
+                'matterport_url' => $matterportUrl,
+                'additional_tour_urls' => $additionalTourUrls,
                 'documents' => $documentOptions,
             ];
 

@@ -3425,6 +3425,19 @@ class ShootController extends Controller
             $shoot = $this->refreshMediaCounters($shoot->fresh());
             $this->clearShootFilesCache($shoot);
 
+            // If photos are uploaded to a scheduled shoot, move it to uploaded status (In-Progress tab)
+            if (count($uploadedFiles) > 0 && in_array($shoot->workflow_status, [Shoot::STATUS_SCHEDULED, 'scheduled', 'booked'], true)) {
+                $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $user ? $user->id : auth()->id());
+                $shoot->save();
+
+                Log::info('Shoot moved to uploaded after photo upload', [
+                    'shoot_id' => $shoot->id,
+                    'user_id' => $user?->id ?? auth()->id(),
+                    'upload_type' => $uploadType,
+                    'uploaded_count' => count($uploadedFiles),
+                ]);
+            }
+
             // If edited files are uploaded by admin/editor, move shoot to ready status (awaiting finalize)
             if ($uploadType === 'edited' && count($uploadedFiles) > 0 && $user && in_array($user->role, ['admin', 'superadmin', 'editor', 'editing_manager'], true)) {
                 $shoot->load('files');
@@ -3532,34 +3545,16 @@ class ShootController extends Controller
                 \App\Jobs\GenerateWatermarkedImageJob::dispatch($file->fresh());
             }
             
-            // Check if all files are verified
+            // Check if all files are verified — move to READY (awaiting explicit finalize)
             $unverifiedFiles = $shoot->files()->where('workflow_stage', '!=', ShootFile::STAGE_VERIFIED)->count();
             if ($unverifiedFiles === 0 && $shoot->workflow_status === Shoot::STATUS_EDITING) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, auth()->id());
+                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, auth()->id());
+                $shoot->save();
                 
-                // Send shoot ready email to client
-                $client = User::find($shoot->client_id);
-                if ($client) {
-                    $this->mailService->sendShootReadyEmail($client, $shoot);
-                }
-
-                // Auto-publish to Bright MLS when photos are ready
-                if ($this->brightMlsService->isAutoPublishAvailable()) {
-                    try {
-                        $mlsResult = $this->brightMlsService->autoPublishForShoot($shoot->fresh());
-                        if ($mlsResult && $mlsResult['success']) {
-                            Log::info('Bright MLS auto-published on delivery', [
-                                'shoot_id' => $shoot->id,
-                                'manifest_id' => $mlsResult['manifest_id'] ?? null,
-                            ]);
-                        }
-                    } catch (\Exception $mlsEx) {
-                        Log::warning('Bright MLS auto-publish failed (non-blocking)', [
-                            'shoot_id' => $shoot->id,
-                            'error' => $mlsEx->getMessage(),
-                        ]);
-                    }
-                }
+                Log::info('All files verified — shoot moved to ready (awaiting finalize)', [
+                    'shoot_id' => $shoot->id,
+                    'verified_by' => auth()->id(),
+                ]);
             }
 
             $shoot = $this->refreshMediaCounters($shoot->fresh());

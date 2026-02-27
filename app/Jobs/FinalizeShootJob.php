@@ -4,7 +4,10 @@ namespace App\Jobs;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\MailService;
+use App\Services\BrightMlsService;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -30,7 +33,7 @@ class FinalizeShootJob implements ShouldQueue
         $this->onQueue('default');
     }
 
-    public function handle(DropboxWorkflowService $dropboxService, AutomationService $automationService): void
+    public function handle(DropboxWorkflowService $dropboxService, AutomationService $automationService, MailService $mailService, BrightMlsService $brightMlsService): void
     {
         $lock = Cache::lock("shoot:finalize:{$this->shootId}", 300);
         if (!$lock->get()) {
@@ -120,6 +123,37 @@ class FinalizeShootJob implements ShouldQueue
             }
 
             $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+
+            // Send shoot ready email to client
+            $client = User::find($shoot->client_id);
+            if ($client) {
+                try {
+                    $mailService->sendShootReadyEmail($client, $shoot);
+                } catch (\Exception $mailEx) {
+                    Log::warning('Shoot ready email failed (non-blocking)', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $mailEx->getMessage(),
+                    ]);
+                }
+            }
+
+            // Auto-publish to Bright MLS when finalized
+            if ($brightMlsService->isAutoPublishAvailable()) {
+                try {
+                    $mlsResult = $brightMlsService->autoPublishForShoot($shoot->fresh());
+                    if ($mlsResult && $mlsResult['success']) {
+                        Log::info('Bright MLS auto-published on finalize', [
+                            'shoot_id' => $shoot->id,
+                            'manifest_id' => $mlsResult['manifest_id'] ?? null,
+                        ]);
+                    }
+                } catch (\Exception $mlsEx) {
+                    Log::warning('Bright MLS auto-publish failed (non-blocking)', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $mlsEx->getMessage(),
+                    ]);
+                }
+            }
 
             $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
             $context = $automationService->buildShootContext($shoot);

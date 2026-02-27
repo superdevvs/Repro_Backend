@@ -131,6 +131,8 @@ class AuthController extends Controller
             'pinterest_url' => 'nullable|url|max:500',
             'terms_accepted' => 'sometimes|boolean',
             'termsAccepted' => 'sometimes|boolean',
+            'travel_range' => 'nullable|integer|min:0|max:500',
+            'travel_range_unit' => 'nullable|string|in:miles,km',
         ]);
 
         // Map phone_number to phonenumber if provided
@@ -142,7 +144,25 @@ class AuthController extends Controller
         $termsAccepted = $validated['terms_accepted'] ?? $validated['termsAccepted'] ?? false;
         unset($validated['terms_accepted'], $validated['termsAccepted']);
 
+        // Store travel_range and travel_range_unit in metadata for photographers
+        if (array_key_exists('travel_range', $validated) || array_key_exists('travel_range_unit', $validated)) {
+            $metadata = $user->metadata ?? [];
+            if (is_string($metadata)) {
+                $metadata = json_decode($metadata, true) ?? [];
+            }
+            if (array_key_exists('travel_range', $validated)) {
+                $metadata['travel_range'] = $validated['travel_range'];
+                unset($validated['travel_range']);
+            }
+            if (array_key_exists('travel_range_unit', $validated)) {
+                $metadata['travel_range_unit'] = $validated['travel_range_unit'];
+                unset($validated['travel_range_unit']);
+            }
+            $user->metadata = $metadata;
+        }
+
         $user->update($validated);
+        $user->save();
 
         if ($termsAccepted) {
             $metadata = $user->metadata ?? [];

@@ -328,7 +328,7 @@ class DashboardController extends Controller
     protected function buildPhotographerSummaries(Carbon $today): array
     {
         $photographers = User::where('role', 'photographer')
-            ->select('id', 'name', 'company_name', 'phonenumber', 'avatar', 'email')
+            ->select('id', 'name', 'company_name', 'phonenumber', 'avatar', 'email', 'metadata')
             ->orderBy('name')
             ->get();
 
@@ -385,6 +385,8 @@ class DashboardController extends Controller
                 'next_shoot_distance' => null,
                 'email' => $photographer->email,
                 'phone' => $photographer->phonenumber,
+                'travel_range' => $this->extractMetadataField($photographer, 'travel_range'),
+                'travel_range_unit' => $this->extractMetadataField($photographer, 'travel_range_unit') ?? 'miles',
             ];
         })->values()->all();
     }
@@ -631,6 +633,15 @@ class DashboardController extends Controller
         }
 
         return $timeString === '' ? '09:00' : trim($timeString);
+    }
+
+    protected function extractMetadataField(User $user, string $field)
+    {
+        $metadata = $user->metadata ?? [];
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true) ?? [];
+        }
+        return $metadata[$field] ?? null;
     }
 
     protected function inferPhotographerStatus(int $loadToday, bool $hasUpcomingShoot, bool $hasAvailability): string

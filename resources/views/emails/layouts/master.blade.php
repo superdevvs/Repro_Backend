@@ -28,7 +28,7 @@
         .email-header {
             text-align: center;
             padding: 24px 20px;
-            background-color: #1a1a2e !important;
+            background-color: #f0f0f0 !important;
             border-radius: 12px 12px 0 0;
             border-bottom: 2px solid #e5e7eb;
         }
@@ -61,7 +61,7 @@
                 color: #e0e0e0 !important;
             }
             .email-header {
-                background-color: #1a1a2e !important;
+                background-color: #f0f0f0 !important;
                 border-bottom-color: #334155 !important;
             }
             .email-body {
@@ -79,7 +79,7 @@
         }
 
         [data-ogsc] .email-header {
-            background-color: #1a1a2e !important;
+            background-color: #f0f0f0 !important;
         }
         [data-ogsc] .email-body {
             background-color: #1e293b !important;
@@ -93,13 +93,13 @@
 <body>
     <div class="email-wrapper">
         <!--[if mso]>
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#1a1a2e;padding:24px 20px;border-radius:12px 12px 0 0;">
-        <img src="https://api.reprodashboard.com/images/repro-logo.png" alt="REPRO Photos" width="200" style="max-width:200px;height:auto;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#f0f0f0;padding:24px 20px;border-radius:12px 12px 0 0;">
+        <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="REPRO Photos" width="200" style="max-width:200px;height:auto;">
         </td></tr></table>
         <![endif]-->
         <!--[if !mso]><!-->
-        <div class="email-header" style="background-color:#1a1a2e !important;">
-            <img src="https://api.reprodashboard.com/images/repro-logo.png" alt="REPRO Photos" style="max-width:200px;height:auto;">
+        <div class="email-header" style="background-color:#f0f0f0 !important;">
+            <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="REPRO Photos" style="max-width:200px;height:auto;">
         </div>
         <!--<![endif]-->
         <div class="email-body">

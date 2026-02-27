@@ -1082,6 +1082,8 @@ class PhotographerAvailabilityController extends Controller
                 'is_available_at_time' => $isAvailableAtTime,
                 'has_availability' => count($netAvailableSlots) > 0,
                 'shoots_count_today' => $shootsOnDate->count(),
+                'travel_range' => $metadata['travel_range'] ?? null,
+                'travel_range_unit' => $metadata['travel_range_unit'] ?? 'miles',
             ];
         }
 
