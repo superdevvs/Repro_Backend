@@ -112,7 +112,9 @@ class ShootController extends Controller
             
             // Build cache key from request parameters - include ALL query params that affect results
             $page = (int) $request->query('page', 1);
-            $perPage = min(50, max(9, (int) $request->query('per_page', 25)));
+            // Allow higher per_page for private listing portal requests
+            $maxPerPage = $request->query('private_listing') !== null ? 200 : 50;
+            $perPage = min($maxPerPage, max(9, (int) $request->query('per_page', 25)));
             $userId = $user ? $user->id : 'guest';
             $userRole = $user ? $user->role : 'guest';
             
@@ -214,9 +216,7 @@ class ShootController extends Controller
             }
 
             // Use simple pagination instead of chunk to avoid memory issues
-            $page = (int) $request->query('page', 1);
-            $perPage = min(50, max(9, (int) $request->query('per_page', 25)));
-            
+            // Re-use the already-computed $perPage from above (respects private_listing cap)
             $shoots = $query->paginate($perPage, ['*'], 'page', $page);
             
             // Transform the items without loading all into memory
@@ -5687,10 +5687,15 @@ class ShootController extends Controller
                 return [];
             }
 
+            $fileName = $file->filename ?? ($file->path ? basename($file->path) : null);
+            if (!$fileName) {
+                return [];
+            }
+
             $imageService = app(ImageProcessingService::class);
             $generated = $imageService->processImageFromPath(
                 $file->shoot_id,
-                $file->filename,
+                $fileName,
                 $sourcePath
             );
 
