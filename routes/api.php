@@ -229,6 +229,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('payments/stripe-multiple-shoots', [StripePaymentController::class, 'payMultipleShoots'])
         ->name('api.payments.stripe-multiple-shoots');
 
+    // Stripe: Embedded checkout for multiple shoots
+    Route::post('payments/stripe-multiple-shoots-embedded', [StripePaymentController::class, 'payMultipleShootsEmbedded'])
+        ->name('api.payments.stripe-multiple-shoots-embedded');
+
     // Process direct payment using Square Web Payments SDK token
     Route::post('payments/create', [PaymentController::class, 'createPayment'])
         ->name('api.payments.create');

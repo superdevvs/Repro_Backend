@@ -271,6 +271,88 @@ class StripePaymentController extends Controller
     }
 
     /**
+     * Create an embedded Stripe Checkout session for multiple shoots (auth required).
+     * Returns client_secret for use with @stripe/stripe-js initEmbeddedCheckout.
+     */
+    public function payMultipleShootsEmbedded(Request $request)
+    {
+        $validated = $request->validate([
+            'shoot_ids' => 'required|array|min:1',
+            'shoot_ids.*' => 'exists:shoots,id',
+        ]);
+
+        try {
+            $this->initStripe();
+
+            $shoots = Shoot::whereIn('id', $validated['shoot_ids'])->get();
+
+            if ($shoots->isEmpty()) {
+                return response()->json(['error' => 'No valid shoots found'], 400);
+            }
+
+            $totalAmount = 0;
+            $lineItems = [];
+            $shootIds = [];
+
+            foreach ($shoots as $shoot) {
+                $amountToPay = (int) round(($shoot->total_quote - $shoot->total_paid) * 100);
+                if ($amountToPay <= 0) continue;
+
+                $totalAmount += $amountToPay;
+                $shootIds[] = (string) $shoot->id;
+
+                $lineItems[] = [
+                    'price_data' => [
+                        'currency' => strtolower(config('services.stripe.currency', 'USD')),
+                        'product_data' => [
+                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'metadata' => [
+                                'shoot_id' => (string) $shoot->id,
+                            ],
+                        ],
+                        'unit_amount' => $amountToPay,
+                    ],
+                    'quantity' => 1,
+                ];
+            }
+
+            if ($totalAmount <= 0) {
+                return response()->json(['error' => 'All selected shoots are already fully paid'], 400);
+            }
+
+            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
+
+            $session = StripeSession::create([
+                'payment_method_types' => ['card'],
+                'mode' => 'payment',
+                'ui_mode' => 'embedded',
+                'line_items' => $lineItems,
+                'metadata' => [
+                    'shoot_ids' => implode(',', $shootIds),
+                    'type' => 'multiple',
+                ],
+                'return_url' => $frontendUrl . '/shoot-history?payment=success',
+            ]);
+
+            return response()->json([
+                'clientSecret' => $session->client_secret,
+                'sessionId' => $session->id,
+                'totalAmount' => $totalAmount / 100,
+                'shootCount' => count($shootIds),
+            ]);
+
+        } catch (\RuntimeException $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        } catch (\Exception $e) {
+            Log::error('Stripe payMultipleShootsEmbedded error', [
+                'shoot_ids' => $validated['shoot_ids'],
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['error' => 'Could not create embedded checkout. Please try again later.'], 500);
+        }
+    }
+
+    /**
      * Handle incoming Stripe webhooks.
      * Signature is verified inside this method (no middleware alias needed).
      */
