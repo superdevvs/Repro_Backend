@@ -2908,6 +2908,14 @@ class ShootController extends Controller
         $originalScheduledDate = $shoot->scheduled_date?->toDateString();
         $originalTime = $shoot->time;
         $originalPhotographerId = $shoot->photographer_id;
+        $originalClientId = $shoot->client_id;
+        $originalShootNotes = $shoot->shoot_notes;
+        $originalCompanyNotes = $shoot->company_notes;
+        $originalPhotographerNotes = $shoot->photographer_notes;
+        $originalEditorNotes = $shoot->editor_notes;
+        $originalBedrooms = $shoot->property_details['bedrooms'] ?? $shoot->property_details['beds'] ?? null;
+        $originalBathrooms = $shoot->property_details['bathrooms'] ?? $shoot->property_details['baths'] ?? null;
+        $originalSqft = $shoot->property_details['sqft'] ?? $shoot->property_details['squareFeet'] ?? null;
         $invoiceNeedsRefresh = false;
         $paymentFieldsProvided = array_key_exists('base_quote', $validated)
             || array_key_exists('tax_amount', $validated)
@@ -3160,15 +3168,45 @@ class ShootController extends Controller
         if ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer) {
             $changes[] = 'Photographer: ' . $shoot->photographer->name;
         }
+        if ($originalClientId !== $shoot->client_id && $shoot->client) {
+            $changes[] = 'Client: ' . $shoot->client->name;
+        }
+        // Track notes changes
+        if ($originalShootNotes !== $shoot->shoot_notes) {
+            $changes[] = 'Shoot Notes: Updated';
+        }
+        if ($originalCompanyNotes !== $shoot->company_notes) {
+            $changes[] = 'Company Notes: Updated';
+        }
+        if ($originalPhotographerNotes !== $shoot->photographer_notes) {
+            $changes[] = 'Photographer Notes: Updated';
+        }
+        if ($originalEditorNotes !== $shoot->editor_notes) {
+            $changes[] = 'Editor Notes: Updated';
+        }
+        // Track property details changes
+        $newPd = $shoot->property_details ?? [];
+        if (is_string($newPd)) {
+            $newPd = json_decode($newPd, true) ?? [];
+        }
+        $newBedrooms = $newPd['bedrooms'] ?? $newPd['beds'] ?? null;
+        $newBathrooms = $newPd['bathrooms'] ?? $newPd['baths'] ?? null;
+        $newSqft = $newPd['sqft'] ?? $newPd['squareFeet'] ?? null;
+        $propertyParts = [];
+        if ($originalBedrooms != $newBedrooms && $newBedrooms !== null) {
+            $propertyParts[] = $newBedrooms . ' bed';
+        }
+        if ($originalBathrooms != $newBathrooms && $newBathrooms !== null) {
+            $propertyParts[] = $newBathrooms . ' bath';
+        }
+        if ($originalSqft != $newSqft && $newSqft !== null) {
+            $propertyParts[] = number_format($newSqft) . ' sqft';
+        }
+        if (!empty($propertyParts)) {
+            $changes[] = 'Property: ' . implode(' / ', $propertyParts);
+        }
         $changesSummary = !empty($changes) ? implode("\n", $changes) : null;
         $changesHtml = !empty($changes) ? implode('<br>', array_map('e', $changes)) : null;
-        
-        $context = $this->automationService->buildShootContext($shoot);
-        if ($shoot->rep) {
-            $context['rep'] = $shoot->rep;
-        }
-        $context['shoot_changes'] = $changesSummary;
-        $context['shoot_changes_html'] = $changesHtml;
 
         $notifyClient = array_key_exists('notify_client', $validated)
             ? (bool) $validated['notify_client']
@@ -3177,52 +3215,123 @@ class ShootController extends Controller
             ? (bool) $validated['notify_photographer']
             : null;
 
-        $client = $shoot->client;
-        if ($client) {
-            $this->mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary, $notifyClient, $notifyPhotographer);
-        }
-
-        $this->automationService->handleEvent('SHOOT_UPDATED', $context);
-
-        if ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
-            $context['previous_photographer_id'] = $originalPhotographerId;
-            $this->automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $context);
-        }
-
-        $scheduledAtChanged = $originalScheduledAt !== $shoot->scheduled_at?->toISOString()
-            || $originalScheduledDate !== $shoot->scheduled_date?->toDateString()
-            || $originalTime !== $shoot->time;
-        if ($scheduledAtChanged) {
-            $context['previous_scheduled_at'] = $originalScheduledAt;
-            $context['previous_scheduled_date'] = $originalScheduledDate;
-            $context['previous_time'] = $originalTime;
-            $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
-        }
-
-        if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
-            if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
-                || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
-                $removedRecipient = $client ?? User::find($shoot->client_id);
-                if ($removedRecipient) {
-                    $this->mailService->sendShootRemovedEmail($removedRecipient, $shoot);
-                }
-                $this->automationService->handleEvent('SHOOT_CANCELED', $context);
-            }
-
-            if ($shoot->status === Shoot::STATUS_DELIVERED || $shoot->workflow_status === Shoot::STATUS_DELIVERED) {
-                $this->automationService->handleEvent('SHOOT_COMPLETED', $context);
-            }
-
-            if ($shoot->status === Shoot::STATUS_UPLOADED || $shoot->workflow_status === Shoot::STATUS_UPLOADED) {
-                $this->automationService->handleEvent('PHOTO_UPLOADED', $context);
-                $this->automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
-            }
-        }
-
-        return response()->json([
+        // Return the response immediately, then run slow I/O (emails, automation) AFTER
+        $response = response()->json([
             'message' => 'Shoot updated',
             'data' => $this->transformShoot($shoot->fresh(['client','photographer','service','services','files']))
         ]);
+
+        // Capture values needed by the terminating callback
+        $shootId = $shoot->id;
+        $mailService = $this->mailService;
+        $automationService = $this->automationService;
+        $photographerNewlyAssigned = $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id && !$originalPhotographerId;
+
+        app()->terminating(function () use (
+            $shootId, $mailService, $automationService,
+            $changesSummary, $changesHtml, $notifyClient, $notifyPhotographer,
+            $originalPhotographerId, $originalScheduledAt, $originalScheduledDate, $originalTime,
+            $originalStatus, $originalWorkflow, $photographerNewlyAssigned
+        ) {
+            $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
+            if (!$shoot) return;
+
+            $client = $shoot->client;
+
+            // Send shoot updated email to client and photographer
+            try {
+                if ($client) {
+                    $mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary, $notifyClient, $notifyPhotographer);
+                }
+            } catch (\Exception $e) {
+                \Log::error('Failed to send shoot updated email', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            // Send booking email to newly assigned photographer (first assignment)
+            if ($photographerNewlyAssigned && $shoot->photographer) {
+                try {
+                    $paymentLink = $mailService->generatePaymentLink($shoot);
+                    $mailService->sendShootScheduledEmail($shoot->photographer, $shoot, $paymentLink ?? '');
+                } catch (\Exception $e) {
+                    \Log::error('Failed to send booking email to newly assigned photographer', [
+                        'shoot_id' => $shoot->id,
+                        'photographer_id' => $shoot->photographer_id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            // Send cancellation/removal email if status changed to cancelled/declined
+            if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
+                if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+                    || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
+                    try {
+                        $removedRecipient = $client ?? User::find($shoot->client_id);
+                        if ($removedRecipient) {
+                            $mailService->sendShootRemovedEmail($removedRecipient, $shoot);
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error('Failed to send shoot removed email', [
+                            'shoot_id' => $shoot->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            }
+
+            // Trigger automation events
+            try {
+                $context = $automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $context['shoot_changes'] = $changesSummary;
+                $context['shoot_changes_html'] = $changesHtml;
+
+                $automationService->handleEvent('SHOOT_UPDATED', $context);
+
+                if ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
+                    $context['previous_photographer_id'] = $originalPhotographerId;
+                    $automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $context);
+                }
+
+                $scheduledAtChanged = $originalScheduledAt !== $shoot->scheduled_at?->toISOString()
+                    || $originalScheduledDate !== $shoot->scheduled_date?->toDateString()
+                    || $originalTime !== $shoot->time;
+                if ($scheduledAtChanged) {
+                    $context['previous_scheduled_at'] = $originalScheduledAt;
+                    $context['previous_scheduled_date'] = $originalScheduledDate;
+                    $context['previous_time'] = $originalTime;
+                    $automationService->handleEvent('SHOOT_SCHEDULED', $context);
+                }
+
+                if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
+                    if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
+                        || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
+                        $automationService->handleEvent('SHOOT_CANCELED', $context);
+                    }
+
+                    if ($shoot->status === Shoot::STATUS_DELIVERED || $shoot->workflow_status === Shoot::STATUS_DELIVERED) {
+                        $automationService->handleEvent('SHOOT_COMPLETED', $context);
+                    }
+
+                    if ($shoot->status === Shoot::STATUS_UPLOADED || $shoot->workflow_status === Shoot::STATUS_UPLOADED) {
+                        $automationService->handleEvent('PHOTO_UPLOADED', $context);
+                        $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
+                    }
+                }
+            } catch (\Exception $e) {
+                \Log::error('Failed to trigger automation events after shoot update', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+
+        return $response;
     }
 
     public function destroy($shootId)

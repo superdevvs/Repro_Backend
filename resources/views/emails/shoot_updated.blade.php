@@ -6,16 +6,22 @@
     @if(!empty($isPhotographer))
     <p>
         A shoot you are assigned to has been updated.
-        Here are the latest details:
     </p>
     @else
     <p>
-        One of your scheduled photo shoots has been updated. 
-        Here is a summary of the latest information regarding the shoot:
+        One of your scheduled photo shoots has been updated.
+    </p>
+    @endif
+
+    @if(isset($changesSummary) && !empty($changesSummary))
+    <p>
+        <strong>What Changed:</strong><br>
+        {!! nl2br(e($changesSummary)) !!}
     </p>
     @endif
 
     <p>
+        <strong>Current Shoot Details:</strong><br>
         Location: {{ $shoot->location }}<br>
         Scheduled Date: {{ $shoot->date }}<br>
         @if(!empty($isPhotographer))
@@ -34,13 +40,6 @@
         <br>
         Total: ${{ number_format($shoot->grand_total, 2) }}
     </p>
-
-    @if(isset($changesSummary) && !empty($changesSummary))
-    <p>
-        <strong>Updated Details:</strong><br>
-        {!! nl2br(e($changesSummary)) !!}
-    </p>
-    @endif
 
     @if($shoot->notes)
     <p>
