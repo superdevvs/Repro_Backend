@@ -148,6 +148,10 @@ Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook']
 Route::post('shoots/{shoot}/create-stripe-checkout', [StripePaymentController::class, 'createCheckoutSession'])
     ->name('api.shoots.stripe.checkout');
 
+// Embedded Stripe checkout (renders inside app dialog)
+Route::post('shoots/{shoot}/create-stripe-embedded-checkout', [StripePaymentController::class, 'createEmbeddedCheckoutSession'])
+    ->name('api.shoots.stripe.embedded-checkout');
+
 // MightyCall SMS Webhooks (no auth - webhook verification handled in controller)
 Route::match(['get', 'post'], 'webhooks/mightycall', [App\Http\Controllers\API\Messaging\MightyCallWebhookController::class, 'handle'])
     ->name('webhooks.mightycall');

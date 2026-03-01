@@ -119,6 +119,78 @@ class StripePaymentController extends Controller
     }
 
     /**
+     * Create an embedded Stripe Checkout session (renders inside app dialog).
+     * Returns client_secret for use with @stripe/stripe-js initEmbeddedCheckout.
+     */
+    public function createEmbeddedCheckoutSession(Request $request, Shoot $shoot)
+    {
+        $amountToPay = (int) round(($shoot->total_quote - $shoot->total_paid) * 100);
+
+        if ($request->has('amount')) {
+            $requestedAmount = (int) round($request->input('amount') * 100);
+            if ($requestedAmount > 0 && $requestedAmount <= $amountToPay) {
+                $amountToPay = $requestedAmount;
+            }
+        }
+
+        if ($amountToPay <= 0) {
+            return response()->json(['error' => 'This shoot is already fully paid or has a zero balance.'], 400);
+        }
+
+        try {
+            $this->initStripe();
+
+            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
+            $currency = config('services.stripe.currency', 'USD');
+
+            $sessionParams = [
+                'payment_method_types' => ['card'],
+                'mode' => 'payment',
+                'ui_mode' => 'embedded',
+                'line_items' => [[
+                    'price_data' => [
+                        'currency' => strtolower($currency),
+                        'product_data' => [
+                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'metadata' => [
+                                'shoot_id' => (string) $shoot->id,
+                            ],
+                        ],
+                        'unit_amount' => $amountToPay,
+                    ],
+                    'quantity' => 1,
+                ]],
+                'metadata' => [
+                    'shoot_id' => (string) $shoot->id,
+                    'type' => 'single',
+                ],
+                'return_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true',
+            ];
+
+            $client = User::find($shoot->client_id);
+            if ($client && $client->email) {
+                $sessionParams['customer_email'] = $client->email;
+            }
+
+            $session = StripeSession::create($sessionParams);
+
+            return response()->json([
+                'clientSecret' => $session->client_secret,
+                'sessionId' => $session->id,
+            ]);
+
+        } catch (\RuntimeException $e) {
+            return response()->json(['error' => $e->getMessage()], 500);
+        } catch (\Exception $e) {
+            Log::error('Stripe createEmbeddedCheckoutSession error', [
+                'shoot_id' => $shoot->id,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['error' => 'Could not create embedded checkout. Please try again later.'], 500);
+        }
+    }
+
+    /**
      * Create a Stripe Checkout session for multiple shoots (auth required).
      */
     public function payMultipleShoots(Request $request)
