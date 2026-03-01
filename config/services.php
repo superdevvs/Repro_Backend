@@ -33,7 +33,15 @@ return [
         'refresh_token' => env('DROPBOX_REFRESH_TOKEN'),
     ],
 
+    'stripe' => [
+        'secret_key'      => env('STRIPE_SECRET_KEY'),
+        'publishable_key' => env('STRIPE_PUBLISHABLE_KEY'),
+        'webhook_secret'  => env('STRIPE_WEBHOOK_SECRET'),
+        'currency'        => env('STRIPE_CURRENCY', 'USD'),
+    ],
+
     'square' => [
+        'enabled' => env('SQUARE_ENABLED', false),
         'access_token' => env('SQUARE_ACCESS_TOKEN'),
         'application_id' => env('SQUARE_APPLICATION_ID'),
         'location_id' => env('SQUARE_LOCATION_ID'),

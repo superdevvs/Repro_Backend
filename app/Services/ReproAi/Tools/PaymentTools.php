@@ -4,7 +4,6 @@ namespace App\Services\ReproAi\Tools;
 
 use App\Models\Shoot;
 use App\Models\Payment;
-use App\Http\Controllers\PaymentController;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 
@@ -50,47 +49,44 @@ class PaymentTools
                 ];
             }
 
-            // Create payment link using Square API directly
-            $squareClient = new \Square\Legacy\SquareClient([
-                'accessToken' => config('services.square.access_token'),
-                'environment' => config('services.square.environment', 'sandbox'),
+            // Create payment link using Stripe Checkout
+            $stripeSecretKey = config('services.stripe.secret_key');
+            if (empty($stripeSecretKey)) {
+                return [
+                    'success' => false,
+                    'error' => 'Stripe is not configured. Please set STRIPE_SECRET_KEY in .env.',
+                ];
+            }
+
+            \Stripe\Stripe::setApiKey($stripeSecretKey);
+
+            $amountInCents = (int) round($amountToPay * 100);
+            $currency = strtolower(config('services.stripe.currency', 'USD'));
+            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
+
+            $session = \Stripe\Checkout\Session::create([
+                'payment_method_types' => ['card'],
+                'mode' => 'payment',
+                'line_items' => [[
+                    'price_data' => [
+                        'currency' => $currency,
+                        'product_data' => [
+                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'metadata' => ['shoot_id' => (string) $shoot->id],
+                        ],
+                        'unit_amount' => $amountInCents,
+                    ],
+                    'quantity' => 1,
+                ]],
+                'metadata' => [
+                    'shoot_id' => (string) $shoot->id,
+                    'type' => 'single',
+                ],
+                'success_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true',
+                'cancel_url'  => $frontendUrl . '/payment/' . $shoot->id,
             ]);
-            
-            $amountInCents = (int) ($amountToPay * 100);
-            $money = new \Square\Legacy\Models\Money();
-            $money->setAmount($amountInCents);
-            $money->setCurrency(config('services.square.currency', 'USD'));
 
-            $lineItem = new \Square\Legacy\Models\OrderLineItem('1');
-            $lineItem->setName('Payment for Shoot at ' . $shoot->address);
-            $lineItem->setBasePriceMoney($money);
-            $lineItem->setMetadata(['shoot_id' => (string)$shoot->id]);
-
-            $order = new \Square\Legacy\Models\Order(config('services.square.location_id'));
-            $order->setLineItems([$lineItem]);
-            $order->setReferenceId((string)$shoot->id);
-
-            $createOrderRequest = new \Square\Legacy\Models\CreateOrderRequest();
-            $createOrderRequest->setOrder($order);
-            $createOrderRequest->setIdempotencyKey(\Illuminate\Support\Str::uuid()->toString());
-
-            $orderResponse = $squareClient->getOrdersApi()->createOrder($createOrderRequest);
-            $createdOrder = $orderResponse->getResult()->getOrder();
-
-            $checkoutRequest = new \Square\Legacy\Models\CreateCheckoutRequest(
-                \Illuminate\Support\Str::uuid()->toString(),
-                ['order' => $createdOrder]
-            );
-
-            $checkoutRequest->setRedirectUrl(config('app.frontend_url', 'http://localhost:5173') . '/shoots/' . $shoot->id . '/payment-success');
-            
-            $checkoutResponse = $squareClient->getCheckoutApi()->createCheckout(
-                config('services.square.location_id'),
-                $checkoutRequest
-            );
-
-            $checkout = $checkoutResponse->getResult()->getCheckout();
-            $checkoutUrl = $checkout->getCheckoutPageUrl();
+            $checkoutUrl = $session->url;
 
             return [
                 'success' => true,

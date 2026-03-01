@@ -34,6 +34,7 @@ use App\Http\Controllers\API\FotelloController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
+use App\Http\Controllers\StripePaymentController;
 
 
 Route::get('/user', function (Request $request) {
@@ -139,6 +140,14 @@ Route::post('webhooks/square', [PaymentController::class, 'handleWebhook'])
     ->middleware('square.webhook') // Verifies the request is genuinely from Square
     ->name('webhooks.square');
 
+// Stripe Webhook (no auth - signature verified in controller)
+Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook'])
+    ->name('webhooks.stripe');
+
+// Public Stripe checkout for single shoot (no auth, used by payment link emails)
+Route::post('shoots/{shoot}/create-stripe-checkout', [StripePaymentController::class, 'createCheckoutSession'])
+    ->name('api.shoots.stripe.checkout');
+
 // MightyCall SMS Webhooks (no auth - webhook verification handled in controller)
 Route::match(['get', 'post'], 'webhooks/mightycall', [App\Http\Controllers\API\Messaging\MightyCallWebhookController::class, 'handle'])
     ->name('webhooks.mightycall');
@@ -212,6 +221,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('payments/multiple-shoots', [PaymentController::class, 'payMultipleShoots'])
         ->name('api.payments.multiple-shoots');
 
+    // Stripe: Pay for multiple shoots
+    Route::post('payments/stripe-multiple-shoots', [StripePaymentController::class, 'payMultipleShoots'])
+        ->name('api.payments.stripe-multiple-shoots');
+
     // Process direct payment using Square Web Payments SDK token
     Route::post('payments/create', [PaymentController::class, 'createPayment'])
         ->name('api.payments.create');
@@ -221,6 +234,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // e.g., POST /api/payments/refund
     Route::post('payments/refund', [PaymentController::class, 'refundPayment'])
         ->name('api.payments.refund');
+
+    // Stripe refund
+    Route::post('payments/stripe-refund', [StripePaymentController::class, 'refundPayment'])
+        ->name('api.payments.stripe-refund');
 
 });
 

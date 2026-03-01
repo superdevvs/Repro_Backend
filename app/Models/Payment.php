@@ -18,6 +18,8 @@ class Payment extends Model
         'payment_details',
         'square_payment_id',
         'square_order_id',
+        'stripe_payment_id',
+        'stripe_session_id',
         'status',
         'processed_at'
     ];
