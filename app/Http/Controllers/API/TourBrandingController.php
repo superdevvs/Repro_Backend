@@ -28,6 +28,9 @@ class TourBrandingController extends Controller
                         'secondary_color' => $branding->secondary_color,
                         'font_family' => $branding->font_family,
                         'custom_domain' => $branding->custom_domain,
+                        'facebook_url' => $branding->facebook_url,
+                        'linkedin_url' => $branding->linkedin_url,
+                        'instagram_url' => $branding->instagram_url,
                         'created_at' => $branding->created_at,
                         'updated_at' => $branding->updated_at,
                     ];
@@ -52,6 +55,9 @@ class TourBrandingController extends Controller
             'secondary_color' => 'nullable|string|max:7',
             'font_family' => 'nullable|string|max:255',
             'custom_domain' => 'nullable|string|max:255',
+            'facebook_url' => 'nullable|string|max:255',
+            'linkedin_url' => 'nullable|string|max:255',
+            'instagram_url' => 'nullable|string|max:255',
         ]);
 
         if ($validator->fails()) {
@@ -66,6 +72,9 @@ class TourBrandingController extends Controller
                 'secondary_color' => $request->secondary_color ?? '#7e3af2',
                 'font_family' => $request->font_family ?? 'Inter',
                 'custom_domain' => $request->custom_domain,
+                'facebook_url' => $request->facebook_url,
+                'linkedin_url' => $request->linkedin_url,
+                'instagram_url' => $request->instagram_url,
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
@@ -82,6 +91,9 @@ class TourBrandingController extends Controller
                     'secondary_color' => $branding->secondary_color,
                     'font_family' => $branding->font_family,
                     'custom_domain' => $branding->custom_domain,
+                    'facebook_url' => $branding->facebook_url,
+                    'linkedin_url' => $branding->linkedin_url,
+                    'instagram_url' => $branding->instagram_url,
                 ],
             ], 201);
         } catch (\Exception $e) {
@@ -102,6 +114,9 @@ class TourBrandingController extends Controller
             'secondary_color' => 'nullable|string|max:7',
             'font_family' => 'nullable|string|max:255',
             'custom_domain' => 'nullable|string|max:255',
+            'facebook_url' => 'nullable|string|max:255',
+            'linkedin_url' => 'nullable|string|max:255',
+            'instagram_url' => 'nullable|string|max:255',
         ]);
 
         if ($validator->fails()) {
@@ -118,6 +133,9 @@ class TourBrandingController extends Controller
                     'secondary_color' => $request->secondary_color,
                     'font_family' => $request->font_family,
                     'custom_domain' => $request->custom_domain,
+                    'facebook_url' => $request->facebook_url,
+                    'linkedin_url' => $request->linkedin_url,
+                    'instagram_url' => $request->instagram_url,
                     'updated_at' => now(),
                 ]);
 
@@ -137,6 +155,9 @@ class TourBrandingController extends Controller
                     'secondary_color' => $branding->secondary_color,
                     'font_family' => $branding->font_family,
                     'custom_domain' => $branding->custom_domain,
+                    'facebook_url' => $branding->facebook_url,
+                    'linkedin_url' => $branding->linkedin_url,
+                    'instagram_url' => $branding->instagram_url,
                 ],
             ]);
         } catch (\Exception $e) {

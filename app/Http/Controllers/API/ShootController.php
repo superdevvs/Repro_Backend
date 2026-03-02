@@ -5061,6 +5061,9 @@ class ShootController extends Controller
         // Include integration data
         $assets['property_details'] = $shoot->property_details;
         $tourLinks = $shoot->tour_links ?? [];
+        if (is_string($tourLinks)) {
+            $tourLinks = json_decode($tourLinks, true) ?? [];
+        }
         $iguideUrl = $shoot->iguide_tour_url
             ?? $tourLinks['iguide_branded']
             ?? $tourLinks['iGuide']
@@ -5073,8 +5076,34 @@ class ShootController extends Controller
         // Include tour links from shoot model
         $assets['matterport_url'] = $tourLinks['matterport_branded'] ?? $tourLinks['matterport'] ?? null;
         $assets['embeds'] = $tourLinks['embeds'] ?? [];
-        $assets['tour_links'] = $tourLinks; // Include full tour_links including tour_style
+        $assets['tour_links'] = $tourLinks;
         $assets['tour_style'] = $tourLinks['tour_style'] ?? 'default';
+        $assets['show_garage'] = !empty($tourLinks['show_garage']);
+
+        // Branded: include client info + branding
+        $client = $shoot->client;
+        if ($client) {
+            $assets['shoot']['client_email'] = $client->email;
+            $assets['shoot']['client_phone'] = $client->phone ?? $client->phonenumber;
+            $assets['shoot']['client_avatar'] = $client->avatar;
+
+            // Load branding for the client (check user_branding table)
+            $branding = DB::table('user_branding')
+                ->where('user_id', $client->id)
+                ->first();
+            if ($branding) {
+                $assets['branding'] = [
+                    'logo' => $branding->logo,
+                    'primary_color' => $branding->primary_color,
+                    'secondary_color' => $branding->secondary_color,
+                    'font_family' => $branding->font_family,
+                    'facebook_url' => $branding->facebook_url,
+                    'linkedin_url' => $branding->linkedin_url,
+                    'instagram_url' => $branding->instagram_url,
+                ];
+            }
+        }
+
         return response()->json($assets);
     }
 
@@ -5089,6 +5118,9 @@ class ShootController extends Controller
         // Include integration data
         $assets['property_details'] = $shoot->property_details;
         $tourLinks = $shoot->tour_links ?? [];
+        if (is_string($tourLinks)) {
+            $tourLinks = json_decode($tourLinks, true) ?? [];
+        }
         $iguideUrl = $shoot->iguide_tour_url
             ?? $tourLinks['iguide_mls']
             ?? $tourLinks['iguide_branded']
@@ -5101,8 +5133,9 @@ class ShootController extends Controller
         // Include tour links from shoot model
         $assets['matterport_url'] = $tourLinks['matterport_mls'] ?? $tourLinks['matterport'] ?? null;
         $assets['embeds'] = $tourLinks['embeds'] ?? [];
-        $assets['tour_links'] = $tourLinks; // Include full tour_links including tour_style
+        $assets['tour_links'] = $tourLinks;
         $assets['tour_style'] = $tourLinks['tour_style'] ?? 'default';
+        $assets['show_garage'] = !empty($tourLinks['show_garage']);
         return response()->json($assets);
     }
 
@@ -5117,6 +5150,9 @@ class ShootController extends Controller
         // Include integration data (no branding/address for generic MLS)
         $assets['property_details'] = $shoot->property_details;
         $tourLinks = $shoot->tour_links ?? [];
+        if (is_string($tourLinks)) {
+            $tourLinks = json_decode($tourLinks, true) ?? [];
+        }
         $iguideUrl = $shoot->iguide_tour_url
             ?? $tourLinks['iguide_mls']
             ?? $tourLinks['iguide_branded']
@@ -5129,8 +5165,9 @@ class ShootController extends Controller
         // Include tour links from shoot model (use MLS variants for generic)
         $assets['matterport_url'] = $tourLinks['matterport_mls'] ?? $tourLinks['matterport'] ?? null;
         $assets['embeds'] = $tourLinks['embeds'] ?? [];
-        $assets['tour_links'] = $tourLinks; // Include full tour_links including tour_style
+        $assets['tour_links'] = $tourLinks;
         $assets['tour_style'] = $tourLinks['tour_style'] ?? 'default';
+        $assets['show_garage'] = !empty($tourLinks['show_garage']);
         return response()->json($assets);
     }
 

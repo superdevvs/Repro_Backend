@@ -37,6 +37,9 @@ class UserBrandingController extends Controller
                         'secondary_color' => $branding->secondary_color,
                         'font_family' => $branding->font_family,
                         'custom_domain' => $branding->custom_domain,
+                        'facebook_url' => $branding->facebook_url,
+                        'linkedin_url' => $branding->linkedin_url,
+                        'instagram_url' => $branding->instagram_url,
                     ] : null,
                 ],
             ]);
@@ -61,6 +64,9 @@ class UserBrandingController extends Controller
             'branding.secondary_color' => 'nullable|string|max:7',
             'branding.font_family' => 'nullable|string|max:255',
             'branding.custom_domain' => 'nullable|string|max:255',
+            'branding.facebook_url' => 'nullable|string|max:255',
+            'branding.linkedin_url' => 'nullable|string|max:255',
+            'branding.instagram_url' => 'nullable|string|max:255',
         ]);
 
         if ($validator->fails()) {
@@ -81,6 +87,9 @@ class UserBrandingController extends Controller
                         'secondary_color' => $brandingData['secondary_color'] ?? '#7e3af2',
                         'font_family' => $brandingData['font_family'] ?? 'Inter',
                         'custom_domain' => $brandingData['custom_domain'] ?? null,
+                        'facebook_url' => $brandingData['facebook_url'] ?? null,
+                        'linkedin_url' => $brandingData['linkedin_url'] ?? null,
+                        'instagram_url' => $brandingData['instagram_url'] ?? null,
                         'updated_at' => now(),
                     ]
                 );
