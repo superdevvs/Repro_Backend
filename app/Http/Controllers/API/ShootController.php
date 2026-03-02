@@ -5094,9 +5094,11 @@ class ShootController extends Controller
             if ($branding) {
                 $assets['branding'] = [
                     'logo' => $branding->logo,
+                    'banner' => $branding->banner ?? null,
                     'primary_color' => $branding->primary_color,
                     'secondary_color' => $branding->secondary_color,
                     'font_family' => $branding->font_family,
+                    'about' => $branding->about ?? null,
                     'facebook_url' => $branding->facebook_url,
                     'linkedin_url' => $branding->linkedin_url,
                     'instagram_url' => $branding->instagram_url,
