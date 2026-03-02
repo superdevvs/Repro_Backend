@@ -4661,7 +4661,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
         
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
         

@@ -27,7 +27,7 @@ class DashboardController extends Controller
     {
         $user = $request->user();
 
-        if (!$user || !in_array($user->role, ['admin', 'superadmin'])) {
+        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -1698,7 +1698,7 @@ class DashboardController extends Controller
         }
 
         // Shoots ready for QA/review (recently completed editing)
-        $readyForReview = Shoot::where('workflow_status', Shoot::STATUS_QA)
+        $readyForReview = Shoot::where('workflow_status', Shoot::STATUS_READY)
             ->count();
         if ($readyForReview > 0) {
             $insights[] = [
