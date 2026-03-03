@@ -704,19 +704,22 @@ class IntegrationController extends Controller
                 }
             }
 
-            // Try converting storage-relative paths to full URLs
-            foreach (['web_path', 'storage_path', 'path'] as $field) {
-                $value = $file->{$field} ?? null;
-                if ($value && !Str::startsWith($value, ['http://', 'https://'])) {
-                    return $this->storagePathToUrl($value);
-                }
-            }
-
-            // Last resort: Dropbox temporary link
+            // When Dropbox is enabled, files live in Dropbox — not on local disk.
+            // Prefer Dropbox temporary links over converting relative paths to
+            // storage URLs that would 404 because the file isn't physically there.
             if ($file->dropbox_path && $this->dropboxService->isEnabled()) {
                 $dropboxUrl = $this->dropboxService->getTemporaryLink($file->dropbox_path);
                 if ($dropboxUrl) {
                     return $dropboxUrl;
+                }
+            }
+
+            // Fallback: convert storage-relative paths to full URLs (works when
+            // files are stored locally and the storage symlink is in place)
+            foreach (['web_path', 'storage_path', 'path'] as $field) {
+                $value = $file->{$field} ?? null;
+                if ($value && !Str::startsWith($value, ['http://', 'https://'])) {
+                    return $this->storagePathToUrl($value);
                 }
             }
         }

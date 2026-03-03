@@ -49,9 +49,11 @@ class BrightMlsService
     private $importUrlBase;
     private $enabled;
     private BrightMlsStrategyInterface $strategy;
+    private ?DropboxWorkflowService $dropboxService;
 
-    public function __construct()
+    public function __construct(?DropboxWorkflowService $dropboxService = null)
     {
+        $this->dropboxService = $dropboxService;
         // Try to load from database settings first, fallback to config
         $settings = $this->loadSettings('integrations.bright_mls');
 
@@ -659,8 +661,39 @@ class BrightMlsService
             }
 
             // Build photo options from shoot files
-            $photoOptions = $photos->map(function ($file) {
-                $url = $file->url ?? $file->path ?? null;
+            $dropbox = $this->dropboxService;
+            $dropboxEnabled = $dropbox && config('services.dropbox.enabled', false);
+            $photoOptions = $photos->map(function ($file) use ($dropboxEnabled, $dropbox) {
+                // Try fields that are already full HTTP URLs
+                foreach (['url', 'web_path', 'storage_path', 'path'] as $field) {
+                    $val = $file->{$field} ?? null;
+                    if ($val && str_starts_with($val, 'http')) {
+                        return [
+                            'url' => $val,
+                            'filename' => $file->filename ?? basename($val),
+                            'description' => '',
+                            'roomType' => '',
+                            'selected' => true,
+                        ];
+                    }
+                }
+
+                // When Dropbox is enabled, files live in Dropbox — get a temp link
+                if ($dropboxEnabled && $file->dropbox_path) {
+                    $tempUrl = $dropbox->getTemporaryLink($file->dropbox_path);
+                    if ($tempUrl) {
+                        return [
+                            'url' => $tempUrl,
+                            'filename' => $file->filename ?? basename($file->dropbox_path),
+                            'description' => '',
+                            'roomType' => '',
+                            'selected' => true,
+                        ];
+                    }
+                }
+
+                // Fallback: convert relative path to storage URL
+                $url = $file->storage_path ?? $file->path ?? null;
                 if ($url && !str_starts_with($url, 'http')) {
                     $url = \Illuminate\Support\Facades\Storage::disk('public')->url($url);
                 }
