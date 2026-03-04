@@ -123,9 +123,9 @@ return [
     // Bright MLS Integration
     'bright_mls' => [
         'api_mode' => env('BRIGHT_MLS_API_MODE', 'legacy'),
-        'environment' => env('BRIGHT_MLS_ENVIRONMENT', 't1'),
-        'api_url' => env('BRIGHT_MLS_API_URL', 'https://bright-manifestservices.tst.brightmls.com'),
-        'import_url_base' => env('BRIGHT_MLS_IMPORT_URL_BASE', 'https://lmsedit.tst.brightmls.com'),
+        'environment' => env('BRIGHT_MLS_ENVIRONMENT', 'p1'),
+        'api_url' => env('BRIGHT_MLS_API_URL', 'https://bright-manifestservices.brightmls.com'),
+        'import_url_base' => env('BRIGHT_MLS_IMPORT_URL_BASE', 'https://lmsedit.brightmls.com'),
         'api_user' => env('BRIGHT_MLS_API_USER'),
         'api_key' => env('BRIGHT_MLS_API_KEY'),
         'vendor_id' => env('BRIGHT_MLS_VENDOR_ID'),
