@@ -168,6 +168,11 @@ return [
         'timeout' => env('MMM_TIMEOUT', 20),
     ],
 
+    // External Booking API (for Lovable / third-party sites)
+    'external_booking' => [
+        'api_key' => env('EXTERNAL_BOOKING_API_KEY'),
+    ],
+
     // Cakemail Email API Integration
     'cakemail' => [
         'username' => env('CAKEMAIL_USERNAME', 'contact@reprophotos.com'),

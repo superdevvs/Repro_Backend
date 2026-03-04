@@ -164,6 +164,15 @@ Route::match(['get', 'post'], 'webhooks/cakemail', [App\Http\Controllers\API\Cak
 Route::post('integrations/mmm/return', [IntegrationController::class, 'mmmReturn'])
     ->name('integrations.mmm.return');
 
+// External Booking API (for Lovable / third-party sites)
+// Secured via X-API-Key header, no user login required
+Route::middleware('external_api_key')->prefix('external')->group(function () {
+    Route::post('/book-shoot', [App\Http\Controllers\API\ExternalBookingController::class, 'bookShoot'])
+        ->name('external.book-shoot');
+    Route::get('/services', [App\Http\Controllers\API\ExternalBookingController::class, 'services'])
+        ->name('external.services');
+});
+
 // Test endpoints (remove in production)
 Route::get('test/dropbox-config', [App\Http\Controllers\TestDropboxController::class, 'debugConfig']);
 Route::get('test/dropbox-curl', [App\Http\Controllers\TestDropboxController::class, 'testWithCurl']);
