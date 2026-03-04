@@ -169,6 +169,8 @@ Route::post('integrations/mmm/return', [IntegrationController::class, 'mmmReturn
 Route::middleware('external_api_key')->prefix('external')->group(function () {
     Route::post('/book-shoot', [App\Http\Controllers\API\ExternalBookingController::class, 'bookShoot'])
         ->name('external.book-shoot');
+    Route::post('/check-client', [App\Http\Controllers\API\ExternalBookingController::class, 'checkClient'])
+        ->name('external.check-client');
     Route::get('/services', [App\Http\Controllers\API\ExternalBookingController::class, 'services'])
         ->name('external.services');
 });

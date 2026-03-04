@@ -177,6 +177,41 @@ class ExternalBookingController extends Controller
     }
 
     /**
+     * Check if an email belongs to an existing client.
+     * Returns exists=true + dashboard login URL if found.
+     *
+     * POST /api/external/check-client
+     * Header: X-API-Key: <your-key>
+     * Body: { "email": "john@example.com" }
+     */
+    public function checkClient(\Illuminate\Http\Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email|max:255',
+        ]);
+
+        $email = strtolower(trim($request->input('email')));
+        $client = User::where('email', $email)->first();
+
+        $dashboardUrl = rtrim(config('app.frontend_url', 'https://reprodashboard.com'), '/');
+
+        if ($client) {
+            return response()->json([
+                'exists' => true,
+                'client_name' => $client->name,
+                'login_url' => $dashboardUrl . '/login',
+                'message' => 'You already have an account. Please log in to book a shoot from your dashboard.',
+            ]);
+        }
+
+        return response()->json([
+            'exists' => false,
+            'login_url' => $dashboardUrl . '/login',
+            'message' => 'No existing account found. You can proceed with booking.',
+        ]);
+    }
+
+    /**
      * List available services for the external site to display.
      * GET /api/external/services
      */
