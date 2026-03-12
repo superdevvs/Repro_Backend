@@ -5563,51 +5563,60 @@ class ShootController extends Controller
         $shoot->setAttribute('created_by_name', $createdByName);
 
         // Handle client data based on requesting user's role
-        // Photographers and editors should NOT see client details
         $requestingUser = auth()->user();
         $requestingRole = $requestingUser ? strtolower($requestingUser->role ?? '') : '';
-        $hideClientFromRole = in_array($requestingRole, ['photographer', 'editor']);
+        $isPhotographerRole = $requestingRole === 'photographer';
+        $isEditorRole = $requestingRole === 'editor';
         
-        if ($shoot->client && !$hideClientFromRole) {
-            $clientData = [
-                'id' => $shoot->client->id,
-                'name' => $shoot->client->name,
-                'email' => $shoot->client->email,
-                'company_name' => $shoot->client->company_name ?? $shoot->client->company ?? null,
-                'phonenumber' => $shoot->client->phonenumber ?? $shoot->client->phone ?? null,
-            ];
-            
-            // Add client's account rep info from client metadata, or fall back to shoot's rep
-            $clientMetadata = $shoot->client->metadata ?? [];
-            $clientRepId = $clientMetadata['accountRepId'] 
-                ?? $clientMetadata['account_rep_id'] 
-                ?? $clientMetadata['repId'] 
-                ?? $clientMetadata['rep_id'] 
-                ?? $shoot->client->created_by_id 
-                ?? null;
-            
-            // First try to find rep from client's metadata/created_by
-            $clientRep = null;
-            if ($clientRepId) {
-                $clientRep = User::find($clientRepId);
-            }
-            
-            // Fallback to shoot's assigned rep (already loaded via loadMissing)
-            if (!$clientRep && $shoot->rep) {
-                $clientRep = $shoot->rep;
-            }
-            
-            if ($clientRep) {
-                $clientData['rep'] = [
-                    'id' => $clientRep->id,
-                    'name' => $clientRep->name,
-                    'email' => $clientRep->email,
+        if ($shoot->client && !$isEditorRole) {
+            if ($isPhotographerRole) {
+                // Photographers see only client name and phone number
+                $clientData = [
+                    'id' => $shoot->client->id,
+                    'name' => $shoot->client->name,
+                    'phonenumber' => $shoot->client->phonenumber ?? $shoot->client->phone ?? null,
                 ];
+            } else {
+                $clientData = [
+                    'id' => $shoot->client->id,
+                    'name' => $shoot->client->name,
+                    'email' => $shoot->client->email,
+                    'company_name' => $shoot->client->company_name ?? $shoot->client->company ?? null,
+                    'phonenumber' => $shoot->client->phonenumber ?? $shoot->client->phone ?? null,
+                ];
+                
+                // Add client's account rep info from client metadata, or fall back to shoot's rep
+                $clientMetadata = $shoot->client->metadata ?? [];
+                $clientRepId = $clientMetadata['accountRepId'] 
+                    ?? $clientMetadata['account_rep_id'] 
+                    ?? $clientMetadata['repId'] 
+                    ?? $clientMetadata['rep_id'] 
+                    ?? $shoot->client->created_by_id 
+                    ?? null;
+                
+                // First try to find rep from client's metadata/created_by
+                $clientRep = null;
+                if ($clientRepId) {
+                    $clientRep = User::find($clientRepId);
+                }
+                
+                // Fallback to shoot's assigned rep (already loaded via loadMissing)
+                if (!$clientRep && $shoot->rep) {
+                    $clientRep = $shoot->rep;
+                }
+                
+                if ($clientRep) {
+                    $clientData['rep'] = [
+                        'id' => $clientRep->id,
+                        'name' => $clientRep->name,
+                        'email' => $clientRep->email,
+                    ];
+                }
             }
             
             $shoot->setAttribute('client', $clientData);
-        } elseif ($hideClientFromRole) {
-            // Hide client info from photographers and editors
+        } elseif ($isEditorRole) {
+            // Hide client info from editors
             $shoot->setAttribute('client', null);
         }
 

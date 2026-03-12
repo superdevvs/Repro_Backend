@@ -44,7 +44,7 @@ class DashboardController extends Controller
                          'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                          'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                 ->with([
-                    'client:id,name,company_name',
+                    'client:id,name,company_name,phonenumber',
                     'photographer:id,name,avatar',
                     'service:id,name',
                 ])
@@ -123,7 +123,7 @@ class DashboardController extends Controller
                          'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
                          'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                 ->with([
-                    'client:id,name,company_name',
+                    'client:id,name,company_name,phonenumber',
                     'photographer:id,name,avatar',
                     'service:id,name',
                 ])
@@ -194,6 +194,7 @@ class DashboardController extends Controller
                 'workflow_status' => $shoot->workflow_status,
                 'client_name' => optional($shoot->client)->name,
                 'client_id' => $shoot->client_id,
+                'client_phone' => optional($shoot->client)->phonenumber,
                 'temperature' => null,
                 'services' => $this->buildServiceTags($shoot),
                 'photographer' => $shoot->photographer ? [
