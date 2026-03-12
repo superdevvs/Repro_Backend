@@ -39,14 +39,15 @@ class DashboardController extends Controller
 
         // Optimize: Use select to only load necessary columns
         $upcomingShoots = $this->formatShoots(
-            Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'address', 'city', 'state', 'zip', 
+            Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip', 
                          'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                          'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                          'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                 ->with([
                     'client:id,name,company_name,phonenumber',
                     'photographer:id,name,avatar',
-                    'service:id,name',
+                    'service:id,name,icon,category_id',
+                    'service.category:id,name,icon',
                 ])
                 ->whereDate('scheduled_date', '>=', $today->toDateString())
                 ->orderBy('scheduled_date')
@@ -118,14 +119,15 @@ class DashboardController extends Controller
 
         // Pending cancellation requests
         $pendingCancellations = $this->formatShoots(
-            Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'address', 'city', 'state', 'zip', 
+            Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip', 
                          'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                          'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
                          'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                 ->with([
                     'client:id,name,company_name,phonenumber',
                     'photographer:id,name,avatar',
-                    'service:id,name',
+                    'service:id,name,icon,category_id',
+                    'service.category:id,name,icon',
                 ])
                 ->whereNotNull('cancellation_requested_at')
                 ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
@@ -457,14 +459,15 @@ class DashboardController extends Controller
 
         $columns = collect($config)->map(function (array $column) use ($today) {
             // Optimize: Use select to only load necessary columns
-            $query = Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'address', 'city', 'state', 'zip', 
+            $query = Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip', 
                              'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                              'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
                              'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
                     ->with([
                         'client:id,name,company_name',
                         'photographer:id,name,avatar',
-                        'service:id,name',
+                        'service:id,name,icon,category_id',
+                        'service.category:id,name,icon',
                     ]);
             
             // For delivered/ready column, check both workflow_status AND status columns
@@ -513,13 +516,20 @@ class DashboardController extends Controller
             $tags[] = [
                 'label' => $shoot->service->name,
                 'type' => 'primary',
+                'icon' => $shoot->service->icon ?? null,
             ];
         }
 
         if ($shoot->service_category) {
+            // Try to resolve category icon from the service's category relation
+            $categoryIcon = null;
+            if ($shoot->service && $shoot->service->category) {
+                $categoryIcon = $shoot->service->category->icon ?? null;
+            }
             $tags[] = [
                 'label' => $shoot->service_category,
                 'type' => 'secondary',
+                'icon' => $categoryIcon,
             ];
         }
 
