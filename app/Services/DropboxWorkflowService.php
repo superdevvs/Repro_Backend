@@ -127,6 +127,15 @@ class DropboxWorkflowService
             return 'video';
         }
 
+        // Detect floorplan from filename patterns
+        $lowerFilename = strtolower($filename);
+        $floorplanPatterns = ['floorplan', 'floor-plan', 'floor_plan', 'fp_', 'fp-', 'layout', 'blueprint'];
+        foreach ($floorplanPatterns as $pattern) {
+            if (str_contains($lowerFilename, $pattern)) {
+                return 'floorplan';
+            }
+        }
+
         $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
         $videoExtensions = ['mp4', 'mov', 'avi', 'mkv', 'wmv'];
 

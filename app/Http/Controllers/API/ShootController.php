@@ -3481,6 +3481,7 @@ class ShootController extends Controller
         DB::beginTransaction();
         try {
             $isExtra = $request->boolean('is_extra', false);
+            $mediaTypeOverride = $request->input('media_type'); // 'floorplan' etc.
             
             foreach ($files as $file) {
                 try {
@@ -3493,6 +3494,12 @@ class ShootController extends Controller
                     // Mark as extra if flagged
                     if ($isExtra && $shootFile) {
                         $shootFile->media_type = 'extra';
+                        $shootFile->save();
+                    }
+
+                    // Override media_type if explicitly provided (e.g. floorplan)
+                    if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan'], true) && $shootFile && !$isExtra) {
+                        $shootFile->media_type = $mediaTypeOverride;
                         $shootFile->save();
                     }
 
@@ -7592,6 +7599,33 @@ class ShootController extends Controller
                     'status' => $p->status,
                 ]),
             ],
+        ]);
+    }
+
+    /**
+     * Reclassify media files (e.g. mark as floorplan or revert to photo)
+     */
+    public function reclassifyFiles(Request $request, Shoot $shoot)
+    {
+        $request->validate([
+            'file_ids' => 'required|array|min:1',
+            'file_ids.*' => 'integer|exists:shoot_files,id',
+            'media_type' => 'required|string|in:floorplan,raw,edited',
+        ]);
+
+        $fileIds = $request->input('file_ids');
+        $mediaType = $request->input('media_type');
+
+        // Only update files that belong to this shoot
+        $updated = ShootFile::where('shoot_id', $shoot->id)
+            ->whereIn('id', $fileIds)
+            ->update(['media_type' => $mediaType]);
+
+        $this->clearShootFilesCache($shoot);
+
+        return response()->json([
+            'message' => "Reclassified {$updated} file(s) as {$mediaType}",
+            'updated_count' => $updated,
         ]);
     }
 }
