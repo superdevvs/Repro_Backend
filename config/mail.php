@@ -7,42 +7,15 @@ return [
     | Default Mailer
     |--------------------------------------------------------------------------
     |
-    | Choose the mailer via MAIL_MAILER. Defaults to CakeMail.
+    | All transactional emails are sent via CakeMail REST API
+    | (MessagingService → CakemailProvider). The log mailer is kept
+    | as a fallback for local development / debugging only.
     |
     */
 
-    'default' => env('MAIL_MAILER', 'cakemail'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Mailer Configuration
-    |--------------------------------------------------------------------------
-    |
-    | Configure mailers in .env. CakeMail remains the default provider.
-    |
-    */
+    'default' => env('MAIL_MAILER', 'log'),
 
     'mailers' => [
-
-        'smtp' => [
-            'transport' => 'smtp',
-            'host' => env('MAIL_HOST', 'smtp.mailgun.org'),
-            'port' => env('MAIL_PORT', 587),
-            'encryption' => env('MAIL_ENCRYPTION', 'tls'),
-            'username' => env('MAIL_USERNAME'),
-            'password' => env('MAIL_PASSWORD'),
-            'timeout' => null,
-        ],
-
-        'cakemail' => [
-            'transport' => 'smtp',
-            'host' => env('CAKEMAIL_HOST', 'smtp.cakemail.com'),
-            'port' => env('CAKEMAIL_PORT', 587),
-            'encryption' => env('CAKEMAIL_ENCRYPTION', 'tls'),
-            'username' => env('CAKEMAIL_USERNAME'),
-            'password' => env('CAKEMAIL_PASSWORD'),
-            'timeout' => null,
-        ],
 
         'log' => [
             'transport' => 'log',

@@ -6,9 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Models\ContactSubmission;
 use App\Models\User;
 use App\Services\MailService;
+use App\Services\Messaging\MessagingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class ContactSubmissionController extends Controller
 {
@@ -82,13 +82,19 @@ class ContactSubmissionController extends Controller
     protected function sendContactNotification(User $client, ContactSubmission $submission): void
     {
         try {
-            Mail::send('emails.contact_notification', [
+            $html = view('emails.contact_notification', [
                 'client' => $client,
                 'submission' => $submission,
-            ], function ($message) use ($client, $submission) {
-                $message->to($client->email)
-                    ->subject('New Contact Form Submission - ' . $submission->sender_name);
-            });
+            ])->render();
+
+            app(MessagingService::class)->sendEmail([
+                'to' => $client->email,
+                'subject' => 'New Contact Form Submission - ' . $submission->sender_name,
+                'body_html' => $html,
+                'body_text' => strip_tags($html),
+                'send_source' => 'CONTACT_NOTIFICATION',
+                'sender_name' => 'R/E Pro Photos',
+            ]);
 
             Log::info('Contact notification email sent', [
                 'client_id' => $client->id,
@@ -109,13 +115,19 @@ class ContactSubmissionController extends Controller
     protected function sendSenderConfirmation(ContactSubmission $submission): void
     {
         try {
-            Mail::send('emails.contact_confirmation', [
+            $html = view('emails.contact_confirmation', [
                 'submission' => $submission,
                 'client' => $submission->client,
-            ], function ($message) use ($submission) {
-                $message->to($submission->sender_email)
-                    ->subject('Thank you for contacting us');
-            });
+            ])->render();
+
+            app(MessagingService::class)->sendEmail([
+                'to' => $submission->sender_email,
+                'subject' => 'Thank you for contacting us',
+                'body_html' => $html,
+                'body_text' => strip_tags($html),
+                'send_source' => 'CONTACT_CONFIRMATION',
+                'sender_name' => 'R/E Pro Photos',
+            ]);
 
             Log::info('Contact confirmation email sent', [
                 'submission_id' => $submission->id,

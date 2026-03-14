@@ -2,11 +2,10 @@
 
 namespace App\Console\Commands;
 
-use App\Mail\AccountingPayoutDigestMail;
-use App\Mail\PayoutReportMail;
+use App\Services\Messaging\MessagingService;
 use App\Services\PayoutReportService;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Log;
 
 class SendPayoutReports extends Command
 {
@@ -14,48 +13,92 @@ class SendPayoutReports extends Command
 
     protected $description = 'Compile and email weekly payout approvals for reps and photographers.';
 
-    public function handle(PayoutReportService $service): int
+    public function handle(PayoutReportService $service, MessagingService $messagingService): int
     {
         [$start, $end] = $service->lastCompletedWeekRange();
 
         $photographerSummaries = $service->buildPhotographerSummaries($start, $end);
         $repSummaries = $service->buildSalesRepSummaries($start, $end);
 
-        $queued = 0;
+        $sent = 0;
 
         foreach ($photographerSummaries as $summary) {
             if (empty($summary['email'])) {
                 continue;
             }
-            Mail::to($summary['email'])->queue(
-                new PayoutReportMail($summary['name'], $summary, $start, $end, 'photographer')
-            );
-            $queued++;
+            $this->sendPayoutReport($messagingService, $summary, $start, $end, 'photographer');
+            $sent++;
         }
 
         foreach ($repSummaries as $summary) {
             if (empty($summary['email'])) {
                 continue;
             }
-            Mail::to($summary['email'])->queue(
-                new PayoutReportMail($summary['name'], $summary, $start, $end, 'sales rep')
-            );
-            $queued++;
+            $this->sendPayoutReport($messagingService, $summary, $start, $end, 'sales rep');
+            $sent++;
         }
 
+        // Send accounting digest
         $accountingAddress = config('mail.accounting_address', 'accounting@reprophotos.com');
-        Mail::to($accountingAddress)->queue(
-            new AccountingPayoutDigestMail($start, $end, $photographerSummaries, $repSummaries)
-        );
+        $subject = sprintf('Payout approvals summary (%s - %s)', $start->format('M d'), $end->format('M d'));
+        $html = view('emails.payout-digest', [
+            'rangeStart' => $start,
+            'rangeEnd' => $end,
+            'photographers' => $photographerSummaries,
+            'reps' => $repSummaries,
+            'totalPhotographerPayout' => $photographerSummaries->sum('gross_total'),
+            'totalRepPayout' => $repSummaries->sum('commission_total'),
+        ])->render();
+
+        try {
+            $messagingService->sendEmail([
+                'to' => $accountingAddress,
+                'subject' => $subject,
+                'body_html' => $html,
+                'body_text' => strip_tags($html),
+                'send_source' => 'PAYOUT_DIGEST',
+                'sender_name' => 'R/E Pro Photos',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to send payout digest email', ['error' => $e->getMessage()]);
+        }
 
         $this->info(sprintf(
-            'Queued %d payout emails plus accounting digest for %d photographers and %d reps.',
-            $queued,
+            'Sent %d payout emails plus accounting digest for %d photographers and %d reps.',
+            $sent,
             $photographerSummaries->count(),
             $repSummaries->count()
         ));
 
         return self::SUCCESS;
+    }
+
+    private function sendPayoutReport(MessagingService $messagingService, array $summary, $start, $end, string $audience): void
+    {
+        $subject = sprintf('Weekly payout recap (%s - %s)', $start->format('M d'), $end->format('M d'));
+        $html = view('emails.payout-report', [
+            'recipientName' => $summary['name'],
+            'summary' => $summary,
+            'rangeStart' => $start,
+            'rangeEnd' => $end,
+            'audience' => $audience,
+        ])->render();
+
+        try {
+            $messagingService->sendEmail([
+                'to' => $summary['email'],
+                'subject' => $subject,
+                'body_html' => $html,
+                'body_text' => strip_tags($html),
+                'send_source' => 'PAYOUT_REPORT',
+                'sender_name' => 'R/E Pro Photos',
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Failed to send payout report email', [
+                'email' => $summary['email'],
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
 

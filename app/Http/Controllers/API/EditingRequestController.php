@@ -3,11 +3,10 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
-use App\Mail\EditingRequestSubmittedMail;
 use App\Models\EditingRequest;
+use App\Services\Messaging\MessagingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
@@ -61,17 +60,27 @@ class EditingRequestController extends Controller
             'status' => 'open',
         ]);
 
-        // Send email notification asynchronously - don't block the response
+        // Send email notification - don't block the response on failure
         try {
             $recipient = config('mail.editing_team_address', 'editing@reprophotos.com');
             $editingRequest->loadMissing(['shoot', 'requester']);
-            
-            // Use dispatch to queue the mail job without blocking
-            // If queue is 'sync', this will still run synchronously but wrapped in try-catch
-            Mail::to($recipient)->queue(new EditingRequestSubmittedMail($editingRequest));
+
+            $subject = 'New special editing request: ' . $editingRequest->tracking_code;
+            $html = view('emails.editing-request', [
+                'request' => $editingRequest,
+            ])->render();
+
+            app(MessagingService::class)->sendEmail([
+                'to' => $recipient,
+                'subject' => $subject,
+                'body_html' => $html,
+                'body_text' => strip_tags($html),
+                'send_source' => 'EDITING_REQUEST',
+                'sender_name' => 'R/E Pro Photos',
+            ]);
         } catch (\Exception $e) {
             // Log the error but don't fail the request - the editing request was created successfully
-            Log::error('Failed to queue editing request email', [
+            Log::error('Failed to send editing request email', [
                 'tracking_code' => $trackingCode,
                 'error' => $e->getMessage(),
             ]);

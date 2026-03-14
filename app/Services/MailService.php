@@ -2,24 +2,10 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
-use App\Mail\AccountCreatedMail;
-use App\Mail\ShootScheduledMail;
-use App\Mail\ShootUpdatedMail;
-use App\Mail\ShootRemovedMail;
-use App\Mail\ShootReadyMail;
-use App\Mail\PaymentConfirmationMail;
-use App\Mail\TermsAcceptedMail;
-use App\Mail\WeeklySalesReportMail;
-use App\Mail\InvoiceGeneratedMail;
-use App\Mail\InvoicePendingApprovalMail;
-use App\Mail\InvoiceApprovedMail;
-use App\Mail\InvoiceRejectedMail;
-use App\Mail\PasswordResetMail;
 use App\Services\Messaging\MessagingService;
 
 class MailService
@@ -30,8 +16,13 @@ class MailService
     public function sendAccountCreatedEmail(User $user, string $resetLink): bool
     {
         try {
-            Mail::to($user->email)->send(new AccountCreatedMail($user, $resetLink));
-            
+            $html = view('emails.account_created', [
+                'user' => $user,
+                'resetLink' => $resetLink,
+            ])->render();
+
+            $this->sendViaCakemail($user->email, 'New Account Information', $html, 'ACCOUNT_CREATED');
+
             Log::info('Account created email sent', [
                 'user_id' => $user->id,
                 'email' => $user->email
@@ -61,7 +52,13 @@ class MailService
             $isDirectPhotographer = $shoot->photographer && $user->id === $shoot->photographer->id;
 
             // Send to primary recipient
-            Mail::to($user->email)->send(new ShootScheduledMail($user, $shootData, $paymentLink, $isDirectPhotographer));
+            $html = view('emails.shoot_scheduled', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'paymentLink' => $paymentLink,
+                'isPhotographer' => $isDirectPhotographer,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'New Shoot Scheduled', $html, 'SHOOT_SCHEDULED');
             
             Log::info('Shoot scheduled email sent', [
                 'user_id' => $user->id,
@@ -72,7 +69,13 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new ShootScheduledMail($shoot->photographer, $shootData, $paymentLink, true));
+                $htmlPhoto = view('emails.shoot_scheduled', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                    'paymentLink' => $paymentLink,
+                    'isPhotographer' => true,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'New Shoot Scheduled', $htmlPhoto, 'SHOOT_SCHEDULED');
                 Log::info('Shoot scheduled email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -111,8 +114,13 @@ class MailService
             $shouldNotifyPhotographer = $notifyPhotographer !== false;
             
             if ($shouldNotifyClient) {
-                // Send to client
-                Mail::to($user->email)->send(new ShootUpdatedMail($user, $shootData, $changesSummary, false));
+                $html = view('emails.shoot_updated', [
+                    'user' => $user,
+                    'shoot' => $shootData,
+                    'changesSummary' => $changesSummary,
+                    'isPhotographer' => false,
+                ])->render();
+                $this->sendViaCakemail($user->email, 'Scheduled Photo Shoot Updated', $html, 'SHOOT_UPDATED');
                 
                 Log::info('Shoot updated email sent', [
                     'user_id' => $user->id,
@@ -134,7 +142,13 @@ class MailService
                 && $shoot->photographer->email
                 && $shoot->photographer->id !== $user->id
             ) {
-                Mail::to($shoot->photographer->email)->send(new ShootUpdatedMail($shoot->photographer, $shootData, $changesSummary, true));
+                $htmlPhoto = view('emails.shoot_updated', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                    'changesSummary' => $changesSummary,
+                    'isPhotographer' => true,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'Scheduled Photo Shoot Updated', $htmlPhoto, 'SHOOT_UPDATED');
                 Log::info('Shoot updated email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -170,7 +184,11 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             
             // Send to client
-            Mail::to($user->email)->send(new ShootRemovedMail($user, $shootData));
+            $html = view('emails.shoot_removed', [
+                'user' => $user,
+                'shoot' => $shootData,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'Photo Shoot Cancelled', $html, 'SHOOT_REMOVED');
             
             Log::info('Shoot removed email sent', [
                 'user_id' => $user->id,
@@ -180,7 +198,11 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new ShootRemovedMail($shoot->photographer, $shootData));
+                $htmlPhoto = view('emails.shoot_removed', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'Photo Shoot Cancelled', $htmlPhoto, 'SHOOT_REMOVED');
                 Log::info('Shoot removed email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -210,7 +232,11 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             
             // Send to client
-            Mail::to($user->email)->send(new ShootReadyMail($user, $shootData));
+            $html = view('emails.shoot_ready', [
+                'user' => $user,
+                'shoot' => $shootData,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'Your Photos Are Ready!', $html, 'SHOOT_READY');
             
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
@@ -220,7 +246,11 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new ShootReadyMail($shoot->photographer, $shootData));
+                $htmlPhoto = view('emails.shoot_ready', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'Your Photos Are Ready!', $htmlPhoto, 'SHOOT_READY');
                 Log::info('Shoot ready email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -251,7 +281,12 @@ class MailService
             $paymentData = $this->formatPaymentData($payment);
             
             // Send to client
-            Mail::to($user->email)->send(new PaymentConfirmationMail($user, $shootData, $paymentData));
+            $html = view('emails.payment_confirmation', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'payment' => $paymentData,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'Thank You for Your Payment!', $html, 'PAYMENT_CONFIRMATION');
             
             Log::info('Payment confirmation email sent', [
                 'user_id' => $user->id,
@@ -262,7 +297,12 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new PaymentConfirmationMail($shoot->photographer, $shootData, $paymentData));
+                $htmlPhoto = view('emails.payment_confirmation', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                    'payment' => $paymentData,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'Thank You for Your Payment!', $htmlPhoto, 'PAYMENT_CONFIRMATION');
                 Log::info('Payment confirmation email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -290,7 +330,10 @@ class MailService
     public function sendTermsAcceptedEmail(User $user): bool
     {
         try {
-            Mail::to($user->email)->send(new TermsAcceptedMail($user));
+            $html = view('emails.terms_accepted', [
+                'user' => $user,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'Terms/Conditions Accepted', $html, 'TERMS_ACCEPTED');
             
             Log::info('Terms accepted email sent', [
                 'user_id' => $user->id,
@@ -551,7 +594,15 @@ class MailService
     public function sendWeeklySalesReportEmail(User $salesRep, array $reportData): bool
     {
         try {
-            Mail::to($salesRep->email)->send(new WeeklySalesReportMail($salesRep, $reportData));
+            $period = $reportData['period'];
+            $weekLabel = "Week {$period['week_number']}, {$period['year']}";
+
+            $html = view('emails.weekly_sales_report', [
+                'salesRep' => $salesRep,
+                'report' => $reportData,
+                'weekLabel' => $weekLabel,
+            ])->render();
+            $this->sendViaCakemail($salesRep->email, "Weekly Sales Report - {$weekLabel}", $html, 'WEEKLY_SALES_REPORT');
             
             Log::info('Weekly sales report email sent', [
                 'sales_rep_id' => $salesRep->id,
@@ -585,7 +636,15 @@ class MailService
                 return false;
             }
 
-            Mail::to($photographer->email)->send(new InvoiceGeneratedMail($invoice));
+            $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
+            $invoice->loadMissing('items');
+
+            $html = view('emails.invoice_generated', [
+                'invoice' => $invoice,
+                'photographer' => $photographer,
+                'period' => $period,
+            ])->render();
+            $this->sendViaCakemail($photographer->email, "Weekly Invoice - {$period}", $html, 'INVOICE_GENERATED');
             
             Log::info('Invoice generated email sent', [
                 'invoice_id' => $invoice->id,
@@ -619,8 +678,18 @@ class MailService
                 return false;
             }
 
+            $photographer = $invoice->photographer;
+            $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
+            $subject = "Invoice Requires Approval - " . ($photographer ? $photographer->name : 'Unknown') . " - {$period}";
+
             foreach ($admins as $admin) {
-                Mail::to($admin->email)->send(new InvoicePendingApprovalMail($invoice, $admin));
+                $html = view('emails.invoice_pending_approval', [
+                    'invoice' => $invoice,
+                    'photographer' => $photographer,
+                    'admin' => $admin,
+                    'period' => $period,
+                ])->render();
+                $this->sendViaCakemail($admin->email, $subject, $html, 'INVOICE_PENDING_APPROVAL');
             }
             
             Log::info('Invoice pending approval emails sent', [
@@ -653,7 +722,14 @@ class MailService
                 return false;
             }
 
-            Mail::to($photographer->email)->send(new InvoiceApprovedMail($invoice));
+            $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
+
+            $html = view('emails.invoice_approved', [
+                'invoice' => $invoice,
+                'photographer' => $photographer,
+                'period' => $period,
+            ])->render();
+            $this->sendViaCakemail($photographer->email, "Invoice Approved - {$period}", $html, 'INVOICE_APPROVED');
             
             Log::info('Invoice approved email sent', [
                 'invoice_id' => $invoice->id,
@@ -686,7 +762,14 @@ class MailService
                 return false;
             }
 
-            Mail::to($photographer->email)->send(new InvoiceRejectedMail($invoice));
+            $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
+
+            $html = view('emails.invoice_rejected', [
+                'invoice' => $invoice,
+                'photographer' => $photographer,
+                'period' => $period,
+            ])->render();
+            $this->sendViaCakemail($photographer->email, "Invoice Rejected - {$period}", $html, 'INVOICE_REJECTED');
             
             Log::info('Invoice rejected email sent', [
                 'invoice_id' => $invoice->id,
@@ -714,7 +797,12 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             
             // Send to client
-            Mail::to($user->email)->send(new \App\Mail\ShootPaidMail($user, $shootData, $amount));
+            $html = view('emails.shoot_paid', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'amount' => $amount,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'Your Shoot Has Been Marked as Paid', $html, 'SHOOT_PAID');
             
             Log::info('Shoot paid email sent', [
                 'user_id' => $user->id,
@@ -725,7 +813,12 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new \App\Mail\ShootPaidMail($shoot->photographer, $shootData, $amount));
+                $htmlPhoto = view('emails.shoot_paid', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                    'amount' => $amount,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'Your Shoot Has Been Marked as Paid', $htmlPhoto, 'SHOOT_PAID');
                 Log::info('Shoot paid email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -755,7 +848,11 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             
             // Send to client
-            Mail::to($user->email)->send(new ShootRemovedMail($user, $shootData));
+            $html = view('emails.shoot_removed', [
+                'user' => $user,
+                'shoot' => $shootData,
+            ])->render();
+            $this->sendViaCakemail($user->email, 'Photo Shoot Cancelled', $html, 'SHOOT_CANCELLED');
             
             Log::info('Shoot cancelled email sent', [
                 'user_id' => $user->id,
@@ -765,7 +862,11 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                Mail::to($shoot->photographer->email)->send(new ShootRemovedMail($shoot->photographer, $shootData));
+                $htmlPhoto = view('emails.shoot_removed', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, 'Photo Shoot Cancelled', $htmlPhoto, 'SHOOT_CANCELLED');
                 Log::info('Shoot cancelled email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -792,7 +893,16 @@ class MailService
     public function sendCancellationFeeInvoiceEmail(User $client, \App\Models\Invoice $invoice): bool
     {
         try {
-            Mail::to($client->email)->send(new \App\Mail\CancellationFeeInvoiceMail($invoice, $client));
+            $shoot = $invoice->shoot;
+            $address = $shoot?->address ?? 'Property';
+
+            $html = view('emails.cancellation_fee_invoice', [
+                'invoice' => $invoice,
+                'client' => $client,
+                'shoot' => $shoot,
+                'address' => $address,
+            ])->render();
+            $this->sendViaCakemail($client->email, "Cancellation Fee Invoice - {$address}", $html, 'CANCELLATION_FEE_INVOICE');
             
             Log::info('Cancellation fee invoice email sent', [
                 'client_id' => $client->id,
@@ -811,5 +921,22 @@ class MailService
             
             return false;
         }
+    }
+
+    /**
+     * Send an email via CakeMail API through MessagingService
+     */
+    private function sendViaCakemail(string $to, string $subject, string $html, string $sendSource): void
+    {
+        $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
+        $messagingService = app(MessagingService::class);
+        $messagingService->sendEmail([
+            'to' => $to,
+            'subject' => $subject,
+            'body_html' => $html,
+            'body_text' => $text,
+            'send_source' => $sendSource,
+            'sender_name' => 'R/E Pro Photos',
+        ]);
     }
 }
