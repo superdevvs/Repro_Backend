@@ -35,17 +35,6 @@ class AutomationController extends Controller
 
         $automations = $query->orderBy('trigger_type')->orderBy('name')->get();
 
-        // Debug: Log weekly automations count
-        $weeklyCount = $automations->filter(function($a) {
-            return in_array($a->trigger_type, ['WEEKLY_SALES_REPORT', 'WEEKLY_AUTOMATED_INVOICING']);
-        })->count();
-        
-        \Log::info('Automations API Response', [
-            'total' => $automations->count(),
-            'weekly_count' => $weeklyCount,
-            'weekly_trigger_types' => $automations->pluck('trigger_type')->toArray(),
-        ]);
-
         return response()->json($automations);
     }
 
@@ -174,6 +163,10 @@ class AutomationController extends Controller
             'PHOTO_UPLOADED',
             'MEDIA_UPLOAD_COMPLETE',
             'PHOTOGRAPHER_ASSIGNED',
+            'SHOOT_REQUESTED',
+            'SHOOT_REQUEST_APPROVED',
+            'EDITING_COMPLETE',
+            'PROPERTY_CONTACT_REMINDER',
         ];
 
         return $request->validate([
