@@ -436,14 +436,15 @@ class Shoot extends Model
         }
         
         return (float) $this->services->sum(function ($service) {
-            $photographerPay = $service->pivot->photographer_pay ?? null;
+            $pivotPay = $service->pivot->photographer_pay ?? null;
             $quantity = $service->pivot->quantity ?? 1;
             
-            if ($photographerPay === null) {
-                return 0;
-            }
+            // Fallback to service-level default photographer_pay
+            $pay = ($pivotPay !== null && $pivotPay !== '')
+                ? (float) $pivotPay
+                : (float) ($service->photographer_pay ?? 0);
             
-            return (float) $photographerPay * $quantity;
+            return $pay * $quantity;
         });
     }
 

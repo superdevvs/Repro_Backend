@@ -63,7 +63,11 @@ class PayoutReportService
                     continue;
                 }
                 
-                $pay = (float) ($service->pivot->photographer_pay ?? 0);
+                // Pivot photographer_pay → service default photographer_pay → 0
+                $pivotPay = $service->pivot->photographer_pay;
+                $pay = $pivotPay !== null && $pivotPay !== ''
+                    ? (float) $pivotPay
+                    : (float) ($service->photographer_pay ?? 0);
                 $qty = (int) ($service->pivot->quantity ?? 1);
                 
                 $serviceRows->push([
