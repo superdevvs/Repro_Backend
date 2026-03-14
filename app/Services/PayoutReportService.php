@@ -12,10 +12,11 @@ class PayoutReportService
 {
     public function lastCompletedWeekRange(): array
     {
-        $end = Carbon::now()->startOfWeek(Carbon::SUNDAY)->subDay(); // Saturday before the current week
-        $start = $end->copy()->subDays(6)->startOfDay();
+        // Default to current month (1st of month → now)
+        $start = Carbon::now()->startOfMonth();
+        $end = Carbon::now()->endOfDay();
 
-        return [$start, $end->endOfDay()];
+        return [$start, $end];
     }
 
     /**
@@ -32,7 +33,13 @@ class PayoutReportService
                     $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
                 },
             ])
-            ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('completed_at', [$start, $end])
+                  ->orWhere(function ($q2) use ($start, $end) {
+                      $q2->whereNull('completed_at')
+                         ->whereBetween('admin_verified_at', [$start, $end]);
+                  });
+            })
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
                 Shoot::WORKFLOW_ADMIN_VERIFIED,
@@ -96,7 +103,13 @@ class PayoutReportService
 
     public function buildSalesRepSummaries(Carbon $start, Carbon $end): Collection
     {
-        $shoots = Shoot::whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+        $shoots = Shoot::where(function ($q) use ($start, $end) {
+                $q->whereBetween('completed_at', [$start, $end])
+                  ->orWhere(function ($q2) use ($start, $end) {
+                      $q2->whereNull('completed_at')
+                         ->whereBetween('admin_verified_at', [$start, $end]);
+                  });
+            })
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
                 Shoot::WORKFLOW_ADMIN_VERIFIED,
