@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Stripe\Stripe;
@@ -560,6 +561,9 @@ class StripePaymentController extends Controller
         $shoot->payment_type = 'stripe';
         $shoot->save();
 
+        // Clear watermark-sensitive caches so client sees non-watermarked images
+        $this->clearShootCachesAfterPayment($shoot);
+
         // Log payment activity
         $this->activityLogger->log(
             $shoot,
@@ -622,6 +626,24 @@ class StripePaymentController extends Controller
             'amount' => $amount,
             'payment_status' => $newPaymentStatus,
         ]);
+    }
+
+    /**
+     * Clear watermark-sensitive caches after payment status changes.
+     */
+    protected function clearShootCachesAfterPayment(Shoot $shoot): void
+    {
+        if ($shoot->client_id) {
+            foreach (['', 'raw', 'edited', 'all'] as $type) {
+                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $shoot->client_id . '_client');
+            }
+        }
+        $user = auth()->user();
+        if ($user) {
+            foreach (['', 'raw', 'edited', 'all'] as $type) {
+                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $user->id . '_' . $user->role);
+            }
+        }
     }
 
     /**

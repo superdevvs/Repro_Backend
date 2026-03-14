@@ -4146,6 +4146,41 @@ class ShootController extends Controller
             $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole;
             Cache::forget($cacheKey);
         }
+
+        // Also clear cache for the shoot's client (they see watermarked vs non-watermarked)
+        if ($shoot->client_id && (!$user || (string)$user->id !== (string)$shoot->client_id)) {
+            foreach (['', 'raw', 'edited', 'all'] as $type) {
+                $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $shoot->client_id . '_client';
+                Cache::forget($cacheKey);
+            }
+        }
+    }
+
+    /**
+     * Clear all shoot-related caches after payment status changes.
+     * Busts file caches for admin + client, and shoot list caches for the client.
+     */
+    protected function clearShootCachesAfterPayment(Shoot $shoot): void
+    {
+        // Clear file caches for current user (admin) + client
+        $this->clearShootFilesCache($shoot);
+
+        // Clear shoot list index caches for the client
+        if ($shoot->client_id) {
+            $clientId = $shoot->client_id;
+            // The index cache key pattern: shoots_index_{userId}_{tab}_{page}_{perPage}_{...}
+            // Use a prefix-based flush for the client's shoot list
+            foreach (['all', 'active', 'completed', 'delivered', 'pending', 'canceled', 'requested', 'on_hold', 'scheduled'] as $tab) {
+                // Clear first few pages which are most likely cached
+                for ($page = 1; $page <= 3; $page++) {
+                    $pattern = "shoots_{$clientId}_{$tab}_{$page}_";
+                    // Try common per_page values
+                    foreach ([20, 25, 50, 100] as $perPage) {
+                        Cache::forget($pattern . $perPage);
+                    }
+                }
+            }
+        }
     }
 
     protected function performFileDeletion(Shoot $shoot, ShootFile $file, bool $suppressResponse = false)
@@ -6859,6 +6894,9 @@ class ShootController extends Controller
                     'error' => $logError->getMessage(),
                 ]);
             }
+
+            // Clear watermark-sensitive caches so client sees non-watermarked images
+            $this->clearShootCachesAfterPayment($shoot);
 
             // Send shoot paid email to client
             try {

@@ -19,6 +19,7 @@ use Square\Legacy\Models\Money;
 use Square\Legacy\Models\CreateRefundRequest;
 use Square\Legacy\Models\CreatePaymentRequest;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Square\Legacy\Exceptions\ApiException;
 
@@ -304,6 +305,9 @@ class PaymentController extends Controller
                 $shoot->payment_type = 'square';
                             $shoot->save();
 
+                // Clear watermark-sensitive caches so client sees non-watermarked images
+                $this->clearShootCachesAfterPayment($shoot);
+
                 // Log payment activity
                 $this->activityLogger->log(
                     $shoot,
@@ -435,6 +439,26 @@ class PaymentController extends Controller
     }
 
     /**
+     * Clear watermark-sensitive caches after payment status changes.
+     */
+    protected function clearShootCachesAfterPayment(Shoot $shoot): void
+    {
+        // Clear file caches for the client (watermarked vs non-watermarked)
+        if ($shoot->client_id) {
+            foreach (['', 'raw', 'edited', 'all'] as $type) {
+                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $shoot->client_id . '_client');
+            }
+        }
+        // Clear for current user (admin) if authenticated
+        $user = auth()->user();
+        if ($user) {
+            foreach (['', 'raw', 'edited', 'all'] as $type) {
+                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $user->id . '_' . $user->role);
+            }
+        }
+    }
+
+    /**
      * Calculate payment status based on total paid vs total quote
      */
     protected function calculatePaymentStatus(float $totalPaid, float $totalQuote): string
@@ -536,6 +560,9 @@ class PaymentController extends Controller
                         $shoot->payment_status = $newPaymentStatus;
                         $shoot->payment_type = 'square';
                         $shoot->save();
+
+                        // Clear watermark-sensitive caches so client sees non-watermarked images
+                        $this->clearShootCachesAfterPayment($shoot);
 
                         // Log payment activity
                         $this->activityLogger->log(
