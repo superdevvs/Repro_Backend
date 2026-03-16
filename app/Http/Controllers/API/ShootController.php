@@ -5762,23 +5762,37 @@ class ShootController extends Controller
 
     protected function resolveHeroImage(Shoot $shoot, bool $allowDropboxCalls = true): ?string
     {
-        // First priority: explicitly set cover — use optimized URL
+        // Helper: check if a file should be excluded from hero image (floorplans + hidden)
+        $isExcluded = function ($file) {
+            if ($file->is_hidden) return true;
+            $mediaType = strtolower($file->media_type ?? '');
+            if ($mediaType === 'floorplan') return true;
+            $filename = strtolower($file->filename ?? $file->stored_filename ?? $file->path ?? '');
+            $floorplanPatterns = ['floorplan', 'floor-plan', 'floor_plan', 'fp_', 'fp-', 'layout', 'blueprint'];
+            foreach ($floorplanPatterns as $pattern) {
+                if (str_contains($filename, $pattern)) return true;
+            }
+            return false;
+        };
+
+        // First priority: explicitly set cover — use optimized URL (skip if excluded)
         $cover = $shoot->files->firstWhere('is_cover', true);
-        if ($cover) {
+        if ($cover && !$isExcluded($cover)) {
             return $this->resolveOptimizedFileUrl($cover);
         }
 
-        // Second priority: first file with a web_path or thumbnail_path
-        $withOptimized = $shoot->files->first(function ($file) {
-            return !empty($file->web_path) || !empty($file->thumbnail_path);
+        // Second priority: first non-excluded file with a web_path or thumbnail_path
+        $withOptimized = $shoot->files->first(function ($file) use ($isExcluded) {
+            return !$isExcluded($file) && (!empty($file->web_path) || !empty($file->thumbnail_path));
         });
         if ($withOptimized) {
             return $this->resolveOptimizedFileUrl($withOptimized);
         }
 
-        // Third priority: first displayable image (JPG, PNG, WEBP, GIF) — generate optimized
+        // Third priority: first displayable non-excluded image (JPG, PNG, WEBP, GIF)
         $displayableExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
-        $displayable = $shoot->files->first(function ($file) use ($displayableExtensions) {
+        $displayable = $shoot->files->first(function ($file) use ($displayableExtensions, $isExcluded) {
+            if ($isExcluded($file)) return false;
             $filename = $file->filename ?? $file->path ?? '';
             $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
             return in_array($ext, $displayableExtensions);
@@ -5787,8 +5801,10 @@ class ShootController extends Controller
             return $this->resolveOptimizedFileUrl($displayable);
         }
 
-        // Fallback: first file (even if not displayable)
-        $first = $shoot->files->first();
+        // Fallback: first non-excluded file
+        $first = $shoot->files->first(function ($file) use ($isExcluded) {
+            return !$isExcluded($file);
+        });
         return $first ? $this->resolveFileUrl($first, $allowDropboxCalls) : null;
     }
 
@@ -6006,6 +6022,13 @@ class ShootController extends Controller
         // Order by sort_order first (for manual sorting), then by created_at as fallback
         $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
 
+        // Clients should not see hidden files
+        if ($userRole === 'client') {
+            $filesQuery->where(function ($q) {
+                $q->where('is_hidden', false)->orWhereNull('is_hidden');
+            });
+        }
+
         if ($type === 'raw') {
             // RAW uploads live in the TODO stage (older data may have null workflow_stage)
             $filesQuery->where(function ($q) {
@@ -6219,6 +6242,7 @@ class ShootController extends Controller
                 'file_size' => $file->file_size,
                 'fileSize' => $file->file_size,
                 'sort_order' => $file->sort_order ?? 0,
+                'is_hidden' => $file->is_hidden ?? false,
                 'media_type' => $file->media_type,
                 // Hide non-watermarked paths from unpaid clients
                 'thumbnail_path' => $needsWatermark ? null : $file->thumbnail_path,
@@ -7628,6 +7652,33 @@ class ShootController extends Controller
         return response()->json([
             'message' => 'File order saved',
             'count' => count($fileIds),
+        ]);
+    }
+
+    /**
+     * Toggle is_hidden on one or more shoot files.
+     */
+    public function toggleFileHidden(Request $request, Shoot $shoot)
+    {
+        $request->validate([
+            'file_ids' => 'required|array|min:1',
+            'file_ids.*' => 'integer',
+            'hidden' => 'required|boolean',
+        ]);
+
+        $fileIds = $request->input('file_ids');
+        $hidden = $request->boolean('hidden');
+
+        $updated = ShootFile::where('shoot_id', $shoot->id)
+            ->whereIn('id', $fileIds)
+            ->update(['is_hidden' => $hidden]);
+
+        $this->clearShootFilesCache($shoot);
+
+        return response()->json([
+            'message' => $hidden ? "Hidden {$updated} file(s)" : "Unhidden {$updated} file(s)",
+            'updated_count' => $updated,
+            'hidden' => $hidden,
         ]);
     }
 

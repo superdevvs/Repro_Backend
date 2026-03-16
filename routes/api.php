@@ -463,6 +463,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/files/{file}/extra', [ShootController::class, 'toggleFileExtra']);
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootController::class, 'reclassifyFiles']);
     Route::patch('/shoots/{shoot}/files/reorder', [ShootController::class, 'reorderFiles']);
+    Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootController::class, 'toggleFileHidden']);
     Route::get('/shoots/{shoot}/workflow-status', [ShootController::class, 'getWorkflowStatus']);
     Route::prefix('/shoots/{shoot}/media')->group(function () {
         Route::post('{file}/favorite', [ShootController::class, 'favoriteMedia']);
