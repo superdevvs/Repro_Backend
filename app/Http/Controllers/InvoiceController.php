@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Models\Shoot;
 use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -70,9 +71,18 @@ class InvoiceController extends Controller
                   });
             });
         } elseif ($user->role === 'editor') {
-            // Editors can see invoices for shoots assigned to them
+            // Editors can see invoices for shoots assigned to them or unassigned editing/uploaded/delivered shoots
             $query->whereHas('shoots', function ($shootQuery) use ($user) {
-                $shootQuery->where('editor_id', $user->id);
+                $shootQuery->where('editor_id', $user->id)
+                    ->orWhere(function ($q) {
+                        $q->whereNull('editor_id')
+                          ->whereIn('status', [
+                              Shoot::STATUS_UPLOADED,
+                              Shoot::STATUS_EDITING,
+                              Shoot::STATUS_READY,
+                              Shoot::STATUS_DELIVERED,
+                          ]);
+                    });
             });
         } elseif ($user->role === 'editing_manager') {
             // Editing managers can see all invoices (read-only)

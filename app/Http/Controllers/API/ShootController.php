@@ -181,11 +181,21 @@ class ShootController extends Controller
             } elseif ($user && $user->role === 'client') {
                 $query->where('client_id', $user->id);
             } elseif ($user && $user->role === 'editor') {
-                // Editors should only see shoots assigned to them or where they have activity
+                // Editors see: shoots assigned to them, shoots they have activity on,
+                // AND any editing/uploaded/delivered shoots with no editor assigned yet
                 $query->where(function (Builder $scope) use ($user) {
                     $scope->where('editor_id', $user->id)
                         ->orWhereHas('activityLogs', function (Builder $logQuery) use ($user) {
                             $logQuery->where('user_id', $user->id);
+                        })
+                        ->orWhere(function (Builder $unassigned) {
+                            $unassigned->whereNull('editor_id')
+                                ->whereIn('status', [
+                                    Shoot::STATUS_UPLOADED,
+                                    Shoot::STATUS_EDITING,
+                                    Shoot::STATUS_READY,
+                                    Shoot::STATUS_DELIVERED,
+                                ]);
                         });
                 });
                 // Default to 'completed' tab for editors to see editing/review shoots
@@ -961,11 +971,20 @@ class ShootController extends Controller
                       });
                 });
             } elseif ($user->role === 'editor') {
-                // Editors can see shoots assigned to them or where they have activity
+                // Editors see: assigned shoots, activity-logged shoots, and unassigned editing/uploaded/delivered
                 $query->where(function ($q) use ($user) {
                     $q->where('editor_id', $user->id)
                         ->orWhereHas('activityLogs', function ($logQuery) use ($user) {
                             $logQuery->where('user_id', $user->id);
+                        })
+                        ->orWhere(function ($unassigned) {
+                            $unassigned->whereNull('editor_id')
+                                ->whereIn('status', [
+                                    Shoot::STATUS_UPLOADED,
+                                    Shoot::STATUS_EDITING,
+                                    Shoot::STATUS_READY,
+                                    Shoot::STATUS_DELIVERED,
+                                ]);
                         });
                 });
             }
@@ -2040,11 +2059,6 @@ class ShootController extends Controller
         }
 
         try {
-            if (Schema::hasColumn('shoots', 'editor_id') && empty($shoot->editor_id)) {
-                $shoot->editor_id = 377;
-                $shoot->save();
-            }
-
             $this->workflowService->startEditing($shoot, $user);
 
             if (!$shoot->activeShareLinks()->exists()) {
@@ -2973,6 +2987,15 @@ class ShootController extends Controller
 
         if (array_key_exists('status', $validated) && $validated['status'] === Shoot::STATUS_DELIVERED) {
             $markDelivered = true;
+        }
+
+        // Auto-assign editor when status transitions to editing
+        $newStatus = $validated['status'] ?? $validated['workflow_status'] ?? null;
+        if ($newStatus && in_array($newStatus, [Shoot::STATUS_EDITING, Shoot::STATUS_UPLOADED]) && empty($shoot->editor_id)) {
+            $primaryEditor = User::where('role', 'editor')->first();
+            if ($primaryEditor) {
+                $shoot->editor_id = $primaryEditor->id;
+            }
         }
 
         // Update services if provided

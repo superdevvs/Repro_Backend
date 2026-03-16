@@ -150,6 +150,12 @@ class ShootWorkflowService
             $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
             $shoot->photos_uploaded_at = now();
             $shoot->updated_by = $user?->id ?? auth()->id();
+
+            // Auto-assign editor if not already set
+            if (empty($shoot->editor_id)) {
+                $shoot->editor_id = $this->resolvePrimaryEditorId();
+            }
+
             $shoot->save();
 
             $this->activityLogger->log(
@@ -393,6 +399,31 @@ class ShootWorkflowService
     {
         $currentStatus = $shoot->status ?? self::STATUS_ON_HOLD;
         return self::VALID_TRANSITIONS[$currentStatus] ?? [];
+    }
+
+    /**
+     * Resolve the primary editor ID for auto-assignment.
+     * Uses round-robin among active editors (least current editing load).
+     */
+    protected function resolvePrimaryEditorId(): ?int
+    {
+        $editors = \App\Models\User::where('role', 'editor')->get(['id']);
+        if ($editors->isEmpty()) {
+            return null;
+        }
+        if ($editors->count() === 1) {
+            return $editors->first()->id;
+        }
+
+        // Round-robin: pick editor with fewest active editing shoots
+        $editorIds = $editors->pluck('id');
+        $loadMap = Shoot::whereIn('editor_id', $editorIds)
+            ->whereIn('status', [self::STATUS_UPLOADED, self::STATUS_EDITING])
+            ->selectRaw('editor_id, count(*) as total')
+            ->groupBy('editor_id')
+            ->pluck('total', 'editor_id');
+
+        return $editors->sortBy(fn($e) => $loadMap[$e->id] ?? 0)->first()->id;
     }
 }
 
