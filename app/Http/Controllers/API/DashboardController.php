@@ -216,6 +216,9 @@ class DashboardController extends Controller
                 'editor_notes' => $shoot->editor_notes,
                 // Property details
                 'property_details' => $shoot->property_details,
+                // Cancellation fields (present when cancellation_requested_at is selected)
+                'cancellation_reason' => $shoot->cancellation_reason ?? null,
+                'cancellation_requested_at' => optional($shoot->cancellation_requested_at)?->toIso8601String(),
             ];
 
             if ($includeMedia) {
