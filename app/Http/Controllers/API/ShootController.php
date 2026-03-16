@@ -5607,11 +5607,21 @@ class ShootController extends Controller
         }
         $shoot->setAttribute('created_by_name', $createdByName);
 
-        // Handle client data based on requesting user's role
+        // Handle role-based data filtering
         $requestingUser = auth()->user();
         $requestingRole = $requestingUser ? strtolower($requestingUser->role ?? '') : '';
         $isPhotographerRole = $requestingRole === 'photographer';
         $isEditorRole = $requestingRole === 'editor';
+        $isClientRole = $requestingRole === 'client';
+
+        // Clients should only see photographer name + avatar (no contact info)
+        if ($isClientRole && $shoot->photographer) {
+            $shoot->setAttribute('photographer', [
+                'id' => $shoot->photographer->id,
+                'name' => $shoot->photographer->name,
+                'avatar' => $shoot->photographer->avatar ?? null,
+            ]);
+        }
         
         if ($shoot->client && !$isEditorRole) {
             if ($isPhotographerRole) {
