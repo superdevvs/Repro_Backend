@@ -2613,12 +2613,10 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        // Only admin/superadmin can approve cancellation
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        // Must have a cancellation request pending
         if (!$shoot->cancellation_requested_at) {
             return response()->json(['message' => 'No cancellation request pending for this shoot'], 422);
         }
@@ -2664,12 +2662,10 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        // Only admin/superadmin can reject cancellation
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        // Must have a cancellation request pending
         if (!$shoot->cancellation_requested_at) {
             return response()->json(['message' => 'No cancellation request pending for this shoot'], 422);
         }
@@ -2804,13 +2800,20 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        // Only admin/superadmin can view pending cancellations
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        // Match dashboard admin experience roles for cancellation approval visibility
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $shoots = Shoot::whereNotNull('cancellation_requested_at')
-            ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
+            ->where(function (Builder $query) {
+                $query->whereNull('status')
+                    ->orWhereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED]);
+            })
+            ->where(function (Builder $query) {
+                $query->whereNull('workflow_status')
+                    ->orWhereNotIn('workflow_status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED]);
+            })
             ->with(['client', 'rep', 'photographer', 'services'])
             ->orderBy('cancellation_requested_at', 'desc')
             ->get();
