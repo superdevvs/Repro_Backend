@@ -69,8 +69,15 @@ class InvoiceController extends Controller
                       });
                   });
             });
+        } elseif ($user->role === 'editor') {
+            // Editors can see invoices for shoots assigned to them
+            $query->whereHas('shoots', function ($shootQuery) use ($user) {
+                $shootQuery->where('editor_id', $user->id);
+            });
+        } elseif ($user->role === 'editing_manager') {
+            // Editing managers can see all invoices (read-only)
         } else {
-            // Other roles (editor, etc.) cannot see invoices
+            // Other roles cannot see invoices
             return response()->json(['data' => [], 'message' => 'No access to invoices'], 403);
         }
 

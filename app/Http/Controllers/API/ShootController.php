@@ -5556,7 +5556,7 @@ class ShootController extends Controller
     protected function transformShoot(Shoot $shoot)
     {
         // Only load missing relationships if not already loaded
-        $shoot->loadMissing(['client', 'photographer', 'service', 'services', 'rep', 'createdByUser']);
+        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services', 'rep', 'createdByUser']);
         // Only load files if not already loaded (they should be from eager loading)
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {

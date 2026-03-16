@@ -15,6 +15,7 @@ class Shoot extends Model
         'client_id',
         'rep_id',
         'photographer_id',
+        'editor_id',
         'service_id',
         'service_category',
         'address',
