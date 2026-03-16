@@ -7603,6 +7603,35 @@ class ShootController extends Controller
     }
 
     /**
+     * Reorder shoot files (persist manual sort order)
+     * PATCH /api/shoots/{shoot}/files/reorder
+     */
+    public function reorderFiles(Request $request, Shoot $shoot)
+    {
+        $request->validate([
+            'file_ids' => 'required|array|min:1',
+            'file_ids.*' => 'integer',
+        ]);
+
+        $fileIds = $request->input('file_ids');
+
+        DB::transaction(function () use ($shoot, $fileIds) {
+            foreach ($fileIds as $index => $fileId) {
+                ShootFile::where('shoot_id', $shoot->id)
+                    ->where('id', $fileId)
+                    ->update(['sort_order' => $index]);
+            }
+        });
+
+        $this->clearShootFilesCache($shoot);
+
+        return response()->json([
+            'message' => 'File order saved',
+            'count' => count($fileIds),
+        ]);
+    }
+
+    /**
      * Reclassify media files (e.g. mark as floorplan or revert to photo)
      */
     public function reclassifyFiles(Request $request, Shoot $shoot)
