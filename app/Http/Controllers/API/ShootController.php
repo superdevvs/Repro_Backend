@@ -182,15 +182,15 @@ class ShootController extends Controller
                 $query->where('client_id', $user->id);
             } elseif ($user && $user->role === 'editor') {
                 // Editors see: shoots assigned to them, shoots they have activity on,
-                // AND any editing/uploaded/delivered shoots with no editor assigned yet
+                // AND all editing-pipeline shoots (uploaded/editing/ready/delivered),
+                // including legacy records assigned to retired editor accounts.
                 $query->where(function (Builder $scope) use ($user) {
                     $scope->where('editor_id', $user->id)
                         ->orWhereHas('activityLogs', function (Builder $logQuery) use ($user) {
                             $logQuery->where('user_id', $user->id);
                         })
-                        ->orWhere(function (Builder $unassigned) {
-                            $unassigned->whereNull('editor_id')
-                                ->whereIn('status', [
+                        ->orWhere(function (Builder $editingPipeline) {
+                            $editingPipeline->whereIn('status', [
                                     Shoot::STATUS_UPLOADED,
                                     Shoot::STATUS_EDITING,
                                     Shoot::STATUS_READY,
@@ -971,15 +971,15 @@ class ShootController extends Controller
                       });
                 });
             } elseif ($user->role === 'editor') {
-                // Editors see: assigned shoots, activity-logged shoots, and unassigned editing/uploaded/delivered
+                // Editors see: assigned shoots, activity-logged shoots, and the full
+                // editing pipeline even when legacy rows point at retired editor IDs.
                 $query->where(function ($q) use ($user) {
                     $q->where('editor_id', $user->id)
                         ->orWhereHas('activityLogs', function ($logQuery) use ($user) {
                             $logQuery->where('user_id', $user->id);
                         })
-                        ->orWhere(function ($unassigned) {
-                            $unassigned->whereNull('editor_id')
-                                ->whereIn('status', [
+                        ->orWhere(function ($editingPipeline) {
+                            $editingPipeline->whereIn('status', [
                                     Shoot::STATUS_UPLOADED,
                                     Shoot::STATUS_EDITING,
                                     Shoot::STATUS_READY,
