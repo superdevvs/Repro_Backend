@@ -23,6 +23,7 @@ use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
 use App\Http\Controllers\API\CouponController;
 use App\Http\Controllers\API\ShootMessageController;
+use App\Http\Controllers\API\TourAnalyticsController;
 use App\Http\Controllers\API\ShootRescheduleRequestController;
 use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\EditingRequestController;
@@ -462,6 +463,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/files/{file}/verify', [ShootController::class, 'verifyFile']);
     Route::post('/shoots/{shoot}/files/{file}/extra', [ShootController::class, 'toggleFileExtra']);
     Route::post('/shoots/{shoot}/generate-description', [ShootController::class, 'generatePropertyDescription']);
+    Route::get('/shoots/{shoot}/tour-analytics', [TourAnalyticsController::class, 'summary']);
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootController::class, 'reclassifyFiles']);
     Route::patch('/shoots/{shoot}/files/reorder', [ShootController::class, 'reorderFiles']);
     Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootController::class, 'toggleFileHidden']);
@@ -797,6 +799,9 @@ Route::prefix('public/shoots')->group(function () {
     Route::get('{shoot}/mls', [ShootController::class, 'publicMls']);
     Route::get('{shoot}/g-mls', [ShootController::class, 'publicGenericMls']);
 });
+
+// Public tour analytics tracking (unauthenticated, rate-limited)
+Route::post('public/tour-events', [TourAnalyticsController::class, 'trackEvent'])->middleware('throttle:60,1');
 
 // Client profile (requires authentication and authorization)
 Route::middleware('auth:sanctum')->prefix('public')->group(function () {

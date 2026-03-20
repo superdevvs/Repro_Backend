@@ -2398,6 +2398,74 @@ class ShootController extends Controller
 
         $shoot->save();
 
+        // Log shoot_updated activity with change summary
+        try {
+            $changes = [];
+            if ($originalStatus !== $shoot->status) {
+                $changes['status'] = ['from' => $originalStatus, 'to' => $shoot->status];
+            }
+            if ($originalWorkflow !== $shoot->workflow_status) {
+                $changes['workflow_status'] = ['from' => $originalWorkflow, 'to' => $shoot->workflow_status];
+            }
+            if ($originalScheduledDate !== $shoot->scheduled_date?->toDateString()) {
+                $changes['scheduled_date'] = ['from' => $originalScheduledDate, 'to' => $shoot->scheduled_date?->toDateString()];
+            }
+            if ($originalTime !== $shoot->time) {
+                $changes['time'] = ['from' => $originalTime, 'to' => $shoot->time];
+            }
+            if ($originalPhotographerId !== $shoot->photographer_id) {
+                $changes['photographer_id'] = ['from' => $originalPhotographerId, 'to' => $shoot->photographer_id];
+            }
+            if ($originalClientId !== $shoot->client_id) {
+                $changes['client_id'] = ['from' => $originalClientId, 'to' => $shoot->client_id];
+            }
+            $newAddress = $this->formatFullAddress($shoot);
+            if ($originalAddress !== $newAddress) {
+                $changes['address'] = ['from' => $originalAddress, 'to' => $newAddress];
+            }
+            if (array_key_exists('services', $validated)) {
+                $newServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
+                $newServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
+                if ($originalServiceIds !== $newServiceIds) {
+                    $changes['services'] = ['from' => $originalServiceNames, 'to' => $newServiceNames];
+                }
+            }
+            if ((float) $shoot->base_quote !== $originalBaseQuote) {
+                $changes['base_quote'] = ['from' => $originalBaseQuote, 'to' => (float) $shoot->base_quote];
+            }
+            if ((float) $shoot->total_quote !== $originalTotalQuote) {
+                $changes['total_quote'] = ['from' => $originalTotalQuote, 'to' => (float) $shoot->total_quote];
+            }
+            if ($originalShootNotes !== $shoot->shoot_notes) {
+                $changes['shoot_notes'] = 'updated';
+            }
+            if ($originalCompanyNotes !== $shoot->company_notes) {
+                $changes['company_notes'] = 'updated';
+            }
+            if ($originalPhotographerNotes !== $shoot->photographer_notes) {
+                $changes['photographer_notes'] = 'updated';
+            }
+            if ($originalEditorNotes !== $shoot->editor_notes) {
+                $changes['editor_notes'] = 'updated';
+            }
+
+            if (!empty($changes)) {
+                $changeKeys = array_keys($changes);
+                $description = $user->name . ' updated ' . implode(', ', $changeKeys);
+                $this->activityLogger->log(
+                    $shoot,
+                    'shoot_updated',
+                    [
+                        'by' => $user->name,
+                        'changes' => $changes,
+                    ],
+                    $user
+                );
+            }
+        } catch (\Exception $e) {
+            // Don't fail the update if activity logging fails
+            Log::warning('Failed to log shoot update activity: ' . $e->getMessage());
+        }
 
         if ($invoiceNeedsRefresh) {
             try {
@@ -2588,6 +2656,26 @@ class ShootController extends Controller
             $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
         }
         $this->automationService->handleEvent('SHOOT_REMOVED', $context);
+
+        // Log shoot_deleted activity before deleting
+        try {
+            $this->activityLogger->log(
+                $shoot,
+                'shoot_deleted',
+                [
+                    'by' => $user->name,
+                    'address' => $shoot->address,
+                    'client' => $shoot->client?->name,
+                    'photographer' => $shoot->photographer?->name,
+                    'status' => $shoot->status,
+                    'scheduled_date' => $shoot->scheduled_date?->toDateString(),
+                ],
+                $user
+            );
+        } catch (\Exception $e) {
+            Log::warning('Failed to log shoot deletion activity: ' . $e->getMessage());
+        }
+
         $shoot->delete();
 
         return response()->json([
@@ -5893,6 +5981,11 @@ class ShootController extends Controller
     {
         $user = $request->user();
         $role = strtolower($user->role ?? '');
+
+        // Only admin, superadmin, editing_manager, and salesRep can view activity logs
+        if (!in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         // Get activity logs for this shoot
         $activityLogs = $shoot->activityLogs()
