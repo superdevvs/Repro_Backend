@@ -6981,12 +6981,24 @@ class ShootController extends Controller
         $baths = $pd['bathrooms'] ?? $pd['baths'] ?? null;
         $sqft = $pd['sqft'] ?? $pd['squareFeet'] ?? null;
 
-        // Smart-pick edited images for diversity
+        // Smart-pick edited images for diversity (database-agnostic)
         $editedFiles = $shoot->files()
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
             ->where(function ($q) {
-                $q->whereRaw("LOWER(COALESCE(file_type, mime_type, '')) IN ('image/jpeg','image/jpg','image/png','image/pjpeg')")
-                  ->orWhereRaw("LOWER(SUBSTRING_INDEX(COALESCE(filename, stored_filename, ''), '.', -1)) IN ('jpg','jpeg','png')");
+                // Match by MIME type
+                $q->where(function ($mq) {
+                    $mq->where('file_type', 'like', 'image/%')
+                        ->orWhere('mime_type', 'like', 'image/%');
+                })
+                // Or match by file extension
+                ->orWhere(function ($fq) {
+                    $fq->where('filename', 'like', '%.jpg')
+                        ->orWhere('filename', 'like', '%.jpeg')
+                        ->orWhere('filename', 'like', '%.png')
+                        ->orWhere('stored_filename', 'like', '%.jpg')
+                        ->orWhere('stored_filename', 'like', '%.jpeg')
+                        ->orWhere('stored_filename', 'like', '%.png');
+                });
             })
             ->orderBy('sort_order')
             ->orderBy('id')
