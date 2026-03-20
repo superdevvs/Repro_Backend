@@ -32,6 +32,7 @@ use App\Http\Controllers\API\CubiCasaController;
 use App\Http\Controllers\API\ImageDownloadController;
 use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\FotelloController;
+use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
@@ -566,6 +567,29 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/jobs', [FotelloController::class, 'listJobs']);
         Route::get('/jobs/{jobId}', [FotelloController::class, 'getJobStatus']);
         Route::post('/jobs/{jobId}/cancel', [FotelloController::class, 'cancelJob']);
+    });
+
+    // Higgsfield AI Video Generation endpoints
+    Route::prefix('higgsfield')->group(function () {
+        // Presets - read for all authenticated users
+        Route::get('/presets', [HiggsFieldController::class, 'getPresets']);
+
+        // Presets - admin CRUD
+        Route::middleware('role:admin,superadmin')->group(function () {
+            Route::post('/presets', [HiggsFieldController::class, 'createPreset']);
+            Route::put('/presets/{id}', [HiggsFieldController::class, 'updatePreset']);
+            Route::delete('/presets/{id}', [HiggsFieldController::class, 'deletePreset']);
+        });
+
+        // Video generation - editing roles
+        Route::middleware('role:admin,superadmin,editing_manager')->group(function () {
+            Route::post('/generate', [HiggsFieldController::class, 'submitVideoGeneration']);
+            Route::get('/jobs', [HiggsFieldController::class, 'listJobs']);
+            Route::get('/jobs/{jobId}', [HiggsFieldController::class, 'getJobStatus']);
+            Route::post('/jobs/{jobId}/select-variants', [HiggsFieldController::class, 'selectVariants']);
+            Route::post('/jobs/{jobId}/regenerate-variants', [HiggsFieldController::class, 'regenerateVariants']);
+            Route::post('/jobs/{jobId}/cancel', [HiggsFieldController::class, 'cancelJob']);
+        });
     });
 
     // Integration endpoints

@@ -151,6 +151,17 @@ return [
         'retry_attempts' => env('FOTELLO_RETRY_ATTEMPTS', 3),
     ],
 
+    // Higgsfield AI Video Generation Integration
+    'higgsfield' => [
+        'api_key' => env('HIGGSFIELD_API_KEY'),
+        'api_secret' => env('HIGGSFIELD_API_SECRET'),
+        'base_url' => env('HIGGSFIELD_BASE_URL', 'https://platform.higgsfield.ai'),
+        'timeout' => env('HIGGSFIELD_TIMEOUT', 120),
+        'retry_attempts' => env('HIGGSFIELD_RETRY_ATTEMPTS', 3),
+        'video_model' => env('HIGGSFIELD_VIDEO_MODEL', 'kling-video/v2.1/pro/image-to-video'),
+        'image_model' => env('HIGGSFIELD_IMAGE_MODEL', 'bytedance/seedream/v4/edit'),
+    ],
+
     // MyMarketingMatters (MMM) Punchout/SSO Integration
     'mmm' => [
         'enabled' => env('MMM_ENABLED', true),
