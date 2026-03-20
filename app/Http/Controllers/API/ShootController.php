@@ -72,6 +72,7 @@ class ShootController extends Controller
     protected const HISTORY_ALLOWED_ROLES = [
         'admin',
         'superadmin',
+        'editing_manager',
         'finance',
         'accounting',
         'editor',
@@ -1434,7 +1435,7 @@ class ShootController extends Controller
             // Admin/Rep/Photographer can create directly scheduled shoots
             $userRole = strtolower($user->role ?? '');
             $isClient = $userRole === 'client';
-            $isAdminOrRep = in_array($userRole, ['admin', 'superadmin', 'rep', 'salesrep']);
+            $isAdminOrRep = in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'rep', 'salesrep']);
             
             // Check if this is a client booking for themselves (client_id matches user id)
             // This handles the case where a client is logged in and booking their own shoot
@@ -2035,7 +2036,7 @@ class ShootController extends Controller
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
 
         // Only admin, superadmin, or rep can approve shoots
-        if (!in_array($user->role, ['admin', 'superadmin', 'rep', 'representative'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'rep', 'representative'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -2149,7 +2150,7 @@ class ShootController extends Controller
         $originalBaseQuote = (float) $shoot->base_quote;
         $originalTaxAmount = (float) $shoot->tax_amount;
         $originalTotalQuote = (float) $shoot->total_quote;
-        $isAdmin = in_array($user->role, ['admin', 'superadmin', 'superadmin']);
+        $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
         $isClient = $user->role === 'client';
         $isRep = $user->role === 'salesRep';
         $requestKeys = array_keys($request->all());
@@ -2191,6 +2192,8 @@ class ShootController extends Controller
             'sqft' => 'nullable|integer|min:0',
             'is_private_listing' => 'nullable|boolean',
             'tour_links' => 'nullable|array',
+            'listing_type' => 'nullable|string|in:for_sale,for_rent',
+            'property_status' => 'nullable|string|in:available,sold,rented',
             'shoot_notes' => 'nullable|string',
             'company_notes' => 'nullable|string',
             'photographer_notes' => 'nullable|string',
@@ -2363,6 +2366,13 @@ class ShootController extends Controller
         if ($propertyDetailsUpdated) {
             $shoot->property_details = $pd;
             $invoiceNeedsRefresh = true;
+        }
+
+        if (array_key_exists('listing_type', $validated)) {
+            $shoot->listing_type = $validated['listing_type'];
+        }
+        if (array_key_exists('property_status', $validated)) {
+            $shoot->property_status = $validated['property_status'];
         }
 
         if (array_key_exists('tour_links', $validated) && is_array($validated['tour_links'])) {
@@ -2564,7 +2574,7 @@ class ShootController extends Controller
     public function destroy($shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'superadmin'])) {
+        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -2684,7 +2694,7 @@ class ShootController extends Controller
 
         // Check if user is admin (admins can upload at any stage)
         $user = auth()->user();
-        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin']);
+        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
 
         if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
             return response()->json([
@@ -2872,7 +2882,7 @@ class ShootController extends Controller
         }
 
         // Check if user has admin permissions
-        if (!in_array(auth()->user()->role, ['admin', 'superadmin'])) {
+        if (!in_array(auth()->user()->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -2931,7 +2941,7 @@ class ShootController extends Controller
 
         // Check if user has permission (admin or photographer assigned to shoot)
         $user = auth()->user();
-        $isAdmin = in_array($user->role, ['admin', 'superadmin']);
+        $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
         $isAssignedPhotographer = $shoot->photographer_id === $user->id;
 
         if (!$isAdmin && !$isAssignedPhotographer) {
@@ -2963,7 +2973,7 @@ class ShootController extends Controller
     public function setCoverMedia(Shoot $shoot, ShootFile $file)
     {
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'superadmin', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
 
         $shoot->files()->where('is_cover', true)->update(['is_cover' => false]);
         $file->is_cover = true;
@@ -2985,7 +2995,7 @@ class ShootController extends Controller
     public function flagMedia(Request $request, Shoot $shoot, ShootFile $file)
     {
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'superadmin', 'editor', 'photographer']);
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'editor', 'photographer']);
 
         $request->validate([
             'reason' => 'nullable|string|max:500',
@@ -3050,7 +3060,7 @@ class ShootController extends Controller
 
     public function reorderMedia(Request $request, Shoot $shoot)
     {
-        $this->authorizeRole(['admin', 'superadmin', 'photographer']);
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer']);
 
         $request->validate([
             'files' => 'required|array',
@@ -3086,7 +3096,7 @@ class ShootController extends Controller
     public function deleteMedia(Shoot $shoot, ShootFile $file)
     {
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'superadmin', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
 
         return $this->performFileDeletion($shoot, $file);
     }
@@ -3338,7 +3348,7 @@ class ShootController extends Controller
             'ids.*' => 'integer',
         ]);
 
-        $this->authorizeRole(['admin', 'superadmin', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
 
         $files = $shoot->files()->whereIn('id', $request->input('ids'))->get();
         $errors = [];
@@ -3484,7 +3494,7 @@ class ShootController extends Controller
     public function finalize(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin','superadmin','superadmin'])) {
+        if (!$user || !in_array($user->role, ['admin','superadmin','editing_manager'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -3563,7 +3573,7 @@ class ShootController extends Controller
         // Check if user is the photographer, editor, or admin
         $isPhotographer = $shoot->photographer_id === $user->id;
         $isEditor = $shoot->editor_id === $user->id || $user->role === 'editor';
-        $isAdmin = in_array($user->role, ['admin', 'superadmin']);
+        $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
         
         if (!$isPhotographer && !$isEditor && !$isAdmin) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -3888,7 +3898,7 @@ class ShootController extends Controller
         $user = $request->user();
         
         // Only admin can assign requests
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Only admins can assign requests'], 403);
         }
         
@@ -4045,7 +4055,7 @@ class ShootController extends Controller
         ]);
 
         $allowed = [];
-        if (in_array($role, ['admin', 'superadmin'])) {
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager'])) {
             $allowed = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
         } elseif ($role === 'client') {
             $allowed = ['shoot_notes'];
@@ -5653,7 +5663,7 @@ class ShootController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'photographer'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'photographer'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -5728,7 +5738,7 @@ class ShootController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'photographer', 'editor'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -5926,7 +5936,7 @@ class ShootController extends Controller
 
         // Role-based restrictions
         $allowedTypes = match($role) {
-            'admin', 'superadmin', 'superadmin' => ['shoot', 'company', 'photographer', 'editing'],
+            'admin', 'superadmin', 'editing_manager' => ['shoot', 'company', 'photographer', 'editing'],
             'client' => ['shoot'],
             'photographer' => ['photographer', 'shoot'],
             'editor' => ['editing', 'shoot'],
@@ -5991,7 +6001,7 @@ class ShootController extends Controller
         $user = auth()->user();
 
         // Check if user is admin
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin'])) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['error' => 'Unauthorized'], 403);
         }
 
@@ -6944,5 +6954,137 @@ class ShootController extends Controller
             'message' => "Reclassified {$updated} file(s) as {$mediaType}",
             'updated_count' => $updated,
         ]);
+    }
+
+    /**
+     * Generate AI property description using GPT-4o vision with edited images.
+     * POST /api/shoots/{shoot}/generate-description
+     */
+    public function generatePropertyDescription(Request $request, Shoot $shoot)
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        try {
+            $llmClient = app(\App\Services\ReproAi\LlmClient::class);
+        } catch (\Exception $e) {
+            return response()->json(['message' => 'AI service is not configured'], 503);
+        }
+
+        // Gather property details
+        $address = trim(($shoot->address ?? '') . ', ' . ($shoot->city ?? '') . ', ' . ($shoot->state ?? '') . ' ' . ($shoot->zip ?? ''));
+        $listingType = $shoot->listing_type === 'for_rent' ? 'rent' : 'sale';
+        $pd = $shoot->property_details ?? [];
+        $beds = $pd['bedrooms'] ?? $pd['beds'] ?? null;
+        $baths = $pd['bathrooms'] ?? $pd['baths'] ?? null;
+        $sqft = $pd['sqft'] ?? $pd['squareFeet'] ?? null;
+
+        // Smart-pick edited images for diversity
+        $editedFiles = $shoot->files()
+            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where(function ($q) {
+                $q->whereRaw("LOWER(COALESCE(file_type, mime_type, '')) IN ('image/jpeg','image/jpg','image/png','image/pjpeg')")
+                  ->orWhereRaw("LOWER(SUBSTRING_INDEX(COALESCE(filename, stored_filename, ''), '.', -1)) IN ('jpg','jpeg','png')");
+            })
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        if ($editedFiles->isEmpty()) {
+            return response()->json([
+                'message' => 'No edited images available to generate description',
+            ], 422);
+        }
+
+        // Pick diverse images: first (exterior), ~25% (interior), ~50% (mid), ~75% (backyard/room), last
+        $total = $editedFiles->count();
+        $indices = array_unique(array_map(fn($pct) => min((int) round($pct * ($total - 1)), $total - 1), [0, 0.25, 0.5, 0.75, 1.0]));
+        $selectedFiles = collect($indices)->map(fn($i) => $editedFiles->values()[$i])->unique('id')->take(5);
+
+        // Build image URLs
+        $imageUrls = [];
+        foreach ($selectedFiles as $file) {
+            $url = null;
+            if (!empty($file->web_path) && \Storage::disk('public')->exists($file->web_path)) {
+                $url = \Storage::disk('public')->url($file->web_path);
+            } elseif (!empty($file->storage_path) && \Storage::disk('public')->exists($file->storage_path)) {
+                $url = \Storage::disk('public')->url($file->storage_path);
+            } elseif (!empty($file->path) && \Storage::disk('public')->exists($file->path)) {
+                $url = \Storage::disk('public')->url($file->path);
+            }
+            // Ensure absolute URL
+            if ($url && !str_starts_with($url, 'http')) {
+                $url = config('app.url') . $url;
+            }
+            if ($url) {
+                $imageUrls[] = $url;
+            }
+        }
+
+        if (empty($imageUrls)) {
+            return response()->json([
+                'message' => 'Could not resolve image URLs for AI description generation',
+            ], 422);
+        }
+
+        // Build property details string
+        $detailParts = [];
+        if ($beds) $detailParts[] = "{$beds} bedrooms";
+        if ($baths) $detailParts[] = "{$baths} bathrooms";
+        if ($sqft) $detailParts[] = "{$sqft} sqft";
+        $detailStr = !empty($detailParts) ? ' Property has ' . implode(', ', $detailParts) . '.' : '';
+
+        $textPrompt = "\"{$address}\" is being placed for \"{$listingType}\". Attached are images for the property.{$detailStr} Write a compelling description for the property based on where it's located and what you see in the images. In max 50-100 words.";
+
+        // Build GPT-4o vision messages
+        $contentParts = [
+            ['type' => 'text', 'text' => $textPrompt],
+        ];
+        foreach ($imageUrls as $url) {
+            $contentParts[] = [
+                'type' => 'image_url',
+                'image_url' => ['url' => $url, 'detail' => 'low'],
+            ];
+        }
+
+        $messages = [
+            [
+                'role' => 'system',
+                'content' => 'You are a real estate copywriter. Write concise, professional property descriptions. Output ONLY the description text with no quotes, labels, or extra formatting.',
+            ],
+            [
+                'role' => 'user',
+                'content' => $contentParts,
+            ],
+        ];
+
+        try {
+            $response = $llmClient->chatCompletion($messages, [], false, [
+                'model' => 'gpt-4o',
+                'temperature' => 0.7,
+                'max_tokens' => 300,
+            ]);
+
+            $description = trim($response['choices'][0]['message']['content'] ?? '');
+
+            if (empty($description)) {
+                return response()->json(['message' => 'AI returned an empty description'], 500);
+            }
+
+            return response()->json([
+                'description' => $description,
+                'images_used' => count($imageUrls),
+            ]);
+        } catch (\Exception $e) {
+            Log::error('AI property description generation failed', [
+                'shoot_id' => $shoot->id,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json([
+                'message' => 'Failed to generate description: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 }

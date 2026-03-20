@@ -248,8 +248,8 @@ class ImageDownloadController extends Controller
      */
     protected function canDownloadFile($user, Shoot $shoot, ShootFile $file): bool
     {
-        // Admin can download anything
-        if ($user->role === 'admin') {
+        // Admin/superadmin/editing_manager can download anything
+        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return true;
         }
 
@@ -277,8 +277,8 @@ class ImageDownloadController extends Controller
      */
     protected function canViewFile($user, Shoot $shoot, ShootFile $file): bool
     {
-        // Admin can view anything
-        if ($user->role === 'admin') {
+        // Admin/superadmin/editing_manager can view anything
+        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return true;
         }
 

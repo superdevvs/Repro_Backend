@@ -461,6 +461,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootController::class, 'moveFileToCompleted']);
     Route::post('/shoots/{shoot}/files/{file}/verify', [ShootController::class, 'verifyFile']);
     Route::post('/shoots/{shoot}/files/{file}/extra', [ShootController::class, 'toggleFileExtra']);
+    Route::post('/shoots/{shoot}/generate-description', [ShootController::class, 'generatePropertyDescription']);
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootController::class, 'reclassifyFiles']);
     Route::patch('/shoots/{shoot}/files/reorder', [ShootController::class, 'reorderFiles']);
     Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootController::class, 'toggleFileHidden']);

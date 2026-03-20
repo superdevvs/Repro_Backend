@@ -70,15 +70,19 @@ class FileUploadController extends Controller
             ], 422);
         }
         
+        // Check if user is admin (admins can upload at any stage)
+        $user = auth()->user();
+        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
+
         // Check workflow permissions based on upload type
-        if ($uploadType === 'raw' && !$shoot->canUploadPhotos()) {
+        if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
             return response()->json([
                 'success' => false,
                 'message' => 'Cannot upload raw photos at this workflow stage',
                 'current_status' => $shoot->workflow_status
             ], 400);
         }
-        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
+        if ($uploadType === 'edited' && !$isAdmin && !in_array($shoot->workflow_status, [
             Shoot::STATUS_EDITING,
         ])) {
             return response()->json([

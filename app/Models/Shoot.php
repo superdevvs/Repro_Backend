@@ -87,6 +87,7 @@ class Shoot extends Model
         'iguide_property_id',
         'is_private_listing',
         'listing_type',
+        'property_status',
         // MMM Integration
         'mmm_status',
         'mmm_order_number',
@@ -149,6 +150,7 @@ class Shoot extends Model
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
         'listing_type' => 'string',
+        'property_status' => 'string',
         'mmm_last_punchout_at' => 'datetime',
         'mmm_last_order_at' => 'datetime',
         'approved_at' => 'datetime',

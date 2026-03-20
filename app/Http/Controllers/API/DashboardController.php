@@ -454,7 +454,7 @@ class DashboardController extends Controller
             [
                 'key' => 'ready',
                 'label' => 'Ready / Delivered',
-                'statuses' => [Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified', 'completed', 'finalised', 'finalized'],
+                'statuses' => [Shoot::STATUS_READY, Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified', 'completed', 'finalised', 'finalized'],
                 'accent' => '#22c55e',
                 'check_status_column' => true,
             ],
