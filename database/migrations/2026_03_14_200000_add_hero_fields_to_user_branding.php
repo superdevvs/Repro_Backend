@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('user_branding', 'hero_headline')) {
+            return;
+        }
+
         Schema::table('user_branding', function (Blueprint $table) {
             $table->string('hero_headline')->nullable()->after('about');
             $table->text('hero_subtitle')->nullable()->after('hero_headline');

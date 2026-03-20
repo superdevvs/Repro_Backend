@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('user_branding', 'facebook_url')) {
+            return;
+        }
+
         Schema::table('user_branding', function (Blueprint $table) {
             $table->string('facebook_url', 255)->nullable()->after('custom_domain');
             $table->string('linkedin_url', 255)->nullable()->after('facebook_url');

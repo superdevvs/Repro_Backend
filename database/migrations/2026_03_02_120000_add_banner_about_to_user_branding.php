@@ -8,6 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (Schema::hasColumn('user_branding', 'banner')) {
+            return;
+        }
+
         Schema::table('user_branding', function (Blueprint $table) {
             $table->string('banner')->nullable()->after('logo');
             $table->text('about')->nullable()->after('custom_domain');

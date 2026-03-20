@@ -17,13 +17,17 @@ return new class extends Migration
      */
     public function up(): void
     {
+        if (Schema::hasColumn('shoot_service', 'photographer_id')) {
+            return;
+        }
+
         Schema::table('shoot_service', function (Blueprint $table) {
             $table->foreignId('photographer_id')
                 ->nullable()
                 ->after('service_id')
                 ->constrained('users')
                 ->nullOnDelete();
-            
+
             // Index for payout queries - we group by photographer_id frequently
             $table->index('photographer_id', 'shoot_service_photographer_id_index');
         });
