@@ -20,6 +20,13 @@ class AutomationService
     ) {
     }
 
+    public function hasActiveTrigger(string $triggerType): bool
+    {
+        return AutomationRule::active()
+            ->forTrigger($triggerType)
+            ->exists();
+    }
+
     /**
      * Handle an automation trigger event
      */

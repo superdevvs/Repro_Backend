@@ -4,7 +4,7 @@
     <p>Hi {{ $user->first_name }}!</p>
 
     <p>
-        A new account has been created on the RE Pro Dashboard: 
+        A new account has been created on the R/E Pro Dashboard: 
         <a href="https://reprodashboard.com">https://reprodashboard.com</a>
     </p>
 

@@ -2,7 +2,10 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
@@ -353,6 +356,238 @@ class MailService
     }
 
     /**
+     * Capture shoot snapshot
+     */
+    public function captureShootSnapshot(Shoot $shoot): array
+    {
+        $shoot = $shoot->fresh(['client', 'photographer', 'service', 'services']) ?? $shoot;
+        $shoot->loadMissing(['client', 'photographer', 'service', 'services']);
+
+        $propertyDetails = $this->normalizePropertyDetails($shoot->property_details);
+
+        return [
+            'status' => $shoot->status,
+            'workflow_status' => $shoot->workflow_status,
+            'scheduled_at' => $shoot->scheduled_at?->toISOString(),
+            'scheduled_date' => $shoot->scheduled_date?->toDateString(),
+            'time' => $shoot->time,
+            'location' => $this->formatFullAddress($shoot) ?: 'TBD',
+            'client_name' => $shoot->client?->name,
+            'photographer_name' => $shoot->photographer?->name,
+            'base_quote' => (float) ($shoot->base_quote ?? 0),
+            'tax_amount' => (float) ($shoot->tax_amount ?? 0),
+            'total_quote' => (float) ($shoot->total_quote ?? 0),
+            'shoot_notes' => $shoot->shoot_notes,
+            'company_notes' => $shoot->company_notes,
+            'photographer_notes' => $shoot->photographer_notes,
+            'editor_notes' => $shoot->editor_notes,
+            'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
+            'services' => $this->formatServicesForComparison($shoot),
+            'property_details' => [
+                'bedrooms' => $propertyDetails['bedrooms'] ?? $propertyDetails['beds'] ?? null,
+                'bathrooms' => $propertyDetails['bathrooms'] ?? $propertyDetails['baths'] ?? null,
+                'sqft' => $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? null,
+                'presence_option' => $propertyDetails['presenceOption'] ?? null,
+                'access_contact_name' => $propertyDetails['accessContactName'] ?? null,
+                'access_contact_phone' => $propertyDetails['accessContactPhone'] ?? null,
+                'lockbox_code' => $propertyDetails['lockboxCode'] ?? null,
+                'lockbox_location' => $propertyDetails['lockboxLocation'] ?? null,
+            ],
+        ];
+    }
+
+    /**
+     * Build shoot change summary
+     */
+    public function buildShootChangeSummary(array $before, Shoot $shoot): array
+    {
+        $shoot = $shoot->fresh(['client', 'photographer', 'service', 'services']) ?? $shoot;
+        $shoot->loadMissing(['client', 'photographer', 'service', 'services']);
+
+        $afterPropertyDetails = $this->normalizePropertyDetails($shoot->property_details);
+        $changes = [];
+
+        $this->addChangeLine(
+            $changes,
+            'Status',
+            $this->formatStatusValue($before['status'] ?? null),
+            $this->formatStatusValue($shoot->status)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Workflow',
+            $this->formatStatusValue($before['workflow_status'] ?? null),
+            $this->formatStatusValue($shoot->workflow_status)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Schedule',
+            $this->formatScheduleValue(
+                $before['scheduled_date'] ?? null,
+                $before['time'] ?? null,
+                $before['scheduled_at'] ?? null
+            ),
+            $this->formatScheduleValue(
+                $shoot->scheduled_date?->toDateString(),
+                $shoot->time,
+                $shoot->scheduled_at?->toISOString()
+            )
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Location',
+            $before['location'] ?? 'TBD',
+            $this->formatFullAddress($shoot) ?: 'TBD'
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Services',
+            $this->formatServiceSummary($before['services'] ?? []),
+            $this->formatServiceSummary($this->formatServicesForComparison($shoot))
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Client',
+            $this->normalizeChangeText($before['client_name'] ?? null),
+            $this->normalizeChangeText($shoot->client?->name)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Photographer',
+            $this->normalizeChangeText($before['photographer_name'] ?? null),
+            $this->normalizeChangeText($shoot->photographer?->name)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Base Quote',
+            $this->formatCurrency($before['base_quote'] ?? 0),
+            $this->formatCurrency($shoot->base_quote ?? 0)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Tax',
+            $this->formatCurrency($before['tax_amount'] ?? 0),
+            $this->formatCurrency($shoot->tax_amount ?? 0)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Total',
+            $this->formatCurrency($before['total_quote'] ?? 0),
+            $this->formatCurrency($shoot->total_quote ?? 0)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Shoot Notes',
+            $this->normalizeChangeText($before['shoot_notes'] ?? null),
+            $this->normalizeChangeText($shoot->shoot_notes)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Company Notes',
+            $this->normalizeChangeText($before['company_notes'] ?? null),
+            $this->normalizeChangeText($shoot->company_notes)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Photographer Notes',
+            $this->normalizeChangeText($before['photographer_notes'] ?? null),
+            $this->normalizeChangeText($shoot->photographer_notes)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Editor Notes',
+            $this->normalizeChangeText($before['editor_notes'] ?? null),
+            $this->normalizeChangeText($shoot->editor_notes)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Bedrooms',
+            $this->formatNumberValue($before['property_details']['bedrooms'] ?? null),
+            $this->formatNumberValue($afterPropertyDetails['bedrooms'] ?? $afterPropertyDetails['beds'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Bathrooms',
+            $this->formatNumberValue($before['property_details']['bathrooms'] ?? null, 1),
+            $this->formatNumberValue($afterPropertyDetails['bathrooms'] ?? $afterPropertyDetails['baths'] ?? null, 1)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Square Footage',
+            $this->formatSquareFootage($before['property_details']['sqft'] ?? null),
+            $this->formatSquareFootage($afterPropertyDetails['sqft'] ?? $afterPropertyDetails['squareFeet'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Access Type',
+            $this->formatStatusValue($before['property_details']['presence_option'] ?? null),
+            $this->formatStatusValue($afterPropertyDetails['presenceOption'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Access Contact Name',
+            $this->normalizeChangeText($before['property_details']['access_contact_name'] ?? null),
+            $this->normalizeChangeText($afterPropertyDetails['accessContactName'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Access Contact Phone',
+            $this->normalizeChangeText($before['property_details']['access_contact_phone'] ?? null),
+            $this->normalizeChangeText($afterPropertyDetails['accessContactPhone'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Lockbox Code',
+            $this->normalizeChangeText($before['property_details']['lockbox_code'] ?? null),
+            $this->normalizeChangeText($afterPropertyDetails['lockboxCode'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Lockbox Location',
+            $this->normalizeChangeText($before['property_details']['lockbox_location'] ?? null),
+            $this->normalizeChangeText($afterPropertyDetails['lockboxLocation'] ?? null)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Private Listing',
+            $this->formatBooleanValue($before['is_private_listing'] ?? false),
+            $this->formatBooleanValue((bool) ($shoot->is_private_listing ?? false))
+        );
+
+        if (empty($changes)) {
+            $changes[] = 'Please review updated details in the dashboard.';
+        }
+
+        return [
+            'summary' => implode("\n", $changes),
+            'html' => implode('<br>', array_map('e', $changes)),
+            'lines' => $changes,
+        ];
+    }
+
+    /**
      * Format shoot data for email templates
      */
     private function formatShootData(Shoot $shoot): object
@@ -360,17 +595,7 @@ class MailService
         // Ensure relationships are loaded
         $shoot->loadMissing(['client', 'photographer', 'services']);
 
-        // Create full address from components
-        $fullAddress = trim($shoot->address);
-        if ($shoot->city) {
-            $fullAddress .= ', ' . $shoot->city;
-        }
-        if ($shoot->state) {
-            $fullAddress .= ', ' . $shoot->state;
-        }
-        if ($shoot->zip) {
-            $fullAddress .= ' ' . $shoot->zip;
-        }
+        $fullAddress = $this->formatFullAddress($shoot);
 
         // Format time nicely (e.g., "2:00 PM" instead of "14:00")
         $formattedTime = null;
@@ -525,14 +750,22 @@ class MailService
         return $packages;
     }
 
-    /**
-     * Generate payment link for shoot
-     * Points to public payment page
-     */
     public function generatePaymentLink(Shoot $shoot): string
     {
         $frontendUrl = config('app.frontend_url', 'https://reprodashboard.com');
         return "{$frontendUrl}/payment/{$shoot->id}";
+    }
+
+    public function generateStoredPasswordResetLink(User $user): string
+    {
+        $token = Str::random(64);
+
+        DB::table('password_reset_tokens')->updateOrInsert(
+            ['email' => $user->email],
+            ['token' => Hash::make($token), 'created_at' => now()]
+        );
+
+        return $this->generatePasswordResetLink($user, $token);
     }
 
     /**
@@ -926,6 +1159,132 @@ class MailService
     /**
      * Send an email via CakeMail API through MessagingService
      */
+    private function addChangeLine(array &$changes, string $label, ?string $before, ?string $after): void
+    {
+        $before = trim((string) $before);
+        $after = trim((string) $after);
+        if ($before === $after || ($before === '' && $after === '')) {
+            return;
+        }
+        if ($before === '' && $after !== '') {
+            $changes[] = "{$label}: {$after}";
+        } elseif ($before !== '' && $after === '') {
+            $changes[] = "{$label}: removed (was {$before})";
+        } else {
+            $changes[] = "{$label}: {$before} → {$after}";
+        }
+    }
+
+    private function formatStatusValue(?string $value): string
+    {
+        if (!$value) return '';
+        return ucwords(str_replace(['_', '-'], ' ', $value));
+    }
+
+    private function formatScheduleValue(?string $date, ?string $time, ?string $scheduledAt): string
+    {
+        $parts = [];
+        if ($date) {
+            try {
+                $parts[] = \Carbon\Carbon::parse($date)->format('M j, Y');
+            } catch (\Exception $e) {
+                $parts[] = $date;
+            }
+        } elseif ($scheduledAt) {
+            try {
+                $parts[] = \Carbon\Carbon::parse($scheduledAt)->format('M j, Y');
+            } catch (\Exception $e) {
+                $parts[] = $scheduledAt;
+            }
+        }
+        if ($time) {
+            try {
+                $parts[] = \Carbon\Carbon::parse($time)->format('g:i A');
+            } catch (\Exception $e) {
+                $parts[] = $time;
+            }
+        }
+        return implode(' at ', $parts) ?: 'TBD';
+    }
+
+
+    private function formatFullAddress(Shoot $shoot): string
+    {
+        return trim(sprintf(
+            '%s, %s, %s %s',
+            $shoot->address ?? '',
+            $shoot->city ?? '',
+            $shoot->state ?? '',
+            $shoot->zip ?? ''
+        ), ', ');
+    }
+
+    private function formatServicesForComparison(Shoot $shoot): array
+    {
+        $shoot->loadMissing('services');
+        if (!$shoot->services || $shoot->services->isEmpty()) {
+            return [];
+        }
+        return $shoot->services->map(function ($s) {
+            return [
+                'id' => $s->id,
+                'name' => $s->name ?? $s->service_name ?? 'Service',
+                'price' => (float) ($s->pivot->price ?? $s->price ?? 0),
+                'quantity' => (int) ($s->pivot->quantity ?? 1),
+            ];
+        })->sortBy('id')->values()->toArray();
+    }
+
+    private function formatServiceSummary(array $services): string
+    {
+        if (empty($services)) return 'None';
+        return collect($services)->map(function ($s) {
+            $name = $s['name'] ?? 'Service';
+            $qty = $s['quantity'] ?? 1;
+            $price = $s['price'] ?? 0;
+            $line = $name;
+            if ($qty > 1) $line .= " x{$qty}";
+            if ($price > 0) $line .= ' ($' . number_format($price * $qty, 2) . ')';
+            return $line;
+        })->implode(', ');
+    }
+
+    private function normalizeChangeText(?string $value): string
+    {
+        if ($value === null || trim($value) === '') return '';
+        return trim($value);
+    }
+
+    private function formatCurrency($value): string
+    {
+        $num = (float) ($value ?? 0);
+        return '$' . number_format($num, 2);
+    }
+
+    private function formatNumberValue($value, int $decimals = 0): string
+    {
+        if ($value === null || $value === '') return '';
+        return number_format((float) $value, $decimals);
+    }
+
+    private function formatSquareFootage($value): string
+    {
+        if ($value === null || $value === '') return '';
+        return number_format((int) $value) . ' sqft';
+    }
+
+    private function formatBooleanValue(bool $value): string
+    {
+        return $value ? 'Yes' : 'No';
+    }
+
+    private function normalizePropertyDetails($pd): array
+    {
+        if (is_string($pd)) {
+            $pd = json_decode($pd, true) ?? [];
+        }
+        return is_array($pd) ? $pd : [];
+    }
     private function sendViaCakemail(string $to, string $subject, string $html, string $sendSource): void
     {
         $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));

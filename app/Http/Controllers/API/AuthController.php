@@ -55,10 +55,16 @@ class AuthController extends Controller
         $token = $user->createToken('auth_token')->plainTextToken;
 
         // Send account created email
-        $resetLink = $this->mailService->generatePasswordResetLink($user);
-        $this->mailService->sendAccountCreatedEmail($user, $resetLink);
+        $resetLink = $this->mailService->generateStoredPasswordResetLink($user);
+        $accountCreatedContext = $this->buildUserContext($user);
+        $accountCreatedContext['client'] = $user;
+        $accountCreatedContext['password_reset_link'] = $resetLink;
 
-        $this->automationService->handleEvent('ACCOUNT_CREATED', $this->buildUserContext($user));
+        if ($this->automationService->hasActiveTrigger('ACCOUNT_CREATED')) {
+            $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
+        } else {
+            $this->mailService->sendAccountCreatedEmail($user, $resetLink);
+        }
 
         return response()->json([
             'message' => 'User registered successfully.',

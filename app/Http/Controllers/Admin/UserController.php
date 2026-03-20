@@ -246,13 +246,17 @@ class UserController extends Controller
         // Send account creation email with password reset link
         try {
             $mailService = app(MailService::class);
-            $token = Str::random(64);
-            DB::table('password_reset_tokens')->updateOrInsert(
-                ['email' => $user->email],
-                ['token' => Hash::make($token), 'created_at' => now()]
-            );
-            $resetLink = $mailService->generatePasswordResetLink($user, $token);
-            $mailService->sendAccountCreatedEmail($user, $resetLink);
+            $automationService = app(AutomationService::class);
+            $resetLink = $mailService->generateStoredPasswordResetLink($user);
+            $accountCreatedContext = $automationService->buildUserContext($user);
+            $accountCreatedContext['client'] = $user;
+            $accountCreatedContext['password_reset_link'] = $resetLink;
+
+            if ($automationService->hasActiveTrigger('ACCOUNT_CREATED')) {
+                $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
+            } else {
+                $mailService->sendAccountCreatedEmail($user, $resetLink);
+            }
         } catch (\Exception $e) {
             \Log::warning('Failed to send account creation email', [
                 'user_id' => $user->id,

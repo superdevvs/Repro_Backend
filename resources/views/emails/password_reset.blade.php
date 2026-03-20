@@ -38,7 +38,7 @@
     
     <p>Hi {{ $user->first_name }},</p>
     
-    <p>We received a request to reset your password for your REPro Photos account. Click the button below to create a new password:</p>
+    <p>We received a request to reset your password for your R/E Pro Photos account. Click the button below to create a new password:</p>
     
     <p style="text-align: center;">
         <a href="{!! $resetLink !!}" class="button">Reset Password</a>

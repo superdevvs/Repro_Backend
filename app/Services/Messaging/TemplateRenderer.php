@@ -127,12 +127,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helve
 <div class="ew">
 <!--[if mso]>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#1a1a2e;padding:24px 20px;">
-<img src="{$logoUrl}" alt="REPRO Photos" width="200" style="max-width:200px;height:auto;">
+<img src="{$logoUrl}" alt="R/E Pro Photos" width="200" style="max-width:200px;height:auto;">
 </td></tr></table>
 <![endif]-->
 <!--[if !mso]><!-->
 <div class="eh" style="background-color:#1a1a2e !important;">
-<img src="{$logoUrl}" alt="REPRO Photos" style="max-width:200px;height:auto;">
+<img src="{$logoUrl}" alt="R/E Pro Photos" style="max-width:200px;height:auto;">
 </div>
 <!--<![endif]-->
 <div class="eb">

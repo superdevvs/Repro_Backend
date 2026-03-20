@@ -1931,6 +1931,7 @@ class ShootController extends Controller
         $validated = $request->validated();
         $user = $request->user();
         $originalPhotographerId = $shoot->photographer_id;
+        $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
 
         // Check authorization - photographer can only schedule their own shoots
         if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
@@ -1946,40 +1947,31 @@ class ShootController extends Controller
                 return response()->json(['message' => 'scheduled_at is required'], 422);
             }
 
-            // Check photographer availability if photographer_id is provided (with lock)
             $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
             if ($photographerId) {
-                // Lock photographer's shoots for this date to prevent concurrent bookings
                 $carbonDate = \Carbon\Carbon::parse($scheduledAt);
                 DB::table('shoots')
                     ->where('photographer_id', $photographerId)
                     ->whereDate('scheduled_at', $carbonDate->toDateString())
-                    ->where('id', '!=', $shoot->id) // Exclude current shoot
+                    ->where('id', '!=', $shoot->id)
                     ->lockForUpdate()
                     ->get();
                 
-                // Now check availability (lock is held, preventing race conditions)
-                // Calculate duration from shoot's services (in minutes)
                 $durationMinutes = $this->calculateShootDurationFromShoot($shoot);
                 $this->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes, $shoot->id);
                 
-                // Update photographer if different
                 if ($photographerId !== $shoot->photographer_id) {
                     $shoot->photographer_id = $photographerId;
                     $shoot->save();
                 }
             }
 
-            // Check if shoot was on hold and remove cancellation fee if it was added
             $wasOnHold = ($shoot->status === 'hold_on' || $shoot->workflow_status === 'on_hold');
             if ($wasOnHold) {
-                // Remove cancellation fee (typically $60) that was added when put on hold
-                // We'll check if the current total is higher than expected and remove the fee
-                $cancellationFee = 60; // Standard cancellation fee
+                $cancellationFee = 60;
                 $currentBase = $shoot->base_quote ?? 0;
                 $currentTotal = $shoot->total_quote ?? 0;
                 
-                // If the quotes are high enough to contain the cancellation fee, remove it
                 if ($currentBase >= $cancellationFee && $currentTotal >= $cancellationFee) {
                     $shoot->base_quote = max(0, $currentBase - $cancellationFee);
                     $shoot->total_quote = max(0, $currentTotal - $cancellationFee);
@@ -1989,7 +1981,6 @@ class ShootController extends Controller
 
             $this->workflowService->schedule($shoot, $scheduledAt, $user);
 
-            // Create Dropbox folders if not already created
             if (!$shoot->dropbox_raw_folder) {
                 $this->dropboxService->createShootFolders($shoot);
             }
@@ -2003,15 +1994,9 @@ class ShootController extends Controller
                 $context['rep'] = $shoot->rep;
             }
             $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
-            $scheduledLabel = $scheduledAt
-                ? \Carbon\Carbon::instance($scheduledAt)->format('M j, Y g:i A')
-                : 'TBD';
-            $scheduledServices = $shoot->services->pluck('name')->filter()->values()->all();
-            $scheduledServicesLabel = $scheduledServices ? implode(', ', $scheduledServices) : 'N/A';
-            $scheduledTotal = number_format((float) ($shoot->total_quote ?? 0), 2);
-            $scheduledSummary = "Scheduled for {$scheduledLabel}\nServices: {$scheduledServicesLabel}\nQuote: \${$scheduledTotal}";
-            $context['shoot_changes'] = $scheduledSummary;
-            $context['shoot_changes_html'] = str_replace("\n", '<br>', $scheduledSummary);
+            $shootChangeSummary = $this->mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
+            $context['shoot_changes'] = $shootChangeSummary['summary'];
+            $context['shoot_changes_html'] = $shootChangeSummary['html'];
             $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
             $this->automationService->handleEvent('SHOOT_UPDATED', $context);
 
@@ -2021,14 +2006,14 @@ class ShootController extends Controller
             }
 
             if ($shoot->client) {
-                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $scheduledSummary);
+                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $shootChangeSummary['summary']);
             }
-            
+
             // Send notification to photographer when assigned
             if ($shoot->photographer) {
                 $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
             }
-            
+
             return response()->json([
                 'message' => 'Shoot scheduled successfully',
                 'data' => new ShootResource($shoot)
@@ -2041,230 +2026,13 @@ class ShootController extends Controller
     }
 
     /**
-     * Start editing (photographer has uploaded media)
-     * POST /api/shoots/{shoot}/start-editing
-     */
-    public function startEditing(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only photographer assigned to shoot can start editing
-        if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        // Admin/super admin can also trigger this
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'photographer'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        try {
-            $this->workflowService->startEditing($shoot, $user);
-
-            if (!$shoot->activeShareLinks()->exists()) {
-                try {
-                    $this->createShootShareLink($shoot->fresh(), $user);
-                } catch (\Exception $e) {
-                    Log::warning('Failed to auto-generate share link on start editing', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            return response()->json([
-                'message' => 'Editing started successfully',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-            ]);
-        } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
-        }
-    }
-
-    /**
-     * Mark as ready for review (editor has completed editing)
-     * POST /api/shoots/{shoot}/ready-for-review
-     */
-    public function readyForReview(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only editor or admin can mark as ready for review
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin', 'editor'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        try {
-            $this->workflowService->markReadyForReview($shoot, $user);
-
-            return response()->json([
-                'message' => 'Shoot marked as ready for review',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-            ]);
-        } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
-        }
-    }
-
-    /**
-     * Mark shoot as completed (admin/super admin finalizes)
-     * POST /api/shoots/{shoot}/complete
-     */
-    public function complete(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only admin and super admin can complete shoots
-        if (!in_array($user->role, ['admin', 'superadmin', 'superadmin'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        try {
-            $this->workflowService->markCompleted($shoot, $user);
-
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-            $context = $this->automationService->buildShootContext($shoot);
-            if ($shoot->rep) {
-                $context['rep'] = $shoot->rep;
-            }
-            $this->automationService->handleEvent('SHOOT_COMPLETED', $context);
-
-            return response()->json([
-                'message' => 'Shoot completed successfully',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-            ]);
-        } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
-        }
-    }
-
-    /**
-     * Put shoot on hold
-     * POST /api/shoots/{shoot}/put-on-hold
-     */
-    public function putOnHold(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Admin, super admin, editing manager, or rep can put on hold
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $reason = $request->input('reason');
-        $cancellationFee = $request->input('cancellation_fee', 0);
-
-        try {
-            $this->workflowService->putOnHold($shoot, $user, $reason);
-
-            // Add cancellation fee if provided
-            // Cancellation fee is a flat fee added to both base and total (doesn't affect tax)
-            if ($cancellationFee > 0) {
-                $currentBase = $shoot->base_quote ?? 0;
-                $currentTotal = $shoot->total_quote ?? 0;
-                
-                // Add cancellation fee to base quote and total quote
-                // Tax amount remains unchanged (cancellation fee is not taxed)
-                $shoot->base_quote = $currentBase + $cancellationFee;
-                $shoot->total_quote = $currentTotal + $cancellationFee;
-                $shoot->save();
-            }
-
-            return response()->json([
-                'message' => 'Shoot put on hold',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-            ]);
-        } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
-        }
-    }
-
-    /**
-     * Get client-submitted shoot requests/issues from admin_issue_notes
-     * GET /api/client-requests
-     */
-    public function clientRequests(Request $request)
-    {
-        $user = $request->user();
-
-        // Only admin, superadmin, or rep can view client requests
-        if (!in_array($user->role, ['admin', 'superadmin', 'rep', 'representative'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        // Find shoots with admin_issue_notes that contain client requests
-        $query = Shoot::query()
-            ->whereNotNull('admin_issue_notes')
-            ->where('admin_issue_notes', '!=', '')
-            ->with(['client:id,name,email'])
-            ->orderByDesc('updated_at');
-
-        // Rep can only see requests for their assigned clients
-        if (in_array($user->role, ['rep', 'representative'])) {
-            $query->whereHas('client', function ($q) use ($user) {
-                $q->where('rep_id', $user->id);
-            });
-        }
-
-        $shoots = $query->limit(100)->get();
-
-        // Parse requests from admin_issue_notes and collect client-raised ones
-        $allRequests = [];
-        foreach ($shoots as $shoot) {
-            if (!$shoot->admin_issue_notes) continue;
-            
-            $notes = explode("\n\n", $shoot->admin_issue_notes);
-            foreach ($notes as $index => $note) {
-                if (preg_match('/\[Request from ([^\]]+)\]:\s*(.+)/s', $note, $matches)) {
-                    $raisedByName = $matches[1];
-                    $noteText = trim($matches[2]);
-                    
-                    // Remove media IDs and assignment tags from note text for display
-                    $noteText = preg_replace('/\[MediaIds: [^\]]+\]/', '', $noteText);
-                    $noteText = preg_replace('/\[Assigned: [^\]]+\]/', '', $noteText);
-                    $noteText = trim($noteText);
-                    
-                    // Check if this was raised by a client
-                    $raisedByUser = \App\Models\User::where('name', $raisedByName)->first();
-                    $isClientRequest = !$raisedByUser || $raisedByUser->role === 'client';
-                    
-                    if ($isClientRequest) {
-                        $allRequests[] = [
-                            'id' => 'req_' . $shoot->id . '_' . $index,
-                            'note' => $noteText ?: $shoot->address . ', ' . $shoot->city,
-                            'status' => $shoot->is_flagged ? 'open' : 'resolved',
-                            'created_at' => $shoot->updated_at?->toISOString(),
-                            'shoot' => [
-                                'id' => $shoot->id,
-                                'address' => $shoot->address,
-                                'city' => $shoot->city,
-                                'state' => $shoot->state,
-                                'scheduled_date' => $shoot->scheduled_date,
-                                'client' => $shoot->client ? [
-                                    'id' => $shoot->client->id,
-                                    'name' => $shoot->client->name,
-                                ] : null,
-                            ],
-                        ];
-                    }
-                }
-            }
-        }
-
-        // Sort by most recent and limit
-        usort($allRequests, fn($a, $b) => strcmp($b['created_at'] ?? '', $a['created_at'] ?? ''));
-        $allRequests = array_slice($allRequests, 0, 50);
-
-        return response()->json(['data' => $allRequests]);
-    }
-
-    /**
      * Approve a requested shoot
      * POST /api/shoots/{shoot}/approve
      */
     public function approve(Request $request, Shoot $shoot)
     {
         $user = $request->user();
+        $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
 
         // Only admin, superadmin, or rep can approve shoots
         if (!in_array($user->role, ['admin', 'superadmin', 'rep', 'representative'])) {
@@ -2279,7 +2047,6 @@ class ShootController extends Controller
             }
         }
 
-        // Verify shoot is in requested status
         if ($shoot->status !== Shoot::STATUS_REQUESTED && $shoot->workflow_status !== Shoot::STATUS_REQUESTED) {
             return response()->json(['message' => 'Only requested shoots can be approved'], 422);
         }
@@ -2293,15 +2060,12 @@ class ShootController extends Controller
             'skip_availability_check' => 'nullable|boolean',
         ]);
 
-        // Use existing scheduled_at if not provided
         $scheduledAt = isset($validated['scheduled_at']) 
             ? new \DateTime($validated['scheduled_at']) 
             : ($shoot->scheduled_at ? new \DateTime($shoot->scheduled_at) : new \DateTime());
 
         try {
-            // Assign photographer if provided
             if (!empty($validated['photographer_id'])) {
-                // Check photographer availability (skip for admins if requested or by default)
                 $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
                 if (!$skipAvailabilityCheck) {
                     $durationMinutes = $this->calculateShootDurationFromServices(
@@ -2313,13 +2077,10 @@ class ShootController extends Controller
                 $shoot->save();
             }
 
-            // Approve the shoot
             $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
 
-            // Create Dropbox folders now that the shoot is approved
             $this->dropboxService->createShootFolders($shoot);
 
-            // Auto-create invoice when shoot is approved and scheduled
             if ($scheduledAt) {
                 try {
                     $this->invoiceService->generateForShoot($shoot->fresh());
@@ -2328,7 +2089,6 @@ class ShootController extends Controller
                         'shoot_id' => $shoot->id,
                         'error' => $e->getMessage()
                     ]);
-                    // Don't fail approval if invoice creation fails
                 }
             }
 
@@ -2338,15 +2098,9 @@ class ShootController extends Controller
                 $context['rep'] = $shoot->rep;
             }
             $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
-            $approvedSchedule = $scheduledAt
-                ? \Carbon\Carbon::instance($scheduledAt)->format('M j, Y g:i A')
-                : 'TBD';
-            $approvedServices = $shoot->services->pluck('name')->filter()->values()->all();
-            $approvedServicesLabel = $approvedServices ? implode(', ', $approvedServices) : 'N/A';
-            $approvedTotal = number_format((float) ($shoot->total_quote ?? 0), 2);
-            $approvedSummary = "Approved and scheduled for {$approvedSchedule}\nServices: {$approvedServicesLabel}\nQuote: \${$approvedTotal}";
-            $context['shoot_changes'] = $approvedSummary;
-            $context['shoot_changes_html'] = str_replace("\n", '<br>', $approvedSummary);
+            $shootChangeSummary = $this->mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
+            $context['shoot_changes'] = $shootChangeSummary['summary'];
+            $context['shoot_changes_html'] = $shootChangeSummary['html'];
             if ($wasRequested) {
                 $this->automationService->handleEvent('SHOOT_REQUEST_APPROVED', $context);
             }
@@ -2354,9 +2108,9 @@ class ShootController extends Controller
             $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
 
             if ($shoot->client) {
-                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $approvedSummary);
+                $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $shootChangeSummary['summary']);
             }
-            
+
             // Send notification to photographer when shoot is approved/scheduled
             if ($shoot->photographer) {
                 $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
@@ -2369,473 +2123,8 @@ class ShootController extends Controller
         } catch (\InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         } catch (ValidationException $e) {
-            return response()->json(['message' => $e->getMessage(), 'errors' => $e->errors()], 422);
+            return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
         }
-    }
-
-    /**
-     * Decline a requested shoot
-     * POST /api/shoots/{shoot}/decline
-     */
-    public function decline(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only admin, superadmin, or rep can decline shoots
-        if (!in_array($user->role, ['admin', 'superadmin', 'rep', 'representative'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        // Rep can only decline shoots for their assigned clients
-        if (in_array($user->role, ['rep', 'representative'])) {
-            $client = $shoot->client;
-            if ($client && $client->rep_id !== $user->id) {
-                return response()->json(['message' => 'You can only decline shoots for your assigned clients'], 403);
-            }
-        }
-
-        // Verify shoot is in requested status
-        if ($shoot->status !== Shoot::STATUS_REQUESTED && $shoot->workflow_status !== Shoot::STATUS_REQUESTED) {
-            return response()->json(['message' => 'Only requested shoots can be declined'], 422);
-        }
-
-        $validated = $request->validate([
-            'reason' => 'required|string|max:2000',
-        ]);
-
-        try {
-            $this->workflowService->decline($shoot, $user, $validated['reason']);
-
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-            $context = $this->automationService->buildShootContext($shoot);
-            if ($shoot->rep) {
-                $context['rep'] = $shoot->rep;
-            }
-            if ($shoot->client) {
-                $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
-            }
-            $this->automationService->handleEvent('SHOOT_CANCELED', $context);
-
-            return response()->json([
-                'message' => 'Shoot request declined',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-            ]);
-        } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
-        }
-    }
-
-    /**
-     * Assign a photographer to a specific service within a shoot
-     * POST /api/shoots/{shoot}/assign-service-photographer
-     * 
-     * This allows different photographers to be assigned to different services
-     * within the same shoot (e.g., one photographer for photos, another for drone).
-     */
-    public function assignServicePhotographer(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only admin/superadmin can assign per-service photographers
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $validated = $request->validate([
-            'service_id' => 'required|exists:services,id',
-            'photographer_id' => 'nullable|exists:users,id',
-        ]);
-
-        // Verify the service is attached to this shoot
-        $serviceAttached = $shoot->services()->where('services.id', $validated['service_id'])->exists();
-        if (!$serviceAttached) {
-            return response()->json(['message' => 'Service is not part of this shoot'], 422);
-        }
-
-        // Verify the user is a photographer (if provided)
-        if ($validated['photographer_id']) {
-            $photographer = User::find($validated['photographer_id']);
-            if (!$photographer || $photographer->role !== 'photographer') {
-                return response()->json(['message' => 'Invalid photographer'], 422);
-            }
-        }
-
-        // Assign photographer to the service
-        $success = $shoot->assignPhotographerToService(
-            $validated['service_id'],
-            $validated['photographer_id']
-        );
-
-        if (!$success) {
-            return response()->json(['message' => 'Failed to assign photographer to service'], 500);
-        }
-
-        // Log activity
-        $serviceName = Service::find($validated['service_id'])->name ?? 'Unknown Service';
-        $photographerName = $validated['photographer_id'] 
-            ? (User::find($validated['photographer_id'])->name ?? 'Unknown')
-            : 'Unassigned';
-
-        $this->activityLogger->log(
-            $shoot,
-            'service_photographer_assigned',
-            [
-                'by' => $user->name,
-                'service_id' => $validated['service_id'],
-                'service_name' => $serviceName,
-                'photographer_id' => $validated['photographer_id'],
-                'photographer_name' => $photographerName,
-            ],
-            $user
-        );
-
-        return response()->json([
-            'message' => "Photographer assigned to {$serviceName}",
-            'data' => new ShootResource($shoot->fresh(['client', 'rep', 'photographer', 'services']))
-        ]);
-    }
-
-    /**
-     * Bulk assign photographers to services within a shoot
-     * POST /api/shoots/{shoot}/assign-service-photographers
-     */
-    public function assignServicePhotographers(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only admin/superadmin can assign per-service photographers
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $validated = $request->validate([
-            'assignments' => 'required|array|min:1',
-            'assignments.*.service_id' => 'required|exists:services,id',
-            'assignments.*.photographer_id' => 'nullable|exists:users,id',
-        ]);
-
-        $results = [];
-        foreach ($validated['assignments'] as $assignment) {
-            // Verify the service is attached to this shoot
-            $serviceAttached = $shoot->services()->where('services.id', $assignment['service_id'])->exists();
-            if (!$serviceAttached) {
-                $results[] = [
-                    'service_id' => $assignment['service_id'],
-                    'success' => false,
-                    'message' => 'Service is not part of this shoot',
-                ];
-                continue;
-            }
-
-            // Verify photographer if provided
-            if (!empty($assignment['photographer_id'])) {
-                $photographer = User::find($assignment['photographer_id']);
-                if (!$photographer || $photographer->role !== 'photographer') {
-                    $results[] = [
-                        'service_id' => $assignment['service_id'],
-                        'success' => false,
-                        'message' => 'Invalid photographer',
-                    ];
-                    continue;
-                }
-            }
-
-            $success = $shoot->assignPhotographerToService(
-                $assignment['service_id'],
-                $assignment['photographer_id'] ?? null
-            );
-
-            $results[] = [
-                'service_id' => $assignment['service_id'],
-                'photographer_id' => $assignment['photographer_id'] ?? null,
-                'success' => $success,
-            ];
-        }
-
-        // Log activity
-        $this->activityLogger->log(
-            $shoot,
-            'service_photographers_bulk_assigned',
-            [
-                'by' => $user->name,
-                'assignments' => $results,
-            ],
-            $user
-        );
-
-        return response()->json([
-            'message' => 'Service photographer assignments updated',
-            'results' => $results,
-            'data' => new ShootResource($shoot->fresh(['client', 'rep', 'photographer', 'services']))
-        ]);
-    }
-
-    /**
-     * Client requests cancellation of their shoot
-     * POST /api/shoots/{shoot}/request-cancellation
-     */
-    public function requestCancellation(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only the client who owns the shoot can request cancellation
-        if ($shoot->client_id !== $user->id && $user->role !== 'client') {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        // Cannot request cancellation for already cancelled/declined shoots
-        if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])) {
-            return response()->json(['message' => 'This shoot is already cancelled or declined'], 422);
-        }
-
-        // Cannot request cancellation if already requested
-        if ($shoot->cancellation_requested_at) {
-            return response()->json(['message' => 'Cancellation has already been requested for this shoot'], 422);
-        }
-
-        $validated = $request->validate([
-            'reason' => 'nullable|string|max:1000',
-        ]);
-
-        $shoot->cancellation_requested_at = now();
-        $shoot->cancellation_requested_by = $user->id;
-        $shoot->cancellation_reason = $validated['reason'] ?? null;
-        $shoot->save();
-
-        // Log activity
-        $this->activityLogger->log(
-            $shoot,
-            'cancellation_requested',
-            [
-                'by' => $user->name,
-                'reason' => $validated['reason'] ?? 'No reason provided',
-            ],
-            $user
-        );
-
-        return response()->json([
-            'message' => 'Cancellation request submitted. Pending admin approval.',
-            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-        ]);
-    }
-
-    /**
-     * Admin approves cancellation request
-     * POST /api/shoots/{shoot}/approve-cancellation
-     */
-    public function approveCancellation(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (!$shoot->cancellation_requested_at) {
-            return response()->json(['message' => 'No cancellation request pending for this shoot'], 422);
-        }
-
-        // Update shoot status to cancelled
-        $shoot->status = Shoot::STATUS_CANCELLED;
-        $shoot->workflow_status = Shoot::STATUS_CANCELLED;
-        $shoot->updated_by = $user->id;
-        $shoot->save();
-
-        // Log activity
-        $this->activityLogger->log(
-            $shoot,
-            'cancellation_approved',
-            [
-                'by' => $user->name,
-                'original_reason' => $shoot->cancellation_reason,
-            ],
-            $user
-        );
-
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-        $context = $this->automationService->buildShootContext($shoot);
-        if ($shoot->rep) {
-            $context['rep'] = $shoot->rep;
-        }
-        if ($shoot->client) {
-            $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
-        }
-        $this->automationService->handleEvent('SHOOT_CANCELED', $context);
-
-        return response()->json([
-            'message' => 'Cancellation approved. Shoot has been cancelled.',
-            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-        ]);
-    }
-
-    /**
-     * Admin rejects cancellation request
-     * POST /api/shoots/{shoot}/reject-cancellation
-     */
-    public function rejectCancellation(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (!$shoot->cancellation_requested_at) {
-            return response()->json(['message' => 'No cancellation request pending for this shoot'], 422);
-        }
-
-        $validated = $request->validate([
-            'reason' => 'nullable|string|max:1000',
-        ]);
-
-        // Clear cancellation request
-        $shoot->cancellation_requested_at = null;
-        $shoot->cancellation_requested_by = null;
-        $shoot->cancellation_reason = null;
-        $shoot->save();
-
-        // Log activity
-        $this->activityLogger->log(
-            $shoot,
-            'cancellation_rejected',
-            [
-                'by' => $user->name,
-                'rejection_reason' => $validated['reason'] ?? 'No reason provided',
-            ],
-            $user
-        );
-
-        return response()->json([
-            'message' => 'Cancellation request rejected.',
-            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-        ]);
-    }
-
-    /**
-     * Admin directly cancels a shoot (no client request required)
-     * POST /api/shoots/{shoot}/cancel
-     */
-    public function cancel(Request $request, Shoot $shoot)
-    {
-        $user = $request->user();
-
-        // Only admin/superadmin can directly cancel shoots
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        // Cannot cancel already cancelled/declined shoots
-        if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])) {
-            return response()->json(['message' => 'This shoot is already cancelled or declined'], 422);
-        }
-
-        $validated = $request->validate([
-            'reason' => 'nullable|string|max:1000',
-            'cancellation_fee' => 'nullable|numeric|min:0',
-            'notify_client' => 'nullable|boolean',
-        ]);
-
-        try {
-            // Update shoot status to cancelled
-            $shoot->status = Shoot::STATUS_CANCELLED;
-            $shoot->workflow_status = Shoot::STATUS_CANCELLED;
-            $shoot->cancellation_reason = $validated['reason'] ?? null;
-            $shoot->updated_by = $user->id;
-
-            $shoot->save();
-
-            // Add cancellation fee if provided - generate invoice and notify client
-            $cancellationFee = $validated['cancellation_fee'] ?? 0;
-            $cancellationInvoice = null;
-            if ($cancellationFee > 0) {
-                // Check if shoot had payments (was paid)
-                $totalPaid = $shoot->payments()
-                    ->where('status', Payment::STATUS_COMPLETED)
-                    ->sum('amount') ?? 0;
-                
-                // Generate cancellation fee invoice
-                $cancellationInvoice = $this->invoiceService->generateCancellationFeeInvoice($shoot, $cancellationFee);
-                
-                // Send cancellation fee invoice to client
-                if ($cancellationInvoice && $shoot->client) {
-                    $this->mailService->sendCancellationFeeInvoiceEmail($shoot->client, $cancellationInvoice);
-                }
-            }
-
-            // Log activity
-            $this->activityLogger->log(
-                $shoot,
-                'shoot_cancelled',
-                [
-                    'by' => $user->name,
-                    'reason' => $validated['reason'] ?? 'No reason provided',
-                    'cancellation_fee' => $cancellationFee,
-                ],
-                $user
-            );
-
-            // Notify client if requested (default: true)
-            $notifyClient = $validated['notify_client'] ?? true;
-            if ($notifyClient && $shoot->client) {
-                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-                $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
-            }
-
-            // Trigger automation event
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-            $context = $this->automationService->buildShootContext($shoot);
-            if ($shoot->rep) {
-                $context['rep'] = $shoot->rep;
-            }
-            $this->automationService->handleEvent('SHOOT_CANCELED', $context);
-
-            return response()->json([
-                'message' => 'Shoot has been cancelled.',
-                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Failed to cancel shoot', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage()
-            ]);
-
-            return response()->json([
-                'message' => 'Failed to cancel shoot',
-                'error' => $e->getMessage()
-            ], 500);
-        }
-    }
-
-    /**
-     * Get shoots with pending cancellation requests (admin only)
-     * GET /api/shoots/pending-cancellations
-     */
-    public function pendingCancellations(Request $request)
-    {
-        $user = $request->user();
-
-        // Match dashboard admin experience roles for cancellation approval visibility
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        $shoots = Shoot::whereNotNull('cancellation_requested_at')
-            ->where(function (Builder $query) {
-                $query->whereNull('status')
-                    ->orWhereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED]);
-            })
-            ->where(function (Builder $query) {
-                $query->whereNull('workflow_status')
-                    ->orWhereNotIn('workflow_status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED]);
-            })
-            ->with(['client', 'rep', 'photographer', 'services'])
-            ->orderBy('cancellation_requested_at', 'desc')
-            ->get();
-
-        return response()->json([
-            'data' => ShootResource::collection($shoots),
-            'count' => $shoots->count(),
-        ]);
     }
 
     /**
@@ -2853,6 +2142,7 @@ class ShootController extends Controller
             $shoot = Shoot::findOrFail($shoot);
         }
         $shoot->loadMissing('services');
+        $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
         $originalServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
         $originalServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
         $originalAddress = $this->formatFullAddress($shoot);
@@ -2862,7 +2152,6 @@ class ShootController extends Controller
         $isAdmin = in_array($user->role, ['admin', 'superadmin', 'superadmin']);
         $isClient = $user->role === 'client';
         $isRep = $user->role === 'salesRep';
-
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
 
@@ -2870,10 +2159,8 @@ class ShootController extends Controller
             if (!$onlyPrivateListing) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
-
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
-
             if (!$ownsShoot && !$assignedRep) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
@@ -2889,27 +2176,21 @@ class ShootController extends Controller
             'services.*.id' => 'required_with:services|integer|exists:services,id',
             'services.*.price' => 'nullable|numeric|min:0',
             'services.*.quantity' => 'nullable|integer|min:1',
-            // Location fields
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:255',
             'state' => 'nullable|string|max:2',
             'zip' => 'nullable|string|max:10',
-            // Client and photographer
             'client_id' => 'nullable|exists:users,id',
             'photographer_id' => 'nullable|exists:users,id',
-            // Payment fields
             'base_quote' => 'nullable|numeric|min:0',
             'tax_amount' => 'nullable|numeric|min:0',
             'total_quote' => 'nullable|numeric|min:0',
-            // Property details
             'property_details' => 'nullable|array',
             'bedrooms' => 'nullable|integer|min:0',
             'bathrooms' => 'nullable|numeric|min:0',
             'sqft' => 'nullable|integer|min:0',
             'is_private_listing' => 'nullable|boolean',
-            // Tour links
             'tour_links' => 'nullable|array',
-            // Notes fields
             'shoot_notes' => 'nullable|string',
             'company_notes' => 'nullable|string',
             'photographer_notes' => 'nullable|string',
@@ -2930,6 +2211,7 @@ class ShootController extends Controller
         $originalCompanyNotes = $shoot->company_notes;
         $originalPhotographerNotes = $shoot->photographer_notes;
         $originalEditorNotes = $shoot->editor_notes;
+
         $originalBedrooms = $shoot->property_details['bedrooms'] ?? $shoot->property_details['beds'] ?? null;
         $originalBathrooms = $shoot->property_details['bathrooms'] ?? $shoot->property_details['baths'] ?? null;
         $originalSqft = $shoot->property_details['sqft'] ?? $shoot->property_details['squareFeet'] ?? null;
@@ -2941,13 +2223,8 @@ class ShootController extends Controller
         if (array_key_exists('is_private_listing', $validated)) {
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
             if (!in_array($currentStatus, [
-                'delivered',
-                'ready_for_client',
-                'admin_verified',
-                'ready',
-                'completed',
-                'workflow_completed',
-                'client_delivered',
+                'delivered', 'ready_for_client', 'admin_verified', 'ready',
+                'completed', 'workflow_completed', 'client_delivered',
             ], true)) {
                 return response()->json([
                     'message' => 'Only delivered/completed shoots can be marked as Private Exclusive',
@@ -2959,18 +2236,13 @@ class ShootController extends Controller
         if (array_key_exists('status', $validated)) {
             $shoot->status = $validated['status'];
         }
-        // If marking delivered, stamp admin_verified_at
         $markDelivered = false;
-        
-        // Handle scheduled_at (ISO datetime from frontend) - parse into scheduled_date, time, and scheduled_at
+
         if (array_key_exists('scheduled_at', $validated) && $validated['scheduled_at']) {
             $scheduledAt = new \DateTime($validated['scheduled_at']);
             $shoot->scheduled_at = $scheduledAt;
-            $newDateLabel = $shoot->scheduled_date
-                ? \Carbon\Carbon::parse($shoot->scheduled_date)->format('M j, Y')
-                : ($shoot->scheduled_at?->format('M j, Y') ?? 'TBD');
         }
-        
+
         if (array_key_exists('scheduled_date', $validated)) {
             $shoot->scheduled_date = $validated['scheduled_date'];
         }
@@ -2989,7 +2261,7 @@ class ShootController extends Controller
             $markDelivered = true;
         }
 
-        // Auto-assign editor when status transitions to editing
+
         $newStatus = $validated['status'] ?? $validated['workflow_status'] ?? null;
         if ($newStatus && in_array($newStatus, [Shoot::STATUS_EDITING, Shoot::STATUS_UPLOADED]) && empty($shoot->editor_id)) {
             $primaryEditor = User::where('role', 'editor')->first();
@@ -2998,12 +2270,10 @@ class ShootController extends Controller
             }
         }
 
-        // Update services if provided
         if (array_key_exists('services', $validated) && is_array($validated['services'])) {
             $this->attachServices($shoot, $validated['services']);
             $invoiceNeedsRefresh = true;
 
-            // If payment fields not explicitly provided, recalculate from services
             if (!$paymentFieldsProvided) {
                 $serviceIds = collect($validated['services'])->pluck('id');
                 $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
@@ -3027,7 +2297,7 @@ class ShootController extends Controller
             }
         }
 
-        // Update location fields
+
         if (array_key_exists('address', $validated)) {
             $shoot->address = $validated['address'];
         }
@@ -3041,17 +2311,14 @@ class ShootController extends Controller
             $shoot->zip = $validated['zip'];
         }
 
-        // Update client if provided
         if (array_key_exists('client_id', $validated)) {
             $shoot->client_id = $validated['client_id'];
         }
 
-        // Update photographer if provided
         if (array_key_exists('photographer_id', $validated)) {
             $shoot->photographer_id = $validated['photographer_id'];
         }
 
-        // Update payment fields
         if (array_key_exists('base_quote', $validated)) {
             $shoot->base_quote = $validated['base_quote'];
         }
@@ -3065,7 +2332,7 @@ class ShootController extends Controller
             $invoiceNeedsRefresh = true;
         }
 
-        // Update property details (all stored in property_details JSON column)
+
         $pd = $shoot->property_details ?? [];
         if (is_string($pd)) {
             $pd = json_decode($pd, true) ?? [];
@@ -3098,17 +2365,14 @@ class ShootController extends Controller
             $invoiceNeedsRefresh = true;
         }
 
-        // Update tour_links if provided
         if (array_key_exists('tour_links', $validated) && is_array($validated['tour_links'])) {
             $currentTourLinks = $shoot->tour_links ?? [];
             if (is_string($currentTourLinks)) {
                 $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
             }
-            // Merge new tour_links with existing ones
             $shoot->tour_links = array_merge($currentTourLinks, $validated['tour_links']);
         }
 
-        // Update notes fields
         if (array_key_exists('shoot_notes', $validated)) {
             $shoot->shoot_notes = $validated['shoot_notes'];
         }
@@ -3123,6 +2387,7 @@ class ShootController extends Controller
         }
 
         $shoot->save();
+
 
         if ($invoiceNeedsRefresh) {
             try {
@@ -3151,17 +2416,14 @@ class ShootController extends Controller
                     $user
                 );
             } catch (\Exception $e) {
-                // ignore activity logging errors
             }
         }
 
         if ($markDelivered) {
-            // Set admin_verified_at if not already set
             if (empty($shoot->admin_verified_at)) {
                 $shoot->admin_verified_at = now();
                 $shoot->save();
             }
-            // Ensure workflow_status reflects delivery
             if ($shoot->workflow_status !== Shoot::STATUS_DELIVERED) {
                 $shoot->workflow_status = Shoot::STATUS_DELIVERED;
                 $shoot->save();
@@ -3169,70 +2431,9 @@ class ShootController extends Controller
         }
 
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
-        
-        // Build changes summary for email notifications
-        $changes = [];
-        $newServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
-        $newServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
-        if ($originalServiceIds !== $newServiceIds) {
-            $changes[] = 'Services: ' . (empty($newServiceNames) ? 'None' : implode(', ', $newServiceNames));
-        }
-        $newAddress = $this->formatFullAddress($shoot);
-        if ($originalAddress !== $newAddress) {
-            $changes[] = 'Location: ' . ($newAddress ?: 'TBD');
-        }
-        if ($originalBaseQuote !== (float) $shoot->base_quote || $originalTotalQuote !== (float) $shoot->total_quote) {
-            $changes[] = 'Quote: $' . number_format((float) $shoot->total_quote, 2);
-        }
-        if ($originalScheduledAt !== $shoot->scheduled_at?->toISOString() || $originalScheduledDate !== $shoot->scheduled_date?->toDateString() || $originalTime !== $shoot->time) {
-            $newDateLabel = $shoot->scheduled_date
-                ? \Carbon\Carbon::parse($shoot->scheduled_date)->format('M j, Y')
-                : ($shoot->scheduled_at?->format('M j, Y') ?? 'TBD');
-            $newTimeLabel = $shoot->time ?? ($shoot->scheduled_at?->format('g:i A') ?? 'TBD');
-            $changes[] = 'Scheduled: ' . $newDateLabel . ' at ' . $newTimeLabel;
-        }
-        if ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer) {
-            $changes[] = 'Photographer: ' . $shoot->photographer->name;
-        }
-        if ($originalClientId !== $shoot->client_id && $shoot->client) {
-            $changes[] = 'Client: ' . $shoot->client->name;
-        }
-        // Track notes changes
-        if ($originalShootNotes !== $shoot->shoot_notes) {
-            $changes[] = 'Shoot Notes: Updated';
-        }
-        if ($originalCompanyNotes !== $shoot->company_notes) {
-            $changes[] = 'Company Notes: Updated';
-        }
-        if ($originalPhotographerNotes !== $shoot->photographer_notes) {
-            $changes[] = 'Photographer Notes: Updated';
-        }
-        if ($originalEditorNotes !== $shoot->editor_notes) {
-            $changes[] = 'Editor Notes: Updated';
-        }
-        // Track property details changes
-        $newPd = $shoot->property_details ?? [];
-        if (is_string($newPd)) {
-            $newPd = json_decode($newPd, true) ?? [];
-        }
-        $newBedrooms = $newPd['bedrooms'] ?? $newPd['beds'] ?? null;
-        $newBathrooms = $newPd['bathrooms'] ?? $newPd['baths'] ?? null;
-        $newSqft = $newPd['sqft'] ?? $newPd['squareFeet'] ?? null;
-        $propertyParts = [];
-        if ($originalBedrooms != $newBedrooms && $newBedrooms !== null) {
-            $propertyParts[] = $newBedrooms . ' bed';
-        }
-        if ($originalBathrooms != $newBathrooms && $newBathrooms !== null) {
-            $propertyParts[] = $newBathrooms . ' bath';
-        }
-        if ($originalSqft != $newSqft && $newSqft !== null) {
-            $propertyParts[] = number_format($newSqft) . ' sqft';
-        }
-        if (!empty($propertyParts)) {
-            $changes[] = 'Property: ' . implode(' / ', $propertyParts);
-        }
-        $changesSummary = !empty($changes) ? implode("\n", $changes) : null;
-        $changesHtml = !empty($changes) ? implode('<br>', array_map('e', $changes)) : null;
+        $shootChangeSummary = $this->mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
+        $changesSummary = $shootChangeSummary['summary'];
+        $changesHtml = $shootChangeSummary['html'];
 
         $notifyClient = array_key_exists('notify_client', $validated)
             ? (bool) $validated['notify_client']

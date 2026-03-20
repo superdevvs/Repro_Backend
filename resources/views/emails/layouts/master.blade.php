@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
     <meta name="supported-color-schemes" content="light dark">
-    <title>@yield('title', 'REPRO Photos')</title>
+    <title>@yield('title', 'R/E Pro Photos')</title>
     <style>
         :root {
             color-scheme: light dark;
@@ -94,12 +94,12 @@
     <div class="email-wrapper">
         <!--[if mso]>
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#f0f0f0;padding:24px 20px;border-radius:12px 12px 0 0;">
-        <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="REPRO Photos" width="200" style="max-width:200px;height:auto;">
+        <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos" width="200" style="max-width:200px;height:auto;">
         </td></tr></table>
         <![endif]-->
         <!--[if !mso]><!-->
         <div class="email-header" style="background-color:#f0f0f0 !important;">
-            <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="REPRO Photos" style="max-width:200px;height:auto;">
+            <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos" style="max-width:200px;height:auto;">
         </div>
         <!--<![endif]-->
         <div class="email-body">

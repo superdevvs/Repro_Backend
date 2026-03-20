@@ -92,17 +92,16 @@ class ShootRescheduleRequestController extends Controller
 
     private function applyScheduleChanges(Shoot $shoot, ShootRescheduleRequest $request): void
     {
-        $originalDate = $shoot->scheduled_date;
-        $originalTime = $shoot->time;
+        $mailService = app(MailService::class);
+        $shoot->loadMissing('services');
+        $beforeSnapshot = $mailService->captureShootSnapshot($shoot);
 
         $shoot->scheduled_date = $request->requested_date;
         if (!empty($request->requested_time)) {
             $shoot->time = $request->requested_time;
         }
         
-        // Also update scheduled_at to keep it in sync
         $timeStr = $request->requested_time ?? $shoot->time ?? '10:00';
-        // Parse time (e.g., "10:15 AM" or "10:15")
         $timeParsed = date_parse($timeStr);
         $hours = $timeParsed['hour'] ?? 10;
         $minutes = $timeParsed['minute'] ?? 0;
@@ -111,10 +110,9 @@ class ShootRescheduleRequestController extends Controller
             ->setTime($hours, $minutes, 0);
         $shoot->scheduled_at = $scheduledAt;
         
-        // Don't change status - keep original status (e.g., 'requested' stays 'requested')
         $shoot->save();
 
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
         $automationService = app(AutomationService::class);
         $context = $automationService->buildShootContext($shoot);
         if ($shoot->rep) {
@@ -122,26 +120,15 @@ class ShootRescheduleRequestController extends Controller
         }
         $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
 
-        $originalDateLabel = $originalDate
-            ? \Carbon\Carbon::parse($originalDate)->format('M j, Y')
-            : 'TBD';
-        $originalTimeLabel = $originalTime ?: null;
-        $originalSchedule = trim($originalDateLabel . ($originalTimeLabel ? " {$originalTimeLabel}" : '')) ?: 'TBD';
-
-        $newDateLabel = $shoot->scheduled_date
-            ? \Carbon\Carbon::parse($shoot->scheduled_date)->format('M j, Y')
-            : 'TBD';
-        $newTimeLabel = $shoot->time ?: null;
-        $newSchedule = trim($newDateLabel . ($newTimeLabel ? " {$newTimeLabel}" : '')) ?: 'TBD';
-
-        $changesSummary = "Schedule: {$originalSchedule} → {$newSchedule}";
+        $shootChangeSummary = $mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
+        $changesSummary = $shootChangeSummary['summary'];
         $context['shoot_changes'] = $changesSummary;
-        $context['shoot_changes_html'] = str_replace("\n", '<br>', $changesSummary);
+        $context['shoot_changes_html'] = $shootChangeSummary['html'];
         $automationService->handleEvent('SHOOT_SCHEDULED', $context);
         $automationService->handleEvent('SHOOT_UPDATED', $context);
 
         if ($shoot->client) {
-            app(MailService::class)->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary);
+            $mailService->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary);
         }
         
         // Log activity for the reschedule
