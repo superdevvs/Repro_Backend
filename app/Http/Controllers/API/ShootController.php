@@ -5430,15 +5430,26 @@ class ShootController extends Controller
         if ($shoot->relationLoaded('services') && $shoot->services->isNotEmpty()) {
             $shootPhotographerId = $shoot->photographer_id;
             $shootPhotographer = $shoot->photographer;
-            $transformedServices = $shoot->services->map(function ($service) use ($shootPhotographerId, $shootPhotographer) {
-                $pivotPhotographerId = $service->pivot->photographer_id ?? null;
+
+            // Batch-load unique per-service photographer IDs to avoid N+1 queries
+            $servicePhotographerIds = $shoot->services
+                ->map(fn($s) => $s->pivot?->photographer_id)
+                ->filter()
+                ->unique()
+                ->values();
+            $servicePhotographers = $servicePhotographerIds->isNotEmpty()
+                ? \App\Models\User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
+                : collect();
+
+            $transformedServices = $shoot->services->map(function ($service) use ($shootPhotographerId, $shootPhotographer, $servicePhotographers) {
+                $pivotPhotographerId = $service->pivot?->photographer_id ?? null;
                 $resolvedPhotographerId = $pivotPhotographerId ?? $shootPhotographerId;
 
                 // Resolve photographer details
                 $resolvedPhotographer = null;
                 if ($resolvedPhotographerId) {
                     if ($pivotPhotographerId) {
-                        $photographer = \App\Models\User::find($pivotPhotographerId);
+                        $photographer = $servicePhotographers->get($pivotPhotographerId);
                     } else {
                         $photographer = $shootPhotographer;
                     }
@@ -5454,9 +5465,9 @@ class ShootController extends Controller
                 return [
                     'id' => (string) $service->id,
                     'name' => $service->name,
-                    'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
-                    'quantity' => (int) ($service->pivot->quantity ?? 1),
-                    'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
+                    'price' => (float) ($service->pivot?->price ?? $service->price ?? 0),
+                    'quantity' => (int) ($service->pivot?->quantity ?? 1),
+                    'photographer_pay' => $service->pivot?->photographer_pay ? (float) $service->pivot->photographer_pay : null,
                     'photographer_id' => $pivotPhotographerId ? (string) $pivotPhotographerId : null,
                     'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
                     'photographer' => $resolvedPhotographer,
