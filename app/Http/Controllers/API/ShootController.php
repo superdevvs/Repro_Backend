@@ -2200,6 +2200,9 @@ class ShootController extends Controller
             'editor_notes' => 'nullable|string',
             'notify_client' => 'nullable|boolean',
             'notify_photographer' => 'nullable|boolean',
+            'service_photographers' => 'nullable|array',
+            'service_photographers.*.service_id' => 'required_with:service_photographers|integer',
+            'service_photographers.*.photographer_id' => 'required_with:service_photographers|integer|exists:users,id',
         ]);
 
         $previousPrivateListing = (bool) ($shoot->is_private_listing ?? false);
@@ -2397,6 +2400,17 @@ class ShootController extends Controller
         }
 
         $shoot->save();
+
+        // Assign per-service photographers if provided
+        if (array_key_exists('service_photographers', $validated) && is_array($validated['service_photographers'])) {
+            foreach ($validated['service_photographers'] as $assignment) {
+                $serviceId = $assignment['service_id'] ?? null;
+                $assignedPhotographerId = $assignment['photographer_id'] ?? null;
+                if ($serviceId && $assignedPhotographerId) {
+                    $shoot->assignPhotographerToService((int) $serviceId, (int) $assignedPhotographerId);
+                }
+            }
+        }
 
         // Log shoot_updated activity with change summary
         try {
