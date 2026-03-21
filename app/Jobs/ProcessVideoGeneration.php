@@ -52,11 +52,22 @@ class ProcessVideoGeneration implements ShouldQueue
                 return;
             }
 
+            // Map aspect_ratio to API format
+            $apiAspectRatio = match ($this->videoJob->aspect_ratio) {
+                'horizontal' => '16:9',
+                'vertical'   => '9:16',
+                'square'     => '1:1',
+                'standard'   => '4:3',
+                default      => '16:9',
+            };
+
             // Submit video generation
             $result = $higgsFieldService->generateVideo(
                 $startFrameUrl,
                 $endFrameUrl,
-                $this->videoJob->preset_prompt
+                $this->videoJob->preset_prompt,
+                5,
+                $apiAspectRatio
             );
 
             if (!$result || !isset($result['request_id'])) {

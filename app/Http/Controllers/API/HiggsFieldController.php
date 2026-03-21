@@ -193,7 +193,7 @@ class HiggsFieldController extends Controller
             'start_frame_file_id' => 'required|exists:shoot_files,id',
             'end_frame_file_id' => 'nullable|exists:shoot_files,id',
             'preset_id' => 'required|exists:ai_video_presets,id',
-            'aspect_ratio' => 'required|in:horizontal,vertical',
+            'aspect_ratio' => 'required|in:horizontal,vertical,square,standard',
         ]);
 
         if ($validator->fails()) {
@@ -713,13 +713,25 @@ class HiggsFieldController extends Controller
         foreach ($pathsToTry as $diskPath) {
             if (file_exists($diskPath) && is_file($diskPath)) {
                 try {
+                    // Resize large images to max 2048px to avoid memory exhaustion
+                    $resized = self::resizeImageForApi($diskPath);
+                    if ($resized) {
+                        Log::info('HiggsFieldController: Converted image to base64', [
+                            'file_id' => $shootFile->id,
+                            'disk_path' => $diskPath,
+                            'base64_length' => strlen($resized['base64']),
+                        ]);
+                        return "data:{$resized['mime']};base64,{$resized['base64']}";
+                    }
+
+                    // Fallback: read raw file if GD is unavailable
                     $contents = file_get_contents($diskPath);
                     if ($contents === false) continue;
 
                     $mimeType = mime_content_type($diskPath) ?: 'image/jpeg';
                     $base64 = base64_encode($contents);
 
-                    Log::info('HiggsFieldController: Converted image to base64', [
+                    Log::info('HiggsFieldController: Converted image to base64 (raw)', [
                         'file_id' => $shootFile->id,
                         'disk_path' => $diskPath,
                         'size_bytes' => strlen($contents),
@@ -742,5 +754,74 @@ class HiggsFieldController extends Controller
         ]);
 
         return null;
+    }
+
+    /**
+     * Resize an image to fit within max dimensions to prevent memory exhaustion.
+     * Returns ['base64' => ..., 'mime' => ...] or null on failure.
+     */
+    private static function resizeImageForApi(string $path, int $maxDim = 2048): ?array
+    {
+        if (!function_exists('imagecreatefromjpeg')) {
+            return null;
+        }
+
+        $info = @getimagesize($path);
+        if (!$info) return null;
+
+        [$origW, $origH, $type] = $info;
+
+        // If already small enough and under 5MB, skip resize
+        if ($origW <= $maxDim && $origH <= $maxDim && filesize($path) < 5 * 1024 * 1024) {
+            $contents = file_get_contents($path);
+            if ($contents === false) return null;
+            $mime = image_type_to_mime_type($type);
+            return ['base64' => base64_encode($contents), 'mime' => $mime];
+        }
+
+        // Calculate new dimensions
+        $scale = min($maxDim / $origW, $maxDim / $origH, 1.0);
+        $newW = (int) round($origW * $scale);
+        $newH = (int) round($origH * $scale);
+
+        // Temporarily increase memory for image processing
+        $oldLimit = ini_get('memory_limit');
+        ini_set('memory_limit', '512M');
+
+        try {
+            $src = match ($type) {
+                IMAGETYPE_JPEG => @imagecreatefromjpeg($path),
+                IMAGETYPE_PNG  => @imagecreatefrompng($path),
+                IMAGETYPE_WEBP => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : false,
+                default => false,
+            };
+
+            if (!$src) {
+                ini_set('memory_limit', $oldLimit);
+                return null;
+            }
+
+            $dst = imagecreatetruecolor($newW, $newH);
+            imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $origW, $origH);
+            imagedestroy($src);
+
+            ob_start();
+            imagejpeg($dst, null, 85);
+            $contents = ob_get_clean();
+            imagedestroy($dst);
+
+            ini_set('memory_limit', $oldLimit);
+
+            if (!$contents) return null;
+
+            return ['base64' => base64_encode($contents), 'mime' => 'image/jpeg'];
+        } catch (\Exception $e) {
+            ini_set('memory_limit', $oldLimit);
+            Log::warning('HiggsFieldController: Image resize failed', [
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 }

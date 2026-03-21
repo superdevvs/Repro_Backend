@@ -180,7 +180,7 @@ class HiggsFieldService
      * @param int $duration Video duration in seconds
      * @return array|null Response with request_id or null on failure
      */
-    public function generateVideo(string $startFrameUrl, ?string $endFrameUrl, string $prompt, int $duration = 5): ?array
+    public function generateVideo(string $startFrameUrl, ?string $endFrameUrl, string $prompt, int $duration = 5, string $aspectRatio = '16:9'): ?array
     {
         try {
             if (!$this->isConfigured()) {
@@ -195,6 +195,7 @@ class HiggsFieldService
                 [
                     'prompt' => $prompt,
                     'duration' => $duration,
+                    'aspect_ratio' => $aspectRatio,
                 ]
             );
 
