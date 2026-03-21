@@ -28,7 +28,7 @@ class HiggsFieldService
             $this->timeout = $settings['timeout'] ?? config('services.higgsfield.timeout', 120) ?? 120;
             $this->retryAttempts = $settings['retryAttempts'] ?? config('services.higgsfield.retry_attempts', 3) ?? 3;
             $this->videoModel = $settings['videoModel'] ?? config('services.higgsfield.video_model', 'kling-video/v2.1/pro/image-to-video');
-            $this->imageModel = $settings['imageModel'] ?? config('services.higgsfield.image_model', 'bytedance/seedream/v4/edit');
+            $this->imageModel = $settings['imageModel'] ?? config('services.higgsfield.image_model', 'higgsfield-ai/soul/reference');
         } catch (\Exception $e) {
             Log::warning('HiggsFieldService constructor error, using defaults', [
                 'error' => $e->getMessage(),
@@ -39,7 +39,7 @@ class HiggsFieldService
             $this->timeout = 120;
             $this->retryAttempts = 3;
             $this->videoModel = 'kling-video/v2.1/pro/image-to-video';
-            $this->imageModel = 'bytedance/seedream/v4/edit';
+            $this->imageModel = 'higgsfield-ai/soul/reference';
         }
     }
 
@@ -79,12 +79,31 @@ class HiggsFieldService
     }
 
     /**
-     * Submit an image generation request for vertical aspect ratio conversion
-     *
-     * @param string $imageUrl Source image URL
-     * @param int $variantCount Number of variants to generate (2-3)
-     * @return array Array of request_ids, or empty on failure
+     * Parse a base64 data URI and return the raw base64 string.
+     * Returns null if the input is not a data URI.
      */
+    private function extractBase64(string $input): ?string
+    {
+        if (preg_match('/^data:[^;]+;base64,(.+)$/s', $input, $matches)) {
+            return $matches[1];
+        }
+        return null;
+    }
+
+    /**
+     * Build the image fields for the API payload.
+     * If the input is a base64 data URI, sends as 'image' (raw base64).
+     * Otherwise sends as 'image_url'.
+     */
+    private function buildImagePayload(string $imageInput, string $fieldPrefix = 'image'): array
+    {
+        $base64 = $this->extractBase64($imageInput);
+        if ($base64) {
+            return [$fieldPrefix => $base64];
+        }
+        return [$fieldPrefix . '_url' => $imageInput];
+    }
+
     public function generateVerticalImages(string $imageUrl, int $variantCount = 3): array
     {
         $requestIds = [];
@@ -98,16 +117,20 @@ class HiggsFieldService
             try {
                 $url = $this->baseUrl . '/' . $this->imageModel;
 
-                $payload = [
-                    'image_url' => $imageUrl,
-                    'prompt' => 'Reframe this real estate photo to vertical 9:16 portrait orientation. Maintain the key architectural features, composition, and visual quality. Extend the image naturally to fill the vertical frame.',
-                    'aspect_ratio' => '9:16',
-                    'resolution' => '720p',
-                ];
+                $payload = array_merge(
+                    $this->buildImagePayload($imageUrl),
+                    [
+                        'prompt' => 'Reframe this real estate photo to vertical 9:16 portrait orientation. Maintain the key architectural features, composition, and visual quality. Extend the image naturally to fill the vertical frame.',
+                        'aspect_ratio' => '9:16',
+                        'resolution' => '720p',
+                    ]
+                );
 
+                $isBase64 = $this->extractBase64($imageUrl) !== null;
                 Log::info('HiggsField: Submitting vertical conversion', [
-                    'image_url' => $imageUrl,
+                    'image_type' => $isBase64 ? 'base64' : 'url',
                     'variant_index' => $i,
+                    'payload_keys' => array_keys($payload),
                 ]);
 
                 $response = Http::timeout($this->timeout)
@@ -167,21 +190,26 @@ class HiggsFieldService
 
             $url = $this->baseUrl . '/' . $this->videoModel;
 
-            $payload = [
-                'image_url' => $startFrameUrl,
-                'prompt' => $prompt,
-                'duration' => $duration,
-            ];
+            $payload = array_merge(
+                $this->buildImagePayload($startFrameUrl),
+                [
+                    'prompt' => $prompt,
+                    'duration' => $duration,
+                ]
+            );
 
             // Add end frame if provided (for models that support it)
             if ($endFrameUrl) {
-                $payload['end_image_url'] = $endFrameUrl;
+                $endFields = $this->buildImagePayload($endFrameUrl, 'end_image');
+                $payload = array_merge($payload, $endFields);
             }
 
+            $isBase64Start = $this->extractBase64($startFrameUrl) !== null;
             Log::info('HiggsField: Submitting video generation', [
-                'start_frame_url' => $startFrameUrl,
+                'start_frame_type' => $isBase64Start ? 'base64' : 'url',
                 'has_end_frame' => !empty($endFrameUrl),
                 'prompt_length' => strlen($prompt),
+                'payload_keys' => array_keys($payload),
             ]);
 
             $response = Http::timeout($this->timeout)

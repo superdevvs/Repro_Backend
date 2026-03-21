@@ -2,8 +2,10 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\API\HiggsFieldController;
 use App\Models\AiVideoGenerationJob;
 use App\Models\AiVideoVerticalVariant;
+use App\Models\ShootFile;
 use App\Services\HiggsFieldService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -35,20 +37,29 @@ class ProcessVideoAspectConversion implements ShouldQueue
 
             $this->videoJob->markAsConvertingAspect();
 
+            // Read images from disk as base64 for Higgsfield API
+            $startFrameUrl = $this->resolveImageForApi($this->videoJob->start_frame_file_id)
+                ?? $this->videoJob->original_start_frame_url;
+
             // Submit conversion requests for start frame
             $this->submitConversionRequests(
                 $higgsFieldService,
-                $this->videoJob->original_start_frame_url,
+                $startFrameUrl,
                 'start'
             );
 
             // Submit conversion requests for end frame if present
-            if ($this->videoJob->original_end_frame_url) {
-                $this->submitConversionRequests(
-                    $higgsFieldService,
-                    $this->videoJob->original_end_frame_url,
-                    'end'
-                );
+            if ($this->videoJob->end_frame_file_id) {
+                $endFrameUrl = $this->resolveImageForApi($this->videoJob->end_frame_file_id)
+                    ?? $this->videoJob->original_end_frame_url;
+
+                if ($endFrameUrl) {
+                    $this->submitConversionRequests(
+                        $higgsFieldService,
+                        $endFrameUrl,
+                        'end'
+                    );
+                }
             }
 
             // Poll all variants until complete
@@ -159,6 +170,27 @@ class ProcessVideoAspectConversion implements ShouldQueue
             ]);
         } else {
             $this->videoJob->markAsFailed('All vertical conversion variants failed');
+        }
+    }
+
+    /**
+     * Resolve a shoot file to a base64 data URI for sending to Higgsfield API.
+     */
+    private function resolveImageForApi(?int $fileId): ?string
+    {
+        if (!$fileId) return null;
+
+        try {
+            $shootFile = ShootFile::find($fileId);
+            if (!$shootFile) return null;
+
+            return HiggsFieldController::readImageAsBase64($shootFile);
+        } catch (\Exception $e) {
+            Log::error('ProcessVideoAspectConversion: Error resolving image', [
+                'file_id' => $fileId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
         }
     }
 

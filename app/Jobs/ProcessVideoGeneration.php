@@ -2,7 +2,9 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\API\HiggsFieldController;
 use App\Models\AiVideoGenerationJob;
+use App\Models\ShootFile;
 use App\Services\HiggsFieldService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -32,17 +34,21 @@ class ProcessVideoGeneration implements ShouldQueue
 
             $this->videoJob->markAsGenerating();
 
-            // Determine frame URLs based on aspect ratio
+            // For horizontal: read images from disk and convert to base64 for Higgsfield API
+            // For vertical: use the selected variant URLs (already hosted by Higgsfield)
             if ($this->videoJob->aspect_ratio === 'vertical') {
                 $startFrameUrl = $this->videoJob->selected_start_frame_url;
                 $endFrameUrl = $this->videoJob->selected_end_frame_url;
             } else {
-                $startFrameUrl = $this->videoJob->original_start_frame_url;
-                $endFrameUrl = $this->videoJob->original_end_frame_url;
+                // Read from local disk as base64 — Higgsfield can't reach our server URLs
+                $startFrameUrl = $this->resolveImageForApi($this->videoJob->start_frame_file_id);
+                $endFrameUrl = $this->videoJob->end_frame_file_id
+                    ? $this->resolveImageForApi($this->videoJob->end_frame_file_id)
+                    : null;
             }
 
             if (!$startFrameUrl) {
-                $this->videoJob->markAsFailed('No start frame URL available');
+                $this->videoJob->markAsFailed('No start frame image available — could not read from disk');
                 return;
             }
 
@@ -142,6 +148,51 @@ class ProcessVideoGeneration implements ShouldQueue
         Log::warning('ProcessVideoGeneration: Max polls reached', [
             'job_id' => $this->videoJob->id,
         ]);
+    }
+
+    /**
+     * Resolve a shoot file to a base64 data URI for sending to Higgsfield API.
+     * Falls back to the stored public URL if file can't be read from disk.
+     */
+    private function resolveImageForApi(?int $fileId): ?string
+    {
+        if (!$fileId) return null;
+
+        try {
+            $shootFile = ShootFile::find($fileId);
+            if (!$shootFile) {
+                Log::warning('ProcessVideoGeneration: ShootFile not found', ['file_id' => $fileId]);
+                return null;
+            }
+
+            // Try base64 from disk first (most reliable for external APIs)
+            $base64 = HiggsFieldController::readImageAsBase64($shootFile);
+            if ($base64) {
+                Log::info('ProcessVideoGeneration: Using base64 image', [
+                    'file_id' => $fileId,
+                    'base64_length' => strlen($base64),
+                ]);
+                return $base64;
+            }
+
+            // Fall back to stored URL
+            $url = $this->videoJob->start_frame_file_id === $fileId
+                ? $this->videoJob->original_start_frame_url
+                : $this->videoJob->original_end_frame_url;
+
+            Log::warning('ProcessVideoGeneration: Could not read file from disk, using stored URL', [
+                'file_id' => $fileId,
+                'url' => $url,
+            ]);
+
+            return $url;
+        } catch (\Exception $e) {
+            Log::error('ProcessVideoGeneration: Error resolving image', [
+                'file_id' => $fileId,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
     }
 
     public function failed(\Throwable $exception): void

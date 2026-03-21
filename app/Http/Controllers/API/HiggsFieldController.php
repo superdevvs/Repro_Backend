@@ -13,6 +13,7 @@ use App\Jobs\ProcessVideoAspectConversion;
 use App\Jobs\ProcessVideoGeneration;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 
 class HiggsFieldController extends Controller
@@ -633,23 +634,113 @@ class HiggsFieldController extends Controller
         return false;
     }
 
+    /**
+     * Get a publicly accessible image URL for a shoot file.
+     * Used for storing in DB and frontend display.
+     * Uses same URL resolution logic as ShootController.
+     */
     private function getImageUrl(ShootFile $shootFile): ?string
     {
-        $url = $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
+        $path = $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
 
-        if (!$url) {
+        if (!$path) {
+            Log::warning('HiggsFieldController: No path found for shoot file', [
+                'file_id' => $shootFile->id,
+            ]);
             return null;
         }
 
-        if (filter_var($url, FILTER_VALIDATE_URL)) {
-            return $url;
+        // If it's already a full URL (e.g., CDN, Dropbox shared link), use directly
+        if (filter_var($path, FILTER_VALIDATE_URL)) {
+            return $path;
         }
 
-        $baseUrl = config('app.url');
-        if (str_starts_with($url, '/')) {
-            return $baseUrl . $url;
+        // Build public URL using same logic as ShootController's $resolveUrl
+        $cleanPath = ltrim($path, '/');
+        if (str_starts_with($cleanPath, 'shoots/') || str_starts_with($cleanPath, 'storage/')) {
+            $storagePath = str_starts_with($cleanPath, 'storage/') ? $cleanPath : 'storage/' . $cleanPath;
+            return url($storagePath);
         }
 
-        return $baseUrl . '/' . $url;
+        return url('storage/' . $cleanPath);
+    }
+
+    /**
+     * Read a shoot file from local disk and return as base64 data URI.
+     * This is used by queue jobs when sending images to external APIs like Higgsfield,
+     * since those APIs need to fetch the image and may not be able to reach our server directly.
+     *
+     * @param ShootFile $shootFile
+     * @return string|null Base64 data URI or null if file not found
+     */
+    public static function readImageAsBase64(ShootFile $shootFile): ?string
+    {
+        $pathsToTry = [];
+
+        $storagePath = $shootFile->storage_path;
+        $filename = $shootFile->filename;
+        $storedFilename = $shootFile->stored_filename;
+        $shootId = $shootFile->shoot_id;
+
+        // Try storage_path directly
+        if ($storagePath) {
+            $cleanPath = ltrim($storagePath, '/');
+            $pathsToTry[] = storage_path('app/public/' . $cleanPath);
+            $pathsToTry[] = storage_path('app/' . $cleanPath);
+            $pathsToTry[] = public_path('storage/' . $cleanPath);
+        }
+
+        // Try common patterns with filename
+        if ($filename && $shootId) {
+            $pathsToTry[] = storage_path("app/public/shoots/{$shootId}/todo/{$filename}");
+            $pathsToTry[] = storage_path("app/public/shoots/{$shootId}/completed/{$filename}");
+            $pathsToTry[] = storage_path("app/public/shoots/{$shootId}/{$filename}");
+        }
+
+        if ($storedFilename && $shootId) {
+            $pathsToTry[] = storage_path("app/public/shoots/{$shootId}/todo/{$storedFilename}");
+            $pathsToTry[] = storage_path("app/public/shoots/{$shootId}/completed/{$storedFilename}");
+            $pathsToTry[] = storage_path("app/public/shoots/{$shootId}/{$storedFilename}");
+        }
+
+        // Try web_path / thumbnail_path as local file paths
+        if ($shootFile->web_path) {
+            $webClean = ltrim($shootFile->web_path, '/');
+            $pathsToTry[] = storage_path('app/public/' . $webClean);
+            $pathsToTry[] = public_path('storage/' . $webClean);
+        }
+
+        foreach ($pathsToTry as $diskPath) {
+            if (file_exists($diskPath) && is_file($diskPath)) {
+                try {
+                    $contents = file_get_contents($diskPath);
+                    if ($contents === false) continue;
+
+                    $mimeType = mime_content_type($diskPath) ?: 'image/jpeg';
+                    $base64 = base64_encode($contents);
+
+                    Log::info('HiggsFieldController: Converted image to base64', [
+                        'file_id' => $shootFile->id,
+                        'disk_path' => $diskPath,
+                        'size_bytes' => strlen($contents),
+                    ]);
+
+                    return "data:{$mimeType};base64,{$base64}";
+                } catch (\Exception $e) {
+                    Log::warning('HiggsFieldController: Failed to read image file', [
+                        'path' => $diskPath,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+
+        Log::warning('HiggsFieldController: Could not find image on disk for base64 conversion', [
+            'file_id' => $shootFile->id,
+            'storage_path' => $storagePath,
+            'paths_tried' => count($pathsToTry),
+        ]);
+
+        return null;
     }
 }

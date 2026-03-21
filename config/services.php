@@ -159,7 +159,7 @@ return [
         'timeout' => env('HIGGSFIELD_TIMEOUT', 120),
         'retry_attempts' => env('HIGGSFIELD_RETRY_ATTEMPTS', 3),
         'video_model' => env('HIGGSFIELD_VIDEO_MODEL', 'kling-video/v2.1/pro/image-to-video'),
-        'image_model' => env('HIGGSFIELD_IMAGE_MODEL', 'bytedance/seedream/v4/edit'),
+        'image_model' => env('HIGGSFIELD_IMAGE_MODEL', 'higgsfield-ai/soul/reference'),
     ],
 
     // MyMarketingMatters (MMM) Punchout/SSO Integration
