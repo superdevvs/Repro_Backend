@@ -114,18 +114,15 @@ class HiggsFieldService
             try {
                 $url = $this->baseUrl . '/' . $this->imageModel;
 
-                $payload = array_merge(
-                    $this->buildImagePayload($imageUrl),
-                    [
-                        'prompt' => 'Extend image vertically',
-                        'aspect_ratio' => '9:16',
-                        'resolution' => '720p',
-                    ]
-                );
+                $payload = [
+                    'image_url' => $imageUrl,
+                    'prompt' => 'Extend this image vertically to 9:16 portrait format, keeping the original content centered and naturally extending the top and bottom',
+                    'aspect_ratio' => '9:16',
+                    'resolution' => '720p',
+                ];
 
-                $isBase64 = $this->extractBase64($imageUrl) !== null;
                 Log::info('HiggsField: Submitting vertical conversion', [
-                    'image_type' => $isBase64 ? 'base64' : 'url',
+                    'image_url' => substr($imageUrl, 0, 100) . '...',
                     'variant_index' => $i,
                     'payload_keys' => array_keys($payload),
                 ]);

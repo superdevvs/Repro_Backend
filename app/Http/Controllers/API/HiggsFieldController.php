@@ -641,7 +641,8 @@ class HiggsFieldController extends Controller
      */
     private function getImageUrl(ShootFile $shootFile): ?string
     {
-        $path = $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
+        // Prefer web_path (optimized/smaller) over full storage_path
+        $path = $shootFile->web_path ?? $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
 
         if (!$path) {
             Log::warning('HiggsFieldController: No path found for shoot file', [

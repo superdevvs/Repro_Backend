@@ -37,8 +37,8 @@ class ProcessVideoAspectConversion implements ShouldQueue
 
             $this->videoJob->markAsConvertingAspect();
 
-            // Read images from disk as base64 for Higgsfield API
-            $startFrameUrl = $this->resolveImageForApi($this->videoJob->start_frame_file_id)
+            // Use web-sized public URL — Higgsfield fetches via HTTP
+            $startFrameUrl = $this->resolveWebUrl($this->videoJob->start_frame_file_id)
                 ?? $this->videoJob->original_start_frame_url;
 
             // Submit conversion requests for start frame
@@ -50,7 +50,7 @@ class ProcessVideoAspectConversion implements ShouldQueue
 
             // Submit conversion requests for end frame if present
             if ($this->videoJob->end_frame_file_id) {
-                $endFrameUrl = $this->resolveImageForApi($this->videoJob->end_frame_file_id)
+                $endFrameUrl = $this->resolveWebUrl($this->videoJob->end_frame_file_id)
                     ?? $this->videoJob->original_end_frame_url;
 
                 if ($endFrameUrl) {
@@ -174,9 +174,9 @@ class ProcessVideoAspectConversion implements ShouldQueue
     }
 
     /**
-     * Resolve a shoot file to a base64 data URI for sending to Higgsfield API.
+     * Resolve a shoot file to its web-sized public URL for Higgsfield API.
      */
-    private function resolveImageForApi(?int $fileId): ?string
+    private function resolveWebUrl(?int $fileId): ?string
     {
         if (!$fileId) return null;
 
@@ -184,9 +184,17 @@ class ProcessVideoAspectConversion implements ShouldQueue
             $shootFile = ShootFile::find($fileId);
             if (!$shootFile) return null;
 
-            return HiggsFieldController::readImageAsBase64($shootFile);
+            $path = $shootFile->web_path ?? $shootFile->storage_path ?? $shootFile->path;
+            if (!$path) return null;
+
+            if (filter_var($path, FILTER_VALIDATE_URL)) {
+                return $path;
+            }
+
+            $cleanPath = ltrim($path, '/');
+            return url('storage/' . $cleanPath);
         } catch (\Exception $e) {
-            Log::error('ProcessVideoAspectConversion: Error resolving image', [
+            Log::error('ProcessVideoAspectConversion: Error resolving web URL', [
                 'file_id' => $fileId,
                 'error' => $e->getMessage(),
             ]);
