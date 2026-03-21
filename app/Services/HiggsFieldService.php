@@ -112,12 +112,13 @@ class HiggsFieldService
 
         for ($i = 0; $i < $variantCount; $i++) {
             try {
-                // Use popcorn/auto model for vertical extension
-                $url = $this->baseUrl . '/popcorn/auto';
+                // Use higgsfield-ai/popcorn/auto model for vertical extension
+                $url = $this->baseUrl . '/higgsfield-ai/popcorn/auto';
 
                 $payload = [
-                    'image_url' => $imageUrl,
+                    'image_urls' => [$imageUrl],
                     'prompt' => 'Extend image vertically',
+                    'num_images' => 1,
                     'aspect_ratio' => '9:16',
                     'resolution' => '1600p',
                 ];
