@@ -50,17 +50,21 @@ class ShootResource extends JsonResource
             'id' => (string) $this->id,
             'client' => [
                 'id' => (string) $this->client_id,
-                'name' => $this->client->name ?? 'Unknown',
-                'email' => $this->client->email ?? '',
+                'name' => $this->client?->name ?? 'Unknown',
+                'email' => $this->client?->email ?? '',
             ],
-            'rep' => $this->when($this->rep_id, [
-                'id' => (string) $this->rep_id,
-                'name' => $this->rep->name ?? 'Unknown',
-            ]),
-            'photographer' => $this->when($this->photographer_id, [
-                'id' => (string) $this->photographer_id,
-                'name' => $this->photographer->name ?? 'Unassigned',
-            ]),
+            'rep' => $this->when($this->rep_id, function () {
+                return [
+                    'id' => (string) $this->rep_id,
+                    'name' => $this->rep?->name ?? 'Unknown',
+                ];
+            }),
+            'photographer' => $this->when($this->photographer_id, function () {
+                return [
+                    'id' => (string) $this->photographer_id,
+                    'name' => $this->photographer?->name ?? 'Unassigned',
+                ];
+            }),
             'location' => [
                 'address' => $this->address,
                 'city' => $this->city,
@@ -68,26 +72,37 @@ class ShootResource extends JsonResource
                 'zip' => $this->zip,
                 'fullAddress' => "{$this->address}, {$this->city}, {$this->state} {$this->zip}",
             ],
-            'services' => $this->services->map(function ($service) {
+            // Batch-load unique per-service photographer IDs to avoid N+1 queries
+            'services' => (function () {
+                $servicePhotographerIds = $this->services
+                    ->pluck('pivot.photographer_id')
+                    ->filter()
+                    ->unique()
+                    ->values();
+                $servicePhotographers = $servicePhotographerIds->isNotEmpty()
+                    ? \App\Models\User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
+                    : collect();
+
+                return $this->services->map(function ($service) use ($servicePhotographers) {
                 // FALLBACK RULE: service.photographer_id ?? shoot.photographer_id
                 $resolvedPhotographerId = $service->pivot->photographer_id ?? $this->photographer_id;
-                
+
                 // Resolve photographer details
                 $resolvedPhotographer = null;
                 if ($resolvedPhotographerId) {
-                    // Try service-level photographer first
+                    // Try service-level photographer first (from batch-loaded collection)
                     if ($service->pivot->photographer_id) {
-                        $photographer = \App\Models\User::find($service->pivot->photographer_id);
+                        $photographer = $servicePhotographers->get($service->pivot->photographer_id);
                     } else {
                         // Fallback to shoot-level photographer
                         $photographer = $this->photographer;
                     }
-                    
+
                     if ($photographer) {
                         $resolvedPhotographer = [
                             'id' => (string) $photographer->id,
                             'name' => $photographer->name,
-                            'avatar' => $photographer->avatar,
+                            'avatar' => $photographer->avatar ?? null,
                         ];
                     }
                 }
@@ -111,7 +126,8 @@ class ShootResource extends JsonResource
                     ] : null,
                     'category_name' => $service->category?->name,
                 ];
-            }),
+                });
+            })(),
             // Explicitly include services_list for frontend compatibility
             'services_list' => $this->services->pluck('name')->filter()->values()->all(),
             'scheduledAt' => $this->scheduled_at?->toIso8601String(),

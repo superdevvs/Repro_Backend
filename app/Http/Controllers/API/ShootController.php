@@ -157,8 +157,9 @@ class ShootController extends Controller
                 'client:id,name,email,company_name,phonenumber',
                 'photographer:id,name,avatar',
                 'editor:id,name,avatar',
+                'rep:id,name,email,avatar',
                 'service:id,name',
-                'services:id,name',
+                'services.category',
             ];
             
             // Only load files if explicitly requested (reduces query time significantly)
