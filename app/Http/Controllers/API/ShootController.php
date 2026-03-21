@@ -5427,12 +5427,14 @@ class ShootController extends Controller
 
         // Transform services to include resolved_photographer_id, category, and photographer details
         // This matches the ShootResource format so the frontend can detect per-service assignments
+        try {
         if ($shoot->relationLoaded('services') && $shoot->services->isNotEmpty()) {
             $shootPhotographerId = $shoot->photographer_id;
             $shootPhotographer = $shoot->photographer;
 
             // Batch-load unique per-service photographer IDs to avoid N+1 queries
             $servicePhotographerIds = $shoot->services
+                ->filter(fn($s) => is_object($s))
                 ->map(fn($s) => $s->pivot?->photographer_id)
                 ->filter()
                 ->unique()
@@ -5442,6 +5444,11 @@ class ShootController extends Controller
                 : collect();
 
             $transformedServices = $shoot->services->map(function ($service) use ($shootPhotographerId, $shootPhotographer, $servicePhotographers) {
+                // Guard: skip if service is not a model (already transformed to array)
+                if (is_array($service)) {
+                    return $service;
+                }
+
                 $pivotPhotographerId = $service->pivot?->photographer_id ?? null;
                 $resolvedPhotographerId = $pivotPhotographerId ?? $shootPhotographerId;
 
@@ -5462,6 +5469,8 @@ class ShootController extends Controller
                     }
                 }
 
+                $categoryObj = $service->relationLoaded('category') ? $service->getRelation('category') : null;
+
                 return [
                     'id' => (string) $service->id,
                     'name' => $service->name,
@@ -5471,16 +5480,19 @@ class ShootController extends Controller
                     'photographer_id' => $pivotPhotographerId ? (string) $pivotPhotographerId : null,
                     'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
                     'photographer' => $resolvedPhotographer,
-                    'category' => $service->category ? [
-                        'id' => (string) $service->category->id,
-                        'name' => $service->category->name,
+                    'category' => $categoryObj ? [
+                        'id' => (string) $categoryObj->id,
+                        'name' => $categoryObj->name,
                     ] : null,
-                    'category_name' => $service->category?->name,
+                    'category_name' => $categoryObj?->name,
                 ];
             })->values()->all();
 
             $shoot->setRelation('services', collect());
             $shoot->setAttribute('services', $transformedServices);
+        }
+        } catch (\Throwable $e) {
+            \Log::warning('transformShoot services error for shoot ' . $shoot->id . ': ' . $e->getMessage());
         }
 
         // Explicitly include services as an array of names for frontend compatibility
