@@ -120,7 +120,7 @@ class HiggsFieldService
                 $payload = array_merge(
                     $this->buildImagePayload($imageUrl),
                     [
-                        'prompt' => 'Reframe this real estate photo to vertical 9:16 portrait orientation. Maintain the key architectural features, composition, and visual quality. Extend the image naturally to fill the vertical frame.',
+                        'prompt' => 'Extend image vertically',
                         'aspect_ratio' => '9:16',
                         'resolution' => '720p',
                     ]

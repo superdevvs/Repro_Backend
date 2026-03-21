@@ -51,6 +51,8 @@ class AiVideoGenerationJob extends Model
     // Aspect ratio constants
     const ASPECT_HORIZONTAL = 'horizontal';
     const ASPECT_VERTICAL = 'vertical';
+    const ASPECT_SQUARE = 'square';
+    const ASPECT_STANDARD = 'standard';
 
     public function shoot(): BelongsTo
     {

@@ -19,7 +19,7 @@ return new class extends Migration
             $table->foreignId('start_frame_file_id')->nullable()->constrained('shoot_files')->onDelete('set null');
             $table->foreignId('end_frame_file_id')->nullable()->constrained('shoot_files')->onDelete('set null');
             $table->text('preset_prompt'); // Actual interpolated prompt sent to Higgsfield (for audit)
-            $table->enum('aspect_ratio', ['horizontal', 'vertical']);
+            $table->enum('aspect_ratio', ['horizontal', 'vertical', 'square', 'standard']);
             $table->enum('status', [
                 'pending',
                 'converting_aspect',
