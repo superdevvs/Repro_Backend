@@ -437,10 +437,10 @@ class ShootController extends Controller
             $this->workflowService->cancel($shoot, $user, $validated['reason'] ?? 'Cancelled by admin');
 
             // Send notification to client if requested
-            if (!empty($validated['notify_client']) && $shoot->client) {
+            if (!empty($validated['notify_client']) && $shoot->client && $shoot->client->email) {
                 try {
                     $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     \Log::warning('Failed to send cancellation email: ' . $e->getMessage());
                 }
             }
@@ -720,10 +720,10 @@ class ShootController extends Controller
             $this->workflowService->decline($shoot, $user, $validated['reason'] ?? null);
 
             // Send notification to client (reuse removed email template)
-            if ($shoot->client) {
+            if ($shoot->client && $shoot->client->email) {
                 try {
                     $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
-                } catch (\Exception $e) {
+                } catch (\Throwable $e) {
                     \Log::warning('Failed to send decline email: ' . $e->getMessage());
                 }
             }
