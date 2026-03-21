@@ -683,7 +683,14 @@ class HiggsFieldController extends Controller
         $storedFilename = $shootFile->stored_filename;
         $shootId = $shootFile->shoot_id;
 
-        // Try storage_path directly
+        // Try web_path first (optimized/smaller for faster API calls)
+        if ($shootFile->web_path) {
+            $webClean = ltrim($shootFile->web_path, '/');
+            $pathsToTry[] = storage_path('app/public/' . $webClean);
+            $pathsToTry[] = public_path('storage/' . $webClean);
+        }
+
+        // Then try storage_path
         if ($storagePath) {
             $cleanPath = ltrim($storagePath, '/');
             $pathsToTry[] = storage_path('app/public/' . $cleanPath);

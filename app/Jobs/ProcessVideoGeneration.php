@@ -35,16 +35,14 @@ class ProcessVideoGeneration implements ShouldQueue
             $this->videoJob->markAsGenerating();
 
             // For vertical: use the selected variant URLs (already hosted by Higgsfield)
-            // For all others: use the public web URL (Higgsfield fetches via HTTP)
+            // For all others: read from disk as base64 data URI (Kling video model requires base64)
             if ($this->videoJob->aspect_ratio === 'vertical') {
                 $startFrameUrl = $this->videoJob->selected_start_frame_url;
                 $endFrameUrl = $this->videoJob->selected_end_frame_url;
             } else {
-                $startFrameUrl = $this->resolveWebUrl($this->videoJob->start_frame_file_id)
-                    ?? $this->videoJob->original_start_frame_url;
+                $startFrameUrl = $this->resolveImageAsBase64($this->videoJob->start_frame_file_id);
                 $endFrameUrl = $this->videoJob->end_frame_file_id
-                    ? ($this->resolveWebUrl($this->videoJob->end_frame_file_id)
-                        ?? $this->videoJob->original_end_frame_url)
+                    ? $this->resolveImageAsBase64($this->videoJob->end_frame_file_id)
                     : null;
             }
 
@@ -163,39 +161,32 @@ class ProcessVideoGeneration implements ShouldQueue
     }
 
     /**
-     * Resolve a shoot file to its web-sized public URL for Higgsfield API.
-     * Prefers web_path (smaller/optimized) over full storage_path.
+     * Resolve a shoot file to a base64 data URI for sending to Kling video model.
+     * Prefers web_path (smaller/optimized) for faster upload.
      */
-    private function resolveWebUrl(?int $fileId): ?string
+    private function resolveImageAsBase64(?int $fileId): ?string
     {
         if (!$fileId) return null;
 
         try {
             $shootFile = ShootFile::find($fileId);
-            if (!$shootFile) return null;
-
-            // Prefer web_path (optimized size) over storage_path (full size)
-            $path = $shootFile->web_path ?? $shootFile->storage_path ?? $shootFile->path;
-            if (!$path) return null;
-
-            // If already a full URL, use directly
-            if (filter_var($path, FILTER_VALIDATE_URL)) {
-                return $path;
+            if (!$shootFile) {
+                Log::warning('ProcessVideoGeneration: ShootFile not found', ['file_id' => $fileId]);
+                return null;
             }
 
-            // Build public URL
-            $cleanPath = ltrim($path, '/');
-            $url = url('storage/' . $cleanPath);
+            $base64 = HiggsFieldController::readImageAsBase64($shootFile);
+            if ($base64) {
+                Log::info('ProcessVideoGeneration: Using base64 image', [
+                    'file_id' => $fileId,
+                    'base64_length' => strlen($base64),
+                ]);
+                return $base64;
+            }
 
-            Log::info('ProcessVideoGeneration: Using web URL', [
-                'file_id' => $fileId,
-                'path_type' => $shootFile->web_path ? 'web_path' : 'storage_path',
-                'url' => $url,
-            ]);
-
-            return $url;
+            return null;
         } catch (\Exception $e) {
-            Log::error('ProcessVideoGeneration: Error resolving web URL', [
+            Log::error('ProcessVideoGeneration: Error resolving image', [
                 'file_id' => $fileId,
                 'error' => $e->getMessage(),
             ]);

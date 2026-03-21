@@ -112,13 +112,14 @@ class HiggsFieldService
 
         for ($i = 0; $i < $variantCount; $i++) {
             try {
-                $url = $this->baseUrl . '/' . $this->imageModel;
+                // Use popcorn/auto model for vertical extension
+                $url = $this->baseUrl . '/popcorn/auto';
 
                 $payload = [
                     'image_url' => $imageUrl,
-                    'prompt' => 'Extend this image vertically to 9:16 portrait format, keeping the original content centered and naturally extending the top and bottom',
+                    'prompt' => 'Extend image vertically',
                     'aspect_ratio' => '9:16',
-                    'resolution' => '720p',
+                    'resolution' => '1600p',
                 ];
 
                 Log::info('HiggsField: Submitting vertical conversion', [
