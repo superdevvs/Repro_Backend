@@ -92,15 +92,12 @@ class HiggsFieldService
 
     /**
      * Build the image fields for the API payload.
-     * If the input is a base64 data URI, sends as 'image' (raw base64).
-     * Otherwise sends as 'image_url'.
+     * Higgsfield API requires 'image_url' — accepts both HTTP URLs and data URIs.
      */
     private function buildImagePayload(string $imageInput, string $fieldPrefix = 'image'): array
     {
-        $base64 = $this->extractBase64($imageInput);
-        if ($base64) {
-            return [$fieldPrefix => $base64];
-        }
+        // Always send as image_url — Higgsfield requires this field name
+        // It accepts both regular URLs and base64 data URIs
         return [$fieldPrefix . '_url' => $imageInput];
     }
 
