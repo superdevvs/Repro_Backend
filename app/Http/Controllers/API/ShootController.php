@@ -389,6 +389,355 @@ class ShootController extends Controller
     }
 
     /**
+     * Admin directly puts a shoot on hold
+     * POST /api/shoots/{shoot}/put-on-hold
+     */
+    public function putOnHold(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'required|string|max:1000',
+        ]);
+
+        try {
+            $this->workflowService->putOnHold($shoot, $user, $validated['reason']);
+
+            return response()->json([
+                'message' => 'Shoot has been placed on hold.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Admin directly cancels a shoot
+     * POST /api/shoots/{shoot}/cancel
+     */
+    public function cancel(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:1000',
+            'notify_client' => 'nullable|boolean',
+        ]);
+
+        try {
+            $this->workflowService->cancel($shoot, $user, $validated['reason'] ?? 'Cancelled by admin');
+
+            // Send notification to client if requested
+            if (!empty($validated['notify_client']) && $shoot->client) {
+                try {
+                    $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to send cancellation email: ' . $e->getMessage());
+                }
+            }
+
+            // Trigger automation
+            try {
+                $this->automationService->handleEvent('SHOOT_CANCELED', [
+                    'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
+                    'user' => $user,
+                ]);
+            } catch (\Exception $e) {
+                \Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
+            }
+
+            return response()->json([
+                'message' => 'Shoot has been cancelled.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Client requests cancellation of their shoot
+     * POST /api/shoots/{shoot}/request-cancellation
+     */
+    public function requestCancellation(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        // Client who owns the shoot or admin roles can request
+        if ($shoot->client_id !== $user->id && !in_array($user->role, ['admin', 'superadmin', 'client'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $currentStatus = $shoot->workflow_status ?? $shoot->status;
+
+        if (in_array($currentStatus, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
+            return response()->json(['message' => 'This shoot cannot be cancelled'], 422);
+        }
+
+        if ($shoot->cancellation_requested_at) {
+            return response()->json(['message' => 'A cancellation request is already pending for this shoot'], 422);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'required|string|max:1000',
+        ]);
+
+        $shoot->cancellation_requested_at = now();
+        $shoot->cancellation_requested_by = $user->id;
+        $shoot->cancellation_reason = $validated['reason'];
+        $shoot->save();
+
+        $this->activityLogger->log(
+            $shoot,
+            'cancellation_requested',
+            [
+                'by' => $user->name,
+                'reason' => $validated['reason'],
+            ],
+            $user
+        );
+
+        return response()->json([
+            'message' => 'Cancellation request submitted. Pending approval.',
+            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+        ]);
+    }
+
+    /**
+     * Admin approves cancellation request
+     * POST /api/shoots/{shoot}/approve-cancellation
+     */
+    public function approveCancellation(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$shoot->cancellation_requested_at) {
+            return response()->json(['message' => 'No cancellation request pending for this shoot'], 422);
+        }
+
+        try {
+            $this->workflowService->cancel($shoot, $user, $shoot->cancellation_reason);
+
+            $shoot->cancellation_requested_at = null;
+            $shoot->cancellation_requested_by = null;
+            $shoot->save();
+
+            // Trigger automation
+            try {
+                $this->automationService->handleEvent('SHOOT_CANCELED', [
+                    'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
+                    'user' => $user,
+                ]);
+            } catch (\Exception $e) {
+                \Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
+            }
+
+            return response()->json([
+                'message' => 'Cancellation request approved. Shoot has been cancelled.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Admin rejects cancellation request
+     * POST /api/shoots/{shoot}/reject-cancellation
+     */
+    public function rejectCancellation(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (!$shoot->cancellation_requested_at) {
+            return response()->json(['message' => 'No cancellation request pending for this shoot'], 422);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:1000',
+        ]);
+
+        $shoot->cancellation_requested_at = null;
+        $shoot->cancellation_requested_by = null;
+        $shoot->cancellation_reason = null;
+        $shoot->save();
+
+        $this->activityLogger->log(
+            $shoot,
+            'cancellation_rejected',
+            [
+                'by' => $user->name,
+                'rejection_reason' => $validated['reason'] ?? 'No reason provided',
+            ],
+            $user
+        );
+
+        return response()->json([
+            'message' => 'Cancellation request rejected.',
+            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+        ]);
+    }
+
+    /**
+     * List shoots with pending cancellation requests
+     * GET /api/shoots/pending-cancellations
+     */
+    public function pendingCancellations(Request $request)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $shoots = Shoot::whereNotNull('cancellation_requested_at')
+            ->with(['client', 'photographer', 'services'])
+            ->orderBy('cancellation_requested_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'data' => ShootResource::collection($shoots),
+        ]);
+    }
+
+    /**
+     * Start editing workflow for a shoot
+     * POST /api/shoots/{shoot}/start-editing
+     */
+    public function startEditing(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        try {
+            $this->workflowService->startEditing($shoot, $user);
+
+            return response()->json([
+                'message' => 'Shoot moved to editing.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services', 'editor']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Mark shoot as ready for review
+     * POST /api/shoots/{shoot}/ready-for-review
+     */
+    public function readyForReview(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        try {
+            $shoot->status = Shoot::STATUS_READY;
+            $shoot->workflow_status = Shoot::STATUS_READY;
+            $shoot->editing_completed_at = now();
+            $shoot->updated_by = $user->id;
+            $shoot->save();
+
+            $this->activityLogger->log(
+                $shoot,
+                'shoot_submitted_for_review',
+                ['by' => $user->name],
+                $user
+            );
+
+            return response()->json([
+                'message' => 'Shoot marked as ready for review.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\Exception $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Mark shoot as complete/delivered
+     * POST /api/shoots/{shoot}/complete
+     */
+    public function complete(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        try {
+            $this->workflowService->markCompleted($shoot, $user);
+
+            return response()->json([
+                'message' => 'Shoot has been completed and delivered.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
+     * Decline a requested shoot
+     * POST /api/shoots/{shoot}/decline
+     */
+    public function decline(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:1000',
+        ]);
+
+        try {
+            $this->workflowService->decline($shoot, $user, $validated['reason'] ?? null);
+
+            // Send notification to client (reuse removed email template)
+            if ($shoot->client) {
+                try {
+                    $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
+                } catch (\Exception $e) {
+                    \Log::warning('Failed to send decline email: ' . $e->getMessage());
+                }
+            }
+
+            return response()->json([
+                'message' => 'Shoot request has been declined.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    /**
      * Client requests a hold for their shoot
      * POST /api/shoots/{shoot}/request-hold
      */
@@ -1403,7 +1752,7 @@ class ShootController extends Controller
     public function show($id)
     {
         $shoot = Shoot::with([
-            'client', 'photographer', 'service', 'services', 'files', 'payments', 
+            'client', 'photographer', 'service', 'services.category', 'files', 'payments', 
             'dropboxFolders', 'workflowLogs.user', 'verifiedBy'
         ])->findOrFail($id);
 
@@ -2537,7 +2886,7 @@ class ShootController extends Controller
         // Return the response immediately, then run slow I/O (emails, automation) AFTER
         $response = response()->json([
             'message' => 'Shoot updated',
-            'data' => $this->transformShoot($shoot->fresh(['client','photographer','service','services','files']))
+            'data' => $this->transformShoot($shoot->fresh(['client','photographer','service','services.category','files']))
         ]);
 
         // Capture values needed by the terminating callback
@@ -4892,7 +5241,7 @@ class ShootController extends Controller
     protected function transformShoot(Shoot $shoot)
     {
         // Only load missing relationships if not already loaded
-        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services', 'rep', 'createdByUser']);
+        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser']);
         // Only load files if not already loaded (they should be from eager loading)
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
@@ -5075,9 +5424,56 @@ class ShootController extends Controller
         // Explicitly include tour_links to ensure it's in the response
         $shoot->tour_links = $shoot->tour_links ?? [];
 
+        // Transform services to include resolved_photographer_id, category, and photographer details
+        // This matches the ShootResource format so the frontend can detect per-service assignments
+        if ($shoot->relationLoaded('services') && $shoot->services->isNotEmpty()) {
+            $shootPhotographerId = $shoot->photographer_id;
+            $shootPhotographer = $shoot->photographer;
+            $transformedServices = $shoot->services->map(function ($service) use ($shootPhotographerId, $shootPhotographer) {
+                $pivotPhotographerId = $service->pivot->photographer_id ?? null;
+                $resolvedPhotographerId = $pivotPhotographerId ?? $shootPhotographerId;
+
+                // Resolve photographer details
+                $resolvedPhotographer = null;
+                if ($resolvedPhotographerId) {
+                    if ($pivotPhotographerId) {
+                        $photographer = \App\Models\User::find($pivotPhotographerId);
+                    } else {
+                        $photographer = $shootPhotographer;
+                    }
+                    if ($photographer) {
+                        $resolvedPhotographer = [
+                            'id' => (string) $photographer->id,
+                            'name' => $photographer->name,
+                            'avatar' => $photographer->avatar ?? null,
+                        ];
+                    }
+                }
+
+                return [
+                    'id' => (string) $service->id,
+                    'name' => $service->name,
+                    'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
+                    'quantity' => (int) ($service->pivot->quantity ?? 1),
+                    'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
+                    'photographer_id' => $pivotPhotographerId ? (string) $pivotPhotographerId : null,
+                    'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
+                    'photographer' => $resolvedPhotographer,
+                    'category' => $service->category ? [
+                        'id' => (string) $service->category->id,
+                        'name' => $service->category->name,
+                    ] : null,
+                    'category_name' => $service->category?->name,
+                ];
+            })->values()->all();
+
+            $shoot->setRelation('services', collect());
+            $shoot->setAttribute('services', $transformedServices);
+        }
+
         // Explicitly include services as an array of names for frontend compatibility
         // Ensure services relationship is loaded and has data
-        $servicesArray = $shoot->services->pluck('name')->filter()->values()->all();
+        $servicesArray = collect($shoot->getAttribute('services') ?? $shoot->services)->pluck('name')->filter()->values()->all();
 
         // Append invoice misc items (admin_misc expenses) so they appear alongside services in shoot tiles
         $miscItems = $this->getInvoiceMiscItemNames($shoot);
@@ -5087,12 +5483,6 @@ class ShootController extends Controller
         
         // Set as attribute so it's included in JSON serialization
         $shoot->setAttribute('services_list', $servicesArray);
-        
-        // Also ensure the services relationship is properly serialized
-        // This ensures frontend gets both services (relationship) and services_list (array)
-        if ($shoot->relationLoaded('services')) {
-            // Services relationship is already loaded, it will be included in JSON response
-        }
 
         return $shoot;
     }

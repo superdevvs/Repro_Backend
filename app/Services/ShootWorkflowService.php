@@ -33,11 +33,11 @@ class ShootWorkflowService
     // Valid transitions for the simplified pipeline
     // requested → scheduled → uploaded → editing → ready → delivered
     private const VALID_TRANSITIONS = [
-        self::STATUS_REQUESTED => [self::STATUS_SCHEDULED, self::STATUS_DECLINED], // approve or decline
+        self::STATUS_REQUESTED => [self::STATUS_SCHEDULED, self::STATUS_DECLINED, self::STATUS_CANCELLED, self::STATUS_ON_HOLD],
         self::STATUS_SCHEDULED => [self::STATUS_UPLOADED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
-        self::STATUS_UPLOADED => [self::STATUS_EDITING, self::STATUS_ON_HOLD],
-        self::STATUS_EDITING => [self::STATUS_READY, self::STATUS_DELIVERED, self::STATUS_ON_HOLD],
-        self::STATUS_READY => [self::STATUS_DELIVERED, self::STATUS_ON_HOLD], // finalize moves to delivered
+        self::STATUS_UPLOADED => [self::STATUS_EDITING, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
+        self::STATUS_EDITING => [self::STATUS_READY, self::STATUS_DELIVERED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
+        self::STATUS_READY => [self::STATUS_DELIVERED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_DELIVERED => [],   // terminal
         // on_hold can resume back into the pipeline
         self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_READY, self::STATUS_CANCELLED],
