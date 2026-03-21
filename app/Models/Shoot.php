@@ -253,6 +253,22 @@ class Shoot extends Model
             $this->load('services');
         }
 
+        if (is_array($this->services)) {
+            return collect($this->services)
+                ->groupBy(function ($service) {
+                    return $service['resolved_photographer_id'] ?? $service['photographer_id'] ?? null;
+                })
+                ->map(function ($services) {
+                    return $services->sum(function ($service) {
+                        $pay = $service['photographer_pay'] ?? 0;
+                        $quantity = $service['quantity'] ?? 1;
+                        return (float) $pay * (int) $quantity;
+                    });
+                })->filter(function ($pay, $photographerId) {
+                    return $photographerId !== null;
+                });
+        }
+
         $fallbackPhotographerId = $this->photographer_id;
 
         return $this->services->groupBy(function ($service) use ($fallbackPhotographerId) {
@@ -436,6 +452,15 @@ class Shoot extends Model
     {
         if (!$this->relationLoaded('services')) {
             $this->load('services');
+        }
+        
+        if (is_array($this->services)) {
+            return (float) collect($this->services)->sum(function ($service) {
+                $pay = $service['photographer_pay'] ?? 0;
+                $quantity = $service['quantity'] ?? 1;
+                
+                return (float) $pay * (int) $quantity;
+            });
         }
         
         return (float) $this->services->sum(function ($service) {

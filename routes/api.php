@@ -519,9 +519,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/shoots/messages/{message}/read', [ShootMessageController::class, 'markAsRead']);
 
-    // Client-submitted shoot requests (status = requested) for admin dashboard
-    Route::get('/client-requests', [ShootController::class, 'clientRequests']);
-
     Route::prefix('editing-requests')->group(function () {
         Route::get('/', [EditingRequestController::class, 'index']);
         Route::post('/', [EditingRequestController::class, 'store']);
