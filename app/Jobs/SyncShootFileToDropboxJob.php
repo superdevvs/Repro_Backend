@@ -96,8 +96,8 @@ class SyncShootFileToDropboxJob implements ShouldQueue
 
         $apiArgs = json_encode([
             'path' => $dropboxPath,
-            'mode' => 'add',
-            'autorename' => true,
+            'mode' => 'overwrite',
+            'autorename' => false,
             'mute' => false,
         ]);
 

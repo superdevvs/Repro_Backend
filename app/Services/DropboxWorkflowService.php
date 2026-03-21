@@ -307,6 +307,33 @@ class DropboxWorkflowService
             }
         }
 
+        // Replace existing file with same original name in same stage (prevent duplicates)
+        $existingFile = ShootFile::where('shoot_id', $shoot->id)
+            ->where('filename', $file->getClientOriginalName())
+            ->where('workflow_stage', $stage)
+            ->first();
+
+        if ($existingFile) {
+            // Delete old file from local storage
+            if ($existingFile->path && Storage::disk('public')->exists($existingFile->path)) {
+                Storage::disk('public')->delete($existingFile->path);
+            }
+            // Delete old thumbnails
+            if ($existingFile->thumbnail_path && Storage::disk('public')->exists($existingFile->thumbnail_path)) {
+                Storage::disk('public')->delete($existingFile->thumbnail_path);
+            }
+            if ($existingFile->web_path && Storage::disk('public')->exists($existingFile->web_path)) {
+                Storage::disk('public')->delete($existingFile->web_path);
+            }
+            $existingFile->delete();
+            Log::info('Replaced duplicate file', [
+                'shoot_id' => $shoot->id,
+                'filename' => $file->getClientOriginalName(),
+                'stage' => $stage,
+                'old_stored' => $existingFile->stored_filename,
+            ]);
+        }
+
         // Now store the file (this may move the temp file)
         Storage::disk('public')->putFileAs($dir, $file, $filename);
 
