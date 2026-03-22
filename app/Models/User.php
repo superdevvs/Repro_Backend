@@ -6,6 +6,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
@@ -165,7 +166,7 @@ class User extends Authenticatable
 
     public function hasServiceGroupRestrictions(): bool
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return false;
         }
 
@@ -178,7 +179,7 @@ class User extends Authenticatable
 
     public function getAssignedServiceGroupIds(): array
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return [];
         }
 
@@ -195,5 +196,23 @@ class User extends Authenticatable
             ->map(fn ($id) => (string) $id)
             ->values()
             ->all();
+    }
+
+    protected function serviceGroupsFeatureAvailable(): bool
+    {
+        try {
+            if (!class_exists(ServiceGroup::class)) {
+                return false;
+            }
+
+            return ServiceGroup::isFeatureAvailable();
+        } catch (\Throwable $exception) {
+            Log::warning('Service groups unavailable while reading users.', [
+                'user_id' => $this->id,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 }

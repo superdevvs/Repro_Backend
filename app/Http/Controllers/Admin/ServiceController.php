@@ -9,6 +9,7 @@ use App\Models\ServiceGroup;
 use App\Models\ServiceSqftRange;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ServiceController extends Controller
 {
@@ -36,7 +37,7 @@ class ServiceController extends Controller
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
         ];
 
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $rules['service_group_ids'] = 'nullable|array';
             $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
         }
@@ -64,7 +65,7 @@ class ServiceController extends Controller
             unset($validated['service_group_ids']);
 
             $service = Service::create($validated);
-            if (ServiceGroup::isFeatureAvailable()) {
+            if ($this->serviceGroupsFeatureAvailable()) {
                 $service->serviceGroups()->sync($serviceGroupIds);
             }
 
@@ -92,17 +93,29 @@ class ServiceController extends Controller
 
     public function index(Request $request)
     {
-        $relations = ['category', 'sqftRanges'];
-        if (ServiceGroup::isFeatureAvailable()) {
-            $relations[] = 'serviceGroups';
-        }
+        try {
+            $relations = ['category', 'sqftRanges'];
+            if ($this->serviceGroupsFeatureAvailable()) {
+                $relations[] = 'serviceGroups';
+            }
 
-        $services = Service::query()
-            ->with($relations)
-            ->visibleToClient($this->resolveVisibleClient($request))
-            ->orderBy('category_id')
-            ->orderBy('name')
-            ->get();
+            $services = Service::query()
+                ->with($relations)
+                ->visibleToClient($this->resolveVisibleClient($request))
+                ->orderBy('category_id')
+                ->orderBy('name')
+                ->get();
+        } catch (\Throwable $exception) {
+            Log::warning('Falling back to plain services catalog.', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            $services = Service::query()
+                ->with(['category', 'sqftRanges'])
+                ->orderBy('category_id')
+                ->orderBy('name')
+                ->get();
+        }
 
         return response()->json([
             'success' => true,
@@ -144,7 +157,7 @@ class ServiceController extends Controller
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
         ];
 
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $rules['service_group_ids'] = 'nullable|array';
             $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
         }
@@ -166,7 +179,7 @@ class ServiceController extends Controller
             unset($validated['service_group_ids']);
 
             $service->update($validated);
-            if (ServiceGroup::isFeatureAvailable() && $serviceGroupIds !== null) {
+            if ($this->serviceGroupsFeatureAvailable() && $serviceGroupIds !== null) {
                 $service->serviceGroups()->sync($serviceGroupIds);
             }
 
@@ -224,7 +237,7 @@ class ServiceController extends Controller
     public function show($id)
     {
         $relations = ['category', 'sqftRanges'];
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $relations[] = 'serviceGroups';
         }
 
@@ -255,7 +268,7 @@ class ServiceController extends Controller
         $authenticatedUser = auth('sanctum')->user();
 
         if ($authenticatedUser && $authenticatedUser->role === 'client') {
-            return ServiceGroup::isFeatureAvailable()
+            return $this->serviceGroupsFeatureAvailable()
                 ? $authenticatedUser->loadMissing('serviceGroups')
                 : $authenticatedUser;
         }
@@ -270,7 +283,7 @@ class ServiceController extends Controller
 
         $query = User::query()->where('role', 'client');
 
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $query->with('serviceGroups');
         }
 
@@ -281,11 +294,28 @@ class ServiceController extends Controller
     {
         $relations = ['sqftRanges', 'category'];
 
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $relations[] = 'serviceGroups';
         }
 
         return $service->load($relations);
+    }
+
+    protected function serviceGroupsFeatureAvailable(): bool
+    {
+        try {
+            if (!class_exists(ServiceGroup::class)) {
+                return false;
+            }
+
+            return ServiceGroup::isFeatureAvailable();
+        } catch (\Throwable $exception) {
+            Log::warning('Service groups unavailable in ServiceController.', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**

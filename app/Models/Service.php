@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 class Service extends Model
 {
@@ -59,7 +60,7 @@ class Service extends Model
 
     public function scopeVisibleToClient(Builder $query, ?User $client): Builder
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return $query;
         }
 
@@ -82,7 +83,7 @@ class Service extends Model
 
     public static function visibleIdsForClient(User $client, ?array $candidateIds = null): Collection
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!static::serviceGroupsFeatureAvailable()) {
             return collect($candidateIds ?? []);
         }
 
@@ -93,6 +94,23 @@ class Service extends Model
         }
 
         return $query->pluck('services.id');
+    }
+
+    protected static function serviceGroupsFeatureAvailable(): bool
+    {
+        try {
+            if (!class_exists(ServiceGroup::class)) {
+                return false;
+            }
+
+            return ServiceGroup::isFeatureAvailable();
+        } catch (\Throwable $exception) {
+            Log::warning('Service groups unavailable while reading services.', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**

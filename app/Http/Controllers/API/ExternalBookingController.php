@@ -239,7 +239,7 @@ class ExternalBookingController extends Controller
 
     protected function ensureClientCanBookServices(User $client, array $services): void
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return;
         }
 
@@ -263,6 +263,23 @@ class ExternalBookingController extends Controller
             throw ValidationException::withMessages([
                 'services' => ['One or more selected services are not available for this client.'],
             ]);
+        }
+    }
+
+    protected function serviceGroupsFeatureAvailable(): bool
+    {
+        try {
+            if (!class_exists(ServiceGroup::class)) {
+                return false;
+            }
+
+            return ServiceGroup::isFeatureAvailable();
+        } catch (\Throwable $exception) {
+            Log::warning('Service groups unavailable in ExternalBookingController.', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
         }
     }
 

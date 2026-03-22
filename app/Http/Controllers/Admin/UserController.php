@@ -41,7 +41,7 @@ class UserController extends Controller
                 ->toArray();
 
             $salesRepClientsQuery = User::query()->where('role', 'client');
-            if (ServiceGroup::isFeatureAvailable()) {
+            if ($this->serviceGroupsFeatureAvailable()) {
                 $salesRepClientsQuery->with('serviceGroups');
             }
 
@@ -68,7 +68,7 @@ class UserController extends Controller
             })->values();
         } else {
             $usersQuery = User::query();
-            if (ServiceGroup::isFeatureAvailable()) {
+            if ($this->serviceGroupsFeatureAvailable()) {
                 $usersQuery->with('serviceGroups');
             }
 
@@ -166,7 +166,7 @@ class UserController extends Controller
             'specialties' => 'nullable|string',
         ];
 
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $rules['service_group_ids'] = 'nullable|array';
             $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
         }
@@ -263,7 +263,7 @@ class UserController extends Controller
         }
 
         $user = User::create($validated);
-        if (ServiceGroup::isFeatureAvailable() && $user->role === 'client') {
+        if ($this->serviceGroupsFeatureAvailable() && $user->role === 'client') {
             $user->serviceGroups()->sync($serviceGroupIds);
         }
 
@@ -302,7 +302,7 @@ class UserController extends Controller
     public function getClients()
     {
         $clientsQuery = User::query()->where('role', 'client');
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $clientsQuery->with('serviceGroups');
         }
 
@@ -437,7 +437,7 @@ class UserController extends Controller
             'specialties' => 'nullable|string',
         ];
 
-        if (ServiceGroup::isFeatureAvailable()) {
+        if ($this->serviceGroupsFeatureAvailable()) {
             $rules['service_group_ids'] = 'nullable|array';
             $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
         }
@@ -519,11 +519,11 @@ class UserController extends Controller
 
         // Update user
         $user->update($validated);
-        if (ServiceGroup::isFeatureAvailable() && $user->role === 'client') {
+        if ($this->serviceGroupsFeatureAvailable() && $user->role === 'client') {
             if ($serviceGroupIdsProvided) {
                 $user->serviceGroups()->sync($serviceGroupIds);
             }
-        } elseif (ServiceGroup::isFeatureAvailable() && ($serviceGroupIdsProvided || $user->serviceGroups()->exists())) {
+        } elseif ($this->serviceGroupsFeatureAvailable() && ($serviceGroupIdsProvided || $user->serviceGroups()->exists())) {
             $user->serviceGroups()->detach();
         }
 
@@ -978,7 +978,7 @@ class UserController extends Controller
 
     protected function serializeServiceGroups(User $user): array
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return [];
         }
 
@@ -993,6 +993,23 @@ class UserController extends Controller
                 'description' => $group->description,
             ];
         })->values()->all();
+    }
+
+    protected function serviceGroupsFeatureAvailable(): bool
+    {
+        try {
+            if (!class_exists(ServiceGroup::class)) {
+                return false;
+            }
+
+            return ServiceGroup::isFeatureAvailable();
+        } catch (\Throwable $exception) {
+            \Log::warning('Service groups unavailable in UserController.', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     private function generateUniqueUsername(?string $seed): string

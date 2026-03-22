@@ -322,6 +322,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,client
 Route::get('/photographers', [UserController::class, 'simplePhotographers']);
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->group(function () {
+    Route::get('/admin/services', [ServiceController::class, 'index']);
+
     Route::post('/admin/services', [ServiceController::class, 'store']);
 
     Route::put('/admin/services/{id}', [ServiceController::class, 'update']);

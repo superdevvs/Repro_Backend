@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -13,7 +14,7 @@ class ServiceGroupController extends Controller
 {
     public function index()
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return response()->json([
                 'success' => true,
                 'data' => [],
@@ -38,7 +39,7 @@ class ServiceGroupController extends Controller
 
     public function store(Request $request)
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return response()->json([
                 'success' => false,
                 'message' => 'Service groups are not available until migrations are applied.',
@@ -61,7 +62,7 @@ class ServiceGroupController extends Controller
 
     public function update(Request $request, ServiceGroup $serviceGroup)
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return response()->json([
                 'success' => false,
                 'message' => 'Service groups are not available until migrations are applied.',
@@ -84,7 +85,7 @@ class ServiceGroupController extends Controller
 
     public function destroy(ServiceGroup $serviceGroup)
     {
-        if (!ServiceGroup::isFeatureAvailable()) {
+        if (!$this->serviceGroupsFeatureAvailable()) {
             return response()->json([
                 'success' => false,
                 'message' => 'Service groups are not available until migrations are applied.',
@@ -182,5 +183,22 @@ class ServiceGroupController extends Controller
             'created_at' => optional($group->created_at)?->toIso8601String(),
             'updated_at' => optional($group->updated_at)?->toIso8601String(),
         ];
+    }
+
+    protected function serviceGroupsFeatureAvailable(): bool
+    {
+        try {
+            if (!class_exists(ServiceGroup::class)) {
+                return false;
+            }
+
+            return ServiceGroup::isFeatureAvailable();
+        } catch (\Throwable $exception) {
+            Log::warning('Service groups unavailable in ServiceGroupController.', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 }
