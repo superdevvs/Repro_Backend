@@ -13,6 +13,14 @@ class ServiceGroupController extends Controller
 {
     public function index()
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return response()->json([
+                'success' => true,
+                'data' => [],
+                'message' => 'Service groups are not available until migrations are applied.',
+            ]);
+        }
+
         $groups = ServiceGroup::with([
             'services:id,name,category_id',
             'services.category:id,name',
@@ -30,6 +38,13 @@ class ServiceGroupController extends Controller
 
     public function store(Request $request)
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Service groups are not available until migrations are applied.',
+            ], 503);
+        }
+
         $validated = $this->validatePayload($request);
         [$serviceIds, $clientIds] = $this->extractAssignments($validated);
 
@@ -46,6 +61,13 @@ class ServiceGroupController extends Controller
 
     public function update(Request $request, ServiceGroup $serviceGroup)
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Service groups are not available until migrations are applied.',
+            ], 503);
+        }
+
         $validated = $this->validatePayload($request, $serviceGroup);
         [$serviceIds, $clientIds] = $this->extractAssignments($validated);
 
@@ -62,6 +84,13 @@ class ServiceGroupController extends Controller
 
     public function destroy(ServiceGroup $serviceGroup)
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Service groups are not available until migrations are applied.',
+            ], 503);
+        }
+
         $serviceGroup->delete();
 
         return response()->json([

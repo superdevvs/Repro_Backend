@@ -165,6 +165,10 @@ class User extends Authenticatable
 
     public function hasServiceGroupRestrictions(): bool
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return false;
+        }
+
         if ($this->relationLoaded('serviceGroups')) {
             return $this->serviceGroups->isNotEmpty();
         }
@@ -174,6 +178,10 @@ class User extends Authenticatable
 
     public function getAssignedServiceGroupIds(): array
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return [];
+        }
+
         if ($this->relationLoaded('serviceGroups')) {
             return $this->serviceGroups
                 ->pluck('id')

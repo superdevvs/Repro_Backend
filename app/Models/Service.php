@@ -59,6 +59,10 @@ class Service extends Model
 
     public function scopeVisibleToClient(Builder $query, ?User $client): Builder
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return $query;
+        }
+
         if (!$client || $client->role !== 'client') {
             return $query;
         }
@@ -78,6 +82,10 @@ class Service extends Model
 
     public static function visibleIdsForClient(User $client, ?array $candidateIds = null): Collection
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return collect($candidateIds ?? []);
+        }
+
         $query = static::query()->select('services.id')->visibleToClient($client);
 
         if (is_array($candidateIds) && !empty($candidateIds)) {

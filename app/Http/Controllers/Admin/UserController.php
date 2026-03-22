@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Models\AccountLink;
 use App\Services\Messaging\AutomationService;
@@ -39,7 +40,12 @@ class UserController extends Controller
                 ->unique()
                 ->toArray();
 
-            $users = User::with('serviceGroups')->where('role', 'client')->get()->filter(function (User $client) use ($repId, $clientIdsFromShoots) {
+            $salesRepClientsQuery = User::query()->where('role', 'client');
+            if (ServiceGroup::isFeatureAvailable()) {
+                $salesRepClientsQuery->with('serviceGroups');
+            }
+
+            $users = $salesRepClientsQuery->get()->filter(function (User $client) use ($repId, $clientIdsFromShoots) {
                 $metadata = $client->metadata ?? [];
                 $repCandidate = null;
                 if (is_array($metadata) && !empty($metadata)) {
@@ -61,7 +67,12 @@ class UserController extends Controller
                 return in_array($client->id, $clientIdsFromShoots, true);
             })->values();
         } else {
-            $users = User::with('serviceGroups')->get();
+            $usersQuery = User::query();
+            if (ServiceGroup::isFeatureAvailable()) {
+                $usersQuery->with('serviceGroups');
+            }
+
+            $users = $usersQuery->get();
         }
 
         if ($users->isEmpty()) {
@@ -129,7 +140,7 @@ class UserController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        $validated = $request->validate([
+        $rules = [
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users',
             'username' => 'nullable|string|unique:users',
@@ -153,9 +164,14 @@ class UserController extends Controller
             'insuranceFile' => 'nullable|string|url',
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
-            'service_group_ids' => 'nullable|array',
-            'service_group_ids.*' => 'integer|exists:service_groups,id',
-        ]);
+        ];
+
+        if (ServiceGroup::isFeatureAvailable()) {
+            $rules['service_group_ids'] = 'nullable|array';
+            $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
+        }
+
+        $validated = $request->validate($rules);
 
         $requestedRole = $validated['role'] ?? null;
         if ($requestedRole !== null) {
@@ -247,7 +263,7 @@ class UserController extends Controller
         }
 
         $user = User::create($validated);
-        if ($user->role === 'client') {
+        if (ServiceGroup::isFeatureAvailable() && $user->role === 'client') {
             $user->serviceGroups()->sync($serviceGroupIds);
         }
 
@@ -285,7 +301,12 @@ class UserController extends Controller
 
     public function getClients()
     {
-        $clients = User::with('serviceGroups')->where('role', 'client')->get()->map(function ($client) {
+        $clientsQuery = User::query()->where('role', 'client');
+        if (ServiceGroup::isFeatureAvailable()) {
+            $clientsQuery->with('serviceGroups');
+        }
+
+        $clients = $clientsQuery->get()->map(function ($client) {
             $clientData = $client->toArray();
             $rep = null;
 
@@ -390,7 +411,7 @@ class UserController extends Controller
 
         $user = User::findOrFail($id);
 
-        $validated = $request->validate([
+        $rules = [
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|email|unique:users,email,' . $id,
             'username' => 'nullable|string|unique:users,username,' . $id,
@@ -414,9 +435,14 @@ class UserController extends Controller
             'insuranceFile' => 'nullable|string|url',
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
-            'service_group_ids' => 'nullable|array',
-            'service_group_ids.*' => 'integer|exists:service_groups,id',
-        ]);
+        ];
+
+        if (ServiceGroup::isFeatureAvailable()) {
+            $rules['service_group_ids'] = 'nullable|array';
+            $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
+        }
+
+        $validated = $request->validate($rules);
 
         $requestedRole = $validated['role'] ?? $user->role;
         $requestedEmail = strtolower((string) ($validated['email'] ?? $user->email));
@@ -493,11 +519,11 @@ class UserController extends Controller
 
         // Update user
         $user->update($validated);
-        if ($user->role === 'client') {
+        if (ServiceGroup::isFeatureAvailable() && $user->role === 'client') {
             if ($serviceGroupIdsProvided) {
                 $user->serviceGroups()->sync($serviceGroupIds);
             }
-        } elseif ($serviceGroupIdsProvided || $user->serviceGroups()->exists()) {
+        } elseif (ServiceGroup::isFeatureAvailable() && ($serviceGroupIdsProvided || $user->serviceGroups()->exists())) {
             $user->serviceGroups()->detach();
         }
 
@@ -952,6 +978,10 @@ class UserController extends Controller
 
     protected function serializeServiceGroups(User $user): array
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return [];
+        }
+
         $groups = $user->relationLoaded('serviceGroups')
             ? $user->serviceGroups
             : $user->serviceGroups()->get(['service_groups.id', 'service_groups.name', 'service_groups.description']);

@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
 
 class ServiceGroup extends Model
 {
@@ -18,6 +19,13 @@ class ServiceGroup extends Model
     protected $casts = [
         'is_active' => 'boolean',
     ];
+
+    public static function isFeatureAvailable(): bool
+    {
+        return Schema::hasTable('service_groups')
+            && Schema::hasTable('service_group_service')
+            && Schema::hasTable('service_group_user');
+    }
 
     public function services()
     {

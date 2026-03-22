@@ -10,6 +10,7 @@ use App\Models\ShootMediaAlbum;
 use App\Models\ShootNote;
 use App\Models\User;
 use App\Models\Service;
+use App\Models\ServiceGroup;
 use App\Models\Payment;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
@@ -2216,6 +2217,10 @@ class ShootController extends Controller
 
     protected function ensureClientCanBookServices(int $clientId, array $services): void
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return;
+        }
+
         $client = User::with('serviceGroups')->find($clientId);
         if (!$client || !$client->hasServiceGroupRestrictions()) {
             return;

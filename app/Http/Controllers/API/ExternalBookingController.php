@@ -7,6 +7,7 @@ use App\Http\Requests\ExternalBookingRequest;
 use App\Http\Resources\ShootResource;
 use App\Models\Shoot;
 use App\Models\Service;
+use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Services\ShootTaxService;
 use App\Services\ShootWorkflowService;
@@ -238,6 +239,10 @@ class ExternalBookingController extends Controller
 
     protected function ensureClientCanBookServices(User $client, array $services): void
     {
+        if (!ServiceGroup::isFeatureAvailable()) {
+            return;
+        }
+
         if (!$client->loadMissing('serviceGroups')->hasServiceGroupRestrictions()) {
             return;
         }

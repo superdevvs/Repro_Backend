@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Service;
+use App\Models\ServiceGroup;
 use App\Models\ServiceSqftRange;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +14,7 @@ class ServiceController extends Controller
 {
     public function store(Request $request)
     {
-        $validated = $request->validate([
+        $rules = [
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
@@ -33,9 +34,14 @@ class ServiceController extends Controller
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
-            'service_group_ids' => 'nullable|array',
-            'service_group_ids.*' => 'integer|exists:service_groups,id',
-        ]);
+        ];
+
+        if (ServiceGroup::isFeatureAvailable()) {
+            $rules['service_group_ids'] = 'nullable|array';
+            $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
+        }
+
+        $validated = $request->validate($rules);
 
         // Ensure category_id is not null
         if (empty($validated['category_id'])) {
@@ -58,7 +64,9 @@ class ServiceController extends Controller
             unset($validated['service_group_ids']);
 
             $service = Service::create($validated);
-            $service->serviceGroups()->sync($serviceGroupIds);
+            if (ServiceGroup::isFeatureAvailable()) {
+                $service->serviceGroups()->sync($serviceGroupIds);
+            }
 
             // Create sqft ranges if provided
             if (!empty($sqftRanges)) {
@@ -71,7 +79,7 @@ class ServiceController extends Controller
 
             return response()->json([
                 'message' => 'Service created successfully.',
-                'service' => $service->load('sqftRanges', 'category', 'serviceGroups')
+                'service' => $this->loadServiceRelations($service)
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -84,8 +92,13 @@ class ServiceController extends Controller
 
     public function index(Request $request)
     {
+        $relations = ['category', 'sqftRanges'];
+        if (ServiceGroup::isFeatureAvailable()) {
+            $relations[] = 'serviceGroups';
+        }
+
         $services = Service::query()
-            ->with(['category', 'sqftRanges', 'serviceGroups'])
+            ->with($relations)
             ->visibleToClient($this->resolveVisibleClient($request))
             ->orderBy('category_id')
             ->orderBy('name')
@@ -108,7 +121,7 @@ class ServiceController extends Controller
             ], 404);
         }
 
-        $validated = $request->validate([
+        $rules = [
             'name' => 'sometimes|string|max:255',
             'description' => 'nullable|string',
             'price' => 'sometimes|numeric',
@@ -129,9 +142,14 @@ class ServiceController extends Controller
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
-            'service_group_ids' => 'nullable|array',
-            'service_group_ids.*' => 'integer|exists:service_groups,id',
-        ]);
+        ];
+
+        if (ServiceGroup::isFeatureAvailable()) {
+            $rules['service_group_ids'] = 'nullable|array';
+            $rules['service_group_ids.*'] = 'integer|exists:service_groups,id';
+        }
+
+        $validated = $request->validate($rules);
 
         DB::beginTransaction();
         try {
@@ -148,7 +166,7 @@ class ServiceController extends Controller
             unset($validated['service_group_ids']);
 
             $service->update($validated);
-            if ($serviceGroupIds !== null) {
+            if (ServiceGroup::isFeatureAvailable() && $serviceGroupIds !== null) {
                 $service->serviceGroups()->sync($serviceGroupIds);
             }
 
@@ -191,7 +209,7 @@ class ServiceController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Service updated successfully',
-                'data' => $service->load('sqftRanges', 'category', 'serviceGroups')
+                'data' => $this->loadServiceRelations($service)
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -205,7 +223,12 @@ class ServiceController extends Controller
 
     public function show($id)
     {
-        $service = Service::with(['category', 'sqftRanges', 'serviceGroups'])->find($id);
+        $relations = ['category', 'sqftRanges'];
+        if (ServiceGroup::isFeatureAvailable()) {
+            $relations[] = 'serviceGroups';
+        }
+
+        $service = Service::with($relations)->find($id);
 
         if (!$service) {
             return response()->json(['message' => 'Service not found'], 404);
@@ -232,7 +255,9 @@ class ServiceController extends Controller
         $authenticatedUser = auth('sanctum')->user();
 
         if ($authenticatedUser && $authenticatedUser->role === 'client') {
-            return $authenticatedUser->loadMissing('serviceGroups');
+            return ServiceGroup::isFeatureAvailable()
+                ? $authenticatedUser->loadMissing('serviceGroups')
+                : $authenticatedUser;
         }
 
         if (!$request->filled('client_id') || !$authenticatedUser) {
@@ -243,9 +268,24 @@ class ServiceController extends Controller
             return null;
         }
 
-        return User::with('serviceGroups')
-            ->where('role', 'client')
-            ->find($request->integer('client_id'));
+        $query = User::query()->where('role', 'client');
+
+        if (ServiceGroup::isFeatureAvailable()) {
+            $query->with('serviceGroups');
+        }
+
+        return $query->find($request->integer('client_id'));
+    }
+
+    protected function loadServiceRelations(Service $service): Service
+    {
+        $relations = ['sqftRanges', 'category'];
+
+        if (ServiceGroup::isFeatureAvailable()) {
+            $relations[] = 'serviceGroups';
+        }
+
+        return $service->load($relations);
     }
 
     /**
