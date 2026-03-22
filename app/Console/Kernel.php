@@ -4,6 +4,7 @@ namespace App\Console;
 
 use App\Console\Commands\GenerateInvoices;
 use App\Console\Commands\ImportShootHistory;
+use App\Console\Commands\RunSystemAutomations;
 use App\Console\Commands\ProcessInvoiceReminders;
 use App\Console\Commands\ProcessShootReminders;
 use App\Console\Commands\ProcessPropertyContactReminders;
@@ -27,6 +28,7 @@ class Kernel extends ConsoleKernel
     protected $commands = [
         GenerateInvoices::class,
         ImportShootHistory::class,
+        RunSystemAutomations::class,
         ProcessShootReminders::class,
         ProcessPropertyContactReminders::class,
         ProcessInvoiceReminders::class,
@@ -42,11 +44,8 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule): void
     {
-        // Weekly automated invoicing - Sunday at 9:00 AM (covers previous Sun-Sat)
-        $schedule->command('invoices:generate --weekly')->weeklyOn(0, '09:00');
-        
-        // Weekly sales reports - Monday at 2:00 AM (after invoices are generated)
-        $schedule->command('reports:sales:weekly')->weeklyOn(1, '02:00');
+        // Database-backed weekly system automations run through a tracked executor.
+        $schedule->command('automations:run-system')->everyFifteenMinutes();
         
         // Nightly backup to Dropbox - Daily at 2:00 AM
         $schedule->job(new BackupToDropboxJob())->dailyAt('02:00');

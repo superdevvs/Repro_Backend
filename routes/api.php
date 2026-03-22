@@ -780,6 +780,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::delete('/automations/{automation}', [AutomationController::class, 'destroy']);
         Route::post('/automations/{automation}/toggle', [AutomationController::class, 'toggleActive']);
         Route::post('/automations/{automation}/test', [AutomationController::class, 'test']);
+        Route::post('/automations/{automation}/run', [AutomationController::class, 'runNow']);
 
         // Settings - Email
         Route::get('/settings/email', [MessagingSettingsController::class, 'emailSettings']);

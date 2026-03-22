@@ -17,7 +17,7 @@ class EnsureSystemAutomations extends Command
         $this->newLine();
 
         // Get admin user - try all possible role formats
-        $admin = User::whereIn('role', ['admin', 'superadmin'])->first();
+        $admin = User::whereIn('role', ['admin', 'superadmin', 'super_admin'])->first();
 
         if (!$admin) {
             $this->error('No admin user found!');
@@ -57,7 +57,7 @@ class EnsureSystemAutomations extends Command
             ],
             [
                 'name' => 'Weekly Automated Invoicing',
-                'description' => 'Automatically generates and sends weekly invoices to photographers based on completed shoots. Runs every Monday at 1:00 AM.',
+                'description' => 'Automatically generates weekly photographer and sales rep invoices for the last completed week. Runs every Monday at 1:00 AM through the system automation runner.',
                 'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
@@ -74,10 +74,11 @@ class EnsureSystemAutomations extends Command
                     'type' => 'weekly',
                     'day_of_week' => 1,
                     'time' => '01:00',
+                    'command' => 'invoices:generate --weekly',
                 ],
                 'recipients_json' => [
                     'type' => 'role',
-                    'roles' => ['photographer'],
+                    'roles' => ['photographer', 'rep'],
                 ],
                 'created_by' => $admin->id,
                 'updated_by' => $admin->id,
@@ -94,7 +95,7 @@ class EnsureSystemAutomations extends Command
             ],
             [
                 'name' => 'Weekly Sales Reports',
-                'description' => 'Automatically generates and sends weekly sales reports to all sales reps. Includes statistics on shoots, revenue, payments, and client breakdowns. Runs every Monday at 2:00 AM.',
+                'description' => 'Automatically generates and sends weekly sales reports to all sales reps. Runs every Monday at 2:00 AM through the system automation runner.',
                 'trigger_type' => 'WEEKLY_SALES_REPORT',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
@@ -111,10 +112,11 @@ class EnsureSystemAutomations extends Command
                     'type' => 'weekly',
                     'day_of_week' => 1,
                     'time' => '02:00',
+                    'command' => 'reports:sales:weekly',
                 ],
                 'recipients_json' => [
                     'type' => 'role',
-                    'roles' => ['salesRep'],
+                    'roles' => ['rep'],
                 ],
                 'created_by' => $admin->id,
                 'updated_by' => $admin->id,

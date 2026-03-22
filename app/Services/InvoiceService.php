@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\Schema;
 
 class InvoiceService
 {
+    private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     protected $mailService;
 
     public function __construct(MailService $mailService = null)
@@ -210,7 +212,7 @@ class InvoiceService
         $start = $start->copy()->startOfDay();
         $end = $end->copy()->endOfDay();
 
-        $shoots = Shoot::with(['services', 'rep:id,name,email,role,metadata'])
+        $shoots = Shoot::with(['services', 'rep:id,name,email,role,secondary_roles,metadata'])
             ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
             ->whereNotNull('rep_id')
             ->whereIn('workflow_status', [
@@ -230,7 +232,7 @@ class InvoiceService
 
             foreach ($grouped as $repId => $repShoots) {
                 $rep = $repShoots->first()->rep ?: User::find($repId);
-                if (!$rep || $rep->role !== 'salesRep') {
+                if (!$this->isSalesRep($rep)) {
                     continue;
                 }
 
@@ -309,6 +311,15 @@ class InvoiceService
                 if ($sendEmails && $rep->email) {
                     try {
                         $this->mailService->sendInvoiceGeneratedEmail($invoice);
+
+                        $invoice->loadMissing(['salesRep', 'client']);
+                        $context = [
+                            'invoice' => $invoice,
+                            'invoice_id' => $invoice->id,
+                            'rep' => $rep,
+                            'account_id' => $repId,
+                        ];
+                        app(AutomationService::class)->handleEvent('WEEKLY_REP_INVOICE', $context);
                     } catch (\Exception $e) {
                         Log::error('Failed to send sales rep invoice email', [
                             'invoice_id' => $invoice->id,
@@ -337,6 +348,27 @@ class InvoiceService
         $salesRepInvoices = $this->generateSalesRepInvoicesForPeriod($start, $end, $sendEmails);
 
         return $photographerInvoices->merge($salesRepInvoices);
+    }
+
+    private function isSalesRep(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $normalizedRoles = array_map('strtolower', self::SALES_REP_ROLES);
+        $primaryRole = strtolower((string) $user->role);
+
+        if (in_array($primaryRole, $normalizedRoles, true)) {
+            return true;
+        }
+
+        $secondaryRoles = is_array($user->secondary_roles) ? $user->secondary_roles : [];
+
+        return collect($secondaryRoles)
+            ->map(fn ($role) => strtolower((string) $role))
+            ->intersect($normalizedRoles)
+            ->isNotEmpty();
     }
 
     /**

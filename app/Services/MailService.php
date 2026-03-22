@@ -592,12 +592,11 @@ class MailService
      */
     private function formatShootData(Shoot $shoot): object
     {
-        // Ensure relationships are loaded
-        $shoot->loadMissing(['client', 'photographer', 'services']);
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'services.category']);
 
         $fullAddress = $this->formatFullAddress($shoot);
+        $propertyDetails = $this->normalizePropertyDetails($shoot->property_details);
 
-        // Format time nicely (e.g., "2:00 PM" instead of "14:00")
         $formattedTime = null;
         if ($shoot->time) {
             try {
@@ -607,7 +606,6 @@ class MailService
             }
         }
 
-        // Format date with time
         $dateStr = 'TBD';
         if ($shoot->scheduled_date) {
             $dateStr = $shoot->scheduled_date->format('M j, Y');
@@ -616,24 +614,50 @@ class MailService
             }
         }
 
-        // Format notes - extract only content from notes relationship or shoot_notes field
         $notesText = $this->formatNotes($shoot);
+        $serviceRows = $this->formatDetailedServices($shoot);
+        $assignedPhotographers = $this->formatAssignedPhotographers($shoot, $serviceRows);
 
         return (object) [
             'id' => $shoot->id,
             'location' => $fullAddress ?: 'TBD',
             'date' => $dateStr,
             'time' => $formattedTime ?? 'TBD',
-            'photographer' => $shoot->photographer ? $shoot->photographer->name : 'TBD',
-            'client_name' => $shoot->client ? $shoot->client->name : 'N/A',
-            'notes' => $notesText,
             'status' => $shoot->status,
+            'status_label' => $this->formatStatusValue($shoot->status),
+            'primary_photographer' => $shoot->photographer?->name,
+            'photographer' => $shoot->photographer ? $shoot->photographer->name : 'TBD',
+            'photographers' => $assignedPhotographers,
+            'photographers_label' => !empty($assignedPhotographers) ? implode(', ', $assignedPhotographers) : 'TBD',
+            'client_name' => $shoot->client ? $shoot->client->name : 'N/A',
+            'client_email' => $shoot->client?->email,
+            'client_phone' => $shoot->client?->phonenumber,
+            'rep_name' => $shoot->rep?->name,
+            'notes' => $notesText,
+            'notes_lines' => $this->splitLines($notesText),
+            'company_notes_lines' => $this->splitLines($shoot->company_notes),
+            'photographer_notes_lines' => $this->splitLines($shoot->photographer_notes),
             'total' => $shoot->base_quote ?? 0,
             'tax' => $shoot->tax_amount ?? 0,
             'tax_rate' => $shoot->tax_percent ?? 0,
             'grand_total' => $shoot->total_quote ?? 0,
+            'formatted_subtotal' => $this->formatCurrency($shoot->base_quote ?? 0),
+            'formatted_tax' => $this->formatCurrency($shoot->tax_amount ?? 0),
+            'formatted_grand_total' => $this->formatCurrency($shoot->total_quote ?? 0),
             'packages' => $this->formatPackages($shoot),
-            'service_category' => $shoot->service_category ?? 'Standard'
+            'services' => $serviceRows,
+            'service_category' => $shoot->service_category ?? 'Standard',
+            'property_highlights' => $this->buildPropertyHighlightRows($propertyDetails),
+            'access_details' => $this->buildAccessRows($propertyDetails),
+            'company_notes' => $shoot->company_notes,
+            'photographer_notes' => $shoot->photographer_notes,
+            'dashboard_url' => 'https://reprodashboard.com',
+            'website_url' => 'https://reprophotos.com',
+            'property_prep_url' => 'https://reprophotos.com/tips-to-get-your-property-camera-ready/',
+            'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
+            'support_email' => 'contact@reprophotos.com',
+            'support_phone' => '202-868-1663',
+            'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
         ];
     }
 
@@ -739,15 +763,153 @@ class MailService
             ];
         }
         
-        // Add tax as separate line item if applicable
-        if ($shoot->tax_amount && $shoot->tax_amount > 0) {
-            $packages[] = [
-                'name' => 'Tax',
-                'price' => $shoot->tax_amount
+        return $packages;
+    }
+
+    private function formatDetailedServices(Shoot $shoot): array
+    {
+        $shoot->loadMissing(['services.category']);
+
+        $servicePhotographerIds = collect($shoot->services ?? [])
+            ->pluck('pivot.photographer_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $servicePhotographers = $servicePhotographerIds->isNotEmpty()
+            ? User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
+            : collect();
+
+        $rows = [];
+
+        foreach ($shoot->services ?? [] as $service) {
+            $quantity = (int) ($service->pivot->quantity ?? 1);
+            $unitPrice = (float) ($service->pivot->price ?? $service->price ?? 0);
+            $lineTotal = $unitPrice * $quantity;
+            $resolvedPhotographerId = $service->pivot->photographer_id ?? $shoot->photographer_id;
+            $resolvedPhotographer = null;
+
+            if ($resolvedPhotographerId) {
+                if ($service->pivot->photographer_id && $servicePhotographers->has($service->pivot->photographer_id)) {
+                    $resolvedPhotographer = $servicePhotographers->get($service->pivot->photographer_id);
+                } elseif ($shoot->photographer && (int) $shoot->photographer->id === (int) $resolvedPhotographerId) {
+                    $resolvedPhotographer = $shoot->photographer;
+                } elseif ($servicePhotographers->has($resolvedPhotographerId)) {
+                    $resolvedPhotographer = $servicePhotographers->get($resolvedPhotographerId);
+                }
+            }
+
+            $meta = [];
+            if (!empty($service->category?->name)) {
+                $meta[] = $service->category->name;
+            }
+            if ($quantity > 1) {
+                $meta[] = 'Qty ' . $quantity;
+            }
+            if ($unitPrice > 0) {
+                $meta[] = $this->formatCurrency($unitPrice) . ' each';
+            }
+
+            $serviceName = $service->name ?? $service->service_name ?? 'Service';
+
+            $rows[] = [
+                'name' => $serviceName,
+                'display_name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
+                'quantity' => $quantity,
+                'category' => $service->category?->name,
+                'unit_price' => $unitPrice,
+                'line_total' => $lineTotal,
+                'formatted_total' => $this->formatCurrency($lineTotal),
+                'photographer_name' => $resolvedPhotographer?->name,
+                'meta' => implode(' | ', $meta),
             ];
         }
-        
-        return $packages;
+
+        if (empty($rows)) {
+            foreach ($this->formatPackages($shoot) as $package) {
+                $rows[] = [
+                    'name' => $package['name'],
+                    'display_name' => $package['name'],
+                    'quantity' => 1,
+                    'category' => null,
+                    'unit_price' => (float) ($package['price'] ?? 0),
+                    'line_total' => (float) ($package['price'] ?? 0),
+                    'formatted_total' => $this->formatCurrency($package['price'] ?? 0),
+                    'photographer_name' => $shoot->photographer?->name,
+                    'meta' => '',
+                ];
+            }
+        }
+
+        return $rows;
+    }
+
+    private function formatAssignedPhotographers(Shoot $shoot, array $serviceRows): array
+    {
+        return collect($serviceRows)
+            ->pluck('photographer_name')
+            ->filter()
+            ->prepend($shoot->photographer?->name)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function buildPropertyHighlightRows(array $propertyDetails): array
+    {
+        $rows = [];
+
+        $beds = $propertyDetails['bedrooms'] ?? $propertyDetails['beds'] ?? null;
+        $baths = $propertyDetails['bathrooms'] ?? $propertyDetails['baths'] ?? null;
+        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? null;
+
+        if ($beds !== null && $beds !== '') {
+            $rows[] = ['label' => 'Bedrooms', 'value' => $this->formatNumberValue($beds)];
+        }
+
+        if ($baths !== null && $baths !== '') {
+            $rows[] = ['label' => 'Bathrooms', 'value' => $this->formatNumberValue($baths, 1)];
+        }
+
+        if ($sqft !== null && $sqft !== '') {
+            $rows[] = ['label' => 'Square Footage', 'value' => number_format((float) $sqft)];
+        }
+
+        return $rows;
+    }
+
+    private function buildAccessRows(array $propertyDetails): array
+    {
+        $rows = [];
+        $mappedRows = [
+            'Access Type' => $propertyDetails['presenceOption'] ?? null,
+            'Access Contact' => $propertyDetails['accessContactName'] ?? null,
+            'Access Phone' => $propertyDetails['accessContactPhone'] ?? null,
+            'Lockbox Code' => $propertyDetails['lockboxCode'] ?? null,
+            'Lockbox Location' => $propertyDetails['lockboxLocation'] ?? null,
+        ];
+
+        foreach ($mappedRows as $label => $value) {
+            if ($value !== null && trim((string) $value) !== '') {
+                $rows[] = ['label' => $label, 'value' => (string) $value];
+            }
+        }
+
+        return $rows;
+    }
+
+    private function splitLines(?string $value): array
+    {
+        if ($value === null || trim($value) === '') {
+            return [];
+        }
+
+        return collect(preg_split('/\r\n|\r|\n/', trim($value)))
+            ->map(fn ($line) => trim((string) $line))
+            ->filter()
+            ->values()
+            ->all();
     }
 
     public function generatePaymentLink(Shoot $shoot): string
@@ -861,28 +1023,32 @@ class MailService
     public function sendInvoiceGeneratedEmail(\App\Models\Invoice $invoice): bool
     {
         try {
-            $photographer = $invoice->photographer;
-            if (!$photographer) {
-                Log::warning('Cannot send invoice email: photographer not found', [
+            $invoice->loadMissing(['photographer', 'salesRep', 'items']);
+
+            $recipient = $invoice->photographer ?? $invoice->salesRep;
+            if (!$recipient || empty($recipient->email)) {
+                Log::warning('Cannot send invoice email: recipient not found', [
                     'invoice_id' => $invoice->id
                 ]);
                 return false;
             }
 
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
-            $invoice->loadMissing('items');
 
             $html = view('emails.invoice_generated', [
                 'invoice' => $invoice,
-                'photographer' => $photographer,
+                'photographer' => $recipient,
+                'recipient' => $recipient,
+                'recipientRole' => $invoice->photographer ? 'photographer' : 'sales rep',
                 'period' => $period,
             ])->render();
-            $this->sendViaCakemail($photographer->email, "Weekly Invoice - {$period}", $html, 'INVOICE_GENERATED');
+            $this->sendViaCakemail($recipient->email, "Weekly Invoice - {$period}", $html, 'INVOICE_GENERATED');
             
             Log::info('Invoice generated email sent', [
                 'invoice_id' => $invoice->id,
-                'photographer_id' => $photographer->id,
-                'email' => $photographer->email
+                'recipient_id' => $recipient->id,
+                'email' => $recipient->email,
+                'recipient_role' => $invoice->photographer ? 'photographer' : 'sales_rep',
             ]);
             
             return true;

@@ -1,28 +1,39 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Invoice Approved')
-@section('content')
-    <p>Hello, {{ $photographer->name }}!</p>
+@section('preheader', 'Your invoice has been approved.')
 
-    <p>Your invoice for {{ $period }} has been approved by an administrator.</p>
-
-    <h3>Invoice Details</h3>
-    <ul>
-        <li><strong>Invoice Number:</strong> {{ $invoice->invoice_number ?? 'N/A' }}</li>
-        <li><strong>Period:</strong> {{ $period }}</li>
-        <li><strong>Total Amount:</strong> ${{ number_format($invoice->total_amount ?? $invoice->total ?? 0, 2) }}</li>
-        <li><strong>Approved At:</strong> {{ $invoice->approved_at ? $invoice->approved_at->format('M j, Y g:i A') : 'N/A' }}</li>
-    </ul>
-
-    <p>
-        You can view your invoice by logging into your dashboard at 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
-    </p>
+@section('hero')
+    <div class="eyebrow">Invoice Approved</div>
+    <h1 class="hero-title">Your invoice has been approved.</h1>
+    <p class="hero-copy">The invoice for this period has passed review and is now cleared for the next payout step.</p>
 @endsection
 
+@section('content')
+    <p class="intro">Hello {{ $photographer->name }}, <strong>your invoice for {{ $period }} has been approved.</strong></p>
 
+    <div class="section-card">
+        <div class="section-pad">
+            <div class="section-kicker">Approval Details</div>
+            <div class="section-title">{{ '$' . number_format($invoice->total_amount ?? $invoice->total ?? 0, 2) }}</div>
+            <table class="detail-table" role="presentation" style="margin-top:12px;">
+                <tr>
+                    <td class="detail-label">Invoice Number</td>
+                    <td class="detail-value">{{ $invoice->invoice_number ?? 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Period</td>
+                    <td class="detail-value">{{ $period }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Approved At</td>
+                    <td class="detail-value">{{ $invoice->approved_at ? $invoice->approved_at->format('M j, Y g:i A') : 'N/A' }}</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    <div class="button-row">
+        <a href="https://reprodashboard.com" class="button">View Invoice</a>
+    </div>
+@endsection

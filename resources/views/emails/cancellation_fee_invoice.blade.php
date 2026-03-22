@@ -1,60 +1,48 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Cancellation Fee Invoice')
-@section('extra-styles')
-    <style>
-        .invoice-details {
-            background-color: #f9fafb;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        .invoice-details p {
-            margin: 8px 0;
-        }
-        .amount {
-            font-size: 28px;
-            font-weight: bold;
-            color: #dc2626;
-            text-align: center;
-            padding: 20px;
-            background-color: #fef2f2;
-            border-radius: 8px;
-            margin: 20px 0;
-        }
-        .cancel-footer {
-            text-align: center;
-            color: #6b7280;
-            font-size: 14px;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #e5e7eb;
-        }
-    </style>
+@section('preheader', 'A cancellation fee invoice has been issued for a property appointment.')
+
+@section('hero')
+    <div class="eyebrow">Cancellation Fee</div>
+    <h1 class="hero-title">A cancellation fee invoice has been issued.</h1>
+    <p class="hero-copy">This invoice reflects a cancellation or on-site appointment issue covered by our cancellation policy. The billing details are listed below.</p>
 @endsection
+
 @section('content')
-    <h1 style="margin:0 0 16px;font-size:24px;color:#1f2937;">Cancellation Fee Invoice</h1>
+    <p class="intro">Hello {{ $client->name }}, <strong>a cancellation fee has been added to your account.</strong></p>
 
-    <p>Hello {{ $client->name }},</p>
+    <table class="stats-row" role="presentation">
+        <tr>
+            <td><div class="stat-card"><div class="stat-label">Amount Due</div><div class="stat-value">{{ '$' . number_format($invoice->total, 2) }}</div></div></td>
+            <td><div class="stat-card"><div class="stat-label">Issue Date</div><div class="stat-copy">{{ $invoice->issue_date->format('F j, Y') }}</div></div></td>
+            <td><div class="stat-card"><div class="stat-label">Due Date</div><div class="stat-copy">{{ $invoice->due_date->format('F j, Y') }}</div></div></td>
+        </tr>
+    </table>
 
-    <p>A cancellation fee has been applied to your account for the following property:</p>
-
-    <div class="invoice-details">
-        <p><strong>Property Address:</strong> {{ $address }}</p>
-        <p><strong>Invoice Number:</strong> {{ $invoice->invoice_number }}</p>
-        <p><strong>Issue Date:</strong> {{ $invoice->issue_date->format('F j, Y') }}</p>
-        <p><strong>Due Date:</strong> {{ $invoice->due_date->format('F j, Y') }}</p>
+    <div class="section-card">
+        <div class="section-pad">
+            <div class="section-kicker">Invoice Details</div>
+            <div class="section-title">{{ $invoice->invoice_number }}</div>
+            <table class="detail-table" role="presentation" style="margin-top:12px;">
+                <tr>
+                    <td class="detail-label">Property</td>
+                    <td class="detail-value">{{ $address }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Invoice Number</td>
+                    <td class="detail-value">{{ $invoice->invoice_number }}</td>
+                </tr>
+            </table>
+        </div>
     </div>
 
-    <div class="amount">
-        Amount Due: ${{ number_format($invoice->total, 2) }}
+    <div class="callout callout-warning">
+        <div class="callout-title">Payment reminder</div>
+        <p class="callout-copy">Please pay the invoice by the due date to avoid additional collection friction. If you have questions about the fee, reply to this email and our team will help.</p>
     </div>
+@endsection
 
-    <p>This fee has been applied in accordance with our cancellation policy. Please make payment by the due date to avoid any additional charges.</p>
-
-    <p>If you have any questions about this invoice, please contact our support team.</p>
-
-    <div class="cancel-footer">
-        <p>Thank you for your business.</p>
-        <p>REPRO HQ</p>
-    </div>
+@section('footer_note')
+    This fee is issued according to the current cancellation policy on your account.
 @endsection

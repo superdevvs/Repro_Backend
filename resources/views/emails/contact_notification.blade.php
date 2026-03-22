@@ -1,72 +1,46 @@
 @extends('emails.layouts.master')
+
 @section('title', 'New Contact Form Submission')
-@section('extra-styles')
-    <style>
-        .field {
-            margin-bottom: 15px;
-        }
-        .field-label {
-            font-weight: bold;
-            color: #374151;
-            font-size: 14px;
-        }
-        .field-value {
-            color: #1f2937;
-            margin-top: 4px;
-        }
-        .message-box {
-            background-color: #f9fafb;
-            padding: 15px;
-            border-radius: 6px;
-            border: 1px solid #e5e7eb;
-            margin-top: 8px;
-        }
-        .contact-footer {
-            text-align: center;
-            color: #6b7280;
-            font-size: 12px;
-            margin-top: 20px;
-        }
-    </style>
+@section('preheader', 'A new message has arrived through your portfolio contact form.')
+
+@section('hero')
+    <div class="eyebrow">New Inquiry</div>
+    <h1 class="hero-title">You have a new portfolio lead.</h1>
+    <p class="hero-copy">A visitor submitted a message through your contact form. Their full details and message are listed below for quick follow-up.</p>
 @endsection
+
 @section('content')
-    <h2 style="margin:0 0 16px;font-size:20px;color:#1a1a1a;">New Contact Form Submission</h2>
+    <p class="intro">Hello {{ $client->name }}, <strong>a new contact form submission just came in.</strong></p>
 
-    <p>Hello {{ $client->name }},</p>
-    
-    <p>You have received a new message through your portfolio contact form.</p>
-    
-    <div class="field">
-        <div class="field-label">From:</div>
-        <div class="field-value">{{ $submission->sender_name }}</div>
-    </div>
-    
-    <div class="field">
-        <div class="field-label">Email:</div>
-        <div class="field-value">
-            <a href="mailto:{{ $submission->sender_email }}">{{ $submission->sender_email }}</a>
+    <div class="section-card">
+        <div class="section-pad">
+            <div class="section-kicker">Lead Details</div>
+            <div class="section-title">{{ $submission->sender_name }}</div>
+            <table class="detail-table" role="presentation" style="margin-top:12px;">
+                <tr>
+                    <td class="detail-label">Email</td>
+                    <td class="detail-value"><a href="mailto:{{ $submission->sender_email }}">{{ $submission->sender_email }}</a></td>
+                </tr>
+                @if($submission->sender_phone)
+                    <tr>
+                        <td class="detail-label">Phone</td>
+                        <td class="detail-value">{{ $submission->sender_phone }}</td>
+                    </tr>
+                @endif
+                <tr>
+                    <td class="detail-label">Received</td>
+                    <td class="detail-value">{{ $submission->created_at->format('F j, Y \a\t g:i A') }}</td>
+                </tr>
+            </table>
         </div>
     </div>
-    
-    @if($submission->sender_phone)
-    <div class="field">
-        <div class="field-label">Phone:</div>
-        <div class="field-value">{{ $submission->sender_phone }}</div>
-    </div>
-    @endif
-    
-    <div class="field">
-        <div class="field-label">Message:</div>
-        <div class="message-box">
-            {!! nl2br(e($submission->message)) !!}
-        </div>
-    </div>
-    
-    <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
-        Received on {{ $submission->created_at->format('F j, Y \a\t g:i A') }}
-    </p>
 
-    <div class="contact-footer">
-        <p>This message was sent via your REPRO HQ portfolio.</p>
+    <div class="note-card">
+        <div class="note-title">Message</div>
+        <div class="body-copy" style="margin-top:0;">{!! nl2br(e($submission->message)) !!}</div>
     </div>
+@endsection
+
+@section('footer_note')
+    This inquiry was submitted through your REPRO HQ portfolio experience.
 @endsection

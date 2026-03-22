@@ -2,6 +2,16 @@
 
 use Illuminate\Support\Facades\Broadcast;
 
+$normalizeNotificationRole = static function ($role): string {
+    $normalized = strtolower((string) $role);
+    $normalized = str_replace('-', '_', $normalized);
+
+    return match ($normalized) {
+        'sales_rep', 'salesrep', 'rep', 'representative' => 'salesrep',
+        default => $normalized,
+    };
+};
+
 Broadcast::channel('sms.thread-list', function ($user) {
     return !is_null($user);
 });
@@ -11,17 +21,17 @@ Broadcast::channel('sms.thread.{threadId}', function ($user, $threadId) {
 });
 
 // Admin notifications channel - admins, superadmins, editing managers, and sales reps can subscribe
-Broadcast::channel('admin.notifications', function ($user) {
-    return $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep']);
+Broadcast::channel('admin.notifications', function ($user) use ($normalizeNotificationRole) {
+    return $user && in_array($normalizeNotificationRole($user->role ?? null), ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);
 });
 
 // Individual shoot channel - authenticated users with access to the shoot
-Broadcast::channel('shoot.{shootId}', function ($user, $shootId) {
+Broadcast::channel('shoot.{shootId}', function ($user, $shootId) use ($normalizeNotificationRole) {
     if (!$user) {
         return false;
     }
     // Admins can listen to all shoots
-    if (in_array($user->role, ['admin', 'superadmin'])) {
+    if (in_array($normalizeNotificationRole($user->role ?? null), ['admin', 'superadmin', 'editing_manager', 'salesrep'], true)) {
         return true;
     }
     // Check if user is related to this shoot (client, photographer, etc.)
@@ -51,8 +61,8 @@ Broadcast::channel('editor.{userId}.notifications', function ($user, $userId) {
 });
 
 // Email inbox channel - admins receive all inbound emails
-Broadcast::channel('email.inbox', function ($user) {
-    return $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
+Broadcast::channel('email.inbox', function ($user) use ($normalizeNotificationRole) {
+    return $user && in_array($normalizeNotificationRole($user->role ?? null), ['admin', 'superadmin', 'editing_manager', 'salesrep'], true);
 });
 
 // Email user channel - users receive their own email notifications by user ID

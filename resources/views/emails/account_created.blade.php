@@ -1,48 +1,51 @@
 @extends('emails.layouts.master')
+
 @section('title', 'New Account Information')
+@section('preheader', 'Your new R/E Pro Photos dashboard account is ready.')
+
+@section('hero')
+    <div class="eyebrow">Account Created</div>
+    <h1 class="hero-title">Your dashboard access is ready.</h1>
+    <p class="hero-copy">We created your R/E Pro Photos account so you can schedule shoots, track production, and manage billing in one place.</p>
+@endsection
+
 @section('content')
-    <p>Hi {{ $user->first_name }}!</p>
+    <p class="intro">Hi {{ $user->first_name }}, <strong>welcome to the R/E Pro Photos dashboard.</strong></p>
 
-    <p>
-        A new account has been created on the R/E Pro Dashboard: 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
+    <div class="button-row">
+        <a href="{{ $resetLink }}" class="button">Create Password</a>
+        <a href="https://reprodashboard.com" class="button button-secondary">Open Dashboard</a>
+    </div>
 
-    <p>
-        Please visit the following link to create a password for your new account:
-        <a href="{{ $resetLink }}">Create a Password</a>
-    </p>
+    <div class="section-card">
+        <div class="section-pad">
+            <div class="section-kicker">Account Details</div>
+            <div class="section-title">{{ $user->name }}</div>
+            <table class="detail-table" role="presentation" style="margin-top:12px;">
+                @if(!empty($user->company_name))
+                    <tr>
+                        <td class="detail-label">Company</td>
+                        <td class="detail-value">{{ $user->company_name }}</td>
+                    </tr>
+                @endif
+                <tr>
+                    <td class="detail-label">Email</td>
+                    <td class="detail-value">{{ $user->email }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Phone</td>
+                    <td class="detail-value">{{ $user->phonenumber ?? 'N/A' }}</td>
+                </tr>
+            </table>
+        </div>
+    </div>
 
-    <p>To login to your account, visit <a href="https://reprodashboard.com">https://reprodashboard.com</a> at any time.</p>
+    <div class="callout">
+        <div class="callout-title">Your next step</div>
+        <p class="callout-copy">Use the secure link above to set your password. After that, you can log in anytime at reprodashboard.com to manage shoots and invoices.</p>
+    </div>
+@endsection
 
-    <p>For future reference, the information you have submitted to create your account is listed below:</p>
-
-    <p>
-        Name: {{ $user->name }}<br>
-        Company: {{ $user->company_name ?? '' }}<br>
-        Phone: {{ $user->phonenumber ?? 'N/A' }}<br>
-        Email: {{ $user->email }}
-    </p>
-
-    <p>
-        If you have any questions about your account please feel free to reply to this email, 
-        or email <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> directly.
-    </p>
-
-    <p>Thanks for the opportunity to provide you with outstanding real estate marketing services!</p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
-        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        We would love your feedback: 
-        <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" target="_blank">
-            Post a review on Google
-        </a>.
-    </p>
+@section('footer_note')
+    If you were not expecting this account, contact our team right away.
 @endsection

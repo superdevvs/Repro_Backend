@@ -12,6 +12,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class InvoiceController extends Controller
 {
+    private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
+    private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     public function index(Request $request)
     {
         $user = $request->user();
@@ -34,7 +37,7 @@ class InvoiceController extends Controller
         ])->withCount('shoots');
 
         // Apply role-based filtering
-        if (in_array($user->role, ['admin', 'superadmin'])) {
+        if ($this->hasRole($user, self::ADMIN_ROLES)) {
             // Admins and superadmins can see all invoices
         } elseif ($user->role === 'client') {
             // Clients can only see invoices for their own shoots
@@ -52,7 +55,7 @@ class InvoiceController extends Controller
                       $shootQuery->where('photographer_id', $user->id);
                   });
             });
-        } elseif ($user->role === 'salesRep') {
+        } elseif ($this->hasRole($user, self::SALES_REP_ROLES)) {
             // Sales reps can only see invoices for their clients
             $query->where(function ($q) use ($user) {
                 $q->where('sales_rep_id', $user->id)
@@ -84,7 +87,7 @@ class InvoiceController extends Controller
                           ]);
                     });
             });
-        } elseif ($user->role === 'editing_manager') {
+        } elseif ($this->hasRole($user, ['editing_manager'])) {
             // Editing managers can see all invoices (read-only)
         } else {
             // Other roles cannot see invoices
@@ -172,7 +175,7 @@ class InvoiceController extends Controller
 
         // Only admins, superadmins, and photographers (for their own invoices) can mark invoices as paid
         $canMarkPaid = false;
-        if (in_array($user->role, ['admin', 'superadmin'])) {
+        if ($this->hasRole($user, self::ADMIN_ROLES)) {
             $canMarkPaid = true;
         } elseif ($user->role === 'photographer' && $invoice->photographer_id == $user->id) {
             $canMarkPaid = true;
@@ -262,5 +265,27 @@ class InvoiceController extends Controller
         return response()->json([
             'data' => $invoice->fresh(['photographer', 'salesRep'])->loadCount('shoots'),
         ]);
+    }
+
+    private function hasRole($user, array $allowedRoles): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $normalize = static fn (?string $role): string => strtolower(str_replace(['_', '-'], '', (string) $role));
+        $normalizedAllowedRoles = array_map($normalize, $allowedRoles);
+        $normalizedRole = $normalize($user->role);
+
+        if (in_array($normalizedRole, $normalizedAllowedRoles, true)) {
+            return true;
+        }
+
+        $secondaryRoles = is_array($user->secondary_roles) ? $user->secondary_roles : [];
+
+        return collect($secondaryRoles)
+            ->map($normalize)
+            ->intersect($normalizedAllowedRoles)
+            ->isNotEmpty();
     }
 }

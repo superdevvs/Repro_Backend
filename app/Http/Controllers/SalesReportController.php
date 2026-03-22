@@ -11,6 +11,8 @@ use Carbon\Carbon;
 
 class SalesReportController extends Controller
 {
+    private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
+
     protected $salesReportService;
     protected $mailService;
     protected $automationService;
@@ -29,7 +31,7 @@ class SalesReportController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep') {
+        if (!$this->salesReportService->isSalesRep($user)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -53,13 +55,13 @@ class SalesReportController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!$this->isAdminLike($user?->role)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $salesRep = User::findOrFail($salesRepId);
 
-        if ($salesRep->role !== 'salesRep') {
+        if (!$this->salesReportService->isSalesRep($salesRep)) {
             return response()->json(['message' => 'User is not a sales rep'], 422);
         }
 
@@ -83,7 +85,7 @@ class SalesReportController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (!$this->isAdminLike($user?->role)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -119,6 +121,17 @@ class SalesReportController extends Controller
                 'end' => $endDate->format('Y-m-d'),
             ],
         ]);
+    }
+
+    private function isAdminLike(?string $role): bool
+    {
+        $normalizedRole = strtolower(str_replace(['_', '-'], '', (string) $role));
+        $normalizedAllowed = array_map(
+            fn (string $item) => strtolower(str_replace(['_', '-'], '', $item)),
+            self::ADMIN_ROLES
+        );
+
+        return in_array($normalizedRole, $normalizedAllowed, true);
     }
 }
 

@@ -9,8 +9,10 @@ use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AutomationController extends Controller
 {
@@ -22,8 +24,12 @@ class AutomationController extends Controller
 
     public function index(Request $request): JsonResponse
     {
+        if (!AutomationRule::query()->where('scope', 'SYSTEM')->exists()) {
+            Artisan::call('automations:ensure-system');
+        }
+
         $query = AutomationRule::query()
-            ->with(['template', 'channel', 'creator', 'updater']);
+            ->with(['template', 'channel', 'creator', 'updater', 'latestDispatch']);
 
         if ($request->has('trigger_type')) {
             $query->where('trigger_type', $request->query('trigger_type'));
@@ -40,7 +46,7 @@ class AutomationController extends Controller
 
     public function show(AutomationRule $automation): JsonResponse
     {
-        return response()->json($automation->load(['template', 'channel', 'creator', 'updater']));
+        return response()->json($automation->load(['template', 'channel', 'creator', 'updater', 'latestDispatch']));
     }
 
     public function store(Request $request): JsonResponse
@@ -52,7 +58,7 @@ class AutomationController extends Controller
             'updated_by' => $request->user()->id,
         ]));
 
-        return response()->json($automation->load(['template', 'channel']), 201);
+        return response()->json($automation->load(['template', 'channel', 'latestDispatch']), 201);
     }
 
     public function update(Request $request, AutomationRule $automation): JsonResponse
@@ -63,7 +69,7 @@ class AutomationController extends Controller
             'updated_by' => $request->user()->id,
         ]));
 
-        return response()->json($automation->fresh()->load(['template', 'channel']));
+        return response()->json($automation->fresh()->load(['template', 'channel', 'latestDispatch']));
     }
 
     public function destroy(AutomationRule $automation): JsonResponse
@@ -132,11 +138,34 @@ class AutomationController extends Controller
     {
         $automation->update(['is_active' => !$automation->is_active]);
 
-        return response()->json($automation->fresh());
+        return response()->json($automation->fresh()->load(['template', 'channel', 'latestDispatch']));
+    }
+
+    public function runNow(AutomationRule $automation): JsonResponse
+    {
+        if ($automation->scope !== 'SYSTEM') {
+            return response()->json(['error' => 'Manual run is only supported for system automations'], 422);
+        }
+
+        Artisan::call('automations:run-system', [
+            '--trigger' => $automation->trigger_type,
+            '--force' => true,
+        ]);
+
+        return response()->json([
+            'status' => 'queued',
+            'output' => trim(Artisan::output()),
+            'automation' => $automation->fresh()->load(['template', 'channel', 'latestDispatch']),
+        ]);
     }
 
     protected function validatePayload(Request $request): array
     {
+        $systemTriggerTypes = [
+            'WEEKLY_SALES_REPORT',
+            'WEEKLY_AUTOMATED_INVOICING',
+        ];
+
         $triggerTypes = [
             'ACCOUNT_CREATED',
             'ACCOUNT_VERIFIED',
@@ -169,7 +198,7 @@ class AutomationController extends Controller
             'PROPERTY_CONTACT_REMINDER',
         ];
 
-        return $request->validate([
+        $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'trigger_type' => ['required', Rule::in($triggerTypes)],
@@ -182,6 +211,13 @@ class AutomationController extends Controller
             'schedule_json' => ['nullable', 'array'],
             'recipients_json' => ['nullable', 'array'],
         ]);
+
+        if (($data['scope'] ?? null) !== 'SYSTEM' && in_array($data['trigger_type'] ?? null, $systemTriggerTypes, true)) {
+            throw ValidationException::withMessages([
+                'trigger_type' => ['Weekly system triggers can only be managed as SYSTEM automations.'],
+            ]);
+        }
+
+        return $data;
     }
 }
-

@@ -23,7 +23,7 @@ class SendWeeklySalesReports extends Command
         $reports = $salesReportService->generateWeeklyReportsForAllSalesReps($startDate, $endDate);
 
         if ($reports->isEmpty()) {
-            $this->warn('No sales reps found.');
+            $this->warn('No eligible sales reps with email addresses were found.');
             return self::SUCCESS;
         }
 
@@ -37,7 +37,7 @@ class SendWeeklySalesReports extends Command
             }
 
             $salesRep = \App\Models\User::find($salesRepId);
-            if (!$salesRep) {
+            if (!$salesRep || !$salesReportService->isSalesRep($salesRep) || empty($salesRep->email)) {
                 $this->warn("Sales rep with ID {$salesRepId} not found.");
                 $failed++;
                 continue;

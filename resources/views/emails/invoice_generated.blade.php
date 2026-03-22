@@ -1,51 +1,78 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Weekly Invoice - ' . $period)
-@section('content')
-    <p>Hello, {{ $photographer->name }}!</p>
+@section('preheader', 'Your weekly invoice is ready to review.')
 
-    <p>Your weekly invoice for {{ $period }} has been generated.</p>
-
-    <h3>Invoice Details</h3>
-    <ul>
-        <li><strong>Invoice Number:</strong> {{ $invoice->invoice_number ?? 'N/A' }}</li>
-        <li><strong>Period:</strong> {{ $period }}</li>
-        <li><strong>Total Amount:</strong> ${{ number_format($invoice->total_amount ?? $invoice->total ?? 0, 2) }}</li>
-        <li><strong>Status:</strong> {{ ucfirst($invoice->status) }}</li>
-    </ul>
-
-    @if($invoice->items && $invoice->items->count() > 0)
-    <h3>Invoice Items</h3>
-    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
-        <tr>
-            <th>Description</th>
-            <th>Type</th>
-            <th>Amount</th>
-        </tr>
-        @foreach($invoice->items as $item)
-        <tr>
-            <td>{{ $item->description }}</td>
-            <td>{{ ucfirst($item->type) }}</td>
-            <td>${{ number_format($item->total_amount, 2) }}</td>
-        </tr>
-        @endforeach
-    </table>
-    @endif
-
-    <p>
-        You can review and manage your invoice by logging into your dashboard at 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        You can add additional expenses or reject the invoice if needed. 
-        If you make changes, the invoice will require admin approval.
-    </p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
-    </p>
+@section('hero')
+    <div class="eyebrow">Invoice Generated</div>
+    <h1 class="hero-title">Your invoice for {{ $period }} is ready.</h1>
+    <p class="hero-copy">Review the amount, the line items included for this period, and any follow-up needed before payout processing continues.</p>
 @endsection
 
+@section('content')
+    @php
+        $recipientModel = $recipient ?? $photographer;
+        $recipientLabel = $recipientRole ?? 'photographer';
+    @endphp
 
+    <p class="intro">Hello {{ $recipientModel->name }}, <strong>your weekly {{ $recipientLabel }} invoice has been generated.</strong></p>
+
+    <div class="button-row">
+        <a href="https://reprodashboard.com" class="button">Open Dashboard</a>
+    </div>
+
+    <table class="stats-row" role="presentation">
+        <tr>
+            <td>
+                <div class="stat-card">
+                    <div class="stat-label">Invoice Number</div>
+                    <div class="stat-copy">{{ $invoice->invoice_number ?? 'N/A' }}</div>
+                </div>
+            </td>
+            <td>
+                <div class="stat-card">
+                    <div class="stat-label">Status</div>
+                    <div class="stat-copy">{{ ucfirst($invoice->status) }}</div>
+                </div>
+            </td>
+            <td>
+                <div class="stat-card">
+                    <div class="stat-label">Total</div>
+                    <div class="stat-value">{{ '$' . number_format($invoice->total_amount ?? $invoice->total ?? 0, 2) }}</div>
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    @if($invoice->items && $invoice->items->count() > 0)
+        <div class="section-card">
+            <div class="section-pad">
+                <div class="section-kicker">Invoice Items</div>
+                <div class="section-title">Line item breakdown</div>
+                <table class="line-table" role="presentation" style="margin-top:12px;">
+                    <tr>
+                        <th>Description</th>
+                        <th>Type</th>
+                        <th style="text-align:right;">Amount</th>
+                    </tr>
+                    @foreach($invoice->items as $item)
+                        <tr>
+                            <td><span class="line-name">{{ $item->description }}</span></td>
+                            <td><span class="line-meta" style="margin-top:0;">{{ ucfirst($item->type) }}</span></td>
+                            <td class="amount-cell">{{ '$' . number_format($item->total_amount, 2) }}</td>
+                        </tr>
+                    @endforeach
+                </table>
+            </div>
+        </div>
+    @endif
+
+    <div class="callout">
+        <div class="callout-title">Next step</div>
+        <p class="callout-copy">Log into the dashboard to review this invoice, add any needed expenses, or reject it if something needs adjustment before approval.</p>
+    </div>
+@endsection
+
+@section('footer_note')
+    Changes made to the invoice after generation may trigger a fresh approval review.
+@endsection

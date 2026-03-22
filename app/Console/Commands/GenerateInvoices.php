@@ -10,7 +10,7 @@ class GenerateInvoices extends Command
 {
     protected $signature = 'invoices:generate {--start=} {--end=} {--weekly : Generate invoices for the last completed week} {--no-email : Do not send email notifications}';
 
-    protected $description = 'Generate invoices for photographers over a given period';
+    protected $description = 'Generate weekly invoices for photographers and sales reps over a given period';
 
     public function handle(InvoiceService $service): int
     {
@@ -32,7 +32,7 @@ class GenerateInvoices extends Command
         $this->info(sprintf('Generated %d invoice(s).', $invoices->count()));
         
         if ($sendEmails) {
-            $this->info('Email notifications sent to photographers.');
+            $this->info('Email notifications sent to eligible photographers and sales reps.');
         }
 
         return self::SUCCESS;

@@ -39,13 +39,22 @@ class RoleMiddleware
         };
 
         $normalizedUserRole = $normalize($user->role);
+        $normalizedSecondaryRoles = collect(is_array($user->secondary_roles) ? $user->secondary_roles : [])
+            ->map($normalize)
+            ->filter()
+            ->values()
+            ->all();
         $normalizedAllowedRoles = array_map($normalize, $roles);
 
-        if (!in_array($normalizedUserRole, $normalizedAllowedRoles, true)) {
+        $hasAllowedRole = in_array($normalizedUserRole, $normalizedAllowedRoles, true)
+            || !empty(array_intersect($normalizedSecondaryRoles, $normalizedAllowedRoles));
+
+        if (!$hasAllowedRole) {
             $origin = $request->headers->get('Origin', '*');
             return response()->json([
                 'message' => 'Unauthorized. Access restricted to specific roles.',
                 'your_role' => $user->role,
+                'your_secondary_roles' => $user->secondary_roles,
                 'required_roles' => $roles,
             ], 403)
             ->header('Access-Control-Allow-Origin', $origin)

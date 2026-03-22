@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class AutomationRule extends Model
 {
@@ -51,6 +52,11 @@ class AutomationRule extends Model
     public function updater(): BelongsTo
     {
         return $this->belongsTo(User::class, 'updated_by');
+    }
+
+    public function latestDispatch(): HasOne
+    {
+        return $this->hasOne(AutomationDispatch::class, 'automation_rule_id')->latestOfMany('scheduled_for');
     }
 
     public function scopeActive($query)

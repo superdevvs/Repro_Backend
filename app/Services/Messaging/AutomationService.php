@@ -13,6 +13,9 @@ use Illuminate\Support\Facades\Log;
 
 class AutomationService
 {
+    private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+    private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
+
     public function __construct(
         private readonly MessagingService $messagingService,
         private readonly TemplateRenderer $templateRenderer,
@@ -213,7 +216,17 @@ class AutomationService
 
                 case 'admin':
                     // Send to all admins
-                    $admins = User::whereIn('role', ['admin', 'superadmin'])->get();
+                    $admins = User::query()
+                        ->where(function ($query) {
+                            $query->whereIn('role', self::ADMIN_ROLES);
+
+                            foreach (self::ADMIN_ROLES as $role) {
+                                $query->orWhereJsonContains('secondary_roles', $role);
+                            }
+                        })
+                        ->get()
+                        ->unique('id')
+                        ->values();
                     foreach ($admins as $admin) {
                         $recipients[] = [
                             'email' => $admin->email,
@@ -337,7 +350,7 @@ class AutomationService
             $context['client'] = $user;
         } elseif ($role === 'photographer') {
             $context['photographer'] = $user;
-        } elseif ($role === 'salesrep') {
+        } elseif (in_array($role, array_map('strtolower', self::SALES_REP_ROLES), true)) {
             $context['rep'] = $user;
         } else {
             $context['client'] = $user;

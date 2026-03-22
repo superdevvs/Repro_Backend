@@ -1,108 +1,53 @@
 @extends('emails.layouts.master')
+
 @section('title', 'New Shoot Scheduled')
+@section('preheader', !empty($isPhotographer) ? 'A new shoot assignment is ready for review.' : 'Your new R/E Pro Photos shoot has been confirmed.')
+
+@section('hero')
+    <div class="eyebrow">{{ !empty($isPhotographer) ? 'New Assignment' : 'Shoot Confirmed' }}</div>
+    <h1 class="hero-title">{{ !empty($isPhotographer) ? 'You have been assigned to a new shoot.' : 'Your photo shoot is officially on the calendar.' }}</h1>
+    <p class="hero-copy">
+        {{ !empty($isPhotographer)
+            ? 'Review the property details, service lineup, and notes below so you are fully prepared before arrival.'
+            : 'Your booking has been scheduled with the R/E Pro Photos team. Everything you need to review before the appointment is organized below.' }}
+    </p>
+@endsection
+
 @section('content')
-    <p>Hi {{ $user->first_name }}!</p>
+    <p class="intro">Hi {{ $user->first_name }}{{ !empty($isPhotographer) ? '' : ',' }}<strong>{{ !empty($isPhotographer) ? ' your upcoming assignment is ready.' : ' thanks for scheduling with us.' }}</strong></p>
 
-    @if(!empty($isPhotographer))
-    <p>You have been assigned to a new photo shoot.</p>
-
-    <p>You can find the shoot listed under your Scheduled Shoots after logging into 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p><strong>Here are the shoot details:</strong></p>
-    @else
-    <p>A new photo shoot has been scheduled under your account!</p>
-
-    <p>You can find the shoot listed under Scheduled Shoots after logging into 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p><strong>Here is a summary of the shoot that was scheduled:</strong></p>
-    @endif
-
-    <p>
-        Location: {{ $shoot->location }}<br>
-        Scheduled Date: {{ $shoot->date }}<br>
-        @if(!empty($isPhotographer))
-        Client: {{ $shoot->client_name ?? 'N/A' }}<br>
-        @else
-        Photographer: {{ $shoot->photographer }}<br>
+    <div class="button-row">
+        <a href="{{ $shoot->dashboard_url }}" class="button">{{ !empty($isPhotographer) ? 'Open Dashboard' : 'View Shoot' }}</a>
+        @if(empty($isPhotographer) && !empty($paymentLink))
+            <a href="{{ $paymentLink }}" class="button button-secondary">Pay Now</a>
         @endif
-        Services:
-        @if(count($shoot->packages) > 0)
-            @foreach($shoot->packages as $package)
-                {{ $package['name'] }}{{ isset($package['price']) && $package['price'] > 0 ? ' — $' . number_format($package['price'], 2) : '' }}@if(!$loop->last), @endif
-            @endforeach
-        @else
-            N/A
-        @endif
-        <br>
-        Total: ${{ number_format($shoot->grand_total, 2) }}
-    </p>
+    </div>
 
-    @if($shoot->notes)
-    <p>
-        <strong>Notes:</strong><br>
-        {{ $shoot->notes }}
-    </p>
-    @endif
+    @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'isPhotographer' => !empty($isPhotographer)])
 
     @if(!empty($isPhotographer))
-    <p>
-        Please review the shoot details and ensure you are prepared for the scheduled date.
-        If you have any scheduling conflicts, contact the office as soon as possible.
-    </p>
+        <div class="callout">
+            <div class="callout-title">Before the appointment</div>
+            <p class="callout-copy">Please confirm timing, access, and service coverage in advance. If anything creates a scheduling conflict, contact the office as soon as possible so we can realign quickly.</p>
+        </div>
     @else
-    <p>
-        To ensure a smooth shoot process, please have the property ready. 
-        Here is a link to getting your property ready for the shoot: 
-        <a href="https://reprophotos.com/tips-to-get-your-property-camera-ready/">
-            Tips to Get Your Property Camera Ready
-        </a>
-    </p>
+        <div class="callout callout-success">
+            <div class="callout-title">How to get the property camera-ready</div>
+            <p class="callout-copy">A little prep goes a long way. Use our property-prep guide to help the home look polished and consistent across photos, video, and tours.</p>
+            <div class="button-row" style="margin-bottom:0;">
+                <a href="{{ $shoot->property_prep_url }}" class="button button-secondary">View Prep Guide</a>
+            </div>
+        </div>
 
-    @if(!empty($paymentLink))
-    <p>
-        For your convenience, you can pay without logging in by clicking the following link: 
-        <a href="{{ $paymentLink }}">Pay Now</a>
-    </p>
-
-    <p>
-        Payment may be made at any time throughout the shoot process. Although the image proofs will be posted to your account prior to payment being made, your final images will not be accessible until payment has been received in full.
-    </p>
+        <div class="callout callout-warning">
+            <div class="callout-title">Cancellation policy</div>
+            <p class="callout-copy">If an appointment is cancelled on-site, a $60 cancellation fee applies. To avoid that charge, please reschedule or cancel at least 6 hours before the start of the appointment.</p>
+        </div>
     @endif
+@endsection
 
-    <p>
-        <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-    </p>
-    @endif
-
-    <p>
-        If you have any questions about this photo shoot please feel free to contact us, or email 
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> directly.
-    </p>
-
-    @if(!empty($isPhotographer))
-    <p>Thank you!</p>
-    @else
-    <p>Thanks for scheduling, we appreciate your business!</p>
-    @endif
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
-        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    @if(empty($isPhotographer))
-    <p>
-        We would love your feedback: 
-        <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" target="_blank">
-            Post a review on Google
-        </a>.
-    </p>
-    @endif
+@section('footer_note')
+    {{ !empty($isPhotographer)
+        ? 'Need help before the shoot? Call or email the office so we can support the assignment.'
+        : 'Payments can be made at any time during the shoot process. Final media access is released once the balance is paid in full.' }}
 @endsection

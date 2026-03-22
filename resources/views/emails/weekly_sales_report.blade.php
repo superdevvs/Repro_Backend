@@ -1,77 +1,90 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Weekly Sales Report - ' . $weekLabel)
+@section('preheader', 'Your weekly sales summary is ready.')
+
+@section('hero')
+    <div class="eyebrow">Weekly Sales Report</div>
+    <h1 class="hero-title">{{ $weekLabel }}</h1>
+    <p class="hero-copy">Your weekly sales snapshot includes top-line performance, client activity, and the highest-value shoots from the period.</p>
+@endsection
+
 @section('content')
-    <p>Subject: Weekly Sales Report - {{ $weekLabel }}</p>
+    <p class="intro">Hello {{ $salesRep->name }}, <strong>here is your weekly sales report.</strong></p>
 
-    <p>Hello, {{ $salesRep->name }}!</p>
+    <div class="button-row">
+        <a href="https://reprodashboard.com" class="button">Open Dashboard</a>
+    </div>
 
-    <p>Here is your weekly sales report for {{ $weekLabel }}:</p>
+    <table class="stats-row" role="presentation">
+        <tr>
+            <td><div class="stat-card"><div class="stat-label">Total Shoots</div><div class="stat-value">{{ $report['summary']['total_shoots'] }}</div></div></td>
+            <td><div class="stat-card"><div class="stat-label">Completion Rate</div><div class="stat-value">{{ $report['summary']['completion_rate'] }}%</div></div></td>
+            <td><div class="stat-card"><div class="stat-label">Revenue</div><div class="stat-value">{{ '$' . number_format($report['summary']['total_revenue'], 2) }}</div></div></td>
+        </tr>
+    </table>
 
-    <h3>Summary</h3>
-    <ul>
-        <li><strong>Total Shoots:</strong> {{ $report['summary']['total_shoots'] }}</li>
-        <li><strong>Completed Shoots:</strong> {{ $report['summary']['completed_shoots'] }}</li>
-        <li><strong>Completion Rate:</strong> {{ $report['summary']['completion_rate'] }}%</li>
-        <li><strong>Total Revenue:</strong> ${{ number_format($report['summary']['total_revenue'], 2) }}</li>
-        <li><strong>Total Paid:</strong> ${{ number_format($report['summary']['total_paid'], 2) }}</li>
-        <li><strong>Outstanding Balance:</strong> ${{ number_format($report['summary']['outstanding_balance'], 2) }}</li>
-        <li><strong>Average Shoot Value:</strong> ${{ number_format($report['summary']['average_shoot_value'], 2) }}</li>
-    </ul>
+    <table class="stats-row" role="presentation">
+        <tr>
+            <td><div class="stat-card"><div class="stat-label">Completed</div><div class="stat-copy">{{ $report['summary']['completed_shoots'] }} shoots</div></div></td>
+            <td><div class="stat-card"><div class="stat-label">Total Paid</div><div class="stat-copy">{{ '$' . number_format($report['summary']['total_paid'], 2) }}</div></div></td>
+            <td><div class="stat-card"><div class="stat-label">Outstanding</div><div class="stat-copy">{{ '$' . number_format($report['summary']['outstanding_balance'], 2) }}</div></div></td>
+        </tr>
+    </table>
 
     @if(count($report['clients']) > 0)
-    <h3>Clients ({{ count($report['clients']) }})</h3>
-    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
-        <tr>
-            <th>Client Name</th>
-            <th>Shoot Count</th>
-            <th>Total Revenue</th>
-            <th>Total Paid</th>
-        </tr>
-        @foreach($report['clients'] as $client)
-        <tr>
-            <td>{{ $client['client_name'] }}</td>
-            <td>{{ $client['shoot_count'] }}</td>
-            <td>${{ number_format($client['total_revenue'], 2) }}</td>
-            <td>${{ number_format($client['total_paid'], 2) }}</td>
-        </tr>
-        @endforeach
-    </table>
+        <div class="section-card">
+            <div class="section-pad">
+                <div class="section-kicker">Clients</div>
+                <div class="section-title">Client activity</div>
+                <table class="line-table" role="presentation" style="margin-top:12px;">
+                    <tr>
+                        <th>Client</th>
+                        <th>Shoots</th>
+                        <th style="text-align:right;">Revenue</th>
+                    </tr>
+                    @foreach($report['clients'] as $client)
+                        <tr>
+                            <td>
+                                <span class="line-name">{{ $client['client_name'] }}</span>
+                                <span class="line-meta">Paid: {{ '$' . number_format($client['total_paid'], 2) }}</span>
+                            </td>
+                            <td><span class="line-meta" style="margin-top:0;">{{ $client['shoot_count'] }}</span></td>
+                            <td class="amount-cell">{{ '$' . number_format($client['total_revenue'], 2) }}</td>
+                        </tr>
+                    @endforeach
+                </table>
+            </div>
+        </div>
     @endif
 
     @if(count($report['top_shoots']) > 0)
-    <h3>Top Shoots by Revenue</h3>
-    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
-        <tr>
-            <th>Shoot ID</th>
-            <th>Client</th>
-            <th>Date</th>
-            <th>Revenue</th>
-            <th>Status</th>
-        </tr>
-        @foreach($report['top_shoots'] as $shoot)
-        <tr>
-            <td>#{{ $shoot['shoot_id'] }}</td>
-            <td>{{ $shoot['client_name'] }}</td>
-            <td>{{ $shoot['scheduled_date'] ?? 'N/A' }}</td>
-            <td>${{ number_format($shoot['total_quote'], 2) }}</td>
-            <td>{{ $shoot['workflow_status'] }}</td>
-        </tr>
-        @endforeach
-    </table>
+        <div class="section-card">
+            <div class="section-pad">
+                <div class="section-kicker">Top Shoots</div>
+                <div class="section-title">Highest revenue shoots</div>
+                <table class="line-table" role="presentation" style="margin-top:12px;">
+                    <tr>
+                        <th>Shoot</th>
+                        <th>Date</th>
+                        <th style="text-align:right;">Revenue</th>
+                    </tr>
+                    @foreach($report['top_shoots'] as $shoot)
+                        <tr>
+                            <td>
+                                <span class="line-name">#{{ $shoot['shoot_id'] }} | {{ $shoot['client_name'] }}</span>
+                                <span class="line-meta">{{ $shoot['workflow_status'] }}</span>
+                            </td>
+                            <td><span class="line-meta" style="margin-top:0;">{{ $shoot['scheduled_date'] ?? 'N/A' }}</span></td>
+                            <td class="amount-cell">{{ '$' . number_format($shoot['total_quote'], 2) }}</td>
+                        </tr>
+                    @endforeach
+                </table>
+            </div>
+        </div>
     @endif
-
-    <p>
-        For more details, please log in to your dashboard at 
-        <a href="https://pro.reprophotos.com">https://pro.reprophotos.com</a>
-    </p>
-
-    <p>
-        Customer Service Team <br>
-        R/E Pro Photos <br>
-        202-868-1663 <br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> <br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a>
-    </p>
 @endsection
 
-
+@section('footer_note')
+    For deeper drill-down, continue the review inside your dashboard.
+@endsection

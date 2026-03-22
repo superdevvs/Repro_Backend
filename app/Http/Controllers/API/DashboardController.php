@@ -713,7 +713,7 @@ class DashboardController extends Controller
                 return response()->json(['message' => 'Unauthorized'], 401);
             }
 
-            $role = $user->role ?? 'client';
+            $role = $this->normalizeNotificationRole($user->role ?? 'client');
             $userId = $user->id;
             $isImpersonating = $request->attributes->get('is_impersonating', false);
 
@@ -789,7 +789,7 @@ class DashboardController extends Controller
         ];
 
         // Build the query based on role
-        if (in_array($role, ['admin', 'superadmin', 'salesRep', 'editing_manager'])) {
+        if (in_array($role, ['admin', 'superadmin', 'salesrep', 'editing_manager'], true)) {
             // Admins and sales reps see all activity logs
             $shootActivityLogs = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->latest()
@@ -859,7 +859,7 @@ class DashboardController extends Controller
         }
 
         // Admins see all inbound emails (messages sent TO the system)
-        if (in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true)) {
             $emails = Message::where('channel', 'EMAIL')
                 ->where('direction', 'INBOUND')
                 ->whereIn('status', ['SENT', 'DELIVERED'])
@@ -917,7 +917,7 @@ class DashboardController extends Controller
         ];
 
         // Admins get full data
-        if (in_array($role, ['admin', 'superadmin'])) {
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true)) {
             $baseData['user'] = $log->user ? [
                 'id' => $log->user->id,
                 'name' => $log->user->name,
@@ -959,6 +959,17 @@ class DashboardController extends Controller
         }
 
         return array_diff_key($metadata, array_flip($sensitiveKeys));
+    }
+
+    protected function normalizeNotificationRole(?string $role): string
+    {
+        $normalized = strtolower((string) $role);
+        $normalized = str_replace('-', '_', $normalized);
+
+        return match ($normalized) {
+            'sales_rep', 'salesrep', 'rep', 'representative' => 'salesrep',
+            default => $normalized ?: 'client',
+        };
     }
 
     /**
@@ -1752,4 +1763,3 @@ class DashboardController extends Controller
         return array_slice($insights, 0, 5);
     }
 }
-

@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Log;
 
 class SalesRepInvoiceController extends Controller
 {
+    private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     protected $mailService;
 
     public function __construct(MailService $mailService)
@@ -25,7 +27,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep') {
+        if (!$this->isSalesRep($user)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -44,7 +46,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep' || $invoice->sales_rep_id !== $user->id) {
+        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -60,7 +62,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep' || $invoice->sales_rep_id !== $user->id) {
+        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -125,7 +127,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep' || $invoice->sales_rep_id !== $user->id) {
+        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -184,7 +186,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep' || $invoice->sales_rep_id !== $user->id) {
+        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -230,7 +232,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'salesRep' || $invoice->sales_rep_id !== $user->id) {
+        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -281,5 +283,26 @@ class SalesRepInvoiceController extends Controller
             Invoice::APPROVAL_STATUS_PENDING,
             Invoice::APPROVAL_STATUS_REJECTED,
         ]) && $invoice->status === Invoice::STATUS_DRAFT;
+    }
+
+    private function isSalesRep($user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $normalizedRoles = array_map('strtolower', self::SALES_REP_ROLES);
+        $role = strtolower((string) $user->role);
+
+        if (in_array($role, $normalizedRoles, true)) {
+            return true;
+        }
+
+        $secondaryRoles = is_array($user->secondary_roles) ? $user->secondary_roles : [];
+
+        return collect($secondaryRoles)
+            ->map(fn ($secondaryRole) => strtolower((string) $secondaryRole))
+            ->intersect($normalizedRoles)
+            ->isNotEmpty();
     }
 }

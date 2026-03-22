@@ -1,60 +1,33 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Reset Your Password')
-@section('extra-styles')
-    <style>
-        .button {
-            display: inline-block;
-            background-color: #2563eb;
-            color: #ffffff !important;
-            text-decoration: none;
-            padding: 14px 30px;
-            border-radius: 6px;
-            font-weight: 600;
-            margin: 20px 0;
-        }
-        .button:hover {
-            background-color: #1d4ed8;
-        }
-        .link-text {
-            word-break: break-all;
-            font-size: 12px;
-            color: #666;
-            background-color: #f5f5f5;
-            padding: 10px;
-            border-radius: 4px;
-            margin-top: 15px;
-        }
-        .footer {
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
-            font-size: 12px;
-            color: #888;
-        }
-    </style>
+@section('preheader', 'Use this secure link to reset your R/E Pro Photos password.')
+
+@section('hero')
+    <div class="eyebrow">Security</div>
+    <h1 class="hero-title">Reset your password.</h1>
+    <p class="hero-copy">We received a request to reset the password on your R/E Pro Photos account. Use the secure button below to create a new one.</p>
 @endsection
+
 @section('content')
-    <h1 style="color:#1a1a1a;font-size:24px;margin-bottom:20px;">Reset Your Password</h1>
-    
-    <p>Hi {{ $user->first_name }},</p>
-    
-    <p>We received a request to reset your password for your R/E Pro Photos account. Click the button below to create a new password:</p>
-    
-    <p style="text-align: center;">
+    <p class="intro">Hi {{ $user->first_name }}, <strong>your reset link is ready.</strong></p>
+
+    <div class="button-row">
         <a href="{!! $resetLink !!}" class="button">Reset Password</a>
-    </p>
-    
-    <p>This link will expire in 60 minutes for security reasons.</p>
-    
-    <p>If you didn't request a password reset, you can safely ignore this email. Your password will remain unchanged.</p>
-    
-    <div class="link-text">
-        <strong>Can't click the button?</strong> Copy and paste this link into your browser:<br>
-        {!! $resetLink !!}
     </div>
-    
-    <div class="footer">
-        <p>This email was sent by R/E Pro Photos.<br>
-        If you have any questions, please contact us at <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a></p>
+
+    <div class="callout">
+        <div class="callout-title">Important</div>
+        <p class="callout-copy">This link will expire in 60 minutes for security reasons. If you did not request this reset, you can safely ignore this email and your password will stay unchanged.</p>
     </div>
+
+    <div class="note-card">
+        <div class="note-title">Having trouble with the button?</div>
+        <div class="body-copy" style="margin-top:0; font-size:13px;">Copy and paste this link into your browser:</div>
+        <div class="fineprint" style="margin-top:10px; color:#47627f;">{!! $resetLink !!}</div>
+    </div>
+@endsection
+
+@section('footer_note')
+    Password reset links are single-purpose security links and should not be shared.
 @endsection

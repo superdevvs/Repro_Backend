@@ -4,9 +4,12 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Broadcasting;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Console\Scheduling\Schedule;
 use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\ImpersonationMiddleware;
 use App\Http\Middleware\ValidateExternalApiKey;
+use App\Jobs\BackupToDropboxJob;
+use App\Jobs\DispatchScheduledMessages;
 
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -17,6 +20,17 @@ return Application::configure(basePath: dirname(__DIR__))
         channels: __DIR__.'/../routes/channels.php',
         health: '/up',
     )
+    ->withSchedule(function (Schedule $schedule) {
+        // Laravel 11 in this project boots schedules from the application builder.
+        $schedule->command('automations:run-system')->everyFifteenMinutes();
+        $schedule->job(new BackupToDropboxJob())->dailyAt('02:00');
+        $schedule->job(new DispatchScheduledMessages())->everyMinute();
+        $schedule->command('messaging:shoot-reminders')->everyFiveMinutes();
+        $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');
+        $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
+        $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
+        $schedule->command('payouts:send')->weeklyOn(0, '05:00');
+    })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
 

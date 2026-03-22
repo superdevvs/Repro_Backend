@@ -1,54 +1,29 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Your Photos Are Ready!')
+@section('preheader', 'Your completed media is ready to review and download.')
+
+@section('hero')
+    <div class="eyebrow">Delivery Ready</div>
+    <h1 class="hero-title">Your media package is ready.</h1>
+    <p class="hero-copy">The shoot has moved into its finished stage and the final files are now available in your dashboard.</p>
+@endsection
+
 @section('content')
-    <p>Hi {{ $user->first_name }}!</p>
+    <p class="intro">Hi {{ $user->first_name }}, <strong>your finished photos are now ready for download.</strong></p>
 
-    <p>
-        Your real estate photos have been completed and are now available for download. 
-        You can log into your account to access them anytime at: 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
+    <div class="button-row">
+        <a href="{{ $shoot->dashboard_url }}" class="button">Open Deliverables</a>
+    </div>
 
-    <p>
-        <strong>Shoot Summary:</strong><br>
-        Location: {{ $shoot->location }}<br>
-        Shoot Date: {{ $shoot->date }}<br>
-        Photographer: {{ $shoot->photographer }}<br>
-        Services: @foreach($shoot->packages as $package){{ $package['name'] }}@if(!$loop->last), @endif @endforeach
-    </p>
+    <div class="callout callout-success">
+        <div class="callout-title">What you can do now</div>
+        <p class="callout-copy">Preview the completed files, download the final media, and manage everything for this property from the dashboard.</p>
+    </div>
 
-    @if($shoot->notes)
-    <p>
-        <strong>Notes:</strong><br>
-        {{ $shoot->notes }}
-    </p>
-    @endif
+    @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'showNotes' => false])
+@endsection
 
-    <p>
-        Please log in to your dashboard to preview, download, and manage your final images. 
-        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        If you have any questions about this shoot or need further assistance, 
-        please reply to this email or contact us at 
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>.
-    </p>
-
-    <p>Thank you for your business!</p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
-        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        We would love your feedback: 
-        <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" target="_blank">
-            Post a review on Google
-        </a>.
-    </p>
+@section('footer_note')
+    We appreciate your business and would love to hear about your experience after delivery.
 @endsection

@@ -1,36 +1,50 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Invoice Rejected')
-@section('content')
-    <p>Hello, {{ $photographer->name }}!</p>
+@section('preheader', 'Your invoice needs revisions before approval.')
 
-    <p>Your invoice for {{ $period }} has been rejected.</p>
-
-    <h3>Invoice Details</h3>
-    <ul>
-        <li><strong>Invoice Number:</strong> {{ $invoice->invoice_number ?? 'N/A' }}</li>
-        <li><strong>Period:</strong> {{ $period }}</li>
-        <li><strong>Total Amount:</strong> ${{ number_format($invoice->total_amount ?? $invoice->total ?? 0, 2) }}</li>
-        <li><strong>Rejected At:</strong> {{ $invoice->rejected_at ? $invoice->rejected_at->format('M j, Y g:i A') : 'N/A' }}</li>
-        @if($invoice->rejection_reason)
-        <li><strong>Rejection Reason:</strong> {{ $invoice->rejection_reason }}</li>
-        @endif
-    </ul>
-
-    <p>
-        You can review the rejection reason and make necessary changes by logging into your dashboard at 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        If you have any questions, please contact us at 
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
-    </p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a>
-    </p>
+@section('hero')
+    <div class="eyebrow">Invoice Rejected</div>
+    <h1 class="hero-title">Your invoice needs a revision.</h1>
+    <p class="hero-copy">The invoice for this period was rejected during review. Use the reason below to update it and resubmit through the dashboard.</p>
 @endsection
 
+@section('content')
+    <p class="intro">Hello {{ $photographer->name }}, <strong>your invoice for {{ $period }} was rejected.</strong></p>
 
+    <div class="section-card">
+        <div class="section-pad">
+            <div class="section-kicker">Invoice Review</div>
+            <div class="section-title">{{ '$' . number_format($invoice->total_amount ?? $invoice->total ?? 0, 2) }}</div>
+            <table class="detail-table" role="presentation" style="margin-top:12px;">
+                <tr>
+                    <td class="detail-label">Invoice Number</td>
+                    <td class="detail-value">{{ $invoice->invoice_number ?? 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Period</td>
+                    <td class="detail-value">{{ $period }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Rejected At</td>
+                    <td class="detail-value">{{ $invoice->rejected_at ? $invoice->rejected_at->format('M j, Y g:i A') : 'N/A' }}</td>
+                </tr>
+            </table>
+        </div>
+    </div>
+
+    @if($invoice->rejection_reason)
+        <div class="callout callout-danger">
+            <div class="callout-title">Rejection reason</div>
+            <p class="callout-copy">{{ $invoice->rejection_reason }}</p>
+        </div>
+    @endif
+
+    <div class="button-row">
+        <a href="https://reprodashboard.com" class="button">Review and Update</a>
+    </div>
+@endsection
+
+@section('footer_note')
+    Once corrected, the invoice can be resubmitted for approval.
+@endsection

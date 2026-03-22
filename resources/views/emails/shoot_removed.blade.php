@@ -1,46 +1,29 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Photo Shoot Cancelled')
+@section('preheader', 'A scheduled shoot has been cancelled or removed.')
+
+@section('hero')
+    <div class="eyebrow">Shoot Cancelled</div>
+    <h1 class="hero-title">This appointment is no longer on the schedule.</h1>
+    <p class="hero-copy">The shoot shown below has been cancelled or removed. The last confirmed details are included here for your records.</p>
+@endsection
+
 @section('content')
-    <p>Hi {{ $user->first_name }}!</p>
+    <p class="intro">Hi {{ $user->first_name }}, <strong>this shoot has been cancelled.</strong></p>
 
-    <p>
-        One of your photo shoots has been cancelled or removed from the schedule.
-    </p>
+    <div class="callout callout-danger">
+        <div class="callout-title">What happens next</div>
+        <p class="callout-copy">If you still need media for this property, reply to this email or rebook through the dashboard and our team will help you get a new appointment scheduled quickly.</p>
+    </div>
 
-    <p>
-        Location: {{ $shoot->location }}<br>
-        Date: {{ $shoot->date }}<br>
-        Photographer: {{ $shoot->photographer }}<br>
-        Services: @foreach($shoot->packages as $package){{ $package['name'] }}@if(!$loop->last), @endif @endforeach
-    </p>
+    <div class="button-row">
+        <a href="{{ $shoot->dashboard_url }}" class="button button-secondary">Open Dashboard</a>
+    </div>
 
-    @if($shoot->notes)
-    <p>
-        <strong>Notes:</strong><br>
-        {{ $shoot->notes }}
-    </p>
-    @endif
+    @include('emails.partials.shoot-summary', ['shoot' => $shoot])
+@endsection
 
-    <p>
-        If you need real estate photography services for this property in the future, 
-        please feel free to reply to this email, or email 
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> directly.
-    </p>
-
-    <p>Thank you!</p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
-        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        We would love your feedback: 
-        <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" target="_blank">
-            Post a review on Google
-        </a>.
-    </p>
+@section('footer_note')
+    Keep this email if you need a record of the cancelled appointment details.
 @endsection

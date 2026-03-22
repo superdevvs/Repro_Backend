@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\DB;
 
 class SalesReportService
 {
+    private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     /**
      * Generate weekly sales report for a sales rep
      */
@@ -107,11 +109,40 @@ class SalesReportService
      */
     public function generateWeeklyReportsForAllSalesReps(Carbon $startDate, Carbon $endDate): Collection
     {
-        $salesReps = User::where('role', 'salesRep')->get();
+        $salesReps = User::query()
+            ->where(function ($query) {
+                $query->whereIn('role', self::SALES_REP_ROLES);
+
+                foreach (self::SALES_REP_ROLES as $role) {
+                    $query->orWhereJsonContains('secondary_roles', $role);
+                }
+            })
+            ->whereNotNull('email')
+            ->get()
+            ->unique('id')
+            ->values();
 
         return $salesReps->map(function ($salesRep) use ($startDate, $endDate) {
             return $this->generateWeeklyReportForSalesRep($salesRep, $startDate, $endDate);
         });
+    }
+
+    public function isSalesRep(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $role = strtolower((string) $user->role);
+        if (in_array($role, array_map('strtolower', self::SALES_REP_ROLES), true)) {
+            return true;
+        }
+
+        $secondaryRoles = is_array($user->secondary_roles) ? $user->secondary_roles : [];
+        return collect($secondaryRoles)
+            ->map(fn ($item) => strtolower((string) $item))
+            ->intersect(array_map('strtolower', self::SALES_REP_ROLES))
+            ->isNotEmpty();
     }
 
     /**

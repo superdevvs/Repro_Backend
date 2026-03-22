@@ -1,54 +1,41 @@
 @extends('emails.layouts.master')
+
 @section('title', 'Your Shoot Has Been Marked as Paid')
+@section('preheader', 'This shoot has now been marked paid.')
+
+@section('hero')
+    <div class="eyebrow">Paid in Full</div>
+    <h1 class="hero-title">This shoot has been marked as paid.</h1>
+    <p class="hero-copy">Your account now reflects a paid status for the appointment below, and any delivery access tied to payment can proceed normally.</p>
+@endsection
+
 @section('content')
-    <p>Hi {{ $user->first_name }}!</p>
+    <p class="intro">Hi {{ $user->first_name }}, <strong>good news: this shoot is now marked paid.</strong></p>
 
-    <p>Great news! Your photo shoot has been marked as paid.</p>
+    <div class="section-card">
+        <div class="section-pad">
+            <div class="section-kicker">Payment Update</div>
+            <div class="section-title">{{ '$' . number_format($amount, 2) }}</div>
+            <table class="detail-table" role="presentation" style="margin-top:12px;">
+                <tr>
+                    <td class="detail-label">Recorded on</td>
+                    <td class="detail-value">{{ now()->format('M j, Y') }}</td>
+                </tr>
+                <tr>
+                    <td class="detail-label">Payment status</td>
+                    <td class="detail-value">Paid</td>
+                </tr>
+            </table>
+        </div>
+    </div>
 
-    <p><strong>Payment Details:</strong></p>
-    <p>
-        Amount Paid: ${{ number_format($amount, 2) }}<br>
-        Date: {{ now()->format('M j, Y') }}
-    </p>
+    <div class="button-row">
+        <a href="{{ $shoot->dashboard_url }}" class="button">Open Dashboard</a>
+    </div>
 
-    <p><strong>Shoot Details:</strong></p>
-    <p>
-        Location: {{ $shoot->location }}<br>
-        Scheduled Date: {{ $shoot->date }}<br>
-        Photographer: {{ $shoot->photographer }}
-    </p>
+    @include('emails.partials.shoot-summary', ['shoot' => $shoot])
+@endsection
 
-    <p>
-        @foreach($shoot->packages as $package)
-            * {{ $package['name'] }}, [${{ number_format($package['price'], 2) }}]<br>
-        @endforeach
-    </p>
-
-    <p>
-        Your final images are now accessible. Visit 
-        <a href="https://reprodashboard.com">https://reprodashboard.com</a> 
-        to view and download your photos.
-    </p>
-
-    <p>
-        If you have any questions please feel free to reply to this email, 
-        or email <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> directly.
-    </p>
-
-    <p>Thank you for your business!</p>
-
-    <p>
-        Customer Service Team<br>
-        202-868-1663<br>
-        <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a><br>
-        <a href="https://reprophotos.com">https://reprophotos.com</a><br>
-        Dashboard: <a href="https://reprodashboard.com">https://reprodashboard.com</a>
-    </p>
-
-    <p>
-        We would love your feedback: 
-        <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" target="_blank">
-            Post a review on Google
-        </a>.
-    </p>
+@section('footer_note')
+    Final images and downloads are available according to the current dashboard status for this shoot.
 @endsection
