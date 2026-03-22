@@ -108,6 +108,8 @@ class ShootController extends Controller
         try {
             $user = auth()->user();
             $tab = strtolower($request->query('tab', 'scheduled'));
+            $isPrivateListingRequest = $request->query('private_listing') !== null;
+            $privateListingScope = strtolower((string) $request->query('listing_scope', 'mine'));
             if (!$request->has('tab') && $request->query('private_listing') !== null) {
                 $tab = 'delivered';
             }
@@ -115,7 +117,7 @@ class ShootController extends Controller
             // Build cache key from request parameters - include ALL query params that affect results
             $page = (int) $request->query('page', 1);
             // Allow higher per_page for private listing portal requests
-            $maxPerPage = $request->query('private_listing') !== null ? 200 : 50;
+            $maxPerPage = $isPrivateListingRequest ? 200 : 50;
             $perPage = min($maxPerPage, max(9, (int) $request->query('per_page', 25)));
             $userId = $user ? $user->id : 'guest';
             $userRole = $user ? $user->role : 'guest';
@@ -131,7 +133,7 @@ class ShootController extends Controller
                 'client_id', 'photographer_id', 'services', 'search', 'address',
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
-                'date_from', 'date_to', 'private_listing'
+                'date_from', 'date_to', 'private_listing', 'listing_scope'
             ]);
             // Remove empty values and sort for consistent cache keys
             $filterParams = array_filter($filterParams, function($value) {
@@ -182,7 +184,10 @@ class ShootController extends Controller
             if ($user && $user->role === 'photographer') {
                 $query->where('photographer_id', $user->id);
             } elseif ($user && $user->role === 'client') {
-                $query->where('client_id', $user->id);
+                $canViewAllPrivateListings = $isPrivateListingRequest && $privateListingScope === 'all';
+                if (!$canViewAllPrivateListings) {
+                    $query->where('client_id', $user->id);
+                }
             } elseif ($user && $user->role === 'editor') {
                 // Editors see: shoots assigned to them, shoots they have activity on,
                 // AND all editing-pipeline shoots (uploaded/editing/ready/delivered),
@@ -3238,7 +3243,7 @@ class ShootController extends Controller
         DB::beginTransaction();
         try {
             $isExtra = $request->boolean('is_extra', false);
-            $mediaTypeOverride = $request->input('media_type'); // 'floorplan' etc.
+            $mediaTypeOverride = $request->input('media_type'); // 'floorplan', 'extra', 'virtual_staging', etc.
             
             foreach ($files as $file) {
                 try {
@@ -3248,15 +3253,19 @@ class ShootController extends Controller
                         ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory)
                         : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory);
 
-                    // Mark as extra if flagged
-                    if ($isExtra && $shootFile) {
-                        $shootFile->media_type = 'extra';
-                        $shootFile->save();
-                    }
+                    // Allow upload-time classification into special media tabs.
+                    if ($shootFile) {
+                        $resolvedMediaType = null;
+                        if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging'], true)) {
+                            $resolvedMediaType = $mediaTypeOverride;
+                        } elseif ($isExtra) {
+                            $resolvedMediaType = 'extra';
+                        }
 
-                    // Override media_type if explicitly provided (e.g. floorplan)
-                    if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan'], true) && $shootFile && !$isExtra) {
-                        $shootFile->media_type = $mediaTypeOverride;
+                        if ($resolvedMediaType) {
+                            $shootFile->media_type = $resolvedMediaType;
+                        }
+
                         $shootFile->save();
                     }
 
@@ -7544,7 +7553,7 @@ class ShootController extends Controller
         $request->validate([
             'file_ids' => 'required|array|min:1',
             'file_ids.*' => 'integer|exists:shoot_files,id',
-            'media_type' => 'required|string|in:floorplan,raw,edited',
+            'media_type' => 'required|string|in:floorplan,raw,edited,extra,virtual_staging,green_grass,twilight,drone',
         ]);
 
         $fileIds = $request->input('file_ids');
