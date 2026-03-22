@@ -2409,6 +2409,9 @@ class ShootController extends Controller
             'scheduled_at' => 'nullable|date',
             'notes' => 'nullable|string|max:2000',
             'skip_availability_check' => 'nullable|boolean',
+            'service_photographers' => 'nullable|array',
+            'service_photographers.*.service_id' => 'required_with:service_photographers|integer',
+            'service_photographers.*.photographer_id' => 'required_with:service_photographers|integer|exists:users,id',
         ]);
 
         $scheduledAt = isset($validated['scheduled_at']) 
@@ -2426,6 +2429,16 @@ class ShootController extends Controller
                 }
                 $shoot->photographer_id = $validated['photographer_id'];
                 $shoot->save();
+            }
+
+            if (array_key_exists('service_photographers', $validated) && is_array($validated['service_photographers'])) {
+                foreach ($validated['service_photographers'] as $assignment) {
+                    $serviceId = $assignment['service_id'] ?? null;
+                    $assignedPhotographerId = $assignment['photographer_id'] ?? null;
+                    if ($serviceId && $assignedPhotographerId) {
+                        $shoot->assignPhotographerToService((int) $serviceId, (int) $assignedPhotographerId);
+                    }
+                }
             }
 
             $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
@@ -5470,12 +5483,26 @@ class ShootController extends Controller
                 }
 
                 $categoryObj = $service->relationLoaded('category') ? $service->getRelation('category') : null;
+                $sqftRanges = $service->relationLoaded('sqftRanges')
+                    ? $service->getRelation('sqftRanges')
+                    : $service->sqftRanges()->get();
 
                 return [
                     'id' => (string) $service->id,
                     'name' => $service->name,
                     'price' => (float) ($service->pivot?->price ?? $service->price ?? 0),
                     'quantity' => (int) ($service->pivot?->quantity ?? 1),
+                    'pricing_type' => $service->pricing_type,
+                    'photo_count' => $service->photo_count !== null ? (int) $service->photo_count : null,
+                    'sqft_ranges' => $sqftRanges->map(fn($range) => [
+                        'id' => $range->id,
+                        'sqft_from' => (int) $range->sqft_from,
+                        'sqft_to' => (int) $range->sqft_to,
+                        'duration' => $range->duration !== null ? (int) $range->duration : null,
+                        'price' => (float) $range->price,
+                        'photographer_pay' => $range->photographer_pay !== null ? (float) $range->photographer_pay : null,
+                        'photo_count' => $range->photo_count !== null ? (int) $range->photo_count : null,
+                    ])->values()->all(),
                     'photographer_pay' => $service->pivot?->photographer_pay ? (float) $service->pivot->photographer_pay : null,
                     'photographer_id' => $pivotPhotographerId ? (string) $pivotPhotographerId : null,
                     'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
@@ -5488,7 +5515,11 @@ class ShootController extends Controller
                 ];
             })->values()->all();
 
-            $shoot->setRelation('services', collect());
+            // Keep the transformed service payload on both the attribute and
+            // relation. If the relation is emptied here, Eloquent's JSON
+            // serialization will output `services: []` and hide the per-service
+            // photographer assignments from the frontend detail views.
+            $shoot->setRelation('services', collect($transformedServices));
             $shoot->setAttribute('services', $transformedServices);
         }
         } catch (\Throwable $e) {

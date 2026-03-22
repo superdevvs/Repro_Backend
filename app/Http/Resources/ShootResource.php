@@ -86,6 +86,9 @@ class ShootResource extends JsonResource
                 return $this->services->map(function ($service) use ($servicePhotographers) {
                 // FALLBACK RULE: service.photographer_id ?? shoot.photographer_id
                 $resolvedPhotographerId = $service->pivot->photographer_id ?? $this->photographer_id;
+                $sqftRanges = $service->relationLoaded('sqftRanges')
+                    ? $service->getRelation('sqftRanges')
+                    : $service->sqftRanges()->get();
 
                 // Resolve photographer details
                 $resolvedPhotographer = null;
@@ -112,6 +115,17 @@ class ShootResource extends JsonResource
                     'name' => $service->name,
                     'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
                     'quantity' => (int) ($service->pivot->quantity ?? 1),
+                    'pricing_type' => $service->pricing_type,
+                    'photo_count' => $service->photo_count !== null ? (int) $service->photo_count : null,
+                    'sqft_ranges' => $sqftRanges->map(fn($range) => [
+                        'id' => $range->id,
+                        'sqft_from' => (int) $range->sqft_from,
+                        'sqft_to' => (int) $range->sqft_to,
+                        'duration' => $range->duration !== null ? (int) $range->duration : null,
+                        'price' => (float) $range->price,
+                        'photographer_pay' => $range->photographer_pay !== null ? (float) $range->photographer_pay : null,
+                        'photo_count' => $range->photo_count !== null ? (int) $range->photo_count : null,
+                    ])->values()->all(),
                     'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
                     // Raw pivot value (may be null)
                     'photographer_id' => $service->pivot->photographer_id ? (string) $service->pivot->photographer_id : null,
