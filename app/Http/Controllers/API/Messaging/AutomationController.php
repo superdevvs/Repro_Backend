@@ -4,12 +4,14 @@ namespace App\Http\Controllers\API\Messaging;
 
 use App\Http\Controllers\Controller;
 use App\Models\AutomationRule;
+use App\Models\MessageTemplate;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\AutomationWorkflowValidator;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
+use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -23,6 +25,15 @@ class AutomationController extends Controller
     private const REQUIRED_SYSTEM_TRIGGER_TYPES = [
         'WEEKLY_SALES_REPORT',
         'WEEKLY_AUTOMATED_INVOICING',
+    ];
+
+    private const PROPERTY_CONTACT_REMINDER_NAMES = [
+        'Property Contact Reminder - 2 Days Before',
+        'Property Contact Reminder - 1 Day Before',
+        'Property Contact Reminder - Shoot Day',
+        'Property Contact Reminder SMS - 2 Days Before',
+        'Property Contact Reminder SMS - 1 Day Before',
+        'Property Contact Reminder SMS - Shoot Day',
     ];
 
     public function __construct(
@@ -295,10 +306,25 @@ class AutomationController extends Controller
         $missingTriggers = array_diff(self::REQUIRED_SYSTEM_TRIGGER_TYPES, $existingSystemTriggers);
 
         if ($missingTriggers === []) {
+            if ($this->propertyContactReminderWorkflowsNeedRepair()) {
+                Artisan::call('db:seed', [
+                    '--class' => MessagingSystemSeeder::class,
+                    '--force' => true,
+                ]);
+            }
+
+            $this->repairPropertyContactReminderWorkflows();
             return;
         }
 
         Artisan::call('automations:ensure-system');
+        if ($this->propertyContactReminderWorkflowsNeedRepair()) {
+            Artisan::call('db:seed', [
+                '--class' => MessagingSystemSeeder::class,
+                '--force' => true,
+            ]);
+        }
+        $this->repairPropertyContactReminderWorkflows();
     }
 
     private function persistResolvedWorkflow(AutomationRule $automation, array $data): AutomationRule
@@ -315,6 +341,87 @@ class AutomationController extends Controller
         ])->save();
 
         return $automation->fresh();
+    }
+
+    private function propertyContactReminderWorkflowsNeedRepair(): bool
+    {
+        $automations = AutomationRule::query()
+            ->where('scope', 'SYSTEM')
+            ->where('trigger_type', 'PROPERTY_CONTACT_REMINDER')
+            ->whereIn('name', self::PROPERTY_CONTACT_REMINDER_NAMES)
+            ->with('template')
+            ->get();
+
+        if ($automations->count() !== count(self::PROPERTY_CONTACT_REMINDER_NAMES)) {
+            return true;
+        }
+
+        foreach ($automations as $automation) {
+            $validation = $this->workflowValidator->validate($this->workflowConverter->getWorkflowDefinition($automation));
+            $expectedTemplateSlug = str_contains($automation->name, 'SMS')
+                ? 'property-contact-reminder-sms'
+                : 'property-contact-reminder';
+            $expectedTemplateId = MessageTemplate::query()->where('slug', $expectedTemplateSlug)->value('id');
+
+            if (
+                !$validation['valid']
+                || !$automation->is_system_locked
+                || ($automation->engine_version ?? 0) < 2
+                || !$automation->workflow_definition_json
+                || (int) $automation->template_id !== (int) $expectedTemplateId
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function repairPropertyContactReminderWorkflows(): void
+    {
+        AutomationRule::query()
+            ->where('scope', 'SYSTEM')
+            ->where('trigger_type', 'PROPERTY_CONTACT_REMINDER')
+            ->whereIn('name', self::PROPERTY_CONTACT_REMINDER_NAMES)
+            ->with('template')
+            ->get()
+            ->each(function (AutomationRule $automation): void {
+                $expectedTemplateSlug = str_contains($automation->name, 'SMS')
+                    ? 'property-contact-reminder-sms'
+                    : 'property-contact-reminder';
+                $expectedTemplateId = MessageTemplate::query()->where('slug', $expectedTemplateSlug)->value('id');
+
+                if ($expectedTemplateId && (int) $automation->template_id !== (int) $expectedTemplateId) {
+                    $automation->template_id = $expectedTemplateId;
+                }
+
+                $workflow = $this->workflowConverter->buildLegacyWorkflow($automation);
+                $triggerNode = collect($workflow['nodes'] ?? [])
+                    ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
+                $entryTrigger = [
+                    'trigger_type' => $automation->trigger_type,
+                    'node_id' => $triggerNode['id'] ?? null,
+                    'node_type' => $triggerNode['type'] ?? null,
+                    'config' => $triggerNode['config'] ?? [],
+                ];
+                $validation = $this->workflowValidator->validate($workflow);
+
+                if (!$validation['valid']) {
+                    Log::warning('Property contact reminder workflow remains invalid after repair attempt', [
+                        'automation_id' => $automation->id,
+                        'name' => $automation->name,
+                        'errors' => $validation['errors'],
+                    ]);
+                }
+
+                $automation->forceFill([
+                    'editor_mode' => 'visual',
+                    'engine_version' => 2,
+                    'is_system_locked' => true,
+                    'workflow_definition_json' => $workflow,
+                    'entry_trigger_json' => $entryTrigger,
+                ])->save();
+            });
     }
 
     private function serializeAutomation(AutomationRule $automation, bool $includeRuns): array

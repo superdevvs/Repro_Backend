@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\MessageTemplate;
 use App\Models\AutomationRule;
+use App\Services\Messaging\AutomationWorkflowConverter;
 use Illuminate\Database\Seeder;
 
 class MessagingSystemSeeder extends Seeder
@@ -436,6 +437,8 @@ class MessagingSystemSeeder extends Seeder
 
     private function seedRequiredAutomations(): void
     {
+        $workflowConverter = app(AutomationWorkflowConverter::class);
+
         $automations = [
             [
                 'name' => 'Send Account Creation Email',
@@ -632,10 +635,27 @@ class MessagingSystemSeeder extends Seeder
                 $automation['template_id'] = MessageTemplate::where('slug', $slugMap[$automation['trigger_type']])->first()?->id;
             }
 
-            AutomationRule::updateOrCreate(
+            $automationRule = AutomationRule::updateOrCreate(
                 ['trigger_type' => $automation['trigger_type'], 'name' => $automation['name']],
                 $automation
             );
+
+            $workflow = $workflowConverter->buildLegacyWorkflow($automationRule);
+            $triggerNode = collect($workflow['nodes'] ?? [])
+                ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
+
+            $automationRule->forceFill([
+                'editor_mode' => 'visual',
+                'engine_version' => 2,
+                'is_system_locked' => $automationRule->scope === 'SYSTEM',
+                'workflow_definition_json' => $workflow,
+                'entry_trigger_json' => [
+                    'trigger_type' => $automationRule->trigger_type,
+                    'node_id' => $triggerNode['id'] ?? null,
+                    'node_type' => $triggerNode['type'] ?? null,
+                    'config' => $triggerNode['config'] ?? [],
+                ],
+            ])->save();
         }
     }
 

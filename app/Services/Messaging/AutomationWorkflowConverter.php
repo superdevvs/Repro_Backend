@@ -59,6 +59,7 @@ class AutomationWorkflowConverter
 
         $currentNodeId = $triggerNodeId;
         $currentX = 320;
+        $conditionNodeId = null;
 
         $conditionJson = is_array($automation->condition_json) ? $automation->condition_json : [];
         $hasLegacyCondition = $conditionJson !== [] && array_diff(array_keys($conditionJson), ['schedule', 'day', 'time', 'command']) !== [];
@@ -104,7 +105,7 @@ class AutomationWorkflowConverter
                 'id' => $currentNodeId . '_' . $waitNodeId,
                 'source' => $currentNodeId,
                 'target' => $waitNodeId,
-                'branchKey' => $currentNodeId === $triggerNodeId ? null : 'true',
+                'branchKey' => $currentNodeId === $conditionNodeId ? 'true' : null,
             ];
             $currentNodeId = $waitNodeId;
             $currentX += 260;
@@ -132,7 +133,7 @@ class AutomationWorkflowConverter
                 'id' => $currentNodeId . '_' . $actionNodeId,
                 'source' => $currentNodeId,
                 'target' => $actionNodeId,
-                'branchKey' => $currentNodeId !== $triggerNodeId && str_starts_with($currentNodeId, 'condition_') ? 'true' : null,
+                'branchKey' => $currentNodeId === $conditionNodeId ? 'true' : null,
             ];
             $currentNodeId = $actionNodeId;
             $currentX += 240;
@@ -146,12 +147,36 @@ class AutomationWorkflowConverter
             'config' => [],
             'validation' => [],
         ];
-        $edges[] = [
-            'id' => $currentNodeId . '_' . $endNodeId,
-            'source' => $currentNodeId,
-            'target' => $endNodeId,
-            'branchKey' => str_starts_with($currentNodeId, 'condition_') ? 'false' : null,
-        ];
+
+        if ($conditionNodeId) {
+            $trueTargetNodeId = $currentNodeId === $conditionNodeId ? $endNodeId : $currentNodeId;
+            $trueEdgeExists = collect($edges)->contains(fn (array $edge) => ($edge['source'] ?? null) === $conditionNodeId
+                && ($edge['branchKey'] ?? null) === 'true');
+
+            if (!$trueEdgeExists) {
+                $edges[] = [
+                    'id' => $conditionNodeId . '_' . $trueTargetNodeId . '_true',
+                    'source' => $conditionNodeId,
+                    'target' => $trueTargetNodeId,
+                    'branchKey' => 'true',
+                ];
+            }
+
+            $edges[] = [
+                'id' => $conditionNodeId . '_' . $endNodeId . '_false',
+                'source' => $conditionNodeId,
+                'target' => $endNodeId,
+                'branchKey' => 'false',
+            ];
+        }
+
+        if ($currentNodeId !== $conditionNodeId) {
+            $edges[] = [
+                'id' => $currentNodeId . '_' . $endNodeId,
+                'source' => $currentNodeId,
+                'target' => $endNodeId,
+            ];
+        }
 
         return [
             'nodes' => $nodes,
