@@ -65,13 +65,21 @@ class BrightMlsService
         $this->environment = strtolower((string) ($settings['environment'] ?? config('services.bright_mls.environment', 't1')));
         $defaults = $this->resolveEnvironmentDefaults($this->mode, $this->environment);
         
-        $this->apiUrl = rtrim($settings['apiUrl'] ?? config('services.bright_mls.api_url', $defaults['api_url']), '/');
+        $this->apiUrl = $this->normalizeConfiguredUrl(
+            $settings['apiUrl'] ?? config('services.bright_mls.api_url', $defaults['api_url']),
+            $defaults,
+            'api_url'
+        );
         $this->apiUser = $settings['apiUser'] ?? config('services.bright_mls.api_user');
         $this->apiKey = $settings['apiKey'] ?? config('services.bright_mls.api_key');
         $this->vendorId = $settings['vendorId'] ?? config('services.bright_mls.vendor_id');
         $this->vendorName = $settings['vendorName'] ?? config('services.bright_mls.vendor_name', 'Repro Photos');
         $this->defaultDocVisibility = $settings['defaultDocVisibility'] ?? config('services.bright_mls.default_doc_visibility', 'private');
-        $this->importUrlBase = rtrim($settings['importUrlBase'] ?? config('services.bright_mls.import_url_base', $defaults['import_url_base']), '/');
+        $this->importUrlBase = $this->normalizeConfiguredUrl(
+            $settings['importUrlBase'] ?? config('services.bright_mls.import_url_base', $defaults['import_url_base']),
+            $defaults,
+            'import_url_base'
+        );
         $this->enabled = $settings['enabled'] ?? config('services.bright_mls.enabled', true);
         $this->strategy = $this->buildStrategy();
     }
@@ -92,13 +100,41 @@ class BrightMlsService
             ?? self::ENVIRONMENT_DEFAULTS[self::MODE_LEGACY]['t1'];
     }
 
+    private function normalizeConfiguredUrl($value, array $defaults, string $key): string
+    {
+        $normalized = is_string($value) ? rtrim(trim($value), '/') : '';
+        $default = rtrim((string) ($defaults[$key] ?? ''), '/');
+
+        if ($normalized === '') {
+            return $default;
+        }
+
+        if ($this->mode === self::MODE_LEGACY) {
+            $legacyDefaults = array_map(
+                static fn (array $config): string => rtrim((string) ($config[$key] ?? ''), '/'),
+                self::ENVIRONMENT_DEFAULTS[self::MODE_LEGACY]
+            );
+
+            if (in_array($normalized, $legacyDefaults, true)) {
+                return $default;
+            }
+
+            $host = strtolower((string) parse_url($normalized, PHP_URL_HOST));
+            if ($host !== '' && str_contains($host, 'bright-solutions.co')) {
+                return $default;
+            }
+        }
+
+        return $normalized;
+    }
+
     private function resolveAuthUser(?array $manifestData = null): ?string
     {
         $candidates = [
-            $this->apiUser,
             $this->vendorId,
-            $manifestData['apiUser'] ?? null,
             $manifestData['vendorId'] ?? null,
+            $this->apiUser,
+            $manifestData['apiUser'] ?? null,
         ];
 
         foreach ($candidates as $candidate) {
@@ -310,8 +346,8 @@ class BrightMlsService
                 ];
             }
 
-            // Prefer API user for authentication, but fall back to vendorId so older
-            // Bright MLS account setups continue working without reconfiguration.
+            // Bright MLS docs require X-API-USER to be the vendor ID. We still keep
+            // apiUser as a compatibility fallback for older saved configurations.
             // If a custom saved API URL fails authentication, also try the configured/default endpoint.
             $maxRetries = 2;
             $response = null;
