@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\Message;
+use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\MessagingService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -17,7 +18,7 @@ class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
 
     public $uniqueFor = 30;
 
-    public function handle(MessagingService $messaging): void
+    public function handle(MessagingService $messaging, AutomationWorkflowExecutor $workflowExecutor): void
     {
         Message::query()
             ->where('channel', 'EMAIL')
@@ -30,6 +31,8 @@ class DispatchScheduledMessages implements ShouldQueue, ShouldBeUnique
                     $messaging->dispatchScheduledMessage($message);
                 }
             });
+
+        $workflowExecutor->resumeDueSteps();
     }
 }
 

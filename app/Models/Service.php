@@ -53,7 +53,7 @@ class Service extends Model
 
     public function serviceGroups()
     {
-        return $this->belongsToMany(ServiceGroup::class)
+        return $this->belongsToMany(ServiceGroup::class, 'service_group_service', 'service_id', 'service_group_id')
             ->withTimestamps()
             ->orderBy('name');
     }

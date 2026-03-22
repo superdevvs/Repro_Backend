@@ -49,16 +49,17 @@ class MailService
     public function sendShootScheduledEmail(User $user, Shoot $shoot, string $paymentLink): bool
     {
         try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             
-            // Determine if this call is sending directly to the photographer
-            $isDirectPhotographer = $shoot->photographer && $user->id === $shoot->photographer->id;
+            // Determine whether the primary recipient is the assigned photographer.
+            $isDirectPhotographer = $this->isPhotographerRecipient($user, $shoot);
 
             // Send to primary recipient
             $html = view('emails.shoot_scheduled', [
                 'user' => $user,
                 'shoot' => $shootData,
-                'paymentLink' => $paymentLink,
+                'paymentLink' => $isDirectPhotographer ? '' : $paymentLink,
                 'isPhotographer' => $isDirectPhotographer,
             ])->render();
             $this->sendViaCakemail($user->email, 'New Shoot Scheduled', $html, 'SHOOT_SCHEDULED');
@@ -115,13 +116,14 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $shouldNotifyClient = $notifyClient !== false;
             $shouldNotifyPhotographer = $notifyPhotographer !== false;
+            $isPrimaryRecipientPhotographer = $this->isPhotographerRecipient($user, $shoot);
             
             if ($shouldNotifyClient) {
                 $html = view('emails.shoot_updated', [
                     'user' => $user,
                     'shoot' => $shootData,
                     'changesSummary' => $changesSummary,
-                    'isPhotographer' => false,
+                    'isPhotographer' => $isPrimaryRecipientPhotographer,
                 ])->render();
                 $this->sendViaCakemail($user->email, 'Scheduled Photo Shoot Updated', $html, 'SHOOT_UPDATED');
                 
@@ -856,6 +858,27 @@ class MailService
             ->all();
     }
 
+    private function isPhotographerRecipient(User $user, Shoot $shoot): bool
+    {
+        $shoot->loadMissing(['photographer', 'services']);
+
+        $photographerIds = collect([
+            $shoot->photographer_id,
+            $shoot->photographer?->id,
+        ])
+            ->merge(
+                collect($shoot->services ?? [])
+                    ->pluck('pivot.photographer_id')
+                    ->filter()
+            )
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        return $photographerIds->contains((int) $user->id);
+    }
+
     private function buildPropertyHighlightRows(array $propertyDetails): array
     {
         $rows = [];
@@ -1193,22 +1216,30 @@ class MailService
     public function sendShootPaidEmail(User $user, Shoot $shoot, float $amount): bool
     {
         try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             
-            // Send to client
-            $html = view('emails.shoot_paid', [
-                'user' => $user,
-                'shoot' => $shootData,
-                'amount' => $amount,
-            ])->render();
-            $this->sendViaCakemail($user->email, 'Your Shoot Has Been Marked as Paid', $html, 'SHOOT_PAID');
-            
-            Log::info('Shoot paid email sent', [
-                'user_id' => $user->id,
-                'shoot_id' => $shoot->id,
-                'email' => $user->email,
-                'amount' => $amount
-            ]);
+            if (!empty($user->email)) {
+                $html = view('emails.shoot_paid', [
+                    'user' => $user,
+                    'shoot' => $shootData,
+                    'amount' => $amount,
+                ])->render();
+                $this->sendViaCakemail($user->email, 'Your Shoot Has Been Marked as Paid', $html, 'SHOOT_PAID');
+                
+                Log::info('Shoot paid email sent', [
+                    'user_id' => $user->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $user->email,
+                    'amount' => $amount
+                ]);
+            } else {
+                Log::warning('Shoot paid email skipped because recipient email is missing', [
+                    'user_id' => $user->id,
+                    'shoot_id' => $shoot->id,
+                    'amount' => $amount,
+                ]);
+            }
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
@@ -1226,11 +1257,11 @@ class MailService
             }
             
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('Failed to send shoot paid email', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
-                'email' => $user->email,
+                'email' => $user->email ?? null,
                 'error' => $e->getMessage()
             ]);
             
@@ -1451,8 +1482,12 @@ class MailService
         }
         return is_array($pd) ? $pd : [];
     }
-    private function sendViaCakemail(string $to, string $subject, string $html, string $sendSource): void
+    private function sendViaCakemail(?string $to, string $subject, string $html, string $sendSource): void
     {
+        if (!is_string($to) || trim($to) === '') {
+            throw new \InvalidArgumentException('Recipient email is required to send mail.');
+        }
+
         $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
         $messagingService = app(MessagingService::class);
         $messagingService->sendEmail([

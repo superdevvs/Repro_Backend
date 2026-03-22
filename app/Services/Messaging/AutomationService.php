@@ -19,7 +19,8 @@ class AutomationService
     public function __construct(
         private readonly MessagingService $messagingService,
         private readonly TemplateRenderer $templateRenderer,
-        private readonly TemplateVariableResolver $variableResolver
+        private readonly TemplateVariableResolver $variableResolver,
+        private readonly AutomationWorkflowExecutor $workflowExecutor,
     ) {
     }
 
@@ -35,16 +36,7 @@ class AutomationService
      */
     public function handleEvent(string $triggerType, array $context): void
     {
-        $rules = AutomationRule::active()
-            ->forTrigger($triggerType)
-            ->with(['template', 'channel'])
-            ->get();
-
-        foreach ($rules as $rule) {
-            if ($this->evaluateCondition($rule, $context)) {
-                $this->executeRule($rule, $context);
-            }
-        }
+        $this->workflowExecutor->executeEventTrigger($triggerType, $context);
     }
 
     /**
@@ -77,7 +69,12 @@ class AutomationService
             return;
         }
 
-        $resolvedContext = $this->variableResolver->resolve($context);
+        $resolvedContext = $this->variableResolver->resolve(array_merge($context, [
+            'recipient_type' => $recipient['type'] ?? 'other',
+            'recipient_name' => $recipient['name'] ?? 'Customer',
+            'recipient_email' => $recipient['email'] ?? null,
+            'recipient_phone' => $recipient['phone'] ?? null,
+        ]));
         $rendered = $this->templateRenderer->render($rule->template, $resolvedContext);
 
         if (!empty($rendered['missing'])) {
@@ -364,6 +361,7 @@ class AutomationService
      */
     public function buildShootContext(Shoot $shoot): array
     {
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services', 'notes']);
         $propertyDetails = $shoot->property_details ?? [];
 
         return [

@@ -43,6 +43,7 @@ class MessagingSystemSeeder extends Seeder
         '[mls_tour_link]' => '{{mls_tour_link}}',
         '[branded_tour_link]' => '{{branded_tour_link}}',
         '[changes_made]' => '{{shoot_change_summary}}',
+        '[shoot_changes_html]' => '{{shoot_changes_html}}',
         '[decline_reason]' => '{{decline_reason}}',
         '[photo_count]' => '{{photo_count}}',
         '[download_link]' => '{{download_link}}',
@@ -52,6 +53,7 @@ class MessagingSystemSeeder extends Seeder
         '[payment_link]' => '{{payment_link}}',
         '[payment_date]' => '{{payment_date}}',
         '[services_provided]' => '{{services_provided}}',
+        '[assigned_photographers]' => '{{assigned_photographers}}',
         '[cancellation_reason]' => '{{cancellation_reason}}',
         '[refund_amount]' => '{{refund_amount}}',
         '[original_invoice]' => '{{original_invoice}}',
@@ -65,6 +67,17 @@ class MessagingSystemSeeder extends Seeder
         '[custom_schedulingfields]' => '{{custom_scheduling_fields}}',
         '[misc_link_title]' => '{{misc_link_title}}',
         '[misc_link_url]' => '{{misc_link_url}}',
+        '[services_provided_html]' => '{{services_provided_html}}',
+        '[recipient_booking_intro]' => '{{recipient_booking_intro}}',
+        '[recipient_update_intro]' => '{{recipient_update_intro}}',
+        '[recipient_manage_copy]' => '{{recipient_manage_copy}}',
+        '[recipient_manage_copy_text]' => '{{recipient_manage_copy_text}}',
+        '[payment_cta_html]' => '{{payment_cta_html}}',
+        '[payment_cta_text]' => '{{payment_cta_text}}',
+        '[property_prep_html]' => '{{property_prep_html}}',
+        '[property_prep_text]' => '{{property_prep_text}}',
+        '[cancellation_policy_html]' => '{{cancellation_policy_html}}',
+        '[cancellation_policy_text]' => '{{cancellation_policy_text}}',
     ];
 
     private array $variableMap = [
@@ -95,6 +108,7 @@ class MessagingSystemSeeder extends Seeder
         'mls_tour_link' => 'mls_tour_link',
         'branded_tour_link' => 'branded_tour_link',
         'changes_made' => 'shoot_change_summary',
+        'shoot_changes_html' => 'shoot_changes_html',
         'decline_reason' => 'decline_reason',
         'photo_count' => 'photo_count',
         'download_link' => 'download_link',
@@ -104,6 +118,7 @@ class MessagingSystemSeeder extends Seeder
         'payment_link' => 'payment_link',
         'payment_date' => 'payment_date',
         'services_provided' => 'services_provided',
+        'assigned_photographers' => 'assigned_photographers',
         'cancellation_reason' => 'cancellation_reason',
         'refund_amount' => 'refund_amount',
         'original_invoice' => 'original_invoice',
@@ -114,6 +129,17 @@ class MessagingSystemSeeder extends Seeder
         'custom_schedulingfields' => 'custom_scheduling_fields',
         'misc_link_title' => 'misc_link_title',
         'misc_link_url' => 'misc_link_url',
+        'services_provided_html' => 'services_provided_html',
+        'recipient_booking_intro' => 'recipient_booking_intro',
+        'recipient_update_intro' => 'recipient_update_intro',
+        'recipient_manage_copy' => 'recipient_manage_copy',
+        'recipient_manage_copy_text' => 'recipient_manage_copy_text',
+        'payment_cta_html' => 'payment_cta_html',
+        'payment_cta_text' => 'payment_cta_text',
+        'property_prep_html' => 'property_prep_html',
+        'property_prep_text' => 'property_prep_text',
+        'cancellation_policy_html' => 'cancellation_policy_html',
+        'cancellation_policy_text' => 'cancellation_policy_text',
     ];
 
     public function run(): void
@@ -151,7 +177,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Scheduled for [shoot_location]',
                 'body_html' => $this->getShootScheduledTemplate(),
                 'body_text' => $this->getShootScheduledPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_quote', 'shoot_notes', 'company_email', 'portal_url', 'recipient_booking_intro', 'recipient_manage_copy', 'payment_cta_html', 'property_prep_html', 'cancellation_policy_html'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -247,7 +273,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Scheduled Photo Shoot for [shoot_location] Updated',
                 'body_html' => $this->getShootUpdatedTemplate(),
                 'body_text' => $this->getShootUpdatedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'company_email', 'portal_url', 'recipient_update_intro', 'recipient_manage_copy', 'shoot_change_summary', 'shoot_changes_html', 'property_prep_html', 'cancellation_policy_html'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -391,7 +417,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Assignment - [shoot_location]',
                 'body_html' => $this->getPhotographerAssignedTemplate(),
                 'body_text' => $this->getPhotographerAssignedPlainText(),
-                'variables_json' => ['greeting', 'photographer_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_packages', 'shoot_notes', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'services_provided', 'services_provided_html', 'shoot_notes', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -710,9 +736,9 @@ class MessagingSystemSeeder extends Seeder
         $content = '
             <p>[greeting]!</p>
             
-            <p>A new photo shoot has been scheduled under your account!</p>
+            <p>[recipient_booking_intro]</p>
             
-            <p>You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
+            <p>[recipient_manage_copy]</p>
             
             <div class="info-box">
                 <p style="margin-top: 0;"><strong>Here is a summary of the shoot that was scheduled:</strong></p>
@@ -726,10 +752,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Scheduled Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
+                    <span class="info-label">Photographers:</span> [assigned_photographers]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span> [services_provided_html]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
@@ -739,19 +765,13 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
+            [property_prep_html]
             
-            <center>
-                <a href="[pay_link]" class="button">Pay Now</a>
-            </center>
-            
-            <p style="font-size: 13px; color: #666;">Payment may be made at any time throughout the shoot process. Although the image proofs will be posted to your account prior to payment being made, your final images will not be accessible until payment has been received in full.</p>
+            [payment_cta_html]
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            <div class="note">
-                <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-            </div>
+            [cancellation_policy_html]
             
             <p><strong>Thanks for scheduling, we appreciate your business!</strong></p>
         ';
@@ -1004,7 +1024,7 @@ class MessagingSystemSeeder extends Seeder
         $content = '
             <p>[greeting]!</p>
             
-            <p>One of your scheduled photo shoots has been <strong>updated</strong>. Here is a summary of the latest information regarding the shoot that was updated:</p>
+            <p>[recipient_update_intro]</p>
             
             <div class="info-box">
                 <div class="info-row">
@@ -1017,26 +1037,24 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Scheduled Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
+                    <span class="info-label">Photographers:</span> [assigned_photographers]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span> [services_provided_html]
                 </div>
             </div>
 
             <p><strong>Updated Details:</strong></p>
-            <p>[shoot_changes_html]</p>
+            [shoot_changes_html]
             
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>Visit <a href="[portal_url]">[portal_url]</a> to manage your shoots.</p>
+            <p>[recipient_manage_copy]</p>
             
-            <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
+            [property_prep_html]
             
-            <div class="note">
-                <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-            </div>
+            [cancellation_policy_html]
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
@@ -1308,30 +1326,28 @@ https://reprohq.com';
 
     private function getShootScheduledPlainText(): string
     {
-        return '[greeting], [realtor_first]!
+        return '[greeting]!
 
-A new photo shoot has been scheduled under your account!
+[recipient_booking_intro]
 
-You can find the shoot listed under Scheduled Shoots after logging into [portal_url]
+[recipient_manage_copy_text]
 
 Here is a summary of the shoot that was scheduled:
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
-Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+Photographers: [assigned_photographers]
+[services_provided]
 Shoot total: [shoot_quote]
 
 [shoot_notes]
 
-To ensure a smooth shoot process, please have the property ready.
+[property_prep_text]
 
-For your convenience, you can pay without logging in by clicking the following link: [pay_link]
+[payment_cta_text]
 
-Payment may be made at any time throughout the shoot process.
-
-Our Cancellation Policy: If an appointment is cancelled on-site, a cancellation fee of $60 will be charged.
+[cancellation_policy_text]
 
 Thanks for scheduling, we appreciate your business!';
     }
@@ -1441,22 +1457,26 @@ Thank you!';
 
     private function getShootUpdatedPlainText(): string
     {
-        return '[greeting], [realtor_first]!
+        return '[greeting]!
 
-One of your scheduled photo shoots has been updated.
+[recipient_update_intro]
 
 Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
-Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+Photographers: [assigned_photographers]
+[services_provided]
 
 Updated Details:
-[shoot_changes]
+[changes_made]
 
 [shoot_notes]
 
-Visit [portal_url] to manage your shoots.
+[recipient_manage_copy_text]
+
+[property_prep_text]
+
+[cancellation_policy_text]
 
 Thank you!';
     }
@@ -1659,7 +1679,7 @@ This is an automated reminder. If you have already provided this information, pl
                     <span class="info-label">Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span> [services_provided_html]
                 </div>
             </div>
             
@@ -1686,7 +1706,8 @@ SHOOT DETAILS:
 Location: [shoot_location]
 Date: [shoot_date]
 Time: [shoot_time]
-Services: [shoot_packages]
+Services:
+[services_provided]
 
 Notes: [shoot_notes]
 

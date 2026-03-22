@@ -15,6 +15,7 @@ class TemplateVariableResolver
     public function resolve(array $context): array
     {
         $portalUrl = $this->resolvePortalUrl();
+        $recipientType = strtolower((string) ($context['recipient_type'] ?? 'client'));
         $derived = [
             'company_name' => config('mail.from.name', config('app.name', '')),
             'company_email' => config('mail.from.address', ''),
@@ -22,6 +23,7 @@ class TemplateVariableResolver
             'company_address' => config('app.company_address', ''),
             'portal_url' => $portalUrl,
             'current_date' => now()->format('M j, Y'),
+            'recipient_type' => $recipientType,
         ];
 
         if (!isset($context['client'])) {
@@ -67,19 +69,27 @@ class TemplateVariableResolver
             $derived['phone_number'] = $derived['client_phone'];
         }
 
-        $derived['shoot_changes'] = $context['shoot_changes']
-            ?? 'Please review updated details in the dashboard.';
-        $derived['shoot_changes_html'] = $context['shoot_changes_html']
-            ?? str_replace("\n", '<br>', (string) $derived['shoot_changes']);
+        $shootChanges = trim((string) ($context['shoot_changes'] ?? ''));
+        $derived['shoot_changes'] = $shootChanges !== ''
+            ? $shootChanges
+            : 'Please review updated details in the dashboard.';
+        $derived['shoot_change_summary'] = $derived['shoot_changes'];
+        $derived['shoot_changes_html'] = $this->formatChangeSummaryHtml(
+            $context['shoot_changes_html'] ?? null,
+            $derived['shoot_changes']
+        );
 
         $invoice = $this->resolveInvoice($context);
         if ($invoice) {
             $derived = array_merge($derived, $this->resolveInvoiceVariables($invoice));
         }
 
-        if (!empty($derived['client_first_name'])) {
-            $derived['greeting'] = 'Hi ' . $derived['client_first_name'];
+        $recipientFirstName = $this->resolveRecipientFirstName($context, $derived, $recipientType);
+        if ($recipientFirstName !== '') {
+            $derived['greeting'] = 'Hi ' . $recipientFirstName;
         }
+
+        $derived = array_merge($derived, $this->resolveRecipientContent($recipientType, $derived));
 
         if (empty($derived['email_signature'])) {
             $derived['email_signature'] = $derived['company_name'] ?? '';
@@ -176,12 +186,13 @@ class TemplateVariableResolver
     private function resolveShoot(array $context): ?Shoot
     {
         if (isset($context['shoot']) && $context['shoot'] instanceof Shoot) {
+            $context['shoot']->loadMissing(['client', 'photographer', 'service', 'services', 'notes']);
             return $context['shoot'];
         }
 
         $shootId = $context['shoot_id'] ?? null;
         if ($shootId) {
-            return Shoot::with(['client', 'photographer', 'service'])->find($shootId);
+            return Shoot::with(['client', 'photographer', 'service', 'services', 'notes'])->find($shootId);
         }
 
         return null;
@@ -206,6 +217,7 @@ class TemplateVariableResolver
      */
     private function resolveShootVariables(Shoot $shoot): array
     {
+        $shoot->loadMissing(['photographer', 'services', 'notes']);
         $location = $this->buildShootLocation($shoot);
         $shootDate = $shoot->scheduled_date
             ? $shoot->scheduled_date->format('M j, Y')
@@ -215,10 +227,10 @@ class TemplateVariableResolver
         $paymentLink = $shoot->id
             ? rtrim($this->resolvePortalUrl(), '/') . "/payment/{$shoot->id}"
             : null;
-
-        $servicesProvided = $shoot->package_services_included
-            ?? $shoot->package_name
-            ?? ($shoot->service?->name ?? $shoot->service_category ?? '');
+        $formattedServices = $this->formatServices($shoot);
+        $servicesProvided = $formattedServices['text'];
+        $servicesProvidedHtml = $formattedServices['html'];
+        $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
 
         return [
             'shoot_id' => $shoot->id,
@@ -228,8 +240,10 @@ class TemplateVariableResolver
             'shoot_time' => $shootTime,
             'shoot_packages' => $servicesProvided,
             'services_provided' => $servicesProvided,
-            'shoot_total' => $total,
-            'shoot_quote' => $total,
+            'services_provided_html' => $servicesProvidedHtml,
+            'assigned_photographers' => $assignedPhotographers,
+            'shoot_total' => $total !== null ? '$' . number_format((float) $total, 2) : null,
+            'shoot_quote' => $total !== null ? '$' . number_format((float) $total, 2) : null,
             'shoot_notes' => $this->formatShootNotes($shoot),
             'shoot_completed_date' => $shoot->completed_at?->format('M j, Y')
                 ?? $shoot->editing_completed_at?->format('M j, Y')
@@ -241,6 +255,202 @@ class TemplateVariableResolver
             'cancellation_reason' => $shoot->cancellation_reason ?? null,
             'decline_reason' => $shoot->declined_reason ?? null,
         ];
+    }
+
+    /**
+     * @return array{text: string, html: string}
+     */
+    private function formatServices(Shoot $shoot): array
+    {
+        $services = $shoot->services ?? collect();
+
+        if ($services->count() > 0) {
+            $textLines = [];
+            $htmlLines = [];
+
+            foreach ($services as $service) {
+                $lineParts = [$service->name ?? 'Service'];
+
+                $quantity = (int) ($service->pivot->quantity ?? 1);
+                if ($quantity > 1) {
+                    $lineParts[] = 'x' . $quantity;
+                }
+
+                $price = $service->pivot->price ?? $service->price ?? null;
+                if ($price !== null && $price !== '') {
+                    $lineParts[] = '$' . number_format((float) $price, 2);
+                }
+
+                $assignedPhotographerName = '';
+                $assignedPhotographerId = $service->pivot->photographer_id ?? null;
+                if ($assignedPhotographerId) {
+                    $assignedPhotographerName = User::find($assignedPhotographerId)?->name ?? '';
+                } elseif (!empty($shoot->photographer?->name)) {
+                    $assignedPhotographerName = $shoot->photographer->name;
+                }
+
+                $line = implode(' - ', array_filter($lineParts, fn ($part) => $part !== ''));
+                if ($assignedPhotographerName !== '') {
+                    $line .= ' (Photographer: ' . $assignedPhotographerName . ')';
+                }
+
+                $textLines[] = '- ' . $line;
+                $htmlLines[] = '<li style="margin:0 0 8px 0;">'
+                    . e($service->name ?? 'Service')
+                    . ($quantity > 1 ? ' <span style="color:#64748b;">x' . e((string) $quantity) . '</span>' : '')
+                    . ($price !== null && $price !== '' ? ' <strong style="color:#0f172a;">$' . e(number_format((float) $price, 2)) . '</strong>' : '')
+                    . ($assignedPhotographerName !== '' ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Assigned photographer: ' . e($assignedPhotographerName) . '</div>' : '')
+                    . '</li>';
+            }
+
+            return [
+                'text' => implode("\n", $textLines),
+                'html' => '<ul style="margin:0;padding-left:18px;">' . implode('', $htmlLines) . '</ul>',
+            ];
+        }
+
+        $fallback = $shoot->package_services_included;
+        if (is_array($fallback) && count($fallback) > 0) {
+            $textLines = array_map(fn ($service) => '- ' . trim((string) $service), $fallback);
+            $htmlLines = array_map(
+                fn ($service) => '<li style="margin:0 0 8px 0;">' . e(trim((string) $service)) . '</li>',
+                $fallback
+            );
+
+            return [
+                'text' => implode("\n", $textLines),
+                'html' => '<ul style="margin:0;padding-left:18px;">' . implode('', $htmlLines) . '</ul>',
+            ];
+        }
+
+        $single = $shoot->package_name ?: ($shoot->service?->name ?? $shoot->service_category ?? 'Service details will appear in the dashboard.');
+
+        return [
+            'text' => '- ' . $single,
+            'html' => '<ul style="margin:0;padding-left:18px;"><li style="margin:0 0 8px 0;">' . e($single) . '</li></ul>',
+        ];
+    }
+
+    private function formatAssignedPhotographers(Shoot $shoot): string
+    {
+        $names = [];
+
+        if (!empty($shoot->photographer?->name)) {
+            $names[] = $shoot->photographer->name;
+        }
+
+        foreach ($shoot->services ?? [] as $service) {
+            $photographerId = $service->pivot->photographer_id ?? null;
+            if ($photographerId) {
+                $name = User::find($photographerId)?->name;
+                if ($name) {
+                    $names[] = $name;
+                }
+            }
+        }
+
+        $names = array_values(array_unique(array_filter($names)));
+
+        return $names ? implode(', ', $names) : '';
+    }
+
+    private function resolveRecipientFirstName(array $context, array $derived, string $recipientType): string
+    {
+        if (!empty($context['recipient_name'])) {
+            [$firstName] = $this->splitName((string) $context['recipient_name']);
+            if ($firstName !== '') {
+                return $firstName;
+            }
+        }
+
+        return match ($recipientType) {
+            'photographer' => (string) ($derived['photographer_first_name'] ?? ''),
+            'rep' => (string) ($derived['rep_first_name'] ?? ''),
+            default => (string) ($derived['client_first_name'] ?? ''),
+        };
+    }
+
+    /**
+     * @param  array<string, mixed>  $derived
+     * @return array<string, string>
+     */
+    private function resolveRecipientContent(string $recipientType, array $derived): array
+    {
+        $portalUrl = (string) ($derived['portal_url'] ?? 'https://reprodashboard.com');
+        $isPhotographer = $recipientType === 'photographer';
+        $isRep = $recipientType === 'rep';
+
+        if ($isPhotographer) {
+            return [
+                'recipient_booking_intro' => 'A shoot has been added to your assignment queue.',
+                'recipient_update_intro' => 'One of your assigned shoots has been updated. Please review the latest details below.',
+                'recipient_manage_copy' => 'You can review this assignment in your dashboard at <a href="' . e($portalUrl) . '">' . e($portalUrl) . '</a>.',
+                'recipient_manage_copy_text' => 'You can review this assignment in your dashboard at ' . $portalUrl . '.',
+                'property_prep_html' => '',
+                'property_prep_text' => '',
+                'payment_cta_html' => '',
+                'payment_cta_text' => '',
+                'cancellation_policy_html' => '',
+                'cancellation_policy_text' => '',
+            ];
+        }
+
+        if ($isRep) {
+            return [
+                'recipient_booking_intro' => 'A new shoot has been scheduled for one of your accounts.',
+                'recipient_update_intro' => 'A scheduled shoot for one of your accounts has been updated. The latest details are below.',
+                'recipient_manage_copy' => 'You can review this shoot in the dashboard at <a href="' . e($portalUrl) . '">' . e($portalUrl) . '</a>.',
+                'recipient_manage_copy_text' => 'You can review this shoot in the dashboard at ' . $portalUrl . '.',
+                'property_prep_html' => '',
+                'property_prep_text' => '',
+                'payment_cta_html' => '',
+                'payment_cta_text' => '',
+                'cancellation_policy_html' => '',
+                'cancellation_policy_text' => '',
+            ];
+        }
+
+        $paymentLink = (string) ($derived['payment_link'] ?? $derived['pay_link'] ?? '');
+
+        return [
+            'recipient_booking_intro' => 'A new photo shoot has been scheduled under your account.',
+            'recipient_update_intro' => 'One of your scheduled photo shoots has been updated. Please review the latest details below.',
+            'recipient_manage_copy' => 'You can find the shoot in your dashboard under <strong>Scheduled Shoots</strong> after logging into <a href="' . e($portalUrl) . '">' . e($portalUrl) . '</a>.',
+            'recipient_manage_copy_text' => 'You can find the shoot in your dashboard under Scheduled Shoots after logging into ' . $portalUrl . '.',
+            'property_prep_html' => '<p>To keep the appointment running smoothly, please make sure the property is ready before the scheduled time.</p>',
+            'property_prep_text' => 'To keep the appointment running smoothly, please make sure the property is ready before the scheduled time.',
+            'payment_cta_html' => $paymentLink !== ''
+                ? '<div style="margin:24px 0;"><a href="' . e($paymentLink) . '" style="display:inline-block;background:#2563eb;color:#ffffff !important;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:600;">Pay Now</a><p style="margin:12px 0 0;color:#64748b;font-size:13px;">Payment can be completed anytime before final delivery. Final assets remain locked until the invoice is paid in full.</p></div>'
+                : '',
+            'payment_cta_text' => $paymentLink !== ''
+                ? "Payment link: {$paymentLink}\nPayment can be completed anytime before final delivery. Final assets remain locked until the invoice is paid in full."
+                : '',
+            'cancellation_policy_html' => '<div style="margin-top:20px;padding:16px 18px;border:1px solid #fde68a;background:#fffbeb;border-radius:14px;"><strong style="display:block;color:#92400e;margin-bottom:6px;">Cancellation Policy</strong><span style="color:#92400e;">If an appointment is cancelled on-site, a $60 cancellation fee may apply. Please cancel or reschedule at least 6 hours before the appointment start time whenever possible.</span></div>',
+            'cancellation_policy_text' => 'Cancellation policy: If an appointment is cancelled on-site, a $60 cancellation fee may apply. Please cancel or reschedule at least 6 hours before the appointment start time whenever possible.',
+        ];
+    }
+
+    private function formatChangeSummaryHtml(?string $explicitHtml, string $fallbackText): string
+    {
+        $html = trim((string) $explicitHtml);
+        if ($html !== '') {
+            return $html;
+        }
+
+        $lines = preg_split('/\r\n|\r|\n/', $fallbackText) ?: [];
+        $lines = array_values(array_filter(array_map('trim', $lines), fn ($line) => $line !== ''));
+
+        if ($lines === []) {
+            return '<p>Please review updated details in the dashboard.</p>';
+        }
+
+        if (count($lines) === 1) {
+            return '<p>' . e($lines[0]) . '</p>';
+        }
+
+        $items = array_map(fn ($line) => '<li style="margin:0 0 8px 0;">' . e($line) . '</li>', $lines);
+
+        return '<ul style="margin:0;padding-left:18px;">' . implode('', $items) . '</ul>';
     }
 
     /**

@@ -4,11 +4,17 @@ namespace Database\Seeders;
 
 use App\Models\AutomationRule;
 use App\Models\User;
+use App\Services\Messaging\AutomationWorkflowConverter;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
 class SystemAutomationsSeeder extends Seeder
 {
+    public function __construct(
+        private readonly AutomationWorkflowConverter $workflowConverter
+    ) {
+    }
+
     /**
      * Run the database seeds.
      */
@@ -33,8 +39,11 @@ class SystemAutomationsSeeder extends Seeder
                 'name' => 'Weekly Automated Invoicing',
                 'description' => 'Automatically generates and sends weekly invoices to photographers based on completed shoots. Runs every Monday at 1:00 AM.',
                 'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING',
+                'editor_mode' => 'visual',
+                'engine_version' => 2,
                 'is_active' => true,
                 'scope' => 'SYSTEM',
+                'is_system_locked' => true,
                 'owner_id' => null,
                 'template_id' => null, // Uses InvoiceGeneratedMail template
                 'channel_id' => null,
@@ -53,10 +62,17 @@ class SystemAutomationsSeeder extends Seeder
                     'type' => 'role',
                     'roles' => ['photographer'],
                 ],
+                'entry_trigger_json' => [
+                    'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING',
+                    'node_type' => 'trigger.schedule',
+                ],
                 'created_by' => $admin->id,
                 'updated_by' => $admin->id,
             ]
         );
+        $invoiceAutomation->forceFill([
+            'workflow_definition_json' => $this->workflowConverter->buildLegacyWorkflow($invoiceAutomation),
+        ])->save();
         
         $this->command->info("Created/Updated: {$invoiceAutomation->name} (ID: {$invoiceAutomation->id})");
 
@@ -70,8 +86,11 @@ class SystemAutomationsSeeder extends Seeder
                 'name' => 'Weekly Sales Reports',
                 'description' => 'Automatically generates and sends weekly sales reports to all sales reps. Includes statistics on shoots, revenue, payments, and client breakdowns. Runs every Monday at 2:00 AM.',
                 'trigger_type' => 'WEEKLY_SALES_REPORT',
+                'editor_mode' => 'visual',
+                'engine_version' => 2,
                 'is_active' => true,
                 'scope' => 'SYSTEM',
+                'is_system_locked' => true,
                 'owner_id' => null,
                 'template_id' => null, // Uses WeeklySalesReportMail template
                 'channel_id' => null,
@@ -90,10 +109,17 @@ class SystemAutomationsSeeder extends Seeder
                     'type' => 'role',
                     'roles' => ['salesRep'],
                 ],
+                'entry_trigger_json' => [
+                    'trigger_type' => 'WEEKLY_SALES_REPORT',
+                    'node_type' => 'trigger.schedule',
+                ],
                 'created_by' => $admin->id,
                 'updated_by' => $admin->id,
             ]
         );
+        $salesReportAutomation->forceFill([
+            'workflow_definition_json' => $this->workflowConverter->buildLegacyWorkflow($salesReportAutomation),
+        ])->save();
         
         $this->command->info("Created/Updated: {$salesReportAutomation->name} (ID: {$salesReportAutomation->id})");
 

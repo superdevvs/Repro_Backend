@@ -29,14 +29,14 @@ class ServiceGroup extends Model
 
     public function services()
     {
-        return $this->belongsToMany(Service::class)
+        return $this->belongsToMany(Service::class, 'service_group_service', 'service_group_id', 'service_id')
             ->withTimestamps()
             ->orderBy('name');
     }
 
     public function clients()
     {
-        return $this->belongsToMany(User::class)
+        return $this->belongsToMany(User::class, 'service_group_user', 'service_group_id', 'user_id')
             ->withTimestamps()
             ->where('role', 'client')
             ->orderBy('name');

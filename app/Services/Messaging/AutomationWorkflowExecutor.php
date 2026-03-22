@@ -1,0 +1,678 @@
+<?php
+
+namespace App\Services\Messaging;
+
+use App\Models\AutomationRule;
+use App\Models\AutomationRun;
+use App\Models\AutomationRunStep;
+use App\Models\MessageTemplate;
+use App\Models\User;
+use Carbon\Carbon;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+
+class AutomationWorkflowExecutor
+{
+    private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+    private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
+
+    public function __construct(
+        private readonly MessagingService $messagingService,
+        private readonly TemplateRenderer $templateRenderer,
+        private readonly TemplateVariableResolver $variableResolver,
+        private readonly AutomationWorkflowConverter $workflowConverter,
+        private readonly AutomationWorkflowValidator $workflowValidator,
+    ) {
+    }
+
+    public function executeEventTrigger(string $triggerType, array $context): void
+    {
+        $rules = AutomationRule::query()
+            ->active()
+            ->where('trigger_type', $triggerType)
+            ->with(['template', 'channel'])
+            ->get();
+
+        foreach ($rules as $rule) {
+            $this->executeAutomation($rule, $context);
+        }
+    }
+
+    public function executeAutomation(AutomationRule $automation, array $context, bool $simulate = false): array|AutomationRun
+    {
+        $workflow = $this->workflowConverter->getWorkflowDefinition($automation);
+        $validation = $this->workflowValidator->validate($workflow);
+
+        if (!$validation['valid']) {
+            if ($simulate) {
+                return [
+                    'validation' => $validation,
+                    'trace' => [],
+                ];
+            }
+
+            return AutomationRun::create([
+                'automation_rule_id' => $automation->id,
+                'trigger_type' => $automation->trigger_type,
+                'status' => 'failed',
+                'context_json' => $context,
+                'related_shoot_id' => $context['shoot_id'] ?? null,
+                'related_account_id' => $context['account_id'] ?? null,
+                'related_invoice_id' => $context['invoice_id'] ?? null,
+                'started_at' => now(),
+                'completed_at' => now(),
+                'error_message' => implode("\n", $validation['errors']),
+            ]);
+        }
+
+        $resolvedContext = $this->variableResolver->resolve($context);
+        $triggerNode = collect($workflow['nodes'])->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
+        $queue = $this->nextNodeIds($workflow, $triggerNode['id'] ?? null);
+
+        if ($simulate) {
+            $trace = $this->simulateQueue($automation, $workflow, $resolvedContext, $queue);
+            return [
+                'validation' => $validation,
+                'trace' => $trace,
+            ];
+        }
+
+        $run = AutomationRun::create([
+            'automation_rule_id' => $automation->id,
+            'trigger_type' => $automation->trigger_type,
+            'status' => 'running',
+            'context_json' => $resolvedContext,
+            'related_shoot_id' => $resolvedContext['shoot_id'] ?? null,
+            'related_account_id' => $resolvedContext['account_id'] ?? null,
+            'related_invoice_id' => $resolvedContext['invoice_id'] ?? null,
+            'started_at' => now(),
+        ]);
+
+        try {
+            $this->processQueue($automation, $workflow, $run, $resolvedContext, $queue);
+        } catch (\Throwable $exception) {
+            $run->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_message' => $exception->getMessage(),
+            ]);
+
+            Log::error('Automation workflow execution failed', [
+                'automation_id' => $automation->id,
+                'run_id' => $run->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        return $run->fresh('steps');
+    }
+
+    public function resumeDueSteps(): void
+    {
+        AutomationRunStep::query()
+            ->where('status', 'waiting')
+            ->whereNotNull('scheduled_for')
+            ->where('scheduled_for', '<=', now())
+            ->with(['run.automationRule.template', 'run.automationRule.channel'])
+            ->orderBy('scheduled_for')
+            ->chunkById(50, function ($steps): void {
+                foreach ($steps as $step) {
+                    $run = $step->run;
+                    $automation = $run?->automationRule;
+
+                    if (!$run || !$automation) {
+                        continue;
+                    }
+
+                    $workflow = $this->workflowConverter->getWorkflowDefinition($automation);
+                    $context = is_array($run->context_json) ? $run->context_json : [];
+                    $nextNodeIds = Arr::wrap($step->output_json['next_node_ids'] ?? []);
+
+                    $step->update([
+                        'status' => 'completed',
+                        'completed_at' => now(),
+                    ]);
+
+                    $run->update([
+                        'status' => 'running',
+                        'error_message' => null,
+                    ]);
+
+                    $this->processQueue($automation, $workflow, $run, $context, $nextNodeIds);
+                }
+            });
+    }
+
+    public function createSystemRun(AutomationRule $automation, array $context, string $command, Carbon $scheduledFor, callable $callback): AutomationRun
+    {
+        $run = AutomationRun::create([
+            'automation_rule_id' => $automation->id,
+            'trigger_type' => $automation->trigger_type,
+            'status' => 'running',
+            'context_json' => $context,
+            'scheduled_for' => $scheduledFor,
+            'started_at' => now(),
+        ]);
+
+        $step = AutomationRunStep::create([
+            'automation_run_id' => $run->id,
+            'automation_rule_id' => $automation->id,
+            'node_id' => 'system_command',
+            'node_type' => 'trigger.schedule',
+            'status' => 'running',
+            'attempt_count' => 1,
+            'scheduled_for' => $scheduledFor,
+            'started_at' => now(),
+            'input_json' => [
+                'command' => $command,
+            ],
+        ]);
+
+        try {
+            $output = $callback();
+
+            $step->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+                'output_json' => [
+                    'command' => $command,
+                    'output' => $output,
+                ],
+            ]);
+
+            $run->update([
+                'status' => 'completed',
+                'completed_at' => now(),
+            ]);
+        } catch (\Throwable $exception) {
+            $step->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_message' => $exception->getMessage(),
+            ]);
+
+            $run->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'error_message' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
+        }
+
+        return $run;
+    }
+
+    private function processQueue(AutomationRule $automation, array $workflow, AutomationRun $run, array $context, array $queue): void
+    {
+        $nodeMap = collect($workflow['nodes'])->keyBy('id');
+
+        while ($queue !== []) {
+            $nodeId = array_shift($queue);
+            $node = $nodeMap->get($nodeId);
+
+            if (!$node) {
+                continue;
+            }
+
+            $step = AutomationRunStep::create([
+                'automation_run_id' => $run->id,
+                'automation_rule_id' => $automation->id,
+                'node_id' => $nodeId,
+                'node_type' => $node['type'],
+                'status' => 'running',
+                'attempt_count' => 1,
+                'started_at' => now(),
+                'input_json' => [
+                    'config' => $node['config'] ?? [],
+                ],
+            ]);
+
+            $nextNodeIds = [];
+            $output = [];
+
+            try {
+                switch ($node['type']) {
+                    case 'condition.if':
+                        $branch = $this->evaluateConditionNode($node, $context) ? 'true' : 'false';
+                        $nextNodeIds = $this->nextNodeIds($workflow, $nodeId, $branch);
+                        $output = ['branch' => $branch];
+                        break;
+
+                    case 'wait.duration':
+                    case 'wait.datetime_offset':
+                        $scheduledFor = $this->resolveWaitSchedule($node, $context);
+                        if ($scheduledFor && $scheduledFor->gt(now())) {
+                            $step->update([
+                                'status' => 'waiting',
+                                'scheduled_for' => $scheduledFor,
+                                'output_json' => [
+                                    'next_node_ids' => $this->nextNodeIds($workflow, $nodeId),
+                                ],
+                            ]);
+                            $run->update([
+                                'status' => 'waiting',
+                                'scheduled_for' => $scheduledFor,
+                            ]);
+                            return;
+                        }
+
+                        $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
+                        $output = ['resumed_immediately' => true];
+                        break;
+
+                    case 'action.email':
+                        $output = $this->executeEmailAction($automation, $node, $context);
+                        $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
+                        break;
+
+                    case 'action.sms':
+                        $output = $this->executeSmsAction($automation, $node, $context);
+                        $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
+                        break;
+
+                    case 'action.internal_notification':
+                        $output = $this->executeInternalNotificationAction($automation, $node, $context);
+                        $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
+                        break;
+
+                    case 'end':
+                        $output = ['ended' => true];
+                        $nextNodeIds = [];
+                        break;
+
+                    default:
+                        $nextNodeIds = $this->nextNodeIds($workflow, $nodeId);
+                        $output = ['passthrough' => true];
+                        break;
+                }
+
+                $step->update([
+                    'status' => 'completed',
+                    'completed_at' => now(),
+                    'output_json' => $output,
+                ]);
+            } catch (\Throwable $exception) {
+                $step->update([
+                    'status' => 'failed',
+                    'completed_at' => now(),
+                    'error_message' => $exception->getMessage(),
+                ]);
+
+                throw $exception;
+            }
+
+            foreach ($nextNodeIds as $nextNodeId) {
+                $queue[] = $nextNodeId;
+            }
+        }
+
+        $run->update([
+            'status' => 'completed',
+            'completed_at' => now(),
+            'scheduled_for' => null,
+        ]);
+    }
+
+    private function evaluateConditionNode(array $node, array $context): bool
+    {
+        $config = is_array($node['config'] ?? null) ? $node['config'] : [];
+        $rules = Arr::wrap($config['rules'] ?? []);
+        $match = $config['match'] ?? 'all';
+
+        $results = collect($rules)->map(function (array $rule) use ($context): bool {
+            $actual = data_get($context, $rule['field'] ?? '');
+            $expected = $rule['value'] ?? null;
+            $operator = $rule['operator'] ?? 'eq';
+
+            return match ($operator) {
+                'neq' => $actual != $expected,
+                'gt' => $actual > $expected,
+                'gte' => $actual >= $expected,
+                'lt' => $actual < $expected,
+                'lte' => $actual <= $expected,
+                'contains' => Str::contains((string) $actual, (string) $expected),
+                'exists' => !empty($actual),
+                'in' => in_array($actual, Arr::wrap($expected), true),
+                default => $actual == $expected,
+            };
+        })->all();
+
+        return $match === 'any'
+            ? in_array(true, $results, true)
+            : !in_array(false, $results, true);
+    }
+
+    private function resolveWaitSchedule(array $node, array $context): ?Carbon
+    {
+        $config = is_array($node['config'] ?? null) ? $node['config'] : [];
+
+        if ($node['type'] === 'wait.duration') {
+            $amount = (int) ($config['amount'] ?? 0);
+            $unit = $config['unit'] ?? 'minutes';
+            if ($amount <= 0) {
+                return null;
+            }
+
+            return match ($unit) {
+                'days' => now()->addDays($amount),
+                'hours' => now()->addHours($amount),
+                default => now()->addMinutes($amount),
+            };
+        }
+
+        $referenceField = $config['referenceField'] ?? 'shoot_datetime';
+        $reference = data_get($context, $referenceField) ?? data_get($context, 'shoot_datetime') ?? data_get($context, 'shoot_date');
+        if (!$reference) {
+            return null;
+        }
+
+        $amount = (int) ($config['amount'] ?? 0);
+        $unit = $config['unit'] ?? 'hours';
+        $direction = $config['direction'] ?? 'before';
+
+        $time = Carbon::parse($reference);
+        $multiplier = $direction === 'before' ? -1 : 1;
+
+        return match ($unit) {
+            'days' => $time->addDays($amount * $multiplier),
+            'minutes' => $time->addMinutes($amount * $multiplier),
+            default => $time->addHours($amount * $multiplier),
+        };
+    }
+
+    private function executeEmailAction(AutomationRule $automation, array $node, array $context): array
+    {
+        $config = is_array($node['config'] ?? null) ? $node['config'] : [];
+        $template = !empty($config['templateId'])
+            ? MessageTemplate::find($config['templateId'])
+            : null;
+
+        $rendered = $template
+            ? $this->templateRenderer->render($template, $context)
+            : $this->renderInlineMessage($config, $context);
+
+        $recipients = $this->resolveActionRecipients($automation, $config, $context, 'email');
+        $sentTo = [];
+
+        foreach ($recipients as $recipient) {
+            if (empty($recipient['email'])) {
+                continue;
+            }
+
+            $this->messagingService->sendEmail([
+                'to' => $recipient['email'],
+                'subject' => $rendered['subject'] ?? '',
+                'body_html' => $rendered['body_html'] ?? '',
+                'body_text' => $rendered['body_text'] ?? '',
+                'channel_id' => $config['channelId'] ?? $automation->channel_id,
+                'template_id' => $template?->id,
+                'related_shoot_id' => $context['shoot_id'] ?? null,
+                'related_account_id' => $context['account_id'] ?? null,
+                'related_invoice_id' => $context['invoice_id'] ?? null,
+                'send_source' => 'AUTOMATION',
+                'contact_email' => $recipient['email'],
+                'contact_name' => $recipient['name'] ?? 'Recipient',
+                'contact_type' => $recipient['type'] ?? 'other',
+            ]);
+
+            $sentTo[] = $recipient['email'];
+        }
+
+        return [
+            'channel' => 'email',
+            'sent_to' => $sentTo,
+        ];
+    }
+
+    private function executeSmsAction(AutomationRule $automation, array $node, array $context): array
+    {
+        $config = is_array($node['config'] ?? null) ? $node['config'] : [];
+        $template = !empty($config['templateId'])
+            ? MessageTemplate::find($config['templateId'])
+            : null;
+        $rendered = $template
+            ? $this->templateRenderer->render($template, $context)
+            : $this->renderInlineMessage($config, $context);
+
+        $recipients = $this->resolveActionRecipients($automation, $config, $context, 'sms');
+        $sentTo = [];
+
+        foreach ($recipients as $recipient) {
+            if (empty($recipient['phone'])) {
+                continue;
+            }
+
+            $this->messagingService->sendSms([
+                'to' => $recipient['phone'],
+                'body_text' => $rendered['body_text'] ?? '',
+                'sender_display_name' => $automation->name,
+            ]);
+
+            $sentTo[] = $recipient['phone'];
+        }
+
+        return [
+            'channel' => 'sms',
+            'sent_to' => $sentTo,
+        ];
+    }
+
+    private function executeInternalNotificationAction(AutomationRule $automation, array $node, array $context): array
+    {
+        $config = is_array($node['config'] ?? null) ? $node['config'] : [];
+        $recipients = $this->resolveActionRecipients($automation, $config, $context, 'internal');
+        $deliveredTo = [];
+
+        foreach ($recipients as $recipient) {
+            if (empty($recipient['email'])) {
+                continue;
+            }
+
+            $body = $this->replaceInlinePlaceholders((string) ($config['body'] ?? ''), $context);
+            $destinationUrl = $this->replaceInlinePlaceholders((string) ($config['destinationUrl'] ?? ''), $context);
+            $title = $this->replaceInlinePlaceholders((string) ($config['title'] ?? $automation->name), $context);
+
+            $this->messagingService->storeInternalEmail([
+                'to' => $recipient['email'],
+                'subject' => $title,
+                'body_text' => trim($body . "\n\nOpen: " . $destinationUrl),
+                'body_html' => '<p>' . e($body) . '</p><p><a href="' . e($destinationUrl) . '">Open workflow item</a></p>',
+                'send_source' => 'AUTOMATION',
+                'sender_display_name' => $automation->name,
+                'contact_email' => $recipient['email'],
+                'contact_name' => $recipient['name'] ?? 'Team member',
+                'contact_type' => $recipient['type'] ?? 'internal',
+            ], 'INBOUND');
+
+            $deliveredTo[] = $recipient['email'];
+        }
+
+        return [
+            'channel' => 'internal',
+            'delivered_to' => $deliveredTo,
+        ];
+    }
+
+    private function resolveActionRecipients(AutomationRule $automation, array $config, array $context, string $mode): array
+    {
+        $recipientMode = $config['recipientMode'] ?? 'automation_default';
+
+        if ($recipientMode === 'context' && !empty($config['contextKey'])) {
+            return $this->contextRecipient((string) $config['contextKey'], $context);
+        }
+
+        $roles = match ($recipientMode) {
+            'roles' => Arr::wrap($config['recipientRoles'] ?? []),
+            default => $this->normalizeRoles($automation->recipients_json),
+        };
+
+        return $this->resolveRecipientsByRoles($roles, $context, $mode);
+    }
+
+    private function resolveRecipientsByRoles(array $roles, array $context, string $mode): array
+    {
+        $recipients = [];
+
+        foreach ($roles as $role) {
+            switch ($role) {
+                case 'client':
+                    $recipients = array_merge($recipients, $this->contextRecipient('client', $context));
+                    break;
+
+                case 'photographer':
+                    $recipients = array_merge($recipients, $this->contextRecipient('photographer', $context));
+                    break;
+
+                case 'rep':
+                    $recipients = array_merge($recipients, $this->contextRecipient('rep', $context));
+                    break;
+
+                case 'admin':
+                    $users = User::query()
+                        ->where(function ($query): void {
+                            $query->whereIn('role', self::ADMIN_ROLES);
+                            foreach (self::ADMIN_ROLES as $adminRole) {
+                                $query->orWhereJsonContains('secondary_roles', $adminRole);
+                            }
+                        })
+                        ->get();
+                    foreach ($users as $user) {
+                        $recipients[] = [
+                            'email' => $user->email,
+                            'phone' => $user->phonenumber ?? null,
+                            'name' => $user->name ?? 'Admin',
+                            'type' => 'admin',
+                        ];
+                    }
+                    break;
+            }
+        }
+
+        return collect($recipients)
+            ->filter(fn (array $recipient) => !empty($recipient['email']) || ($mode === 'sms' && !empty($recipient['phone'])))
+            ->unique(fn (array $recipient) => $recipient['email'] ?? $recipient['phone'] ?? spl_object_hash((object) $recipient))
+            ->values()
+            ->all();
+    }
+
+    private function contextRecipient(string $key, array $context): array
+    {
+        $item = data_get($context, $key);
+        if (!$item) {
+            return [];
+        }
+
+        return [[
+            'email' => $item['email'] ?? $item->email ?? null,
+            'phone' => $item['phonenumber'] ?? $item->phonenumber ?? $item['phone'] ?? $item->phone ?? null,
+            'name' => $item['name'] ?? $item->name ?? Str::headline($key),
+            'type' => $key,
+        ]];
+    }
+
+    private function normalizeRoles(mixed $recipientsJson): array
+    {
+        if (is_array($recipientsJson) && array_is_list($recipientsJson)) {
+            return array_values(array_map('strval', $recipientsJson));
+        }
+
+        if (is_array($recipientsJson) && isset($recipientsJson['roles']) && is_array($recipientsJson['roles'])) {
+            return array_values(array_map('strval', $recipientsJson['roles']));
+        }
+
+        return ['client'];
+    }
+
+    private function nextNodeIds(array $workflow, ?string $sourceId, ?string $branchKey = null): array
+    {
+        if (!$sourceId) {
+            return [];
+        }
+
+        return collect($workflow['edges'] ?? [])
+            ->filter(function (array $edge) use ($sourceId, $branchKey): bool {
+                if (($edge['source'] ?? null) !== $sourceId) {
+                    return false;
+                }
+
+                if ($branchKey === null) {
+                    return true;
+                }
+
+                return ($edge['branchKey'] ?? null) === $branchKey;
+            })
+            ->pluck('target')
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    private function renderInlineMessage(array $config, array $context): array
+    {
+        return [
+            'subject' => $this->replaceInlinePlaceholders((string) ($config['subject'] ?? ''), $context),
+            'body_html' => $this->replaceInlinePlaceholders((string) ($config['bodyHtml'] ?? ''), $context),
+            'body_text' => $this->replaceInlinePlaceholders((string) ($config['bodyText'] ?? ''), $context),
+        ];
+    }
+
+    private function replaceInlinePlaceholders(string $value, array $context): string
+    {
+        return preg_replace_callback('/{{\s*([a-zA-Z0-9_.]+)\s*}}/', function (array $matches) use ($context): string {
+            return (string) data_get($context, $matches[1], '');
+        }, $value) ?? $value;
+    }
+
+    private function simulateQueue(AutomationRule $automation, array $workflow, array $context, array $queue): array
+    {
+        $nodeMap = collect($workflow['nodes'])->keyBy('id');
+        $trace = [];
+
+        while ($queue !== []) {
+            $nodeId = array_shift($queue);
+            $node = $nodeMap->get($nodeId);
+            if (!$node) {
+                continue;
+            }
+
+            $entry = [
+                'node_id' => $nodeId,
+                'node_type' => $node['type'],
+                'status' => 'simulated',
+            ];
+
+            switch ($node['type']) {
+                case 'condition.if':
+                    $branch = $this->evaluateConditionNode($node, $context) ? 'true' : 'false';
+                    $entry['branch'] = $branch;
+                    $queue = array_merge($this->nextNodeIds($workflow, $nodeId, $branch), $queue);
+                    break;
+
+                case 'wait.duration':
+                case 'wait.datetime_offset':
+                    $entry['scheduled_for'] = optional($this->resolveWaitSchedule($node, $context))?->toIso8601String();
+                    $queue = array_merge($this->nextNodeIds($workflow, $nodeId), $queue);
+                    break;
+
+                case 'action.email':
+                case 'action.sms':
+                case 'action.internal_notification':
+                    $entry['preview_recipients'] = $this->resolveActionRecipients($automation, $node['config'] ?? [], $context, 'email');
+                    $queue = array_merge($this->nextNodeIds($workflow, $nodeId), $queue);
+                    break;
+
+                default:
+                    $queue = array_merge($this->nextNodeIds($workflow, $nodeId), $queue);
+                    break;
+            }
+
+            $trace[] = $entry;
+        }
+
+        return $trace;
+    }
+}

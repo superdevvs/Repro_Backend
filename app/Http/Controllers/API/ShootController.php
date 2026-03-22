@@ -3230,7 +3230,8 @@ class ShootController extends Controller
 
         if ($uploadType === 'edited' && !$isAdmin && !in_array($shoot->workflow_status, [
             Shoot::STATUS_EDITING,
-        ])) {
+            Shoot::STATUS_READY,
+        ], true)) {
             return response()->json([
                 'message' => 'Cannot upload edited files at this workflow stage',
                 'current_status' => $shoot->workflow_status,
@@ -6797,7 +6798,7 @@ class ShootController extends Controller
                 if ($shoot->client) {
                     $this->mailService->sendShootPaidEmail($shoot->client, $shoot, $amount);
                 }
-            } catch (\Exception $emailError) {
+            } catch (\Throwable $emailError) {
                 Log::warning('Failed to send shoot paid email', [
                     'shoot_id' => $shoot->id,
                     'error' => $emailError->getMessage(),

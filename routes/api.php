@@ -774,12 +774,15 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
 
         // Automations
         Route::get('/automations', [AutomationController::class, 'index']);
+        Route::post('/automations/validate', [AutomationController::class, 'validateWorkflow']);
         Route::get('/automations/{automation}', [AutomationController::class, 'show']);
         Route::post('/automations', [AutomationController::class, 'store']);
         Route::put('/automations/{automation}', [AutomationController::class, 'update']);
         Route::delete('/automations/{automation}', [AutomationController::class, 'destroy']);
         Route::post('/automations/{automation}/toggle', [AutomationController::class, 'toggleActive']);
         Route::post('/automations/{automation}/test', [AutomationController::class, 'test']);
+        Route::post('/automations/{automation}/simulate', [AutomationController::class, 'simulate']);
+        Route::get('/automations/{automation}/runs', [AutomationController::class, 'runs']);
         Route::post('/automations/{automation}/run', [AutomationController::class, 'runNow']);
 
         // Settings - Email

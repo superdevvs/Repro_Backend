@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\AutomationDispatch;
 use App\Models\AutomationRule;
+use App\Services\Messaging\AutomationWorkflowExecutor;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -14,6 +15,12 @@ class RunSystemAutomations extends Command
     protected $signature = 'automations:run-system {--trigger=} {--force}';
 
     protected $description = 'Run due system automation commands such as weekly invoicing and weekly sales reports';
+
+    public function __construct(
+        private readonly AutomationWorkflowExecutor $workflowExecutor
+    ) {
+        parent::__construct();
+    }
 
     public function handle(): int
     {
@@ -76,9 +83,23 @@ class RunSystemAutomations extends Command
 
             try {
                 $this->info("Running {$rule->name}: {$commandString}");
+                $exitCode = 1;
 
-                $exitCode = Artisan::call($commandString);
-                $output = trim(Artisan::output());
+                $run = $this->workflowExecutor->createSystemRun(
+                    $rule,
+                    [
+                        'trigger_type' => $rule->trigger_type,
+                        'scheduled_for' => $scheduledFor->toIso8601String(),
+                        'period_key' => $periodKey,
+                    ],
+                    $commandString,
+                    $scheduledFor,
+                    function () use ($commandString, &$exitCode): string {
+                        $exitCode = Artisan::call($commandString);
+                        return trim(Artisan::output());
+                    }
+                );
+                $output = (string) (($run->steps()->latest('id')->first()?->output_json['output']) ?? '');
 
                 $dispatch->update([
                     'status' => $exitCode === 0 ? 'completed' : 'failed',

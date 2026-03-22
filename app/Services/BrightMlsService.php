@@ -22,7 +22,7 @@ class BrightMlsService
                 'import_url_base' => 'https://lmsedit.tst.brightmls.com',
             ],
             'p1' => [
-                'api_url' => 'https://bright-manifestservices.brightmls.com',
+                'api_url' => 'https://bright-manifestservices.prd.brightmls.com',
                 'import_url_base' => 'https://lmsedit.brightmls.com',
             ],
         ],
@@ -92,6 +92,47 @@ class BrightMlsService
             ?? self::ENVIRONMENT_DEFAULTS[self::MODE_LEGACY]['t1'];
     }
 
+    private function resolveAuthUser(?array $manifestData = null): ?string
+    {
+        $candidates = [
+            $this->apiUser,
+            $this->vendorId,
+            $manifestData['apiUser'] ?? null,
+            $manifestData['vendorId'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function resolveCandidateApiUrls(): array
+    {
+        $configUrl = config('services.bright_mls.api_url');
+        $modeDefaults = $this->resolveEnvironmentDefaults($this->mode, $this->environment);
+        $defaultUrl = $modeDefaults['api_url'] ?? null;
+
+        $urls = array_filter([
+            is_string($this->apiUrl) ? rtrim($this->apiUrl, '/') : null,
+            is_string($configUrl) ? rtrim($configUrl, '/') : null,
+            is_string($defaultUrl) ? rtrim($defaultUrl, '/') : null,
+        ]);
+
+        return array_values(array_unique($urls));
+    }
+
+    private function shouldRetryWithFallback(?int $status): bool
+    {
+        return $status === null || $status === 401 || $status === 403;
+    }
+
     private function validateConfiguration(?array $manifestData = null): ?array
     {
         if (!$this->enabled) {
@@ -135,7 +176,16 @@ class BrightMlsService
             return [
                 'success' => false,
                 'status' => 'config_error',
-                'error' => 'Bright MLS vendor ID is missing (required for X-API-USER header)',
+                'error' => 'Bright MLS vendor ID is missing',
+                'response' => null,
+            ];
+        }
+
+        if (empty($this->resolveAuthUser($manifestData))) {
+            return [
+                'success' => false,
+                'status' => 'config_error',
+                'error' => 'Bright MLS API user or vendor ID is missing for authentication',
                 'response' => null,
             ];
         }
@@ -222,6 +272,7 @@ class BrightMlsService
             }
 
             $effectiveVendorId = $this->vendorId ?? $manifestData['vendorId'];
+            $authUser = $this->resolveAuthUser($manifestData);
 
             // Ensure each listItem has required id and lastModified fields
             $normalizedItems = $listItems->values()->map(function ($item, $index) {
@@ -259,28 +310,73 @@ class BrightMlsService
                 ];
             }
 
-            // X-API-USER must match vendorId per Bright MLS docs
-            // Retry up to 2 times on 5xx server errors (with 1s delay)
+            // Prefer API user for authentication, but fall back to vendorId so older
+            // Bright MLS account setups continue working without reconfiguration.
+            // If a custom saved API URL fails authentication, also try the configured/default endpoint.
             $maxRetries = 2;
             $response = null;
-            for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
-                $response = Http::withHeaders([
-                    'X-API-USER' => $effectiveVendorId,
-                    'X-API-KEY' => $this->apiKey ?? '',
-                    'Content-Type' => 'application/json',
-                ])->timeout(20)->post($this->apiUrl . '/manifest', $payload);
+            $effectiveApiUrl = $this->apiUrl;
+            $candidateUrls = $this->resolveCandidateApiUrls();
+            $lastHttpResponse = null;
 
-                if ($response->successful() || $response->status() < 500) {
-                    break; // Don't retry on success or client errors (4xx)
-                }
+            foreach ($candidateUrls as $candidateUrlIndex => $candidateUrl) {
+                for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+                    $effectiveApiUrl = $candidateUrl;
+                    try {
+                        $response = Http::withHeaders([
+                            'X-API-USER' => $authUser,
+                            'X-API-KEY' => $this->apiKey ?? '',
+                            'Content-Type' => 'application/json',
+                        ])->timeout(20)->post($candidateUrl . '/manifest', $payload);
+                    } catch (\Throwable $requestError) {
+                        Log::warning('Bright MLS request failed for endpoint', [
+                            'url' => $candidateUrl,
+                            'error' => $requestError->getMessage(),
+                            'mls_id' => $manifestData['mlsId'] ?? null,
+                        ]);
 
-                if ($attempt < $maxRetries) {
-                    Log::warning('Bright MLS server error, retrying', [
-                        'attempt' => $attempt + 1,
-                        'status' => $response->status(),
-                        'mls_id' => $manifestData['mlsId'] ?? null,
-                    ]);
-                    sleep(1);
+                        if (isset($candidateUrls[$candidateUrlIndex + 1])) {
+                            break;
+                        }
+
+                        if ($lastHttpResponse) {
+                            $response = $lastHttpResponse;
+                            break 2;
+                        }
+
+                        throw $requestError;
+                    }
+
+                    $lastHttpResponse = $response;
+
+                    if ($response->successful()) {
+                        break 2;
+                    }
+
+                    $status = $response->status();
+                    if ($status < 500) {
+                        if ($this->shouldRetryWithFallback($status) && isset($candidateUrls[$candidateUrlIndex + 1])) {
+                            Log::warning('Bright MLS auth failed on endpoint, trying fallback URL', [
+                                'attempted_url' => $candidateUrl,
+                                'next_url' => $candidateUrls[$candidateUrlIndex + 1],
+                                'status' => $status,
+                                'mls_id' => $manifestData['mlsId'] ?? null,
+                            ]);
+                            break;
+                        }
+
+                        break 2;
+                    }
+
+                    if ($attempt < $maxRetries) {
+                        Log::warning('Bright MLS server error, retrying', [
+                            'attempt' => $attempt + 1,
+                            'status' => $status,
+                            'url' => $candidateUrl,
+                            'mls_id' => $manifestData['mlsId'] ?? null,
+                        ]);
+                        sleep(1);
+                    }
                 }
             }
 
@@ -310,6 +406,7 @@ class BrightMlsService
                     'response' => $errorBody,
                     'mode' => $this->mode,
                     'environment' => $this->environment,
+                    'api_url' => $effectiveApiUrl,
                     'payload_snapshot' => $payload,
                     'published_at' => now()->toIso8601String(),
                 ];
@@ -328,6 +425,7 @@ class BrightMlsService
                 'response' => $data,
                 'mode' => $this->mode,
                 'environment' => $this->environment,
+                'api_url' => $effectiveApiUrl,
                 'payload_snapshot' => $payload,
                 'published_at' => now()->toIso8601String(),
             ];
@@ -346,6 +444,7 @@ class BrightMlsService
                 'response' => null,
                 'mode' => $this->mode,
                 'environment' => $this->environment,
+                'api_url' => $this->apiUrl,
                 'published_at' => now()->toIso8601String(),
             ];
         }
@@ -514,7 +613,7 @@ class BrightMlsService
                 return [
                     'success' => false,
                     'status' => 'config_error',
-                    'message' => 'Bright MLS vendor ID is missing (required for X-API-USER header)',
+                    'message' => 'Bright MLS vendor ID is missing',
                 ];
             }
 
@@ -526,15 +625,52 @@ class BrightMlsService
                 ];
             }
 
-            // Send a minimal POST to /manifest — a 400 "Missing request body" confirms
-            // the API is reachable and credentials are valid. A 401/403 means bad creds.
-            $response = Http::withHeaders([
-                'X-API-USER' => $this->vendorId,
-                'X-API-KEY' => $this->apiKey,
-                'Content-Type' => 'application/json',
-            ])->timeout(10)->post($this->apiUrl . '/manifest', []);
+            $authUser = $this->resolveAuthUser();
+            if (empty($authUser)) {
+                return [
+                    'success' => false,
+                    'status' => 'config_error',
+                    'message' => 'Bright MLS API user or vendor ID is missing for authentication',
+                ];
+            }
 
-            $status = $response->status();
+            // Send a minimal POST to /manifest — a 400 "Missing request body" confirms
+            // the API is reachable and credentials are valid. If a saved custom URL fails
+            // auth, try the configured/default endpoint as a compatibility fallback.
+            $response = null;
+            $status = null;
+            $effectiveApiUrl = $this->apiUrl;
+            $lastHttpResponse = null;
+
+            $candidateUrls = $this->resolveCandidateApiUrls();
+            foreach ($candidateUrls as $candidateUrlIndex => $candidateUrl) {
+                $effectiveApiUrl = $candidateUrl;
+                try {
+                    $response = Http::withHeaders([
+                        'X-API-USER' => $authUser,
+                        'X-API-KEY' => $this->apiKey,
+                        'Content-Type' => 'application/json',
+                    ])->timeout(10)->post($candidateUrl . '/manifest', []);
+                } catch (\Throwable $requestError) {
+                    if (isset($candidateUrls[$candidateUrlIndex + 1])) {
+                        continue;
+                    }
+
+                    if ($lastHttpResponse) {
+                        $response = $lastHttpResponse;
+                        $status = $response->status();
+                        break;
+                    }
+
+                    throw $requestError;
+                }
+
+                $lastHttpResponse = $response;
+                $status = $response->status();
+                if (!$this->shouldRetryWithFallback($status) || !isset($candidateUrls[$candidateUrlIndex + 1])) {
+                    break;
+                }
+            }
 
             // 400 = API reached, creds accepted, body validation failed (expected)
             // 200/201 = unexpected but fine
@@ -545,6 +681,7 @@ class BrightMlsService
                     'message' => 'Connection successful — API is reachable and credentials are valid',
                     'mode' => $this->mode,
                     'environment' => $this->environment,
+                    'api_url' => $effectiveApiUrl,
                 ];
             }
 
@@ -553,9 +690,10 @@ class BrightMlsService
                 return [
                     'success' => false,
                     'status' => $status,
-                    'message' => 'Authentication failed — check your Vendor ID and API Key',
+                    'message' => 'Authentication failed — check your API User, Vendor ID, and API Key',
                     'mode' => $this->mode,
                     'environment' => $this->environment,
+                    'api_url' => $effectiveApiUrl,
                 ];
             }
 
@@ -565,6 +703,7 @@ class BrightMlsService
                 'message' => 'Unexpected response (HTTP ' . $status . ')',
                 'mode' => $this->mode,
                 'environment' => $this->environment,
+                'api_url' => $effectiveApiUrl,
             ];
         } catch (\Exception $e) {
             return [

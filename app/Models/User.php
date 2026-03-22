@@ -159,7 +159,7 @@ class User extends Authenticatable
 
     public function serviceGroups()
     {
-        return $this->belongsToMany(ServiceGroup::class)
+        return $this->belongsToMany(ServiceGroup::class, 'service_group_user', 'user_id', 'service_group_id')
             ->withTimestamps()
             ->orderBy('name');
     }

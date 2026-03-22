@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -49,9 +50,13 @@ class ServiceGroupController extends Controller
         $validated = $this->validatePayload($request);
         [$serviceIds, $clientIds] = $this->extractAssignments($validated);
 
-        $group = ServiceGroup::create($validated);
-        $group->services()->sync($serviceIds);
-        $group->clients()->sync($clientIds);
+        $group = DB::transaction(function () use ($validated, $serviceIds, $clientIds) {
+            $group = ServiceGroup::create($validated);
+            $group->services()->sync($serviceIds);
+            $group->clients()->sync($clientIds);
+
+            return $group;
+        });
 
         return response()->json([
             'success' => true,
@@ -72,9 +77,11 @@ class ServiceGroupController extends Controller
         $validated = $this->validatePayload($request, $serviceGroup);
         [$serviceIds, $clientIds] = $this->extractAssignments($validated);
 
-        $serviceGroup->update($validated);
-        $serviceGroup->services()->sync($serviceIds);
-        $serviceGroup->clients()->sync($clientIds);
+        DB::transaction(function () use ($serviceGroup, $validated, $serviceIds, $clientIds) {
+            $serviceGroup->update($validated);
+            $serviceGroup->services()->sync($serviceIds);
+            $serviceGroup->clients()->sync($clientIds);
+        });
 
         return response()->json([
             'success' => true,

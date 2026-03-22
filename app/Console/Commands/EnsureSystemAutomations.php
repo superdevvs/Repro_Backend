@@ -4,12 +4,19 @@ namespace App\Console\Commands;
 
 use App\Models\AutomationRule;
 use App\Models\User;
+use App\Services\Messaging\AutomationWorkflowConverter;
 use Illuminate\Console\Command;
 
 class EnsureSystemAutomations extends Command
 {
     protected $signature = 'automations:ensure-system';
     protected $description = 'Ensure system automations (Weekly Sales Reports and Weekly Automated Invoicing) exist in the database';
+
+    public function __construct(
+        private readonly AutomationWorkflowConverter $workflowConverter
+    ) {
+        parent::__construct();
+    }
 
     public function handle()
     {
@@ -59,8 +66,11 @@ class EnsureSystemAutomations extends Command
                 'name' => 'Weekly Automated Invoicing',
                 'description' => 'Automatically generates weekly photographer and sales rep invoices for the last completed week. Runs every Monday at 1:00 AM through the system automation runner.',
                 'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING',
+                'editor_mode' => 'visual',
+                'engine_version' => 2,
                 'is_active' => true,
                 'scope' => 'SYSTEM',
+                'is_system_locked' => true,
                 'owner_id' => null,
                 'template_id' => null,
                 'channel_id' => null,
@@ -80,10 +90,17 @@ class EnsureSystemAutomations extends Command
                     'type' => 'role',
                     'roles' => ['photographer', 'rep'],
                 ],
+                'entry_trigger_json' => [
+                    'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING',
+                    'node_type' => 'trigger.schedule',
+                ],
                 'created_by' => $admin->id,
                 'updated_by' => $admin->id,
             ]
         );
+        $invoiceAuto->forceFill([
+            'workflow_definition_json' => $this->workflowConverter->buildLegacyWorkflow($invoiceAuto),
+        ])->save();
         $this->line("  ✓ {$invoiceAuto->name} (ID: {$invoiceAuto->id}, Scope: {$invoiceAuto->scope})");
 
         // Create/Update Weekly Sales Reports
@@ -97,8 +114,11 @@ class EnsureSystemAutomations extends Command
                 'name' => 'Weekly Sales Reports',
                 'description' => 'Automatically generates and sends weekly sales reports to all sales reps. Runs every Monday at 2:00 AM through the system automation runner.',
                 'trigger_type' => 'WEEKLY_SALES_REPORT',
+                'editor_mode' => 'visual',
+                'engine_version' => 2,
                 'is_active' => true,
                 'scope' => 'SYSTEM',
+                'is_system_locked' => true,
                 'owner_id' => null,
                 'template_id' => null,
                 'channel_id' => null,
@@ -118,10 +138,17 @@ class EnsureSystemAutomations extends Command
                     'type' => 'role',
                     'roles' => ['rep'],
                 ],
+                'entry_trigger_json' => [
+                    'trigger_type' => 'WEEKLY_SALES_REPORT',
+                    'node_type' => 'trigger.schedule',
+                ],
                 'created_by' => $admin->id,
                 'updated_by' => $admin->id,
             ]
         );
+        $salesAuto->forceFill([
+            'workflow_definition_json' => $this->workflowConverter->buildLegacyWorkflow($salesAuto),
+        ])->save();
         $this->line("  ✓ {$salesAuto->name} (ID: {$salesAuto->id}, Scope: {$salesAuto->scope})");
 
         // Verify all system automations
