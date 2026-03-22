@@ -155,4 +155,37 @@ class User extends Authenticatable
         $metadata['specialties'] = array_map('strval', $serviceIds);
         $this->metadata = $metadata;
     }
+
+    public function serviceGroups()
+    {
+        return $this->belongsToMany(ServiceGroup::class)
+            ->withTimestamps()
+            ->orderBy('name');
+    }
+
+    public function hasServiceGroupRestrictions(): bool
+    {
+        if ($this->relationLoaded('serviceGroups')) {
+            return $this->serviceGroups->isNotEmpty();
+        }
+
+        return $this->serviceGroups()->exists();
+    }
+
+    public function getAssignedServiceGroupIds(): array
+    {
+        if ($this->relationLoaded('serviceGroups')) {
+            return $this->serviceGroups
+                ->pluck('id')
+                ->map(fn ($id) => (string) $id)
+                ->values()
+                ->all();
+        }
+
+        return $this->serviceGroups()
+            ->pluck('service_groups.id')
+            ->map(fn ($id) => (string) $id)
+            ->values()
+            ->all();
+    }
 }

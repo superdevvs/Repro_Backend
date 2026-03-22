@@ -39,7 +39,7 @@ class UserController extends Controller
                 ->unique()
                 ->toArray();
 
-            $users = User::where('role', 'client')->get()->filter(function (User $client) use ($repId, $clientIdsFromShoots) {
+            $users = User::with('serviceGroups')->where('role', 'client')->get()->filter(function (User $client) use ($repId, $clientIdsFromShoots) {
                 $metadata = $client->metadata ?? [];
                 $repCandidate = null;
                 if (is_array($metadata) && !empty($metadata)) {
@@ -61,7 +61,7 @@ class UserController extends Controller
                 return in_array($client->id, $clientIdsFromShoots, true);
             })->values();
         } else {
-            $users = User::all();
+            $users = User::with('serviceGroups')->get();
         }
 
         if ($users->isEmpty()) {
@@ -153,6 +153,8 @@ class UserController extends Controller
             'insuranceFile' => 'nullable|string|url',
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
+            'service_group_ids' => 'nullable|array',
+            'service_group_ids.*' => 'integer|exists:service_groups,id',
         ]);
 
         $requestedRole = $validated['role'] ?? null;
@@ -169,6 +171,13 @@ class UserController extends Controller
                 ], 422);
             }
         }
+
+        $serviceGroupIds = collect($validated['service_group_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+        unset($validated['service_group_ids']);
 
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
@@ -238,6 +247,9 @@ class UserController extends Controller
         }
 
         $user = User::create($validated);
+        if ($user->role === 'client') {
+            $user->serviceGroups()->sync($serviceGroupIds);
+        }
 
         if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
             $this->demoteOtherSuperAdmins($user);
@@ -273,7 +285,7 @@ class UserController extends Controller
 
     public function getClients()
     {
-        $clients = User::where('role', 'client')->get()->map(function ($client) {
+        $clients = User::with('serviceGroups')->where('role', 'client')->get()->map(function ($client) {
             $clientData = $client->toArray();
             $rep = null;
 
@@ -323,6 +335,8 @@ class UserController extends Controller
                     'email' => $rep->email,
                 ];
             }
+
+            $clientData['service_group_ids'] = $client->getAssignedServiceGroupIds();
 
             return $clientData;
         });
@@ -400,6 +414,8 @@ class UserController extends Controller
             'insuranceFile' => 'nullable|string|url',
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
+            'service_group_ids' => 'nullable|array',
+            'service_group_ids.*' => 'integer|exists:service_groups,id',
         ]);
 
         $requestedRole = $validated['role'] ?? $user->role;
@@ -417,6 +433,14 @@ class UserController extends Controller
                 'message' => 'Only aj@reprophotos.com can be a superadmin.',
             ], 422);
         }
+
+        $serviceGroupIdsProvided = array_key_exists('service_group_ids', $validated);
+        $serviceGroupIds = collect($validated['service_group_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+        unset($validated['service_group_ids']);
 
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
@@ -469,6 +493,13 @@ class UserController extends Controller
 
         // Update user
         $user->update($validated);
+        if ($user->role === 'client') {
+            if ($serviceGroupIdsProvided) {
+                $user->serviceGroups()->sync($serviceGroupIds);
+            }
+        } elseif ($serviceGroupIdsProvided || $user->serviceGroups()->exists()) {
+            $user->serviceGroups()->detach();
+        }
 
         if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
             $this->demoteOtherSuperAdmins($user);
@@ -601,6 +632,11 @@ class UserController extends Controller
     protected function presentUserForViewer(User $user, User $viewer): array
     {
         $payload = $user->attributesToArray();
+        $payload['service_groups'] = $this->serializeServiceGroups($user);
+        $payload['service_group_ids'] = array_map(
+            fn ($group) => (string) $group['id'],
+            $payload['service_groups']
+        );
         
         // Map database fields to frontend field names
         if (isset($payload['phonenumber'])) {
@@ -846,6 +882,11 @@ class UserController extends Controller
         $totalSpent
     ): array {
         $payload = $user->attributesToArray();
+        $payload['service_groups'] = $this->serializeServiceGroups($user);
+        $payload['service_group_ids'] = array_map(
+            fn ($group) => (string) $group['id'],
+            $payload['service_groups']
+        );
         
         // Map database fields to frontend field names
         if (isset($payload['phonenumber'])) {
@@ -907,6 +948,21 @@ class UserController extends Controller
         }
 
         return $payload;
+    }
+
+    protected function serializeServiceGroups(User $user): array
+    {
+        $groups = $user->relationLoaded('serviceGroups')
+            ? $user->serviceGroups
+            : $user->serviceGroups()->get(['service_groups.id', 'service_groups.name', 'service_groups.description']);
+
+        return $groups->map(function ($group) {
+            return [
+                'id' => (string) $group->id,
+                'name' => $group->name,
+                'description' => $group->description,
+            ];
+        })->values()->all();
     }
 
     private function generateUniqueUsername(?string $seed): string

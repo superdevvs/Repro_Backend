@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\ServiceController;
+use App\Http\Controllers\Admin\ServiceGroupController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\API\ShootController;
 use App\Http\Controllers\API\DashboardController;
@@ -326,6 +327,11 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->gr
     Route::put('/admin/services/{id}', [ServiceController::class, 'update']);
 
     Route::delete('/admin/services/{id}', [ServiceController::class, 'destroy']);
+
+    Route::get('/admin/service-groups', [ServiceGroupController::class, 'index']);
+    Route::post('/admin/service-groups', [ServiceGroupController::class, 'store']);
+    Route::put('/admin/service-groups/{serviceGroup}', [ServiceGroupController::class, 'update']);
+    Route::delete('/admin/service-groups/{serviceGroup}', [ServiceGroupController::class, 'destroy']);
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->get(
@@ -888,4 +894,3 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::get('/accounts/template', [App\Http\Controllers\API\ImportController::class, 'getAccountsTemplate']);
     Route::get('/shoots/template', [App\Http\Controllers\API\ImportController::class, 'getShootsTemplate']);
 });
-

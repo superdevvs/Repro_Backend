@@ -3,7 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 
 class Service extends Model
 {
@@ -46,6 +48,43 @@ class Service extends Model
     public function sqftRanges()
     {
         return $this->hasMany(ServiceSqftRange::class)->orderBy('sqft_from');
+    }
+
+    public function serviceGroups()
+    {
+        return $this->belongsToMany(ServiceGroup::class)
+            ->withTimestamps()
+            ->orderBy('name');
+    }
+
+    public function scopeVisibleToClient(Builder $query, ?User $client): Builder
+    {
+        if (!$client || $client->role !== 'client') {
+            return $query;
+        }
+
+        $groupIds = $client->relationLoaded('serviceGroups')
+            ? $client->serviceGroups->pluck('id')
+            : $client->serviceGroups()->pluck('service_groups.id');
+
+        if ($groupIds->isEmpty()) {
+            return $query;
+        }
+
+        return $query->whereHas('serviceGroups', function (Builder $groupQuery) use ($groupIds) {
+            $groupQuery->whereIn('service_groups.id', $groupIds);
+        });
+    }
+
+    public static function visibleIdsForClient(User $client, ?array $candidateIds = null): Collection
+    {
+        $query = static::query()->select('services.id')->visibleToClient($client);
+
+        if (is_array($candidateIds) && !empty($candidateIds)) {
+            $query->whereIn('services.id', $candidateIds);
+        }
+
+        return $query->pluck('services.id');
     }
 
     /**

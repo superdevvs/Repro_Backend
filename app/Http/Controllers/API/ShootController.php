@@ -1764,6 +1764,7 @@ class ShootController extends Controller
     {
         $validated = $request->validated();
         $user = $request->user();
+        $this->ensureClientCanBookServices((int) $validated['client_id'], $validated['services']);
 
         try {
             // DB transaction handles only database writes — returns shoot + metadata
@@ -2213,6 +2214,32 @@ class ShootController extends Controller
             $shoot->services()->sync($pivotData);
     }
 
+    protected function ensureClientCanBookServices(int $clientId, array $services): void
+    {
+        $client = User::with('serviceGroups')->find($clientId);
+        if (!$client || !$client->hasServiceGroupRestrictions()) {
+            return;
+        }
+
+        $requestedIds = collect($services)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $visibleIds = Service::visibleIdsForClient($client, $requestedIds->all())
+            ->map(fn ($id) => (int) $id)
+            ->values();
+
+        $invalidIds = $requestedIds->diff($visibleIds)->values()->all();
+
+        if (!empty($invalidIds)) {
+            throw ValidationException::withMessages([
+                'services' => ['One or more selected services are not available for this client.'],
+            ]);
+        }
+    }
+
     /**
      * Create notes for shoot
      */
@@ -2588,6 +2615,12 @@ class ShootController extends Controller
         $paymentFieldsProvided = array_key_exists('base_quote', $validated)
             || array_key_exists('tax_amount', $validated)
             || array_key_exists('total_quote', $validated);
+        $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
+        $targetServices = array_key_exists('services', $validated)
+            ? $validated['services']
+            : $shoot->services->map(fn ($service) => ['id' => $service->id])->values()->all();
+
+        $this->ensureClientCanBookServices($targetClientId, $targetServices);
 
         if (array_key_exists('is_private_listing', $validated)) {
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));

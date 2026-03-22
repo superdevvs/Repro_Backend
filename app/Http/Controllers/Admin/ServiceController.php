@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Service;
 use App\Models\ServiceSqftRange;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 class ServiceController extends Controller
@@ -32,6 +33,8 @@ class ServiceController extends Controller
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
+            'service_group_ids' => 'nullable|array',
+            'service_group_ids.*' => 'integer|exists:service_groups,id',
         ]);
 
         // Ensure category_id is not null
@@ -46,9 +49,16 @@ class ServiceController extends Controller
         try {
             // Extract sqft_ranges before creating service
             $sqftRanges = $validated['sqft_ranges'] ?? [];
+            $serviceGroupIds = collect($validated['service_group_ids'] ?? [])
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values()
+                ->all();
             unset($validated['sqft_ranges']);
+            unset($validated['service_group_ids']);
 
             $service = Service::create($validated);
+            $service->serviceGroups()->sync($serviceGroupIds);
 
             // Create sqft ranges if provided
             if (!empty($sqftRanges)) {
@@ -61,7 +71,7 @@ class ServiceController extends Controller
 
             return response()->json([
                 'message' => 'Service created successfully.',
-                'service' => $service->load('sqftRanges', 'category')
+                'service' => $service->load('sqftRanges', 'category', 'serviceGroups')
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -72,9 +82,14 @@ class ServiceController extends Controller
         }
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        $services = Service::with(['category', 'sqftRanges'])->get();
+        $services = Service::query()
+            ->with(['category', 'sqftRanges', 'serviceGroups'])
+            ->visibleToClient($this->resolveVisibleClient($request))
+            ->orderBy('category_id')
+            ->orderBy('name')
+            ->get();
 
         return response()->json([
             'success' => true,
@@ -114,15 +129,28 @@ class ServiceController extends Controller
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
+            'service_group_ids' => 'nullable|array',
+            'service_group_ids.*' => 'integer|exists:service_groups,id',
         ]);
 
         DB::beginTransaction();
         try {
             // Extract sqft_ranges before updating service
             $sqftRanges = $validated['sqft_ranges'] ?? null;
+            $serviceGroupIds = array_key_exists('service_group_ids', $validated)
+                ? collect($validated['service_group_ids'] ?? [])
+                    ->map(fn ($id) => (int) $id)
+                    ->unique()
+                    ->values()
+                    ->all()
+                : null;
             unset($validated['sqft_ranges']);
+            unset($validated['service_group_ids']);
 
             $service->update($validated);
+            if ($serviceGroupIds !== null) {
+                $service->serviceGroups()->sync($serviceGroupIds);
+            }
 
             // Update sqft ranges if provided
             if ($sqftRanges !== null) {
@@ -163,7 +191,7 @@ class ServiceController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Service updated successfully',
-                'data' => $service->load('sqftRanges', 'category')
+                'data' => $service->load('sqftRanges', 'category', 'serviceGroups')
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
@@ -177,7 +205,7 @@ class ServiceController extends Controller
 
     public function show($id)
     {
-        $service = Service::with(['category', 'sqftRanges'])->find($id);
+        $service = Service::with(['category', 'sqftRanges', 'serviceGroups'])->find($id);
 
         if (!$service) {
             return response()->json(['message' => 'Service not found'], 404);
@@ -197,6 +225,27 @@ class ServiceController extends Controller
         $service->delete();
 
         return response()->json(['message' => 'Service deleted successfully'], 200);
+    }
+
+    protected function resolveVisibleClient(Request $request): ?User
+    {
+        $authenticatedUser = auth('sanctum')->user();
+
+        if ($authenticatedUser && $authenticatedUser->role === 'client') {
+            return $authenticatedUser->loadMissing('serviceGroups');
+        }
+
+        if (!$request->filled('client_id') || !$authenticatedUser) {
+            return null;
+        }
+
+        if (!in_array($authenticatedUser->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            return null;
+        }
+
+        return User::with('serviceGroups')
+            ->where('role', 'client')
+            ->find($request->integer('client_id'));
     }
 
     /**

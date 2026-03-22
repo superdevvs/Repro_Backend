@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class ExternalBookingController extends Controller
 {
@@ -48,6 +49,7 @@ class ExternalBookingController extends Controller
             $result = DB::transaction(function () use ($validated, $request) {
                 // 1. Find or create client by email
                 $client = $this->findOrCreateClient($validated);
+                $this->ensureClientCanBookServices($client, $validated['services']);
 
                 // 2. Calculate pricing from service catalog
                 $services = $validated['services'];
@@ -232,6 +234,31 @@ class ExternalBookingController extends Controller
             ]);
 
         return response()->json(['data' => $services]);
+    }
+
+    protected function ensureClientCanBookServices(User $client, array $services): void
+    {
+        if (!$client->loadMissing('serviceGroups')->hasServiceGroupRestrictions()) {
+            return;
+        }
+
+        $requestedIds = collect($services)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $visibleIds = Service::visibleIdsForClient($client, $requestedIds->all())
+            ->map(fn ($id) => (int) $id)
+            ->values();
+
+        $invalidIds = $requestedIds->diff($visibleIds)->values()->all();
+
+        if (!empty($invalidIds)) {
+            throw ValidationException::withMessages([
+                'services' => ['One or more selected services are not available for this client.'],
+            ]);
+        }
     }
 
     /**
