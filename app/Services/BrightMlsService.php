@@ -22,7 +22,7 @@ class BrightMlsService
                 'import_url_base' => 'https://lmsedit.tst.brightmls.com',
             ],
             'p1' => [
-                'api_url' => 'https://bright-manifestservices.prd.brightmls.com',
+                'api_url' => 'https://bright-manifestservices.brightmls.com',
                 'import_url_base' => 'https://lmsedit.brightmls.com',
             ],
         ],
@@ -161,7 +161,14 @@ class BrightMlsService
             is_string($defaultUrl) ? rtrim($defaultUrl, '/') : null,
         ]);
 
-        return array_values(array_unique($urls));
+        // For legacy mode, also try the alternate production URL variant and T1 as fallback
+        if ($this->mode === self::MODE_LEGACY) {
+            $urls[] = 'https://bright-manifestservices.brightmls.com';
+            $urls[] = 'https://bright-manifestservices.prd.brightmls.com';
+            $urls[] = 'https://bright-manifestservices.tst.brightmls.com';
+        }
+
+        return array_values(array_unique(array_filter($urls)));
     }
 
     private function shouldRetryWithFallback(?int $status): bool
@@ -426,6 +433,15 @@ class BrightMlsService
 
                 // Parse Bright MLS error format: { statusCode, message, body: [{path, message}] }
                 $errorMessage = $errorBody['message'] ?? $errorBody['error'] ?? 'Unknown error';
+
+                // Detect New mode auth rejection and add a helpful hint
+                if ($this->mode === self::MODE_NEW && ($response->status() === 401 || $response->status() === 403)) {
+                    if (stripos($errorMessage, 'Missing Authentication Token') !== false ||
+                        stripos($errorMessage, 'Forbidden') !== false) {
+                        $errorMessage = 'The New (April Migration) API rejected the credentials. '
+                            . 'Switch to Legacy mode in Settings → Integrations → Bright MLS if you have not received new API credentials.';
+                    }
+                }
                 $validationErrors = [];
                 if (is_array($errorBody) && !empty($errorBody['body']) && is_array($errorBody['body'])) {
                     foreach ($errorBody['body'] as $detail) {
@@ -723,10 +739,22 @@ class BrightMlsService
 
             // 401/403 = bad credentials
             if ($status === 401 || $status === 403) {
+                $message = 'Authentication failed — check your API User, Vendor ID, and API Key';
+                // The New (April Migration) API uses different auth; surface a clearer hint
+                if ($this->mode === self::MODE_NEW) {
+                    $body = $response->json() ?? [];
+                    $serverMsg = $body['message'] ?? '';
+                    if (stripos($serverMsg, 'Missing Authentication Token') !== false ||
+                        stripos($serverMsg, 'Forbidden') !== false) {
+                        $message = 'The New (April Migration) API rejected the credentials. '
+                            . 'This endpoint may require different authentication. '
+                            . 'Switch to Legacy mode if you have not received new API credentials for the migration.';
+                    }
+                }
                 return [
                     'success' => false,
                     'status' => $status,
-                    'message' => 'Authentication failed — check your API User, Vendor ID, and API Key',
+                    'message' => $message,
                     'mode' => $this->mode,
                     'environment' => $this->environment,
                     'api_url' => $effectiveApiUrl,
