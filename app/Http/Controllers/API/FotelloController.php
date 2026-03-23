@@ -176,7 +176,7 @@ class FotelloController extends Controller
             }
 
             // For non-admin users, only show their own jobs
-            if (!in_array($user->role, ['admin', 'superadmin'])) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
                 $query->where('user_id', $user->id);
             }
 
@@ -218,7 +218,7 @@ class FotelloController extends Controller
 
             // Check permissions
             $user = request()->user();
-            if (!in_array($user->role, ['admin', 'superadmin']) && $job->user_id !== $user->id) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager']) && $job->user_id !== $user->id) {
                 return response()->json([
                     'success' => false,
                     'message' => 'You do not have permission to view this job',
@@ -289,7 +289,7 @@ class FotelloController extends Controller
 
             // Check permissions
             $user = request()->user();
-            if (!in_array($user->role, ['admin', 'superadmin']) && $job->user_id !== $user->id) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager']) && $job->user_id !== $user->id) {
                 return response()->json([
                     'success' => false,
                     'message' => 'You do not have permission to cancel this job',
@@ -344,22 +344,7 @@ class FotelloController extends Controller
     private function canEditShoot($user, Shoot $shoot): bool
     {
         // Admins and superadmins can edit any shoot
-        if (in_array($user->role, ['admin', 'superadmin'])) {
-            return true;
-        }
-
-        // Clients can edit their own shoots
-        if ($user->role === 'client' && $shoot->client_id === $user->id) {
-            return true;
-        }
-
-        // Photographers can edit shoots assigned to them
-        if ($user->role === 'photographer' && $shoot->photographer_id === $user->id) {
-            return true;
-        }
-
-        // Editors can edit any shoot
-        if ($user->role === 'editor') {
+        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'])) {
             return true;
         }
 

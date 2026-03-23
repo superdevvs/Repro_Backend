@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class Shoot extends Model
 {
@@ -376,6 +377,67 @@ class Shoot extends Model
         return $this->hasMany(Payment::class);
     }
 
+    public function getCanonicalCompletedPayments()
+    {
+        $payments = $this->relationLoaded('payments')
+            ? $this->payments
+            : $this->payments()->get();
+
+        return $payments
+            ->filter(fn (Payment $payment) => $payment->status === Payment::STATUS_COMPLETED)
+            ->unique(fn (Payment $payment) => $this->resolvePaymentDeduplicationKey($payment))
+            ->values();
+    }
+
+    public function calculateCanonicalTotalPaid(): float
+    {
+        return (float) $this->getCanonicalCompletedPayments()->sum(
+            fn (Payment $payment) => (float) $payment->amount
+        );
+    }
+
+    public function syncPaymentStatusFromRecords(?string $paymentType = null): array
+    {
+        $totalPaid = $this->calculateCanonicalTotalPaid();
+        $totalQuote = (float) ($this->total_quote ?? 0);
+        $newStatus = $totalPaid <= 0
+            ? 'unpaid'
+            : ($totalPaid >= $totalQuote ? 'paid' : 'partial');
+
+        $dirty = false;
+
+        if ($this->payment_status !== $newStatus) {
+            $this->payment_status = $newStatus;
+            $dirty = true;
+        }
+
+        if ($paymentType !== null && $paymentType !== '' && $this->payment_type !== $paymentType) {
+            $this->payment_type = $paymentType;
+            $dirty = true;
+        }
+
+        if ($dirty) {
+            $this->save();
+        }
+
+        $overpaymentAmount = $totalPaid - $totalQuote;
+        if ($totalQuote > 0 && $overpaymentAmount > 0.01) {
+            Log::warning('Shoot payment overage detected', [
+                'shoot_id' => $this->id,
+                'total_quote' => $totalQuote,
+                'total_paid' => $totalPaid,
+                'overpayment_amount' => round($overpaymentAmount, 2),
+                'payment_ids' => $this->getCanonicalCompletedPayments()->pluck('id')->all(),
+            ]);
+        }
+
+        return [
+            'total_paid' => $totalPaid,
+            'payment_status' => $newStatus,
+            'remaining_balance' => max($totalQuote - $totalPaid, 0),
+        ];
+    }
+
     public function invoices()
     {
         return $this->belongsToMany(Invoice::class, 'invoice_shoot')->withTimestamps();
@@ -436,12 +498,12 @@ class Shoot extends Model
     // Helper methods
     public function getTotalPaidAttribute()
     {
-        return $this->payments->where('status', 'completed')->sum('amount');
+        return $this->calculateCanonicalTotalPaid();
     }
 
     public function getRemainingBalanceAttribute()
     {
-        return $this->total_quote - $this->total_paid;
+        return max((float) ($this->total_quote ?? 0) - (float) ($this->total_paid ?? 0), 0);
     }
 
     /**
@@ -527,6 +589,23 @@ class Shoot extends Model
 
         // Return null if no logo found (will fallback to text watermark)
         return null;
+    }
+
+    private function resolvePaymentDeduplicationKey(Payment $payment): string
+    {
+        if (!empty($payment->stripe_session_id)) {
+            return 'stripe_session:' . $payment->stripe_session_id;
+        }
+
+        if (!empty($payment->stripe_payment_id)) {
+            return 'stripe_payment:' . $payment->stripe_payment_id;
+        }
+
+        if (!empty($payment->square_payment_id)) {
+            return 'square_payment:' . $payment->square_payment_id;
+        }
+
+        return 'payment_id:' . $payment->id;
     }
 
     public function canUploadPhotos()

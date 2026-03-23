@@ -550,16 +550,11 @@ class StripePaymentController extends Controller
      */
     protected function updateShootPaymentStatus(Shoot $shoot, Payment $payment, float $amount): void
     {
-        $totalPaid = $shoot->payments()
-            ->where('status', Payment::STATUS_COMPLETED)
-            ->sum('amount');
-
         $oldPaymentStatus = $shoot->payment_status;
-        $newPaymentStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote);
-
-        $shoot->payment_status = $newPaymentStatus;
-        $shoot->payment_type = 'stripe';
-        $shoot->save();
+        $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('stripe')
+            ?? $shoot->syncPaymentStatusFromRecords('stripe');
+        $totalPaid = $paymentSummary['total_paid'];
+        $newPaymentStatus = $paymentSummary['payment_status'];
 
         // Clear watermark-sensitive caches so client sees non-watermarked images
         $this->clearShootCachesAfterPayment($shoot);
@@ -698,13 +693,10 @@ class StripePaymentController extends Controller
 
                 $shoot = $paymentRecord->shoot;
                 if ($shoot) {
-                    $totalPaid = $shoot->payments()
-                        ->where('status', Payment::STATUS_COMPLETED)
-                        ->sum('amount');
-
-                    $newStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote);
-                    $shoot->payment_status = $newStatus;
-                    $shoot->save();
+                    $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('stripe')
+                        ?? $shoot->syncPaymentStatusFromRecords('stripe');
+                    $totalPaid = $paymentSummary['total_paid'];
+                    $newStatus = $paymentSummary['payment_status'];
 
                     $this->activityLogger->log(
                         $shoot,

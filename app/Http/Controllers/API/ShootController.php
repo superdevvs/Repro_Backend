@@ -3154,12 +3154,14 @@ class ShootController extends Controller
             
             if ($contentLength > $postMaxSize) {
                 return response()->json([
+                    'error_type' => 'oversize',
                     'message' => 'Upload too large. Maximum allowed: ' . ini_get('post_max_size'),
                     'errors' => ['files' => ['The uploaded file exceeds the server limit of ' . ini_get('post_max_size')]],
                 ], 413);
             }
             
             return response()->json([
+                'error_type' => 'invalid_file',
                 'message' => 'No files received. The file may have been too large or the upload was interrupted.',
                 'errors' => ['files' => ['No valid files were received by the server.']],
                 'debug' => [
@@ -3179,6 +3181,7 @@ class ShootController extends Controller
         foreach ($files as $file) {
             if (!$file->isValid()) {
                 return response()->json([
+                    'error_type' => 'invalid_file',
                     'message' => 'Invalid file uploaded',
                     'errors' => ['files' => ['One or more files failed to upload properly.']],
                 ], 422);
@@ -3188,6 +3191,7 @@ class ShootController extends Controller
             $maxFileSize = 500 * 1024 * 1024; // 500MB in bytes
             if ($file->getSize() > $maxFileSize) {
                 return response()->json([
+                    'error_type' => 'oversize',
                     'message' => 'File too large: ' . $file->getClientOriginalName(),
                     'errors' => ['files' => ['File exceeds 500MB limit: ' . $file->getClientOriginalName()]],
                 ], 422);
@@ -3220,19 +3224,31 @@ class ShootController extends Controller
         // Check if user is admin (admins can upload at any stage)
         $user = auth()->user();
         $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
+        $isEditedUploadManager = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true);
 
         if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
             return response()->json([
+                'error_type' => 'invalid_workflow_stage',
                 'message' => 'Cannot upload raw files at this workflow stage',
                 'current_status' => $shoot->workflow_status,
             ], 400);
         }
 
-        if ($uploadType === 'edited' && !$isAdmin && !in_array($shoot->workflow_status, [
+        if ($uploadType === 'edited' && !$isEditedUploadManager) {
+            return response()->json([
+                'error_type' => 'forbidden',
+                'message' => 'You do not have permission to upload edited files',
+                'current_status' => $shoot->workflow_status,
+            ], 403);
+        }
+
+        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
+            Shoot::STATUS_UPLOADED,
             Shoot::STATUS_EDITING,
             Shoot::STATUS_READY,
         ], true)) {
             return response()->json([
+                'error_type' => 'invalid_workflow_stage',
                 'message' => 'Cannot upload edited files at this workflow stage',
                 'current_status' => $shoot->workflow_status,
             ], 400);
@@ -3300,6 +3316,7 @@ class ShootController extends Controller
                 } catch (\Exception $e) {
                     $errors[] = [
                         'filename' => $file->getClientOriginalName(),
+                        'error_type' => 'upload_failed',
                         'error' => $e->getMessage(),
                     ];
                 }
@@ -3344,11 +3361,14 @@ class ShootController extends Controller
             DB::commit();
 
             return response()->json([
-                'message' => 'Files processed',
+                'message' => count($errors) > 0 && count($uploadedFiles) > 0
+                    ? 'Files processed with some upload errors'
+                    : 'Files processed',
                 'uploaded_files' => $uploadedFiles,
                 'errors' => $errors,
                 'success_count' => count($uploadedFiles),
                 'error_count' => count($errors),
+                'partial_success' => count($uploadedFiles) > 0 && count($errors) > 0,
                 'shoot_status' => $shoot->workflow_status,
                 'raw_photo_count' => $shoot->raw_photo_count,
                 'edited_photo_count' => $shoot->edited_photo_count,
@@ -3360,6 +3380,7 @@ class ShootController extends Controller
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
+                'error_type' => 'upload_failed',
                 'message' => 'Failed to upload files',
                 'error' => $e->getMessage(),
             ], 500);
@@ -6724,19 +6745,19 @@ class ShootController extends Controller
 
             // If amount is 0 or null, use the outstanding balance
             if ($amount <= 0) {
-                $currentPaid = $shoot->payments()
-                    ->where('status', Payment::STATUS_COMPLETED)
-                    ->sum('amount') ?? 0;
-                $amount = ($shoot->total_quote ?? 0) - $currentPaid;
+                $currentPaid = $shoot->fresh(['payments'])?->calculateCanonicalTotalPaid() ?? $shoot->calculateCanonicalTotalPaid();
+                $amount = max(($shoot->total_quote ?? 0) - $currentPaid, 0);
             }
 
             // Don't create payment if amount is 0 or negative
             if ($amount <= 0) {
+                $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
+                    ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
                 return response()->json([
                     'message' => 'Shoot is already fully paid',
                     'data' => [
-                        'total_paid' => $shoot->total_quote,
-                        'payment_status' => 'paid',
+                        'total_paid' => $paymentSummary['total_paid'],
+                        'payment_status' => $paymentSummary['payment_status'],
                     ],
                 ]);
             }
@@ -6753,16 +6774,11 @@ class ShootController extends Controller
             ]);
 
             // Calculate new total paid
-            $totalPaid = $shoot->payments()
-                ->where('status', Payment::STATUS_COMPLETED)
-                ->sum('amount');
-
-            // Update shoot payment status
             $oldPaymentStatus = $shoot->payment_status;
-            $newPaymentStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote ?? 0);
-            $shoot->payment_status = $newPaymentStatus;
-            $shoot->payment_type = $paymentMethod;
-            $shoot->save();
+            $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
+                ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
+            $totalPaid = $paymentSummary['total_paid'];
+            $newPaymentStatus = $paymentSummary['payment_status'];
 
             // Log activity (wrapped in try-catch to not fail the main operation)
             try {

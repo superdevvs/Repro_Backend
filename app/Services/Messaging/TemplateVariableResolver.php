@@ -48,6 +48,19 @@ class TemplateVariableResolver
             $derived = array_merge($derived, $this->resolveUser($context['rep'], 'rep'));
         }
 
+        if (isset($context['recipient']) && ($context['recipient'] instanceof User || is_array($context['recipient']))) {
+            $recipientUser = $this->resolveUser($context['recipient'], 'recipient');
+            $derived = array_merge($derived, $recipientUser, [
+                'recipient_name' => $recipientUser['recipient_name'] ?? null,
+                'recipient_first_name' => $recipientUser['recipient_first_name'] ?? null,
+                'recipient_email' => $recipientUser['recipient_email'] ?? null,
+            ]);
+        } elseif (!empty($context['recipient_name'])) {
+            [$recipientFirstName] = $this->splitName((string) $context['recipient_name']);
+            $derived['recipient_name'] = (string) $context['recipient_name'];
+            $derived['recipient_first_name'] = $recipientFirstName;
+        }
+
         $shoot = $this->resolveShoot($context);
         if ($shoot) {
             $derived = array_merge($derived, $this->resolveShootVariables($shoot));
@@ -87,6 +100,7 @@ class TemplateVariableResolver
         $recipientFirstName = $this->resolveRecipientFirstName($context, $derived, $recipientType);
         if ($recipientFirstName !== '') {
             $derived['greeting'] = 'Hi ' . $recipientFirstName;
+            $derived['recipient_first_name'] = $recipientFirstName;
         }
 
         $derived = array_merge($derived, $this->resolveRecipientContent($recipientType, $derived));
@@ -95,7 +109,26 @@ class TemplateVariableResolver
             $derived['email_signature'] = $derived['company_name'] ?? '';
         }
 
-        return array_merge($derived, $context);
+        $resolved = array_merge($derived, $context);
+
+        foreach ([
+            'recipient_name',
+            'recipient_first_name',
+            'recipient_email',
+            'greeting',
+            'shoot_changes',
+            'shoot_change_summary',
+            'shoot_changes_html',
+            'services_provided',
+            'services_provided_html',
+            'assigned_photographers',
+        ] as $canonicalKey) {
+            if (array_key_exists($canonicalKey, $derived)) {
+                $resolved[$canonicalKey] = $derived[$canonicalKey];
+            }
+        }
+
+        return $resolved;
     }
 
     private function resolvePortalUrl(): string
@@ -356,6 +389,17 @@ class TemplateVariableResolver
 
     private function resolveRecipientFirstName(array $context, array $derived, string $recipientType): string
     {
+        if (!empty($derived['recipient_first_name'])) {
+            return (string) $derived['recipient_first_name'];
+        }
+
+        if (!empty($derived['recipient_name'])) {
+            [$firstName] = $this->splitName((string) $derived['recipient_name']);
+            if ($firstName !== '') {
+                return $firstName;
+            }
+        }
+
         if (!empty($context['recipient_name'])) {
             [$firstName] = $this->splitName((string) $context['recipient_name']);
             if ($firstName !== '') {

@@ -292,18 +292,11 @@ class PaymentController extends Controller
                             'processed_at' => now()
                         ]);
 
-                // Calculate new payment status
-                $totalPaid = $shoot->payments()
-                    ->where('status', Payment::STATUS_COMPLETED)
-                    ->sum('amount');
-
                 $oldPaymentStatus = $shoot->payment_status;
-                $newPaymentStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote);
-
-                // Update shoot payment status
-                $shoot->payment_status = $newPaymentStatus;
-                $shoot->payment_type = 'square';
-                            $shoot->save();
+                $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('square')
+                    ?? $shoot->syncPaymentStatusFromRecords('square');
+                $totalPaid = $paymentSummary['total_paid'];
+                $newPaymentStatus = $paymentSummary['payment_status'];
 
                 // Clear watermark-sensitive caches so client sees non-watermarked images
                 $this->clearShootCachesAfterPayment($shoot);
@@ -550,16 +543,11 @@ class PaymentController extends Controller
                             'processed_at' => now(),
                         ]);
 
-                        // Update shoot payment status
-                        $totalPaid = $shoot->payments()
-                            ->where('status', Payment::STATUS_COMPLETED)
-                            ->sum('amount');
-
                         $oldPaymentStatus = $shoot->payment_status;
-                        $newPaymentStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote);
-                        $shoot->payment_status = $newPaymentStatus;
-                        $shoot->payment_type = 'square';
-                        $shoot->save();
+                        $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('square')
+                            ?? $shoot->syncPaymentStatusFromRecords('square');
+                        $totalPaid = $paymentSummary['total_paid'];
+                        $newPaymentStatus = $paymentSummary['payment_status'];
 
                         // Clear watermark-sensitive caches so client sees non-watermarked images
                         $this->clearShootCachesAfterPayment($shoot);
@@ -688,13 +676,10 @@ class PaymentController extends Controller
 
                     // Update shoot payment status
                     $shoot = $payment->shoot;
-                    $totalPaid = $shoot->payments()
-                        ->where('status', Payment::STATUS_COMPLETED)
-                        ->sum('amount');
-                    
-                    $newStatus = $this->calculatePaymentStatus($totalPaid, $shoot->total_quote);
-                    $shoot->payment_status = $newStatus;
-                        $shoot->save();
+                    $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('square')
+                        ?? $shoot->syncPaymentStatusFromRecords('square');
+                    $totalPaid = $paymentSummary['total_paid'];
+                    $newStatus = $paymentSummary['payment_status'];
 
                     // Log refund activity
                     $this->activityLogger->log(

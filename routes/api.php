@@ -566,7 +566,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Fotello AI Photo Editing endpoints (Admin/Super Admin only)
-    Route::prefix('fotello')->middleware('role:admin,superadmin,editing_manager')->group(function () {
+    Route::prefix('fotello')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
         Route::get('/editing-types', [FotelloController::class, 'getEditingTypes']);
         Route::post('/edit', [FotelloController::class, 'submitEditing']);
         Route::get('/jobs', [FotelloController::class, 'listJobs']);

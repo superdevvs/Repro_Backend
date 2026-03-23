@@ -116,6 +116,7 @@ class MailService
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
+            $normalizedChangesSummary = $this->normalizeChangeSummaryText($changesSummary);
             $shouldNotifyClient = $notifyClient !== false;
             $shouldNotifyPhotographer = $notifyPhotographer !== false;
             $isPrimaryRecipientPhotographer = $this->isPhotographerRecipient($user, $shoot);
@@ -124,7 +125,7 @@ class MailService
                 $html = view('emails.shoot_updated', [
                     'user' => $user,
                     'shoot' => $shootData,
-                    'changesSummary' => $changesSummary,
+                    'changesSummary' => $normalizedChangesSummary,
                     'isPhotographer' => $isPrimaryRecipientPhotographer,
                 ])->render();
                 $this->sendViaCakemail($user->email, 'Scheduled Photo Shoot Updated', $html, 'SHOOT_UPDATED');
@@ -152,7 +153,7 @@ class MailService
                 $htmlPhoto = view('emails.shoot_updated', [
                     'user' => $shoot->photographer,
                     'shoot' => $shootData,
-                    'changesSummary' => $changesSummary,
+                    'changesSummary' => $normalizedChangesSummary,
                     'isPhotographer' => true,
                 ])->render();
                 $this->sendViaCakemail($shoot->photographer->email, 'Scheduled Photo Shoot Updated', $htmlPhoto, 'SHOOT_UPDATED');
@@ -935,6 +936,15 @@ class MailService
             ->filter()
             ->values()
             ->all();
+    }
+
+    private function normalizeChangeSummaryText(?string $value): string
+    {
+        $trimmed = trim((string) $value);
+
+        return $trimmed !== ''
+            ? $trimmed
+            : 'Please review updated details in the dashboard.';
     }
 
     public function generatePaymentLink(Shoot $shoot): string

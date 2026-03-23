@@ -195,7 +195,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Photo Shoot Requested (PENDING) - [shoot_location]',
                 'body_html' => $this->getShootRequestedTemplate(),
                 'body_text' => $this->getShootRequestedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'services_provided', 'services_provided_html', 'shoot_quote', 'shoot_notes', 'company_email', 'portal_url'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -211,7 +211,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Scheduled (REQUEST APPROVED) - [shoot_location]',
                 'body_html' => $this->getShootRequestApprovedTemplate(),
                 'body_text' => $this->getShootRequestApprovedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url', 'shoot_change_summary', 'shoot_changes_html'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -227,7 +227,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Scheduled (REQUEST APPROVED) - [shoot_location]',
                 'body_html' => $this->getShootRequestModifiedTemplate(),
                 'body_text' => $this->getShootRequestModifiedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_quote', 'shoot_notes', 'pay_link', 'company_email', 'portal_url', 'shoot_change_summary', 'shoot_changes_html'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -243,7 +243,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Request (DECLINED) - [shoot_location]',
                 'body_html' => $this->getShootRequestDeclinedTemplate(),
                 'body_text' => $this->getShootRequestDeclinedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -259,7 +259,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Shoot Reminder - [shoot_location]',
                 'body_html' => $this->getShootReminderTemplate(),
                 'body_text' => $this->getShootReminderPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -291,7 +291,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => '[shoot_location] - Photos Ready!',
                 'body_html' => $this->getShootReadyTemplate(),
                 'body_text' => $this->getShootReadyPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'shoot_packages', 'shoot_quote', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_quote', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -307,7 +307,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => '[shoot_location] - Shoot Delivered',
                 'body_html' => $this->getShootDeliveredTemplate(),
                 'body_text' => $this->getShootDeliveredPlainText(),
-                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_packages', 'small_zip_link', 'full_zip_link', 'mls_tour_link', 'branded_tour_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'services_provided', 'services_provided_html', 'assigned_photographers', 'small_zip_link', 'full_zip_link', 'mls_tour_link', 'branded_tour_link', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -339,7 +339,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => '[shoot_location] - Payment Due Reminder',
                 'body_html' => $this->getPaymentDueReminderTemplate(),
                 'body_text' => $this->getPaymentDueReminderPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_quote', 'shoot_completeddate', 'shoot_packages', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_quote', 'shoot_completeddate', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -355,7 +355,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Thank You for Your Payment!',
                 'body_html' => $this->getPaymentThankYouTemplate(),
                 'body_text' => $this->getPaymentThankYouPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'realtor_last', 'shoot_location', 'current_date', 'payment_amount', 'shoot_packages', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'realtor_last', 'shoot_location', 'current_date', 'payment_amount', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -371,7 +371,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => '[shoot_location] - Summary',
                 'body_html' => $this->getShootSummaryTemplate(),
                 'body_text' => $this->getShootSummaryPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_packages', 'small_zip_link', 'full_zip_link', 'mls_tour_link', 'branded_tour_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'services_provided', 'services_provided_html', 'assigned_photographers', 'small_zip_link', 'full_zip_link', 'mls_tour_link', 'branded_tour_link', 'portal_url', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -387,7 +387,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Photo Shoot Removed from Schedule',
                 'body_html' => $this->getShootDeletedTemplate(),
                 'body_text' => $this->getShootDeletedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_packages', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -403,7 +403,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'Photo Shoot Refund Applied',
                 'body_html' => $this->getRefundSubmittedTemplate(),
                 'body_text' => $this->getRefundSubmittedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_packages', 'shoot_notes'],
+                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -780,7 +780,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographers:</span> [assigned_photographers]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [services_provided_html]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
@@ -829,7 +829,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Requested Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
@@ -875,7 +875,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
@@ -934,7 +934,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
@@ -985,7 +985,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1021,7 +1021,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
 
@@ -1065,7 +1065,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographers:</span> [assigned_photographers]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [services_provided_html]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
 
@@ -1106,7 +1106,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
@@ -1153,7 +1153,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Scheduled Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
 
@@ -1195,7 +1195,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Completed Date:</span> [shoot_completeddate]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1274,7 +1274,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Payment Amount:</span> <strong style="font-size: 18px; color: #22c55e;">[payment_amount]</strong>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1308,7 +1308,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1364,7 +1364,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1390,7 +1390,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [shoot_packages]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1474,7 +1474,7 @@ NOTE: This shoot is in PENDING status. You will receive a confirmation email onc
 Location: [shoot_location]
 Requested Shoot Date: [shoot_date]
 Requested Shoot Time: [shoot_time]
-[shoot_packages]
+[services_provided]
 Total: [shoot_quote]
 
 [shoot_notes]
@@ -1492,11 +1492,11 @@ Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+[services_provided]
 Total: [shoot_quote]
 
 Updated Details:
-[shoot_changes]
+[changes_made]
 
 [shoot_notes]
 
@@ -1517,11 +1517,11 @@ Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+[services_provided]
 Total: [shoot_quote]
 
 Updated Details:
-[shoot_changes]
+[changes_made]
 
 [shoot_notes]
 
@@ -1538,7 +1538,7 @@ Location: [shoot_location]
 Requested Shoot Date: [shoot_date]
 Requested Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+[services_provided]
 
 [shoot_notes]
 
@@ -1557,7 +1557,7 @@ Location: [shoot_location]
 Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+[services_provided]
 
 [shoot_notes]
 
@@ -1601,7 +1601,7 @@ The content for [shoot_location] is uploaded!
 You can view the images by logging in to [portal_url]
 
 Photographer: [photographer_first] [photographer_last]
-[shoot_packages]
+[services_provided]
 Total: [shoot_quote]
 
 [shoot_notes]
@@ -1620,7 +1620,7 @@ This is a friendly reminder that one of your shoots is ready and payment is requ
 Payment Due: [shoot_quote]
 Location: [shoot_location]
 Completed Date: [shoot_completeddate]
-[shoot_packages]
+[services_provided]
 
 [shoot_notes]
 
@@ -1637,7 +1637,7 @@ Your final media for [shoot_location] has been delivered and is ready to review.
 
 Scheduled Date: [shoot_date]
 Scheduled Time: [shoot_time]
-Services: [shoot_packages]
+Services: [services_provided]
 
 Dashboard: [portal_url]
 Small / MLS Images: [small_zip_link]
@@ -1680,7 +1680,7 @@ Thank you for paying for your photo shoot!
 Location: [shoot_location]
 Payment Date: [current_date]
 Payment Amount: [payment_amount]
-[shoot_packages]
+[services_provided]
 
 [shoot_notes]
 
@@ -1696,7 +1696,7 @@ Thank you!';
 One of your photo shoots is ready!
 
 Location: [shoot_location]
-[shoot_packages]
+[services_provided]
 
 Small/MLS-Size Images: [small_zip_link]
 Full-Size Images: [full_zip_link]
@@ -1714,7 +1714,7 @@ Thank you!';
 One of your Real Estate photo shoots has been removed from the schedule due to a cancellation or a re-schedule.
 
 Location: [shoot_location]
-[shoot_packages]
+[services_provided]
 
 [shoot_notes]
 
@@ -1726,7 +1726,7 @@ Thank you!';
         return 'One of your Real Estate photo shoots has been refunded.
 
 Location: [shoot_location]
-[shoot_packages]
+[services_provided]
 
 [shoot_notes]
 
@@ -1832,7 +1832,7 @@ This is an automated reminder. If you have already provided this information, pl
                     <span class="info-label">Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Services:</span> [services_provided_html]
+                    <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
             </div>
             
@@ -1909,3 +1909,9 @@ Thank you!';
         return array_values(array_unique($mapped));
     }
 }
+
+
+
+
+
+
