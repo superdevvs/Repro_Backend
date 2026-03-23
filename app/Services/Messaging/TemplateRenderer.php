@@ -131,30 +131,21 @@ a { color: #1463ff; text-decoration: none; }
   padding: 34px 38px 28px;
 }
 .brand-row {
-  display: table;
+  display: flex;
+  align-items: center;
+  gap: 14px;
   position: relative;
   z-index: 2;
   margin-bottom: 28px;
 }
-.brand-icon,
-.brand-copy {
-  display: table-cell;
-  vertical-align: middle;
+.brand-logo {
+  display: inline-block;
 }
-.brand-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 999px;
-  background: #11192d;
-  color: #ffffff;
-  text-align: center;
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 48px;
-  box-shadow: 0 10px 24px rgba(17, 25, 45, 0.14);
+.brand-logo img {
+  width: 154px;
+  height: auto;
 }
 .brand-copy {
-  padding-left: 16px;
   color: #1d2940;
   font-size: 16px;
   line-height: 1.4;
@@ -470,7 +461,9 @@ a { color: #1463ff; text-decoration: none; }
         <div class="hero-gridline-v"></div>
       </div>
       <div class="brand-row">
-        <div class="brand-icon">&#10003;</div>
+        <div class="brand-logo">
+          <img src="{$logoUrl}" alt="R/E Pro Photos">
+        </div>
         <div class="brand-copy">
           <span>{$heroEyebrow}</span>
           R/E Pro Photos
