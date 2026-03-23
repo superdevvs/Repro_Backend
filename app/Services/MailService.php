@@ -6,10 +6,12 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use App\Models\MessageTemplate;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\TemplateRenderer;
 
 class MailService
 {
@@ -237,11 +239,11 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             
             // Send to client
-            $html = view('emails.shoot_ready', [
+            $html = view('emails.shoot_delivered', [
                 'user' => $user,
                 'shoot' => $shootData,
             ])->render();
-            $this->sendViaCakemail($user->email, 'Your Photos Are Ready!', $html, 'SHOOT_READY');
+            $this->sendViaCakemail($user->email, 'Your Shoot Has Been Delivered', $html, 'SHOOT_READY');
             
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
@@ -251,11 +253,11 @@ class MailService
 
             // Also send to photographer if assigned
             if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_ready', [
+                $htmlPhoto = view('emails.shoot_delivered', [
                     'user' => $shoot->photographer,
                     'shoot' => $shootData,
                 ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Your Photos Are Ready!', $htmlPhoto, 'SHOOT_READY');
+                $this->sendViaCakemail($shoot->photographer->email, 'Your Shoot Has Been Delivered', $htmlPhoto, 'SHOOT_READY');
                 Log::info('Shoot ready email sent to photographer', [
                     'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
@@ -1057,15 +1059,31 @@ class MailService
             }
 
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
+            $recipientRole = $invoice->photographer ? 'photographer' : 'sales rep';
+            $rendered = $this->renderWeeklyInvoiceGeneratedTemplate($invoice, $recipient, $recipientRole, $period);
 
-            $html = view('emails.invoice_generated', [
-                'invoice' => $invoice,
-                'photographer' => $recipient,
-                'recipient' => $recipient,
-                'recipientRole' => $invoice->photographer ? 'photographer' : 'sales rep',
-                'period' => $period,
-            ])->render();
-            $this->sendViaCakemail($recipient->email, "Weekly Invoice - {$period}", $html, 'INVOICE_GENERATED');
+            if ($rendered) {
+                $this->sendViaCakemail(
+                    $recipient->email,
+                    $rendered['subject'] ?: "Weekly Invoice - {$period}",
+                    $rendered['html'],
+                    'INVOICE_GENERATED'
+                );
+            } else {
+                Log::warning('Weekly invoice template not found in messaging templates, using Blade fallback', [
+                    'invoice_id' => $invoice->id,
+                ]);
+
+                $html = view('emails.invoice_generated', [
+                    'invoice' => $invoice,
+                    'photographer' => $recipient,
+                    'recipient' => $recipient,
+                    'recipientRole' => $recipientRole,
+                    'period' => $period,
+                ])->render();
+
+                $this->sendViaCakemail($recipient->email, "Weekly Invoice - {$period}", $html, 'INVOICE_GENERATED');
+            }
             
             Log::info('Invoice generated email sent', [
                 'invoice_id' => $invoice->id,
@@ -1482,6 +1500,70 @@ class MailService
         }
         return is_array($pd) ? $pd : [];
     }
+
+    private function renderWeeklyInvoiceGeneratedTemplate(\App\Models\Invoice $invoice, $recipient, string $recipientRole, string $period): ?array
+    {
+        $template = MessageTemplate::query()
+            ->where('slug', 'weekly-invoice-generated')
+            ->where('channel', 'EMAIL')
+            ->where('is_active', true)
+            ->first();
+
+        if (!$template) {
+            return null;
+        }
+
+        return app(TemplateRenderer::class)->render($template, [
+            'recipient_name' => $recipient->name ?? 'there',
+            'recipient_role' => $recipientRole,
+            'billing_period' => $period,
+            'invoice_number' => $invoice->invoice_number ?: 'Pending assignment',
+            'invoice_status' => Str::headline((string) ($invoice->status ?? 'draft')),
+            'invoice_total' => $this->formatCurrency($invoice->total_amount ?? $invoice->total ?? 0),
+            'invoice_items_html' => $this->buildInvoiceItemsHtml($invoice),
+            'invoice_items_text' => $this->buildInvoiceItemsText($invoice),
+            'dashboard_url' => 'https://reprodashboard.com',
+            'invoice_next_step' => 'Open the dashboard to review the invoice, confirm line items, and add any missing expenses before approval moves forward.',
+            'approval_note' => 'Changes made after generation may trigger a fresh approval review before payout is finalized.',
+        ]);
+    }
+
+    private function buildInvoiceItemsHtml(\App\Models\Invoice $invoice): string
+    {
+        if (!$invoice->items || $invoice->items->isEmpty()) {
+            return '<p style="margin: 0;">Line items will appear here once charges or expenses are attached to the invoice.</p>';
+        }
+
+        return $invoice->items->map(function ($item) {
+            $type = e(Str::headline((string) ($item->type ?? 'line item')));
+            $description = e((string) ($item->description ?? 'Line item'));
+            $amount = e($this->formatCurrency($item->total_amount ?? 0));
+
+            return <<<HTML
+<div class="info-row">
+    <span class="info-label">{$type}</span>
+    {$description}
+    <strong style="float: right;">{$amount}</strong>
+</div>
+HTML;
+        })->implode("\n");
+    }
+
+    private function buildInvoiceItemsText(\App\Models\Invoice $invoice): string
+    {
+        if (!$invoice->items || $invoice->items->isEmpty()) {
+            return '- No line items have been attached yet.';
+        }
+
+        return $invoice->items->map(function ($item) {
+            $type = Str::headline((string) ($item->type ?? 'line item'));
+            $description = trim((string) ($item->description ?? 'Line item'));
+            $amount = $this->formatCurrency($item->total_amount ?? 0);
+
+            return "- {$description} ({$type}): {$amount}";
+        })->implode("\n");
+    }
+
     private function sendViaCakemail(?string $to, string $subject, string $html, string $sendSource): void
     {
         if (!is_string($to) || trim($to) === '') {

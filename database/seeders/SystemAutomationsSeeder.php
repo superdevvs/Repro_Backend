@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\AutomationRule;
+use App\Models\MessageTemplate;
 use App\Models\User;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use Illuminate\Database\Seeder;
@@ -30,6 +31,8 @@ class SystemAutomationsSeeder extends Seeder
         }
 
         // Weekly Automated Invoicing for Photographers
+        $weeklyInvoiceTemplateId = MessageTemplate::where('slug', 'weekly-invoice-generated')->first()?->id;
+
         $invoiceAutomation = AutomationRule::updateOrCreate(
             [
                 'trigger_type' => 'WEEKLY_AUTOMATED_INVOICING',
@@ -45,7 +48,7 @@ class SystemAutomationsSeeder extends Seeder
                 'scope' => 'SYSTEM',
                 'is_system_locked' => true,
                 'owner_id' => null,
-                'template_id' => null, // Uses InvoiceGeneratedMail template
+                'template_id' => $weeklyInvoiceTemplateId,
                 'channel_id' => null,
                 'condition_json' => [
                     'schedule' => 'weekly',

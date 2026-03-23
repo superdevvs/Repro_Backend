@@ -4,9 +4,9 @@
 @section('preheader', 'Your weekly invoice is ready to review.')
 
 @section('hero')
-    <div class="eyebrow">Invoice Generated</div>
+    <div class="eyebrow">Weekly Invoicing</div>
     <h1 class="hero-title">Your invoice for {{ $period }} is ready.</h1>
-    <p class="hero-copy">Review the amount, the line items included for this period, and any follow-up needed before payout processing continues.</p>
+    <p class="hero-copy">Review the payout window, confirm the line items included this week, and handle any follow-up before approval moves forward.</p>
 @endsection
 
 @section('content')
@@ -18,7 +18,7 @@
     <p class="intro">Hello {{ $recipientModel->name }}, <strong>your weekly {{ $recipientLabel }} invoice has been generated.</strong></p>
 
     <div class="button-row">
-        <a href="https://reprodashboard.com" class="button">Open Dashboard</a>
+        <a href="https://reprodashboard.com" class="button button-large">Review Weekly Invoice</a>
     </div>
 
     <table class="stats-row" role="presentation">
@@ -69,7 +69,7 @@
 
     <div class="callout">
         <div class="callout-title">Next step</div>
-        <p class="callout-copy">Log into the dashboard to review this invoice, add any needed expenses, or reject it if something needs adjustment before approval.</p>
+        <p class="callout-copy">Open the dashboard to review this invoice, add any missing expenses, or flag an issue if something needs adjustment before approval.</p>
     </div>
 @endsection
 

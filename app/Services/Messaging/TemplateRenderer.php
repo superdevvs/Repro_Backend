@@ -92,8 +92,9 @@ class TemplateRenderer
         $logoUrl = 'https://api.reprodashboard.com/images/Repro%20HQ%20dark.png';
         $heroEyebrow = $this->escapeHtml($this->resolveHeroEyebrow($template));
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
-        $heroTitle = $this->buildHeroTitleHtml($subject !== '' ? $subject : ($template->name ?? 'R/E Pro Photos Update'));
+        $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? 'R/E Pro Photos Update'));
         $journeyHtml = $this->buildJourneyRail($template);
+        $heroIllustration = $this->buildHeroIllustration();
 
         return <<<HTML
 <!DOCTYPE html>
@@ -132,20 +133,23 @@ a { color: #1463ff; text-decoration: none; }
 }
 .brand-row {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
   position: relative;
   z-index: 2;
   margin-bottom: 28px;
 }
 .brand-logo {
   display: inline-block;
+  flex-shrink: 0;
 }
 .brand-logo img {
   width: 154px;
   height: auto;
 }
 .brand-copy {
+  text-align: right;
   color: #1d2940;
   font-size: 16px;
   line-height: 1.4;
@@ -158,6 +162,15 @@ a { color: #1463ff; text-decoration: none; }
   letter-spacing: 1.4px;
   text-transform: uppercase;
   font-weight: 700;
+}
+.hero-overline {
+  display: block;
+  margin-bottom: 14px;
+  color: #6c82a3;
+  font-size: 16px;
+  line-height: 1.5;
+  letter-spacing: 0.2px;
+  font-weight: 500;
 }
 .hero-title {
   position: relative;
@@ -188,44 +201,81 @@ a { color: #1463ff; text-decoration: none; }
   font-size: 15px;
   line-height: 1.8;
 }
-.hero-orbit {
+.hero-illustration {
   position: absolute;
+  top: 36px;
+  right: 24px;
+  width: 240px;
+  height: 184px;
+  pointer-events: none;
+  opacity: 0.95;
+}
+.hero-camera-body,
+.hero-camera-top,
+.hero-camera-lens,
+.hero-camera-lens-inner,
+.hero-camera-flash,
+.hero-camera-line {
+  position: absolute;
+  border: 1.5px solid #e6edf7;
+  background: transparent;
+}
+.hero-camera-body {
+  left: 24px;
+  top: 62px;
+  width: 182px;
+  height: 102px;
+  border-radius: 28px;
+}
+.hero-camera-top {
+  left: 58px;
   top: 40px;
-  right: 20px;
-  width: 224px;
-  height: 224px;
+  width: 74px;
+  height: 32px;
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+}
+.hero-camera-lens {
+  left: 84px;
+  top: 78px;
+  width: 64px;
+  height: 64px;
   border-radius: 999px;
-  border: 1px solid #ebeff5;
 }
-.hero-orbit:before,
-.hero-orbit:after {
-  content: "";
-  position: absolute;
-  inset: 28px;
+.hero-camera-lens-inner {
+  left: 98px;
+  top: 92px;
+  width: 36px;
+  height: 36px;
   border-radius: 999px;
-  border: 1px solid #ebeff5;
 }
-.hero-orbit:after {
-  inset: 56px;
+.hero-camera-flash {
+  left: 170px;
+  top: 84px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
 }
-.hero-gridline-h,
-.hero-gridline-v {
-  position: absolute;
-  background: #eef2f7;
+.hero-camera-line-one {
+  left: 196px;
+  top: 44px;
+  width: 36px;
+  height: 0;
+  border-width: 1.5px 0 0 0;
 }
-.hero-gridline-h {
-  left: 0;
-  right: 0;
-  top: 50%;
-  height: 1px;
-  margin-top: -1px;
+.hero-camera-line-two {
+  left: 208px;
+  top: 60px;
+  width: 22px;
+  height: 0;
+  border-width: 1.5px 0 0 0;
 }
-.hero-gridline-v {
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  width: 1px;
-  margin-left: -1px;
+.hero-camera-line-three {
+  left: 206px;
+  top: 74px;
+  width: 0;
+  height: 22px;
+  border-width: 0 0 0 1.5px;
 }
 .journey {
   position: relative;
@@ -327,6 +377,12 @@ a { color: #1463ff; text-decoration: none; }
   margin: 6px 10px 10px 0;
   box-shadow: 0 12px 24px rgba(20, 99, 255, 0.18);
 }
+.button-large {
+  padding: 18px 30px;
+  font-size: 16px;
+  letter-spacing: 0.2px;
+  box-shadow: 0 16px 30px rgba(20, 99, 255, 0.22);
+}
 .info-box {
   margin: 20px 0;
   padding: 18px 20px;
@@ -357,6 +413,34 @@ a { color: #1463ff; text-decoration: none; }
   border: 1px solid #f0d7a8;
   background: linear-gradient(180deg, #fff9ee 0%, #fff3df 100%);
   color: #8b5b14 !important;
+}
+.change-card {
+  margin: 22px 0;
+  padding: 20px 22px;
+  border-radius: 24px;
+  border: 1px solid #d9e7ff;
+  background: linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%);
+}
+.change-card-title {
+  margin: 0 0 12px;
+  color: #10233b;
+  font-size: 18px;
+  line-height: 1.4;
+  font-weight: 800;
+}
+.change-card p,
+.change-card li,
+.change-card div,
+.change-card span {
+  color: #35506f !important;
+}
+.change-card ul,
+.change-card ol {
+  margin: 0;
+  padding-left: 20px;
+}
+.change-card li {
+  margin-bottom: 10px;
 }
 .footer-wrap { padding: 18px 0 0; }
 .footer-card {
@@ -427,13 +511,62 @@ a { color: #1463ff; text-decoration: none; }
     letter-spacing: -1.6px !important;
     max-width: none !important;
   }
+  .hero-overline {
+    font-size: 14px !important;
+    margin-bottom: 12px !important;
+  }
   .hero-copy { max-width: none !important; }
-  .hero-orbit {
+  .hero-illustration {
     position: absolute !important;
-    width: 160px !important;
-    height: 160px !important;
-    right: -26px !important;
+    width: 180px !important;
+    height: 138px !important;
+    right: -8px !important;
     top: 24px !important;
+  }
+  .hero-camera-body {
+    left: 16px !important;
+    top: 48px !important;
+    width: 138px !important;
+    height: 78px !important;
+  }
+  .hero-camera-top {
+    left: 42px !important;
+    top: 30px !important;
+    width: 54px !important;
+    height: 24px !important;
+  }
+  .hero-camera-lens {
+    left: 60px !important;
+    top: 60px !important;
+    width: 50px !important;
+    height: 50px !important;
+  }
+  .hero-camera-lens-inner {
+    left: 72px !important;
+    top: 72px !important;
+    width: 26px !important;
+    height: 26px !important;
+  }
+  .hero-camera-flash {
+    left: 128px !important;
+    top: 66px !important;
+    width: 12px !important;
+    height: 12px !important;
+  }
+  .hero-camera-line-one {
+    left: 152px !important;
+    top: 34px !important;
+    width: 22px !important;
+  }
+  .hero-camera-line-two {
+    left: 158px !important;
+    top: 46px !important;
+    width: 14px !important;
+  }
+  .hero-camera-line-three {
+    left: 156px !important;
+    top: 58px !important;
+    height: 14px !important;
   }
   .journey-bar {
     width: calc(25% - 7px) !important;
@@ -456,10 +589,7 @@ a { color: #1463ff; text-decoration: none; }
 <div class="page">
   <div class="shell">
     <div class="hero-card">
-      <div class="hero-orbit">
-        <div class="hero-gridline-h"></div>
-        <div class="hero-gridline-v"></div>
-      </div>
+      {$heroIllustration}
       <div class="brand-row">
         <div class="brand-logo">
           <img src="{$logoUrl}" alt="R/E Pro Photos">
@@ -542,19 +672,40 @@ HTML;
         };
     }
 
-    protected function buildHeroTitleHtml(string $subject): string
+    protected function buildHeroTitleHtml(MessageTemplate $template, string $subject): string
     {
         $subject = trim($subject);
         if ($subject === '') {
             return '<span class="hero-title-primary">R/E Pro Photos update.</span>';
         }
 
+        if ($titleParts = $this->extractTitleOverline($template, $subject)) {
+            return sprintf(
+                '<span class="hero-overline">%s</span><span class="hero-title-primary">%s</span>',
+                $this->escapeHtml($titleParts['overline']),
+                $this->escapeHtml($titleParts['primary'])
+            );
+        }
+
         $parts = preg_split('/\s+-\s+|\s+\|\s+|\s*:\s*/', $subject, 2);
         if (is_array($parts) && count($parts) === 2) {
+            [$first, $second] = array_map(fn (string $part) => trim($part), $parts);
+
+            if ($this->isDynamicContextSegment($first) xor $this->isDynamicContextSegment($second)) {
+                $overline = $this->isDynamicContextSegment($first) ? $first : $second;
+                $primary = $overline === $first ? $second : $first;
+
+                return sprintf(
+                    '<span class="hero-overline">%s</span><span class="hero-title-primary">%s</span>',
+                    $this->escapeHtml($overline),
+                    $this->escapeHtml(rtrim($primary, '.'))
+                );
+            }
+
             return sprintf(
                 '<span class="hero-title-primary">%s.</span> <span class="hero-title-accent">%s</span>',
-                $this->escapeHtml(rtrim($parts[0], '.')),
-                $this->escapeHtml($parts[1])
+                $this->escapeHtml(rtrim($first, '.')),
+                $this->escapeHtml($second)
             );
         }
 
@@ -573,6 +724,22 @@ HTML;
         );
     }
 
+    protected function buildHeroIllustration(): string
+    {
+        return <<<'HTML'
+<div class="hero-illustration" aria-hidden="true">
+  <div class="hero-camera-top"></div>
+  <div class="hero-camera-body"></div>
+  <div class="hero-camera-lens"></div>
+  <div class="hero-camera-lens-inner"></div>
+  <div class="hero-camera-flash"></div>
+  <div class="hero-camera-line hero-camera-line-one"></div>
+  <div class="hero-camera-line hero-camera-line-two"></div>
+  <div class="hero-camera-line hero-camera-line-three"></div>
+</div>
+HTML;
+    }
+
     protected function buildJourneyRail(MessageTemplate $template): string
     {
         $definition = match ($template->slug) {
@@ -580,7 +747,11 @@ HTML;
                 'labels' => ['Payment', 'Editing', 'Quality Check', 'Delivery'],
                 'active' => 0,
             ],
-            'shoot-ready', 'shoot-summary' => [
+            'weekly-invoice-generated' => [
+                'labels' => ['Generated', 'Review', 'Approval', 'Payout'],
+                'active' => 0,
+            ],
+            'shoot-ready', 'shoot-summary', 'shoot-delivered' => [
                 'labels' => ['Payment', 'Editing', 'Quality Check', 'Delivery'],
                 'active' => 3,
             ],
@@ -624,6 +795,65 @@ HTML;
     protected function escapeHtml(string $value): string
     {
         return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+    }
+
+    /**
+     * @return array{overline: string, primary: string}|null
+     */
+    protected function extractTitleOverline(MessageTemplate $template, string $subject): ?array
+    {
+        $subject = trim($subject);
+
+        foreach ($this->preferredTitleSuffixes($template) as $suffix) {
+            if ($suffix === '' || !str_ends_with($subject, $suffix)) {
+                continue;
+            }
+
+            $leading = trim(substr($subject, 0, -strlen($suffix)));
+            if ($leading === '') {
+                continue;
+            }
+
+            return [
+                'overline' => trim($leading, "-:| \t\n\r\0\x0B"),
+                'primary' => $suffix,
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @return string[]
+     */
+    protected function preferredTitleSuffixes(MessageTemplate $template): array
+    {
+        return match ($template->slug) {
+            'account-created' => ['New Account Information'],
+            'payment-due-reminder' => ['Payment Due Reminder'],
+            'shoot-summary' => ['Summary'],
+            'shoot-delivered' => ['Shoot Delivered'],
+            default => [],
+        };
+    }
+
+    protected function isDynamicContextSegment(string $segment): bool
+    {
+        $segment = trim($segment);
+
+        if ($segment === '') {
+            return false;
+        }
+
+        if (str_contains($segment, '{{') || str_contains($segment, '[')) {
+            return true;
+        }
+
+        if (preg_match('/\d/', $segment) || str_contains($segment, ',')) {
+            return true;
+        }
+
+        return str_word_count($segment) >= 4 && strlen($segment) >= 20;
     }
 
     protected function stripLegacyWrapper(string $html): string

@@ -10,7 +10,7 @@
         body {
             margin: 0;
             padding: 0;
-            background-color: #eef3f8;
+            background: linear-gradient(180deg, #f7f9fc 0%, #eef3f8 100%);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             color: #10233b;
             -webkit-text-size-adjust: 100%;
@@ -40,51 +40,70 @@
             mso-hide: all;
         }
         .page {
-            padding: 28px 12px;
+            padding: 30px 12px;
         }
         .shell {
-            max-width: 680px;
+            max-width: 720px;
             margin: 0 auto;
         }
         .card {
+            background: transparent;
+            box-shadow: none;
+        }
+        .hero-card,
+        .content-card {
             background-color: #ffffff;
-            border-radius: 28px;
+            border-radius: 34px;
             overflow: hidden;
-            box-shadow: 0 22px 60px rgba(13, 35, 67, 0.12);
+            box-shadow: 0 24px 70px rgba(22, 34, 60, 0.09);
+            border: 1px solid rgba(222, 230, 241, 0.7);
         }
-        .brand-band {
-            background: linear-gradient(135deg, #071223 0%, #0b2242 55%, #123e83 100%);
-            padding: 22px 28px 18px;
+        .hero-card + .content-card {
+            margin-top: 18px;
         }
-        .brand-meta {
-            font-size: 11px;
-            letter-spacing: 1.6px;
-            text-transform: uppercase;
-            color: #d6e4ff;
+        .hero-card {
+            position: relative;
+            padding: 34px 38px 28px;
         }
-        .brand-chip {
+        .hero-brand {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 24px;
+        }
+        .hero-logo {
             display: inline-block;
-            margin-top: 10px;
-            background-color: #ffffff;
-            border-radius: 18px;
-            padding: 16px 22px;
-            box-shadow: 0 14px 32px rgba(2, 13, 30, 0.2);
+            flex-shrink: 0;
         }
-        .brand-chip img {
-            width: 176px;
+        .hero-logo img {
+            width: 154px;
             height: auto;
         }
-        .hero-wrap {
-            padding: 24px 28px 0;
+        .hero-brand-copy {
+            text-align: right;
+            color: #1d2940;
+            font-size: 16px;
+            line-height: 1.4;
+            font-weight: 800;
+        }
+        .hero-brand-copy span {
+            display: block;
+            color: #7f90a7;
+            font-size: 11px;
+            letter-spacing: 1.4px;
+            text-transform: uppercase;
+            font-weight: 700;
         }
         .hero-panel {
-            border-radius: 24px;
-            background: linear-gradient(180deg, #f5f9ff 0%, #edf5ff 100%);
-            border: 1px solid #dbe7f8;
-            padding: 24px;
+            position: relative;
+            z-index: 2;
+            max-width: 560px;
         }
         .eyebrow {
-            margin: 0 0 10px;
+            margin: 0 0 12px;
             font-size: 11px;
             line-height: 1.4;
             letter-spacing: 2px;
@@ -94,19 +113,96 @@
         }
         .hero-title {
             margin: 0;
-            font-size: 31px;
-            line-height: 1.15;
-            font-weight: 800;
-            color: #071223;
+            font-size: 56px;
+            line-height: 0.96;
+            font-weight: 300;
+            letter-spacing: -2.4px;
+            color: #10192f;
         }
         .hero-copy {
-            margin: 14px 0 0;
-            font-size: 16px;
-            line-height: 1.7;
-            color: #4f6886;
+            margin: 20px 0 0;
+            font-size: 15px;
+            line-height: 1.8;
+            color: #667a96;
+        }
+        .hero-illustration {
+            position: absolute;
+            top: 36px;
+            right: 24px;
+            width: 240px;
+            height: 184px;
+            pointer-events: none;
+            opacity: 0.95;
+        }
+        .hero-camera-body,
+        .hero-camera-top,
+        .hero-camera-lens,
+        .hero-camera-lens-inner,
+        .hero-camera-flash,
+        .hero-camera-line {
+            position: absolute;
+            border: 1.5px solid #e6edf7;
+            background: transparent;
+        }
+        .hero-camera-body {
+            left: 24px;
+            top: 62px;
+            width: 182px;
+            height: 102px;
+            border-radius: 28px;
+        }
+        .hero-camera-top {
+            left: 58px;
+            top: 40px;
+            width: 74px;
+            height: 32px;
+            border-bottom: 0;
+            border-radius: 16px 16px 0 0;
+        }
+        .hero-camera-lens {
+            left: 84px;
+            top: 78px;
+            width: 64px;
+            height: 64px;
+            border-radius: 999px;
+        }
+        .hero-camera-lens-inner {
+            left: 98px;
+            top: 92px;
+            width: 36px;
+            height: 36px;
+            border-radius: 999px;
+        }
+        .hero-camera-flash {
+            left: 170px;
+            top: 84px;
+            width: 16px;
+            height: 16px;
+            border-radius: 999px;
+        }
+        .hero-camera-line-one {
+            left: 196px;
+            top: 44px;
+            width: 36px;
+            height: 0;
+            border-width: 1.5px 0 0 0;
+        }
+        .hero-camera-line-two {
+            left: 208px;
+            top: 60px;
+            width: 22px;
+            height: 0;
+            border-width: 1.5px 0 0 0;
+        }
+        .hero-camera-line-three {
+            left: 206px;
+            top: 74px;
+            width: 0;
+            height: 22px;
+            border-width: 0 0 0 1.5px;
         }
         .content {
-            padding: 24px 28px 18px;
+            padding: 30px 32px;
         }
         .section-card {
             margin: 0 0 18px;
@@ -339,6 +435,12 @@
             margin: 0 10px 10px 0;
             box-shadow: 0 12px 24px rgba(20, 99, 255, 0.18);
         }
+        .button-large {
+            padding: 18px 30px;
+            font-size: 16px;
+            letter-spacing: 0.2px;
+            box-shadow: 0 16px 30px rgba(20, 99, 255, 0.22);
+        }
         .button-secondary {
             background: #ffffff;
             color: #173963 !important;
@@ -384,25 +486,26 @@
             line-height: 1.7;
         }
         .footer-wrap {
-            padding: 0 28px 28px;
+            padding: 18px 0 0;
         }
         .footer-card {
-            border-radius: 22px;
+            border-radius: 26px;
             background: linear-gradient(135deg, #0b1b30 0%, #102847 100%);
-            padding: 22px;
+            padding: 24px 26px;
             color: #dce8ff;
+            box-shadow: 0 20px 40px rgba(16, 40, 71, 0.18);
         }
         .footer-title {
             margin: 0 0 8px;
-            font-size: 15px;
+            font-size: 18px;
             line-height: 1.5;
             color: #ffffff;
             font-weight: 800;
         }
         .footer-copy,
         .footer-copy a {
-            color: #c8d8f4 !important;
-            font-size: 13px;
+            color: #dce8ff !important;
+            font-size: 14px;
             line-height: 1.8;
         }
         .footer-links a {
@@ -411,31 +514,110 @@
             color: #ffffff !important;
             font-weight: 700;
         }
+        .footer-meta {
+            width: 100%;
+            margin-top: 18px;
+        }
+        .footer-meta-cell {
+            width: 50%;
+            padding-right: 12px;
+        }
+        .footer-meta-card {
+            border-radius: 18px;
+            padding: 14px 16px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(221, 232, 255, 0.14);
+        }
+        .footer-meta-label {
+            display: block;
+            margin-bottom: 4px;
+            color: #9fb4d4;
+            font-size: 11px;
+            line-height: 1.4;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            font-weight: 800;
+        }
+        .footer-meta-value {
+            color: #ffffff;
+            font-size: 14px;
+            line-height: 1.6;
+            font-weight: 700;
+        }
         .footer-note {
-            padding: 16px 20px 2px;
+            padding: 14px 8px 0;
             text-align: center;
-            color: #7a8ca6;
-            font-size: 12px;
+            color: #7d90ab;
+            font-size: 11px;
             line-height: 1.7;
         }
         @media only screen and (max-width: 640px) {
             .page {
                 padding: 14px 8px;
             }
-            .brand-band,
-            .hero-wrap,
-            .content,
-            .footer-wrap {
-                padding-left: 18px !important;
-                padding-right: 18px !important;
+            .hero-card {
+                padding: 24px 22px !important;
             }
-            .hero-panel,
+            .content,
             .section-pad,
             .footer-card {
-                padding: 18px !important;
+                padding-left: 20px !important;
+                padding-right: 20px !important;
             }
             .hero-title {
-                font-size: 26px !important;
+                font-size: 38px !important;
+                letter-spacing: -1.6px !important;
+            }
+            .hero-illustration {
+                width: 180px !important;
+                height: 138px !important;
+                right: -8px !important;
+                top: 24px !important;
+            }
+            .hero-camera-body {
+                left: 16px !important;
+                top: 48px !important;
+                width: 138px !important;
+                height: 78px !important;
+            }
+            .hero-camera-top {
+                left: 42px !important;
+                top: 30px !important;
+                width: 54px !important;
+                height: 24px !important;
+            }
+            .hero-camera-lens {
+                left: 60px !important;
+                top: 60px !important;
+                width: 50px !important;
+                height: 50px !important;
+            }
+            .hero-camera-lens-inner {
+                left: 72px !important;
+                top: 72px !important;
+                width: 26px !important;
+                height: 26px !important;
+            }
+            .hero-camera-flash {
+                left: 128px !important;
+                top: 66px !important;
+                width: 12px !important;
+                height: 12px !important;
+            }
+            .hero-camera-line-one {
+                left: 152px !important;
+                top: 34px !important;
+                width: 22px !important;
+            }
+            .hero-camera-line-two {
+                left: 158px !important;
+                top: 46px !important;
+                width: 14px !important;
+            }
+            .hero-camera-line-three {
+                left: 156px !important;
+                top: 58px !important;
+                height: 14px !important;
             }
             .detail-label,
             .detail-value,
@@ -461,43 +643,73 @@
     <div class="page">
         <div class="shell">
             <div class="card">
-                <div class="brand-band">
-                    <div class="brand-meta">R/E Pro Photos | Premium real estate media</div>
-                    <div class="brand-chip">
-                        <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos">
-                    </div>
-                </div>
-
                 @hasSection('hero')
-                    <div class="hero-wrap">
+                    <div class="hero-card">
+                        <div class="hero-illustration" aria-hidden="true">
+                            <div class="hero-camera-top"></div>
+                            <div class="hero-camera-body"></div>
+                            <div class="hero-camera-lens"></div>
+                            <div class="hero-camera-lens-inner"></div>
+                            <div class="hero-camera-flash"></div>
+                            <div class="hero-camera-line hero-camera-line-one"></div>
+                            <div class="hero-camera-line hero-camera-line-two"></div>
+                            <div class="hero-camera-line hero-camera-line-three"></div>
+                        </div>
+                        <div class="hero-brand">
+                            <div class="hero-logo">
+                                <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos">
+                            </div>
+                            <div class="hero-brand-copy">
+                                <span>Email Update</span>
+                                R/E Pro Photos
+                            </div>
+                        </div>
                         <div class="hero-panel">
                             @yield('hero')
                         </div>
                     </div>
                 @endif
 
-                <div class="content">
-                    @yield('content')
-                </div>
-
-                <div class="footer-wrap">
-                    <div class="footer-card">
-                        <div class="footer-title">Need help with a shoot, invoice, or account question?</div>
-                        <div class="footer-copy">
-                            Our team is here to help keep your marketing workflow moving.
-                            Reach us at <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> or call 202-868-1663.
-                        </div>
-                        <div class="footer-copy footer-links" style="margin-top:14px;">
-                            <a href="https://reprodashboard.com">Dashboard</a>
-                            <a href="https://reprophotos.com">Website</a>
-                            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews">Leave a Review</a>
-                        </div>
-                        @hasSection('footer_note')
-                            <div class="fineprint">@yield('footer_note')</div>
-                        @endif
+                <div class="content-card">
+                    <div class="content">
+                        @yield('content')
                     </div>
-                    <div class="footer-note">
-                        This email was sent by R/E Pro Photos. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
+
+                    <div class="footer-wrap">
+                        <div class="footer-card">
+                            <div class="footer-title">Need help with a shoot, invoice, or account question?</div>
+                            <div class="footer-copy">
+                                Our team is here to help keep your marketing workflow moving.
+                                Reach us at <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> or call 202-868-1663.
+                            </div>
+                            <div class="footer-copy footer-links" style="margin-top:14px;">
+                                <a href="https://reprodashboard.com">Dashboard</a>
+                                <a href="https://reprophotos.com">Website</a>
+                                <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews">Leave a Review</a>
+                            </div>
+                            <table class="footer-meta" role="presentation">
+                                <tr>
+                                    <td class="footer-meta-cell">
+                                        <div class="footer-meta-card">
+                                            <span class="footer-meta-label">Support</span>
+                                            <span class="footer-meta-value">contact@reprophotos.com<br>202-868-1663</span>
+                                        </div>
+                                    </td>
+                                    <td class="footer-meta-cell" style="padding-right:0;">
+                                        <div class="footer-meta-card">
+                                            <span class="footer-meta-label">Portal</span>
+                                            <span class="footer-meta-value">Track your shoots, invoices, and delivery updates in one place.</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+                            @hasSection('footer_note')
+                                <div class="fineprint">@yield('footer_note')</div>
+                            @endif
+                        </div>
+                        <div class="footer-note">
+                            This email was sent by R/E Pro Photos. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
+                        </div>
                     </div>
                 </div>
             </div>

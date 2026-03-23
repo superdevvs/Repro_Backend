@@ -297,7 +297,39 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 10. Payment Due Reminder
+            // 10. Shoot Delivered
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Shoot Delivered',
+                'slug' => 'shoot-delivered',
+                'description' => 'Final media delivery with direct access links',
+                'category' => 'GENERAL',
+                'subject' => '[shoot_location] - Shoot Delivered',
+                'body_html' => $this->getShootDeliveredTemplate(),
+                'body_text' => $this->getShootDeliveredPlainText(),
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_packages', 'small_zip_link', 'full_zip_link', 'mls_tour_link', 'branded_tour_link', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
+
+            // 11. Payment Due Reminder
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Weekly Invoice Generated',
+                'slug' => 'weekly-invoice-generated',
+                'description' => 'Editable weekly invoice notification sent when a new invoice is generated',
+                'category' => 'INVOICE',
+                'subject' => '{{billing_period}} - Weekly Invoice',
+                'body_html' => $this->getWeeklyInvoiceGeneratedTemplate(),
+                'body_text' => $this->getWeeklyInvoiceGeneratedPlainText(),
+                'variables_json' => ['recipient_name', 'recipient_role', 'billing_period', 'invoice_number', 'invoice_status', 'invoice_total', 'invoice_items_html', 'invoice_items_text', 'dashboard_url', 'invoice_next_step', 'approval_note'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
+
+            // 12. Payment Due Reminder
             [
                 'channel' => 'EMAIL',
                 'name' => 'Payment Due Reminder',
@@ -313,7 +345,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 11. Thank You For Payment
+            // 13. Thank You For Payment
             [
                 'channel' => 'EMAIL',
                 'name' => 'Thank You For Your Payment',
@@ -329,7 +361,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 12. Shoot Summary
+            // 14. Shoot Summary
             [
                 'channel' => 'EMAIL',
                 'name' => 'Shoot Summary',
@@ -345,7 +377,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 13. Shoot Deleted
+            // 15. Shoot Deleted
             [
                 'channel' => 'EMAIL',
                 'name' => 'Shoot Deleted',
@@ -361,7 +393,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 14. Refund Submitted
+            // 16. Refund Submitted
             [
                 'channel' => 'EMAIL',
                 'name' => 'Refund Submitted',
@@ -377,7 +409,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 15. Property Contact Reminder
+            // 17. Property Contact Reminder
             [
                 'channel' => 'EMAIL',
                 'name' => 'Property Contact Reminder',
@@ -393,7 +425,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 16. Property Contact Reminder SMS
+            // 18. Property Contact Reminder SMS
             [
                 'channel' => 'SMS',
                 'name' => 'Property Contact Reminder SMS',
@@ -409,7 +441,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
             
-            // 17. Photographer Assigned
+            // 19. Photographer Assigned
             [
                 'channel' => 'EMAIL',
                 'name' => 'Photographer Assigned',
@@ -1037,8 +1069,10 @@ class MessagingSystemSeeder extends Seeder
                 </div>
             </div>
 
-            <p><strong>Updated Details:</strong></p>
-            [shoot_changes_html]
+            <div class="change-card">
+                <div class="change-card-title">Updated Details</div>
+                [shoot_changes_html]
+            </div>
             
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
@@ -1083,10 +1117,10 @@ class MessagingSystemSeeder extends Seeder
             <p>[shoot_notes]</p>
             
             <center>
-                <a href="[pay_link]" class="button">Pay Now</a>
+                <a href="[pay_link]" class="button button-large">Pay Now</a>
             </center>
             
-            <p style="font-size: 13px; color: #666;">If you have photo packages for download, the download links will be accessible once payment has been received in full. You can make the requested payment by clicking on the red Pay button.</p>
+            <p style="font-size: 13px; color: #666;">If you have photo packages for download, the download links will be accessible once payment has been received in full. Use the large Pay Now button above to unlock access as soon as payment is received.</p>
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
@@ -1095,6 +1129,51 @@ class MessagingSystemSeeder extends Seeder
             <p>Thank you!</p>
         ';
         
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getShootDeliveredTemplate(): string
+    {
+        $content = '
+            <h1>Your Shoot Has Been Delivered</h1>
+            <p>[greeting]!</p>
+
+            <p>Your final media for <strong>[shoot_location]</strong> has been delivered and is ready to review.</p>
+
+            <p>You can access everything by logging in to your account at <a href="[portal_url]">[portal_url]</a> and opening the shoot under <strong>Completed Shoots</strong>.</p>
+
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Services:</span> [shoot_packages]
+                </div>
+            </div>
+
+            <div class="change-card">
+                <div class="change-card-title">Delivery Links</div>
+                <p style="margin-top: 0;"><strong>Small / MLS Images:</strong> <a href="[small_zip_link]">[small_zip_link]</a></p>
+                <p><strong>Full Resolution Images:</strong> <a href="[full_zip_link]">[full_zip_link]</a></p>
+                <p><strong>MLS Tour:</strong> <a href="[mls_tour_link]">[mls_tour_link]</a></p>
+                <p style="margin-bottom: 0;"><strong>Branded Tour:</strong> <a href="[branded_tour_link]">[branded_tour_link]</a></p>
+            </div>
+
+            <center>
+                <a href="[portal_url]" class="button button-large">Open Deliverables</a>
+            </center>
+
+            <p>If you have any questions about the delivered media, please reply to this email or contact <a href="mailto:[company_email]">[company_email]</a>.</p>
+
+            <p>Thank you!</p>
+        ';
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1124,7 +1203,7 @@ class MessagingSystemSeeder extends Seeder
             <p>[shoot_notes]</p>
             
             <center>
-                <a href="[pay_link]" class="button">Pay Now</a>
+                <a href="[pay_link]" class="button button-large">Pay Now</a>
             </center>
             
             <p>Alternatively you can make the requested payment by logging in to your account at <a href="[portal_url]">[portal_url]</a> and clicking on the shoot under <strong>Completed Shoots</strong>.</p>
@@ -1134,6 +1213,45 @@ class MessagingSystemSeeder extends Seeder
             <p>Thank you!</p>
         ';
         
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getWeeklyInvoiceGeneratedTemplate(): string
+    {
+        $content = '
+            <p>Hello {{recipient_name}}, <strong>your weekly {{recipient_role}} invoice has been generated.</strong></p>
+
+            <center>
+                <a href="{{dashboard_url}}" class="button button-large">Review Weekly Invoice</a>
+            </center>
+
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Billing Period:</span> {{billing_period}}
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Invoice Number:</span> {{invoice_number}}
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Status:</span> {{invoice_status}}
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Total:</span> <strong>{{invoice_total}}</strong>
+                </div>
+            </div>
+
+            <div class="change-card">
+                <div class="change-card-title">Included This Week</div>
+                {{invoice_items_html}}
+            </div>
+
+            <p>{{invoice_next_step}}</p>
+
+            <p>If something needs attention, open <a href="{{dashboard_url}}">{{dashboard_url}}</a> to review the invoice and follow up before approval moves forward.</p>
+
+            <p>{{approval_note}}</p>
+        ';
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1509,6 +1627,48 @@ Completed Date: [shoot_completeddate]
 Payment link: [pay_link]
 
 Thank you!';
+    }
+
+    private function getShootDeliveredPlainText(): string
+    {
+        return '[greeting]!
+
+Your final media for [shoot_location] has been delivered and is ready to review.
+
+Scheduled Date: [shoot_date]
+Scheduled Time: [shoot_time]
+Services: [shoot_packages]
+
+Dashboard: [portal_url]
+Small / MLS Images: [small_zip_link]
+Full Resolution Images: [full_zip_link]
+MLS Tour: [mls_tour_link]
+Branded Tour: [branded_tour_link]
+
+If you have any questions, please contact [company_email].
+
+Thank you!';
+    }
+
+    private function getWeeklyInvoiceGeneratedPlainText(): string
+    {
+        return 'Hello {{recipient_name}},
+
+Your weekly {{recipient_role}} invoice has been generated.
+
+Billing Period: {{billing_period}}
+Invoice Number: {{invoice_number}}
+Status: {{invoice_status}}
+Total: {{invoice_total}}
+
+Included This Week:
+{{invoice_items_text}}
+
+{{invoice_next_step}}
+
+Review your invoice here: {{dashboard_url}}
+
+{{approval_note}}';
     }
 
     private function getPaymentThankYouPlainText(): string
