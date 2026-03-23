@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Schema;
 
 class InvoiceFactory extends Factory
 {
@@ -20,7 +21,11 @@ class InvoiceFactory extends Factory
         $subtotal = $this->faker->randomFloat(2, 100, 2000);
         $tax = $this->faker->randomFloat(2, 0, 200);
 
-        return [
+        $attributes = [
+            'user_id' => User::factory(),
+            'role' => Invoice::ROLE_CLIENT,
+            'period_start' => $issueDate->copy()->toDateString(),
+            'period_end' => $dueDate->copy()->toDateString(),
             'shoot_id' => Shoot::factory(),
             'client_id' => User::factory(),
             'invoice_number' => strtoupper('INV-' . Str::random(8)),
@@ -30,8 +35,13 @@ class InvoiceFactory extends Factory
             'tax' => $tax,
             'total' => $subtotal + $tax,
             'status' => 'sent',
-            'notes' => null,
             'paid_at' => null,
         ];
+
+        if (Schema::hasColumn('invoices', 'notes')) {
+            $attributes['notes'] = null;
+        }
+
+        return $attributes;
     }
 }

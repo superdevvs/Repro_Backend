@@ -5909,6 +5909,43 @@ class ShootController extends Controller
             });
         }
 
+        $isRawCameraFile = function (ShootFile $file): bool {
+            $rawExtensions = [
+                'raw', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2',
+                'orf', 'pef', 'srw', '3fr', 'fff', 'iiq', 'rwl', 'x3f',
+            ];
+            $rawMimeFragments = [
+                'canon-raw', 'canon-cr2', 'canon-cr3', 'nikon-nef', 'sony-arw',
+                'adobe-dng', 'phaseone-iiq', 'raw',
+            ];
+
+            $nameCandidates = [
+                strtolower((string) $file->filename),
+                strtolower((string) $file->stored_filename),
+            ];
+
+            foreach ($nameCandidates as $name) {
+                foreach ($rawExtensions as $extension) {
+                    if ($name !== '' && Str::endsWith($name, '.' . $extension)) {
+                        return true;
+                    }
+                }
+            }
+
+            if (($file->media_type ?? null) === 'raw') {
+                return true;
+            }
+
+            $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+            foreach ($rawMimeFragments as $fragment) {
+                if ($mime !== '' && Str::contains($mime, $fragment)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
         if ($type === 'raw') {
             // RAW uploads live in the TODO stage (older data may have null workflow_stage)
             $filesQuery->where(function ($q) {
@@ -5918,33 +5955,13 @@ class ShootController extends Controller
         } elseif ($type === 'edited') {
             // Edited uploads live in COMPLETED/VERIFIED
             $filesQuery->whereIn('workflow_stage', ['completed', 'verified']);
-
-            // Also ensure we only return renderable edited formats (avoid RAW files like .NEF)
-            $filesQuery->where(function ($q) {
-                $q->whereRaw(
-                    "LOWER(COALESCE(file_type, mime_type, '')) IN ('image/jpeg','image/jpg','image/png','image/pjpeg')"
-                )
-                  ->orWhereRaw("LOWER(COALESCE(file_type, mime_type, '')) LIKE 'video/%'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.jpg'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.jpeg'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.png'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.mp4'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.mov'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.avi'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.mkv'")
-                  ->orWhereRaw("LOWER(COALESCE(filename, '')) LIKE '%.wmv'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.jpg'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.jpeg'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.png'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.mp4'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.mov'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.avi'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.mkv'")
-                  ->orWhereRaw("LOWER(COALESCE(stored_filename, '')) LIKE '%.wmv'");
-            });
         }
 
         $files = $filesQuery->get();
+
+        if ($type === 'edited') {
+            $files = $files->reject($isRawCameraFile)->values();
+        }
         
         Log::debug('getFiles query result', [
             'shoot_id' => $id,

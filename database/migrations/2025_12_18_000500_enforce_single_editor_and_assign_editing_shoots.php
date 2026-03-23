@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
@@ -14,6 +15,10 @@ return new class extends Migration
             ->where('role', 'editor')
             ->where('id', '!=', $primaryEditorId)
             ->update(['role' => 'client']);
+
+        if (!Schema::hasColumn('shoots', 'editor_id')) {
+            return;
+        }
 
         // Ensure any shoots currently in editing/review with no editor assigned are assigned to primary editor
         DB::table('shoots')

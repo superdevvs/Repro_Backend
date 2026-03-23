@@ -263,6 +263,22 @@ class DropboxWorkflowService
             : ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
 
+        $existingFile = ShootFile::where('shoot_id', $shoot->id)
+            ->where('filename', $file->getClientOriginalName())
+            ->where('workflow_stage', $stage)
+            ->first();
+
+        if ($existingFile) {
+            $this->deleteLocalStoredAssets($existingFile);
+            Log::info('Replacing duplicate file in place', [
+                'shoot_id' => $shoot->id,
+                'file_id' => $existingFile->id,
+                'filename' => $file->getClientOriginalName(),
+                'stage' => $stage,
+                'old_stored' => $existingFile->stored_filename,
+            ]);
+        }
+
         // Extract image metadata (dimensions, EXIF)
         $metadata = $this->extractImageMetadata($file);
 
@@ -307,38 +323,16 @@ class DropboxWorkflowService
             }
         }
 
-        // Replace existing file with same original name in same stage (prevent duplicates)
-        $existingFile = ShootFile::where('shoot_id', $shoot->id)
-            ->where('filename', $file->getClientOriginalName())
-            ->where('workflow_stage', $stage)
-            ->first();
-
-        if ($existingFile) {
-            // Delete old file from local storage
-            if ($existingFile->path && Storage::disk('public')->exists($existingFile->path)) {
-                Storage::disk('public')->delete($existingFile->path);
-            }
-            // Delete old thumbnails
-            if ($existingFile->thumbnail_path && Storage::disk('public')->exists($existingFile->thumbnail_path)) {
-                Storage::disk('public')->delete($existingFile->thumbnail_path);
-            }
-            if ($existingFile->web_path && Storage::disk('public')->exists($existingFile->web_path)) {
-                Storage::disk('public')->delete($existingFile->web_path);
-            }
-            $existingFile->delete();
-            Log::info('Replaced duplicate file', [
-                'shoot_id' => $shoot->id,
-                'filename' => $file->getClientOriginalName(),
-                'stage' => $stage,
-                'old_stored' => $existingFile->stored_filename,
-            ]);
-        }
-
         // Now store the file (this may move the temp file)
         Storage::disk('public')->putFileAs($dir, $file, $filename);
 
-        $shootFile = ShootFile::create([
+        $shootFile = $existingFile ?: new ShootFile([
             'shoot_id' => $shoot->id,
+            'filename' => $file->getClientOriginalName(),
+            'workflow_stage' => $stage,
+        ]);
+
+        $shootFile->fill([
             'filename' => $file->getClientOriginalName(),
             'stored_filename' => $filename,
             'path' => $serverPath,
@@ -352,11 +346,14 @@ class DropboxWorkflowService
             'thumbnail_path' => $thumbnailPath,
             'web_path' => $webPath,
             'placeholder_path' => $placeholderPath,
-            'processed_at' => ($thumbnailPath || $webPath) ? now() : null,
+            'processed_at' => ($thumbnailPath || $webPath || $placeholderPath) ? now() : null,
+            'processing_failed_at' => null,
+            'processing_error' => null,
             'metadata' => !empty($metadata) ? $metadata : null,
         ]);
+        $shootFile->save();
 
-        if ($this->shouldProcessImage($file)) {
+        if ($this->shouldProcessImage($file) && !$shootFile->thumbnail_path && !$shootFile->web_path && !$shootFile->placeholder_path) {
             ProcessImageJob::dispatch($shootFile);
         }
 
@@ -411,6 +408,16 @@ class DropboxWorkflowService
         ]);
 
         return $shootFile;
+    }
+
+    protected function deleteLocalStoredAssets(ShootFile $shootFile): void
+    {
+        foreach (['path', 'thumbnail_path', 'web_path', 'placeholder_path'] as $attribute) {
+            $storedPath = $shootFile->{$attribute};
+            if ($storedPath && Storage::disk('public')->exists($storedPath)) {
+                Storage::disk('public')->delete($storedPath);
+            }
+        }
     }
 
     /**

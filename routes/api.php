@@ -12,6 +12,7 @@ use App\Http\Controllers\API\DashboardController;
 use App\Http\Controllers\PhotographerAvailabilityController;
 use App\Http\Controllers\PhotographerShootController;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\ClientBillingController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\DropboxAuthController;
 use App\Http\Controllers\InvoiceReportController;
@@ -357,6 +358,10 @@ Route::middleware(['auth:sanctum'])->get(
 Route::middleware('auth:sanctum')->prefix('invoices')->group(function () {
     Route::get('/', [InvoiceController::class, 'index']);
     Route::get('{invoice}/download', [InvoiceController::class, 'download']);
+});
+
+Route::middleware('auth:sanctum')->prefix('client')->group(function () {
+    Route::get('billing', [ClientBillingController::class, 'index']);
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin')->group(function () {
