@@ -16,6 +16,13 @@ class SystemAutomationsSeeder extends Seeder
     ) {
     }
 
+    private function writeOutput(string $method, string $message): void
+    {
+        if ($this->command) {
+            $this->command->{$method}($message);
+        }
+    }
+
     /**
      * Run the database seeds.
      */
@@ -26,7 +33,7 @@ class SystemAutomationsSeeder extends Seeder
         $admin = User::whereIn('role', ['admin', 'superadmin'])->first();
 
         if (!$admin) {
-            $this->command->warn('No admin user found. Skipping system automations seeding.');
+            $this->writeOutput('warn', 'No admin user found. Skipping system automations seeding.');
             return;
         }
 
@@ -77,7 +84,7 @@ class SystemAutomationsSeeder extends Seeder
             'workflow_definition_json' => $this->workflowConverter->buildLegacyWorkflow($invoiceAutomation),
         ])->save();
         
-        $this->command->info("Created/Updated: {$invoiceAutomation->name} (ID: {$invoiceAutomation->id})");
+        $this->writeOutput('info', "Created/Updated: {$invoiceAutomation->name} (ID: {$invoiceAutomation->id})");
 
         // Weekly Sales Reports to Sales Reps
         $salesReportAutomation = AutomationRule::updateOrCreate(
@@ -124,11 +131,11 @@ class SystemAutomationsSeeder extends Seeder
             'workflow_definition_json' => $this->workflowConverter->buildLegacyWorkflow($salesReportAutomation),
         ])->save();
         
-        $this->command->info("Created/Updated: {$salesReportAutomation->name} (ID: {$salesReportAutomation->id})");
+        $this->writeOutput('info', "Created/Updated: {$salesReportAutomation->name} (ID: {$salesReportAutomation->id})");
 
-        $this->command->info('System automations seeded successfully!');
-        $this->command->info('- Weekly Automated Invoicing (Monday 1:00 AM)');
-        $this->command->info('- Weekly Sales Reports (Monday 2:00 AM)');
+        $this->writeOutput('info', 'System automations seeded successfully!');
+        $this->writeOutput('info', '- Weekly Automated Invoicing (Monday 1:00 AM)');
+        $this->writeOutput('info', '- Weekly Sales Reports (Monday 2:00 AM)');
     }
 }
 
