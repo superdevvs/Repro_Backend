@@ -367,8 +367,8 @@ class BrightMlsService
                     $effectiveApiUrl = $candidateUrl;
                     try {
                         $response = Http::withHeaders([
-                            'X-API-USER' => $authUser,
-                            'X-API-KEY' => $this->apiKey ?? '',
+                            'x-api-user' => $authUser,
+                            'x-api-key' => $this->apiKey ?? '',
                             'Content-Type' => 'application/json',
                         ])->timeout(20)->post($candidateUrl . '/manifest', $payload);
                     } catch (\Throwable $requestError) {
@@ -431,20 +431,23 @@ class BrightMlsService
                     'response' => $errorBody,
                 ]);
 
-                // Parse Bright MLS error format: { statusCode, message, body: [{path, message}] }
-                $errorMessage = $errorBody['message'] ?? $errorBody['error'] ?? 'Unknown error';
+                // Parse Bright MLS error format:
+                // New API: { success, message, description, error: [{path, message}] }
+                // Legacy:  { statusCode, message, body: [{path, message}] }
+                $errorMessage = $errorBody['description'] ?? $errorBody['message'] ?? $errorBody['error'] ?? 'Unknown error';
 
-                // Detect New mode auth rejection and add a helpful hint
-                if ($this->mode === self::MODE_NEW && ($response->status() === 401 || $response->status() === 403)) {
-                    if (stripos($errorMessage, 'Missing Authentication Token') !== false ||
-                        stripos($errorMessage, 'Forbidden') !== false) {
-                        $errorMessage = 'The New (April Migration) API rejected the credentials. '
-                            . 'Switch to Legacy mode in Settings → Integrations → Bright MLS if you have not received new API credentials.';
-                    }
+                // Detect auth rejection
+                if ($response->status() === 401 || $response->status() === 403) {
+                    $errorMessage = 'Authentication failed — check your API Key and Vendor/Customer ID. '
+                        . 'HTTP ' . $response->status() . ': ' . ($errorBody['message'] ?? 'Unauthorized');
                 }
+
                 $validationErrors = [];
-                if (is_array($errorBody) && !empty($errorBody['body']) && is_array($errorBody['body'])) {
-                    foreach ($errorBody['body'] as $detail) {
+                // New API uses 'error' array, Legacy uses 'body' array
+                $errorDetails = $errorBody['error'] ?? $errorBody['body'] ?? [];
+                if (is_array($errorDetails)) {
+                    foreach ($errorDetails as $detail) {
+                        if (!is_array($detail)) continue;
                         $path = is_array($detail['path'] ?? null) ? implode('.', $detail['path']) : ($detail['path'] ?? '');
                         $validationErrors[] = ($path ? "[{$path}] " : '') . ($detail['message'] ?? 'Validation error');
                     }
@@ -699,8 +702,8 @@ class BrightMlsService
                 $effectiveApiUrl = $candidateUrl;
                 try {
                     $response = Http::withHeaders([
-                        'X-API-USER' => $authUser,
-                        'X-API-KEY' => $this->apiKey,
+                        'x-api-user' => $authUser,
+                        'x-api-key' => $this->apiKey,
                         'Content-Type' => 'application/json',
                     ])->timeout(10)->post($candidateUrl . '/manifest', []);
                 } catch (\Throwable $requestError) {
@@ -739,18 +742,10 @@ class BrightMlsService
 
             // 401/403 = bad credentials
             if ($status === 401 || $status === 403) {
-                $message = 'Authentication failed — check your API User, Vendor ID, and API Key';
-                // The New (April Migration) API uses different auth; surface a clearer hint
-                if ($this->mode === self::MODE_NEW) {
-                    $body = $response->json() ?? [];
-                    $serverMsg = $body['message'] ?? '';
-                    if (stripos($serverMsg, 'Missing Authentication Token') !== false ||
-                        stripos($serverMsg, 'Forbidden') !== false) {
-                        $message = 'The New (April Migration) API rejected the credentials. '
-                            . 'This endpoint may require different authentication. '
-                            . 'Switch to Legacy mode if you have not received new API credentials for the migration.';
-                    }
-                }
+                $body = $response->json() ?? [];
+                $serverMsg = $body['message'] ?? 'Unauthorized';
+                $message = 'Authentication failed (HTTP ' . $status . ': ' . $serverMsg . '). '
+                    . 'Check your API Key and Customer/Vendor ID.';
                 return [
                     'success' => false,
                     'status' => $status,
