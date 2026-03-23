@@ -6,6 +6,7 @@ use App\Models\MessageTemplate;
 use App\Models\AutomationRule;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Schema;
 
 class MessagingSystemSeeder extends Seeder
 {
@@ -425,6 +426,12 @@ class MessagingSystemSeeder extends Seeder
             ],
         ];
 
+        $canonicalSlugs = collect($templates)
+            ->pluck('slug')
+            ->filter()
+            ->values()
+            ->all();
+
         foreach ($templates as $template) {
             $normalized = $this->normalizeTemplateDefinition($template);
 
@@ -433,11 +440,24 @@ class MessagingSystemSeeder extends Seeder
                 $normalized
             );
         }
+
+        MessageTemplate::query()
+            ->where('is_system', true)
+            ->whereNotNull('slug')
+            ->whereNotIn('slug', $canonicalSlugs)
+            ->delete();
     }
 
     private function seedRequiredAutomations(): void
     {
         $workflowConverter = app(AutomationWorkflowConverter::class);
+        $supportsVisualWorkflow = collect([
+            'editor_mode',
+            'engine_version',
+            'is_system_locked',
+            'workflow_definition_json',
+            'entry_trigger_json',
+        ])->every(fn (string $column) => Schema::hasColumn('automation_rules', $column));
 
         $automations = [
             [
@@ -640,78 +660,31 @@ class MessagingSystemSeeder extends Seeder
                 $automation
             );
 
-            $workflow = $workflowConverter->buildLegacyWorkflow($automationRule);
-            $triggerNode = collect($workflow['nodes'] ?? [])
-                ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
+            if ($supportsVisualWorkflow) {
+                $workflow = $workflowConverter->buildLegacyWorkflow($automationRule);
+                $triggerNode = collect($workflow['nodes'] ?? [])
+                    ->first(fn (array $node) => str_starts_with((string) ($node['type'] ?? ''), 'trigger.'));
 
-            $automationRule->forceFill([
-                'editor_mode' => 'visual',
-                'engine_version' => 2,
-                'is_system_locked' => $automationRule->scope === 'SYSTEM',
-                'workflow_definition_json' => $workflow,
-                'entry_trigger_json' => [
-                    'trigger_type' => $automationRule->trigger_type,
-                    'node_id' => $triggerNode['id'] ?? null,
-                    'node_type' => $triggerNode['type'] ?? null,
-                    'config' => $triggerNode['config'] ?? [],
-                ],
-            ])->save();
+                $automationRule->forceFill([
+                    'editor_mode' => 'visual',
+                    'engine_version' => 2,
+                    'is_system_locked' => $automationRule->scope === 'SYSTEM',
+                    'workflow_definition_json' => $workflow,
+                    'entry_trigger_json' => [
+                        'trigger_type' => $automationRule->trigger_type,
+                        'node_id' => $triggerNode['id'] ?? null,
+                        'node_type' => $triggerNode['type'] ?? null,
+                        'config' => $triggerNode['config'] ?? [],
+                    ],
+                ])->save();
+            }
         }
     }
 
-    // EMAIL WRAPPER
+    // EMAIL BODY NORMALIZER
     private function getEmailWrapper($content): string
     {
-        return '<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f5f5f5; }
-        .email-container { max-width: 600px; margin: 0 auto; background-color: #ffffff; }
-        .header { background-color: #1a1a1a; padding: 30px 40px; text-align: center; }
-        .logo-text { font-size: 28px; font-weight: bold; color: #ffffff; letter-spacing: 2px; }
-        .content { padding: 40px; color: #333333; line-height: 1.6; }
-        .button { display: inline-block; background-color: #000000; color: #ffffff !important; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; margin: 20px 0; text-align: center; }
-        .info-box { background-color: #f8f8f8; border-left: 4px solid #000000; padding: 20px; margin: 20px 0; }
-        .info-row { padding: 8px 0; }
-        .info-label { font-weight: 600; color: #666666; display: inline-block; width: 160px; }
-        .footer { background-color: #f8f8f8; padding: 30px 40px; text-align: center; color: #666666; font-size: 13px; line-height: 1.8; }
-        .footer-signature { margin: 20px 0; padding: 20px; background-color: #ffffff; border-radius: 6px; }
-        h1 { font-size: 24px; margin: 0 0 20px 0; color: #1a1a1a; font-weight: 600; }
-        p { margin: 12px 0; }
-        ul { margin: 10px 0; padding-left: 20px; }
-        .note { background-color: #fff3cd; border-left: 4px solid: #ffc107; padding: 15px; margin: 20px 0; color: #856404; }
-    </style>
-</head>
-<body>
-    <div class="email-container">
-        <div class="header">
-            <div class="logo-text">' . self::BRAND_NAME . '</div>
-        </div>
-        <div class="content">
-            ' . $content . '
-        </div>
-        <div class="footer">
-            <div class="footer-signature">
-                <strong>Customer Service Team</strong><br>
-                <strong style="font-size: 16px;">' . self::BRAND_NAME . '</strong><br>
-                📞 ' . self::BRAND_PHONE . '<br>
-                📧 <a href="mailto:' . self::BRAND_EMAIL . '" style="color: #666666;">' . self::BRAND_EMAIL . '</a><br>
-                🌐 <a href="' . self::BRAND_SITE . '" style="color: #666666;">' . self::BRAND_SITE . '</a><br>
-                📊 Pro Dashboard: <a href="' . self::BRAND_PORTAL . '" style="color: #666666;">' . self::BRAND_PORTAL . '</a>
-            </div>
-            <p style="margin: 15px 0;">
-                We would love your feedback: <a href="#" style="color: #666666; font-weight: 600;">Post a review on Google</a>
-            </p>
-            <p style="font-size: 11px; color: #999999; margin-top: 20px;">
-                © ' . date('Y') . ' ' . self::BRAND_NAME . '. All Rights Reserved.
-            </p>
-        </div>
-    </div>
-</body>
-</html>';
+        return trim((string) $content);
     }
 
     // TEMPLATE HTML METHODS

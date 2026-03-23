@@ -89,7 +89,7 @@ class TemplateRenderer
     {
         $bodyHtml = $this->stripLegacyWrapper($bodyHtml);
 
-        $logoUrl = 'https://api.reprodashboard.com/images/repro-logo.png';
+        $logoUrl = 'https://api.reprodashboard.com/images/Repro%20HQ%20dark.png';
 
         return <<<HTML
 <!DOCTYPE html>
@@ -97,47 +97,198 @@ class TemplateRenderer
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="light dark">
-<meta name="supported-color-schemes" content="light dark">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
 <style>
-:root { color-scheme: light dark; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f5f5f5; -webkit-text-size-adjust: 100%; }
-.ew { max-width: 600px; margin: 0 auto; padding: 20px; }
-.eh { text-align: center; padding: 24px 20px; background-color: #1a1a2e !important; border-radius: 12px 12px 0 0; border-bottom: 2px solid #e5e7eb; }
-.eh img { max-width: 200px; height: auto; }
-.eb { background-color: #ffffff; padding: 30px 24px; border-radius: 0 0 12px 12px; }
-.eb p { margin-bottom: 14px; color: #333; }
-.eb a { color: #2563eb; }
-.eb h3, .eb h4 { color: #1a1a1a; }
-.eb table { width: 100%; }
-@media (prefers-color-scheme: dark) {
-  body { background-color: #1a1a2e !important; color: #e0e0e0 !important; }
-  .eh { background-color: #1a1a2e !important; }
-  .eb { background-color: #1e293b !important; }
-  .eb p, .eb li, .eb td, .eb span { color: #cbd5e1 !important; }
-  .eb h3, .eb h4, .eb strong { color: #f1f5f9 !important; }
-  .eb a { color: #60a5fa !important; }
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #eef3f8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  color: #10233b;
+  -webkit-text-size-adjust: 100%;
+  word-break: break-word;
 }
-[data-ogsc] .eh { background-color: #1a1a2e !important; }
-[data-ogsc] .eb { background-color: #1e293b !important; }
-[data-ogsc] .eb p { color: #cbd5e1 !important; }
+table { border-collapse: collapse; width: 100%; }
+img { border: 0; display: block; max-width: 100%; }
+a { color: #1463ff; text-decoration: none; }
+.page { padding: 28px 12px; }
+.shell { max-width: 680px; margin: 0 auto; }
+.card {
+  background-color: #ffffff;
+  border-radius: 28px;
+  overflow: hidden;
+  box-shadow: 0 22px 60px rgba(13, 35, 67, 0.12);
+}
+.brand-band {
+  background: linear-gradient(135deg, #071223 0%, #0b2242 55%, #123e83 100%);
+  padding: 22px 28px 18px;
+}
+.brand-meta {
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: #d6e4ff;
+}
+.brand-chip {
+  display: inline-block;
+  margin-top: 10px;
+  background-color: #ffffff;
+  border-radius: 18px;
+  padding: 16px 22px;
+  box-shadow: 0 14px 32px rgba(2, 13, 30, 0.2);
+}
+.brand-chip img { width: 176px; height: auto; }
+.content { padding: 28px 28px 18px; }
+.content p,
+.content li,
+.content div,
+.content td,
+.content span {
+  color: #35506f;
+  font-size: 15px;
+  line-height: 1.75;
+}
+.content p { margin: 0 0 14px; }
+.content ul,
+.content ol {
+  margin: 0 0 16px;
+  padding-left: 20px;
+}
+.content h1,
+.content h2,
+.content h3,
+.content h4 {
+  margin: 0 0 14px;
+  color: #071223;
+  line-height: 1.25;
+}
+.content h1 { font-size: 31px; font-weight: 800; }
+.content h2 { font-size: 24px; font-weight: 800; }
+.content h3 { font-size: 19px; font-weight: 800; }
+.content h4 { font-size: 16px; font-weight: 800; }
+.content strong { color: #071223; }
+.content center { display: block; text-align: left; }
+.content hr {
+  border: 0;
+  border-top: 1px solid #edf2f7;
+  margin: 18px 0;
+}
+.button {
+  display: inline-block;
+  padding: 14px 22px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #1463ff 0%, #0b83ff 100%);
+  color: #ffffff !important;
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1.2;
+  text-decoration: none;
+  margin: 6px 10px 10px 0;
+  box-shadow: 0 12px 24px rgba(20, 99, 255, 0.18);
+}
+.info-box {
+  margin: 18px 0;
+  padding: 18px 20px;
+  border-radius: 20px;
+  border: 1px solid #dbe7f8;
+  background: linear-gradient(180deg, #f8fbff 0%, #f2f8ff 100%);
+}
+.info-row {
+  padding: 10px 0;
+  border-bottom: 1px solid #e4edf8;
+}
+.info-row:last-child { border-bottom: 0; }
+.info-label {
+  display: inline-block;
+  min-width: 150px;
+  color: #60799a;
+  font-weight: 800;
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+.note {
+  margin: 18px 0;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid #ffdcae;
+  background: linear-gradient(180deg, #fff8ef 0%, #fff3e3 100%);
+  color: #8b5b14 !important;
+}
+.footer-wrap { padding: 0 28px 28px; }
+.footer-card {
+  border-radius: 22px;
+  background: linear-gradient(135deg, #0b1b30 0%, #102847 100%);
+  padding: 22px;
+  color: #dce8ff;
+}
+.footer-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #ffffff;
+  font-weight: 800;
+}
+.footer-copy {
+  margin: 0;
+  color: #dce8ff;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.footer-copy a { color: #ffffff !important; text-decoration: underline; }
+.footer-links a { margin-right: 14px; white-space: nowrap; }
+.footer-note {
+  padding: 14px 8px 0;
+  text-align: center;
+  color: #7d90ab;
+  font-size: 11px;
+  line-height: 1.7;
+}
+@media only screen and (max-width: 640px) {
+  .page { padding: 14px 8px !important; }
+  .brand-band, .content, .footer-wrap, .footer-card { padding-left: 18px !important; padding-right: 18px !important; }
+  .info-label {
+    display: block !important;
+    min-width: 0 !important;
+    margin-bottom: 4px;
+  }
+}
 </style>
 </head>
 <body>
-<div class="ew">
-<!--[if mso]>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="background-color:#1a1a2e;padding:24px 20px;">
-<img src="{$logoUrl}" alt="R/E Pro Photos" width="200" style="max-width:200px;height:auto;">
-</td></tr></table>
-<![endif]-->
-<!--[if !mso]><!-->
-<div class="eh" style="background-color:#1a1a2e !important;">
-<img src="{$logoUrl}" alt="R/E Pro Photos" style="max-width:200px;height:auto;">
-</div>
-<!--<![endif]-->
-<div class="eb">
+<div class="page">
+  <div class="shell">
+    <div class="card">
+      <div class="brand-band">
+        <div class="brand-meta">R/E Pro Photos | Premium real estate media</div>
+        <div class="brand-chip">
+          <img src="{$logoUrl}" alt="R/E Pro Photos">
+        </div>
+      </div>
+      <div class="content">
 {$bodyHtml}
-</div>
+      </div>
+      <div class="footer-wrap">
+        <div class="footer-card">
+          <div class="footer-title">Need help with a shoot, invoice, or account question?</div>
+          <p class="footer-copy">
+            Our team is here to help keep your marketing workflow moving.
+            Reach us at <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> or call 202-868-1663.
+          </p>
+          <p class="footer-copy footer-links" style="margin-top:14px;">
+            <a href="https://reprodashboard.com">Dashboard</a>
+            <a href="https://reprophotos.com">Website</a>
+            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews">Leave a Review</a>
+          </p>
+        </div>
+        <div class="footer-note">
+          This email was sent by R/E Pro Photos. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 </body>
 </html>
@@ -146,22 +297,26 @@ HTML;
 
     protected function stripLegacyWrapper(string $html): string
     {
-        // If the HTML contains the old email-container wrapper with logo-text header,
-        // extract just the inner content + footer to avoid double-wrapping.
+        // Extract the inner template content from known wrapped email documents
+        // so the renderer can apply the canonical shared layout.
         if (str_contains($html, 'email-container') && str_contains($html, 'logo-text')) {
-            // Extract content between <div class="content"> and <div class="footer">
-            // Use greedy match since content div contains nested divs
             if (preg_match('/<div\s+class=["\']content["\']>\s*(.+)\s*<\/div>\s*<div\s+class=["\']footer["\']/s', $html, $contentMatch)) {
-                $innerContent = trim($contentMatch[1]);
-                // Also grab the footer inner HTML
-                if (preg_match('/<div\s+class=["\']footer["\']>(.*)<\/div>\s*<\/div>\s*<\/body>/s', $html, $footerMatch)) {
-                    return $innerContent . "\n" . '<div style="background-color:#f8f8f8;padding:30px 24px;text-align:center;color:#666;font-size:13px;line-height:1.8;border-top:1px solid #e5e7eb;margin-top:20px;">' . trim($footerMatch[1]) . '</div>';
-                }
-                return $innerContent;
+                return trim($contentMatch[1]);
             }
         }
 
-        // Strip full HTML document wrapper (user pasted a full <!DOCTYPE> template)
+        if (str_contains($html, 'class="ew"') && str_contains($html, 'class="eb"')) {
+            if (preg_match('/<div\s+class=["\']eb["\']>\s*(.*)\s*<\/div>\s*<\/div>\s*<\/body>/si', $html, $contentMatch)) {
+                return trim($contentMatch[1]);
+            }
+        }
+
+        if (str_contains($html, 'class="page"') && str_contains($html, 'class="brand-band"')) {
+            if (preg_match('/<div\s+class=["\']content["\']>\s*(.*)\s*<\/div>\s*<div\s+class=["\']footer-wrap["\']/si', $html, $contentMatch)) {
+                return trim($contentMatch[1]);
+            }
+        }
+
         $trimmed = trim($html);
         if (str_starts_with($trimmed, '<!DOCTYPE') || str_starts_with($trimmed, '<html')) {
             if (preg_match('/<body[^>]*>(.*)<\/body>/si', $html, $bodyMatch)) {
