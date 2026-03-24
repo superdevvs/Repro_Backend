@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>thank you for taking care of the payment.</strong></p>
+<p class="intro"><strong>Thank you for taking care of the payment.</strong></p>
 
     <div class="section-card">
         <div class="section-pad">

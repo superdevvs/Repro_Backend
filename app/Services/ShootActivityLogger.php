@@ -41,6 +41,7 @@ class ShootActivityLogger
         'payment_marked_paid',
         'media_uploaded',
         'media_upload_initiated',
+        'hero_image_updated',
         'raw_downloaded_by_editor',
         'share_link_generated',
         'share_link_revoked',
@@ -138,6 +139,7 @@ class ShootActivityLogger
             // Media & files
             'media_uploaded' => 'Media uploaded' . (isset($metadata['file_count']) && $metadata['file_count'] ? ": {$metadata['file_count']} files" : ''),
             'media_upload_initiated' => 'Media upload started' . (isset($metadata['file_count']) && $metadata['file_count'] ? ": {$metadata['file_count']} files" : '') . (isset($metadata['type']) && $metadata['type'] ? " ({$metadata['type']})" : ''),
+            'hero_image_updated' => 'Hero image updated' . $by . (isset($metadata['filename']) && $metadata['filename'] ? ": {$metadata['filename']}" : ''),
             'album_created' => 'Album created' . (isset($metadata['album_name']) && $metadata['album_name'] ? ": {$metadata['album_name']}" : ''),
             'raw_downloaded_by_editor' => 'Raw files downloaded by editor' . (isset($metadata['editor_name']) && $metadata['editor_name'] ? " ({$metadata['editor_name']})" : '') . (isset($metadata['file_count']) && $metadata['file_count'] ? ": {$metadata['file_count']} files" : ''),
 

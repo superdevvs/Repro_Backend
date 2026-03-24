@@ -3,14 +3,18 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="light">
-    <meta name="supported-color-schemes" content="light">
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
     <title>@yield('title', 'R/E Pro Photos')</title>
     <style>
+        :root {
+            color-scheme: light dark;
+            supported-color-schemes: light dark;
+        }
         body {
             margin: 0;
             padding: 0;
-            background: linear-gradient(180deg, #f7f9fc 0%, #eef3f8 100%);
+            background: #eef3f8;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             color: #10233b;
             -webkit-text-size-adjust: 100%;
@@ -89,14 +93,6 @@
             line-height: 1.4;
             font-weight: 800;
         }
-        .hero-brand-copy span {
-            display: block;
-            color: #7f90a7;
-            font-size: 11px;
-            letter-spacing: 1.4px;
-            text-transform: uppercase;
-            font-weight: 700;
-        }
         .hero-panel {
             position: relative;
             z-index: 2;
@@ -113,7 +109,7 @@
         }
         .hero-title {
             margin: 0;
-            font-size: 56px;
+            font-size: 48px;
             line-height: 0.96;
             font-weight: 300;
             letter-spacing: -2.4px;
@@ -124,82 +120,6 @@
             font-size: 15px;
             line-height: 1.8;
             color: #667a96;
-        }
-        .hero-illustration {
-            position: absolute;
-            top: 36px;
-            right: 24px;
-            width: 240px;
-            height: 184px;
-            pointer-events: none;
-            opacity: 0.95;
-        }
-        .hero-camera-body,
-        .hero-camera-top,
-        .hero-camera-lens,
-        .hero-camera-lens-inner,
-        .hero-camera-flash,
-        .hero-camera-line {
-            position: absolute;
-            border: 1.5px solid #e6edf7;
-            background: transparent;
-        }
-        .hero-camera-body {
-            left: 24px;
-            top: 62px;
-            width: 182px;
-            height: 102px;
-            border-radius: 28px;
-        }
-        .hero-camera-top {
-            left: 58px;
-            top: 40px;
-            width: 74px;
-            height: 32px;
-            border-bottom: 0;
-            border-radius: 16px 16px 0 0;
-        }
-        .hero-camera-lens {
-            left: 84px;
-            top: 78px;
-            width: 64px;
-            height: 64px;
-            border-radius: 999px;
-        }
-        .hero-camera-lens-inner {
-            left: 98px;
-            top: 92px;
-            width: 36px;
-            height: 36px;
-            border-radius: 999px;
-        }
-        .hero-camera-flash {
-            left: 170px;
-            top: 84px;
-            width: 16px;
-            height: 16px;
-            border-radius: 999px;
-        }
-        .hero-camera-line-one {
-            left: 196px;
-            top: 44px;
-            width: 36px;
-            height: 0;
-            border-width: 1.5px 0 0 0;
-        }
-        .hero-camera-line-two {
-            left: 208px;
-            top: 60px;
-            width: 22px;
-            height: 0;
-            border-width: 1.5px 0 0 0;
-        }
-        .hero-camera-line-three {
-            left: 206px;
-            top: 74px;
-            width: 0;
-            height: 22px;
-            border-width: 0 0 0 1.5px;
         }
         .content {
             padding: 30px 32px;
@@ -294,9 +214,9 @@
             color: #295391;
         }
         .status-pill {
-            background-color: #eef8f1;
-            border: 1px solid #ccebd6;
-            color: #23744c;
+            background-color: #edf4ff;
+            border: 1px solid #d6e5ff;
+            color: #295391;
         }
         .status-warning {
             background-color: #fff5e8;
@@ -463,8 +383,8 @@
             border-color: #ffc8cf;
         }
         .callout-success {
-            background: linear-gradient(180deg, #f1fbf5 0%, #eaf8f0 100%);
-            border-color: #caecd5;
+            background: linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%);
+            border-color: #d9e7ff;
         }
         .callout-title {
             margin: 0 0 8px;
@@ -565,59 +485,8 @@
                 padding-right: 20px !important;
             }
             .hero-title {
-                font-size: 38px !important;
+                font-size: 32px !important;
                 letter-spacing: -1.6px !important;
-            }
-            .hero-illustration {
-                width: 180px !important;
-                height: 138px !important;
-                right: -8px !important;
-                top: 24px !important;
-            }
-            .hero-camera-body {
-                left: 16px !important;
-                top: 48px !important;
-                width: 138px !important;
-                height: 78px !important;
-            }
-            .hero-camera-top {
-                left: 42px !important;
-                top: 30px !important;
-                width: 54px !important;
-                height: 24px !important;
-            }
-            .hero-camera-lens {
-                left: 60px !important;
-                top: 60px !important;
-                width: 50px !important;
-                height: 50px !important;
-            }
-            .hero-camera-lens-inner {
-                left: 72px !important;
-                top: 72px !important;
-                width: 26px !important;
-                height: 26px !important;
-            }
-            .hero-camera-flash {
-                left: 128px !important;
-                top: 66px !important;
-                width: 12px !important;
-                height: 12px !important;
-            }
-            .hero-camera-line-one {
-                left: 152px !important;
-                top: 34px !important;
-                width: 22px !important;
-            }
-            .hero-camera-line-two {
-                left: 158px !important;
-                top: 46px !important;
-                width: 14px !important;
-            }
-            .hero-camera-line-three {
-                left: 156px !important;
-                top: 58px !important;
-                height: 14px !important;
             }
             .detail-label,
             .detail-value,
@@ -630,37 +499,142 @@
             .line-table th {
                 padding-bottom: 6px !important;
             }
-            .amount-cell {
-                text-align: left !important;
-                padding-top: 4px !important;
+        .amount-cell {
+            text-align: left !important;
+            padding-top: 4px !important;
+        }
+    }
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #0b1220 !important;
+                color: #d7e2f0 !important;
             }
+            .hero-card,
+            .content-card,
+            .section-card,
+            .stat-card,
+            .note-card,
+            .callout {
+                background: #111c2e !important;
+                border-color: #24344d !important;
+                box-shadow: none !important;
+            }
+            .hero-title,
+            .section-title,
+            .stat-value,
+            .detail-value,
+            .line-name,
+            .callout-title,
+            .intro strong {
+                color: #f5f7fb !important;
+            }
+            .hero-copy,
+            .body-copy,
+            .section-copy,
+            .intro,
+            .detail-label,
+            .detail-subvalue,
+            .line-meta,
+            .note-card p,
+            .note-card li,
+            .note-card div,
+            .fineprint,
+            .footer-note,
+            .section-kicker,
+            .eyebrow,
+            .stat-label,
+            .stat-copy {
+                color: #a9b8cb !important;
+            }
+            .detail-table td,
+            .line-table th,
+            .line-table td,
+            .divider {
+                border-color: #24344d !important;
+            }
+            .pill,
+            .status-pill {
+                background: #172843 !important;
+                border-color: #2b4b78 !important;
+                color: #9fc2ff !important;
+            }
+            .button-secondary {
+                background: #142237 !important;
+                color: #dfe8f5 !important;
+                border-color: #314662 !important;
+            }
+            .footer-card,
+            .footer-meta-card {
+                box-shadow: none !important;
+            }
+            .footer-meta-card {
+                background: rgba(17, 28, 46, 0.72) !important;
+                border-color: rgba(83, 110, 150, 0.45) !important;
+            }
+        }
+        [data-ogsc] body,
+        [data-ogsc] .page {
+            background: #0b1220 !important;
+            color: #d7e2f0 !important;
+        }
+        [data-ogsc] .hero-card,
+        [data-ogsc] .content-card,
+        [data-ogsc] .section-card,
+        [data-ogsc] .stat-card,
+        [data-ogsc] .note-card,
+        [data-ogsc] .callout {
+            background: #111c2e !important;
+            border-color: #24344d !important;
+            box-shadow: none !important;
+        }
+        [data-ogsc] .hero-title,
+        [data-ogsc] .section-title,
+        [data-ogsc] .stat-value,
+        [data-ogsc] .detail-value,
+        [data-ogsc] .line-name,
+        [data-ogsc] .callout-title,
+        [data-ogsc] .intro strong {
+            color: #f5f7fb !important;
+        }
+        [data-ogsc] .hero-copy,
+        [data-ogsc] .body-copy,
+        [data-ogsc] .section-copy,
+        [data-ogsc] .intro,
+        [data-ogsc] .detail-label,
+        [data-ogsc] .detail-subvalue,
+        [data-ogsc] .line-meta,
+        [data-ogsc] .note-card p,
+        [data-ogsc] .note-card li,
+        [data-ogsc] .note-card div,
+        [data-ogsc] .fineprint,
+        [data-ogsc] .footer-note,
+        [data-ogsc] .section-kicker,
+        [data-ogsc] .eyebrow,
+        [data-ogsc] .stat-label,
+        [data-ogsc] .stat-copy {
+            color: #a9b8cb !important;
+        }
+        [data-ogsc] .pill,
+        [data-ogsc] .status-pill {
+            background: #172843 !important;
+            border-color: #2b4b78 !important;
+            color: #9fc2ff !important;
         }
     </style>
     @yield('extra-styles')
 </head>
 <body>
-    <div class="preheader">@yield('preheader', 'R/E Pro Photos update')</div>
+    <div class="preheader">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
     <div class="page">
         <div class="shell">
             <div class="card">
                 @hasSection('hero')
                     <div class="hero-card">
-                        <div class="hero-illustration" aria-hidden="true">
-                            <div class="hero-camera-top"></div>
-                            <div class="hero-camera-body"></div>
-                            <div class="hero-camera-lens"></div>
-                            <div class="hero-camera-lens-inner"></div>
-                            <div class="hero-camera-flash"></div>
-                            <div class="hero-camera-line hero-camera-line-one"></div>
-                            <div class="hero-camera-line hero-camera-line-two"></div>
-                            <div class="hero-camera-line hero-camera-line-three"></div>
-                        </div>
                         <div class="hero-brand">
                             <div class="hero-logo">
                                 <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos">
                             </div>
                             <div class="hero-brand-copy">
-                                <span>Email Update</span>
                                 R/E Pro Photos
                             </div>
                         </div>

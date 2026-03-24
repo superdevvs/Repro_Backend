@@ -15,7 +15,7 @@
         $recipientLabel = $recipientRole ?? 'photographer';
     @endphp
 
-    <p class="intro">Hello {{ $recipientModel->name }}, <strong>your weekly {{ $recipientLabel }} invoice has been generated.</strong></p>
+<p class="intro"><strong>Your weekly {{ $recipientLabel }} invoice has been generated.</strong></p>
 
     <div class="button-row">
         <a href="https://reprodashboard.com" class="button button-large">Review Weekly Invoice</a>

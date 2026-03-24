@@ -41,6 +41,9 @@ class TemplateRenderer
         $html = $this->normalizeLegacyUrls($html);
         $text = $this->normalizeLegacyUrls($text);
         $subject = $this->normalizeLegacyUrls($subject);
+        $html = $this->stripLeadingGreeting($html);
+        $html = $this->normalizeLegacySuccessColors($html);
+        $text = $this->stripLeadingGreetingFromText($text);
 
         if ($template->channel === 'EMAIL' && $html !== '') {
             $html = $this->wrapWithLayout($template, $html, $subject);
@@ -90,11 +93,9 @@ class TemplateRenderer
         $bodyHtml = $this->stripLegacyWrapper($bodyHtml);
 
         $logoUrl = 'https://api.reprodashboard.com/images/Repro%20HQ%20dark.png';
-        $heroEyebrow = $this->escapeHtml($this->resolveHeroEyebrow($template));
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? 'R/E Pro Photos Update'));
         $journeyHtml = $this->buildJourneyRail($template);
-        $heroIllustration = $this->buildHeroIllustration();
 
         return <<<HTML
 <!DOCTYPE html>
@@ -102,13 +103,17 @@ class TemplateRenderer
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="light">
-<meta name="supported-color-schemes" content="light">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
 <style>
+:root {
+  color-scheme: light dark;
+  supported-color-schemes: light dark;
+}
 body {
   margin: 0;
   padding: 0;
-  background: linear-gradient(180deg, #f7f9fc 0%, #eef3f8 100%);
+  background: #eef3f8;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   color: #10233b;
   -webkit-text-size-adjust: 100%;
@@ -177,7 +182,7 @@ a { color: #1463ff; text-decoration: none; }
   z-index: 2;
   margin: 0;
   max-width: 520px;
-  font-size: 56px;
+  font-size: 48px;
   line-height: 0.96;
   font-weight: 300;
   letter-spacing: -2.4px;
@@ -200,82 +205,6 @@ a { color: #1463ff; text-decoration: none; }
   color: #667a96;
   font-size: 15px;
   line-height: 1.8;
-}
-.hero-illustration {
-  position: absolute;
-  top: 36px;
-  right: 24px;
-  width: 240px;
-  height: 184px;
-  pointer-events: none;
-  opacity: 0.95;
-}
-.hero-camera-body,
-.hero-camera-top,
-.hero-camera-lens,
-.hero-camera-lens-inner,
-.hero-camera-flash,
-.hero-camera-line {
-  position: absolute;
-  border: 1.5px solid #e6edf7;
-  background: transparent;
-}
-.hero-camera-body {
-  left: 24px;
-  top: 62px;
-  width: 182px;
-  height: 102px;
-  border-radius: 28px;
-}
-.hero-camera-top {
-  left: 58px;
-  top: 40px;
-  width: 74px;
-  height: 32px;
-  border-bottom: 0;
-  border-radius: 16px 16px 0 0;
-}
-.hero-camera-lens {
-  left: 84px;
-  top: 78px;
-  width: 64px;
-  height: 64px;
-  border-radius: 999px;
-}
-.hero-camera-lens-inner {
-  left: 98px;
-  top: 92px;
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-}
-.hero-camera-flash {
-  left: 170px;
-  top: 84px;
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
-}
-.hero-camera-line-one {
-  left: 196px;
-  top: 44px;
-  width: 36px;
-  height: 0;
-  border-width: 1.5px 0 0 0;
-}
-.hero-camera-line-two {
-  left: 208px;
-  top: 60px;
-  width: 22px;
-  height: 0;
-  border-width: 1.5px 0 0 0;
-}
-.hero-camera-line-three {
-  left: 206px;
-  top: 74px;
-  width: 0;
-  height: 22px;
-  border-width: 0 0 0 1.5px;
 }
 .journey {
   position: relative;
@@ -507,7 +436,7 @@ a { color: #1463ff; text-decoration: none; }
   .hero-card { padding: 24px 22px !important; }
   .body-inner, .footer-card { padding-left: 20px !important; padding-right: 20px !important; }
   .hero-title {
-    font-size: 38px !important;
+    font-size: 32px !important;
     letter-spacing: -1.6px !important;
     max-width: none !important;
   }
@@ -516,58 +445,6 @@ a { color: #1463ff; text-decoration: none; }
     margin-bottom: 12px !important;
   }
   .hero-copy { max-width: none !important; }
-  .hero-illustration {
-    position: absolute !important;
-    width: 180px !important;
-    height: 138px !important;
-    right: -8px !important;
-    top: 24px !important;
-  }
-  .hero-camera-body {
-    left: 16px !important;
-    top: 48px !important;
-    width: 138px !important;
-    height: 78px !important;
-  }
-  .hero-camera-top {
-    left: 42px !important;
-    top: 30px !important;
-    width: 54px !important;
-    height: 24px !important;
-  }
-  .hero-camera-lens {
-    left: 60px !important;
-    top: 60px !important;
-    width: 50px !important;
-    height: 50px !important;
-  }
-  .hero-camera-lens-inner {
-    left: 72px !important;
-    top: 72px !important;
-    width: 26px !important;
-    height: 26px !important;
-  }
-  .hero-camera-flash {
-    left: 128px !important;
-    top: 66px !important;
-    width: 12px !important;
-    height: 12px !important;
-  }
-  .hero-camera-line-one {
-    left: 152px !important;
-    top: 34px !important;
-    width: 22px !important;
-  }
-  .hero-camera-line-two {
-    left: 158px !important;
-    top: 46px !important;
-    width: 14px !important;
-  }
-  .hero-camera-line-three {
-    left: 156px !important;
-    top: 58px !important;
-    height: 14px !important;
-  }
   .journey-bar {
     width: calc(25% - 7px) !important;
     margin-right: 9px !important;
@@ -583,19 +460,103 @@ a { color: #1463ff; text-decoration: none; }
     margin-bottom: 4px;
   }
 }
+@media (prefers-color-scheme: dark) {
+  body {
+    background: #0b1220 !important;
+    color: #d7e2f0 !important;
+  }
+  .hero-card,
+  .body-card,
+  .info-box,
+  .change-card,
+  .note {
+    background: #111c2e !important;
+    border-color: #24344d !important;
+    box-shadow: none !important;
+  }
+  .hero-title,
+  .body-inner h1,
+  .body-inner h2,
+  .body-inner h3,
+  .body-inner h4,
+  .body-inner strong,
+  .change-card-title {
+    color: #f5f7fb !important;
+  }
+  .hero-copy,
+  .body-inner p,
+  .body-inner li,
+  .body-inner div,
+  .body-inner td,
+  .body-inner span,
+  .hero-overline,
+  .info-label,
+  .footer-note {
+    color: #a9b8cb !important;
+  }
+  .body-inner hr,
+  .info-row {
+    border-color: #24344d !important;
+  }
+  .button,
+  .button-large {
+    box-shadow: none !important;
+  }
+  .footer-card,
+  .footer-meta-card {
+    box-shadow: none !important;
+  }
+  .footer-meta-card {
+    background: rgba(17, 28, 46, 0.72) !important;
+    border-color: rgba(83, 110, 150, 0.45) !important;
+  }
+}
+[data-ogsc] body,
+[data-ogsc] .page {
+  background: #0b1220 !important;
+  color: #d7e2f0 !important;
+}
+[data-ogsc] .hero-card,
+[data-ogsc] .body-card,
+[data-ogsc] .info-box,
+[data-ogsc] .change-card,
+[data-ogsc] .note {
+  background: #111c2e !important;
+  border-color: #24344d !important;
+  box-shadow: none !important;
+}
+[data-ogsc] .hero-title,
+[data-ogsc] .body-inner h1,
+[data-ogsc] .body-inner h2,
+[data-ogsc] .body-inner h3,
+[data-ogsc] .body-inner h4,
+[data-ogsc] .body-inner strong,
+[data-ogsc] .change-card-title {
+  color: #f5f7fb !important;
+}
+[data-ogsc] .hero-copy,
+[data-ogsc] .body-inner p,
+[data-ogsc] .body-inner li,
+[data-ogsc] .body-inner div,
+[data-ogsc] .body-inner td,
+[data-ogsc] .body-inner span,
+[data-ogsc] .hero-overline,
+[data-ogsc] .info-label,
+[data-ogsc] .footer-note {
+  color: #a9b8cb !important;
+}
 </style>
 </head>
 <body>
+<div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all;">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 <div class="page">
   <div class="shell">
     <div class="hero-card">
-      {$heroIllustration}
       <div class="brand-row">
         <div class="brand-logo">
           <img src="{$logoUrl}" alt="R/E Pro Photos">
         </div>
         <div class="brand-copy">
-          <span>{$heroEyebrow}</span>
           R/E Pro Photos
         </div>
       </div>
@@ -648,16 +609,23 @@ a { color: #1463ff; text-decoration: none; }
 HTML;
     }
 
-    protected function resolveHeroEyebrow(MessageTemplate $template): string
+    protected function stripLeadingGreeting(string $bodyHtml): string
     {
-        return match ($template->category) {
-            'ACCOUNT' => 'Account update',
-            'BOOKING' => 'Booking update',
-            'REMINDER' => 'Reminder',
-            'PAYMENT' => 'Payment update',
-            'INVOICE' => 'Invoice update',
-            default => 'Workflow update',
-        };
+        return preg_replace('/^\s*<p>\s*(hi|hello)\b.*?<\/p>\s*/is', '', $bodyHtml) ?? $bodyHtml;
+    }
+
+    protected function stripLeadingGreetingFromText(string $text): string
+    {
+        return preg_replace('/^\s*(hi|hello)\b[^\r\n]*[\r\n]+/i', '', $text) ?? $text;
+    }
+
+    protected function normalizeLegacySuccessColors(string $bodyHtml): string
+    {
+        return str_ireplace(
+            ['#22c55e', '#16a34a', '#15803d', '#f0fdf4', '#dcfce7'],
+            ['#1463ff', '#1463ff', '#295391', '#eff6ff', '#dbeafe'],
+            $bodyHtml
+        );
     }
 
     protected function resolveHeroCopy(MessageTemplate $template): string
@@ -722,22 +690,6 @@ HTML;
             '<span class="hero-title-primary">%s</span>',
             $this->escapeHtml($subject)
         );
-    }
-
-    protected function buildHeroIllustration(): string
-    {
-        return <<<'HTML'
-<div class="hero-illustration" aria-hidden="true">
-  <div class="hero-camera-top"></div>
-  <div class="hero-camera-body"></div>
-  <div class="hero-camera-lens"></div>
-  <div class="hero-camera-lens-inner"></div>
-  <div class="hero-camera-flash"></div>
-  <div class="hero-camera-line hero-camera-line-one"></div>
-  <div class="hero-camera-line hero-camera-line-two"></div>
-  <div class="hero-camera-line hero-camera-line-three"></div>
-</div>
-HTML;
     }
 
     protected function buildJourneyRail(MessageTemplate $template): string

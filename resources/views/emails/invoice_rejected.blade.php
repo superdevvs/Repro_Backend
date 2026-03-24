@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hello {{ $photographer->name }}, <strong>your invoice for {{ $period }} was rejected.</strong></p>
+<p class="intro"><strong>Your invoice for {{ $period }} was rejected.</strong></p>
 
     <div class="section-card">
         <div class="section-pad">

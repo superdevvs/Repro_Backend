@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>thank you for accepting the terms and conditions.</strong></p>
+<p class="intro"><strong>Thank you for accepting the terms and conditions.</strong></p>
 
     <table class="stats-row" role="presentation">
         <tr>

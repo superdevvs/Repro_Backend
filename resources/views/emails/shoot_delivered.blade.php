@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>your finished photos are now delivered and ready for download.</strong></p>
+<p class="intro"><strong>Your finished photos are now delivered and ready for download.</strong></p>
 
     <div class="button-row">
         <a href="{{ $shoot->dashboard_url }}" class="button button-large">Open Deliverables</a>

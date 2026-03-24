@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>this shoot has been cancelled.</strong></p>
+<p class="intro"><strong>This shoot has been cancelled.</strong></p>
 
     <div class="callout callout-danger">
         <div class="callout-title">What happens next</div>

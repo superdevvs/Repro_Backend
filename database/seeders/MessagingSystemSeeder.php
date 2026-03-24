@@ -587,7 +587,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REQUESTED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'photographer'],
+                'recipients_json' => ['client'],
             ],
             [
                 'name' => 'Shoot Request Approved',
@@ -595,7 +595,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REQUEST_APPROVED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'photographer'],
+                'recipients_json' => ['client'],
             ],
             [
                 'name' => 'Shoot Request Declined',
@@ -603,7 +603,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_REQUEST_DECLINED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'photographer'],
+                'recipients_json' => ['client'],
             ],
             [
                 'name' => 'Shoot Updated Notification',
@@ -858,7 +858,7 @@ class MessagingSystemSeeder extends Seeder
         $content = '
             <p>[greeting]!</p>
             
-            <p>One of your requested photo shoots has been <strong style="color: #22c55e;">APPROVED</strong> and scheduled under your account! You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
+            <p>One of your requested photo shoots has been <strong style="color: #1463ff;">APPROVED</strong> and scheduled under your account! You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
             
             <div class="info-box">
                 <p style="margin-top: 0;"><strong>Here is a summary of the shoot that was scheduled:</strong></p>
@@ -913,7 +913,7 @@ class MessagingSystemSeeder extends Seeder
         $content = '
             <p>[greeting]!</p>
             
-            <p>One of your requested photo shoots has been <strong style="color: #22c55e;">APPROVED</strong> and scheduled under your account! You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
+            <p>One of your requested photo shoots has been <strong style="color: #1463ff;">APPROVED</strong> and scheduled under your account! You can find the shoot listed under <strong>Scheduled Shoots</strong> after logging into <a href="[portal_url]">[portal_url]</a></p>
             
             <div class="note">
                 <strong>NOTE:</strong> Please review the below shoot information carefully as some details may have changed since your request.
@@ -1263,7 +1263,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you for paying for your photo shoot!</p>
             
-            <div class="info-box" style="background-color: #f0fdf4; border-left-color: #22c55e;">
+            <div class="info-box" style="background-color: #eff6ff; border-left-color: #1463ff;">
                 <div class="info-row">
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
@@ -1271,7 +1271,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Payment Date:</span> [current_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Payment Amount:</span> <strong style="font-size: 18px; color: #22c55e;">[payment_amount]</strong>
+                <span class="info-label">Payment Amount:</span> <strong style="font-size: 18px; color: #1463ff;">[payment_amount]</strong>
                 </div>
                 <div class="info-row">
                     <span class="info-label">Services:</span><br>[services_provided_html]

@@ -116,7 +116,7 @@ class BookingTools
                     
                     // Send email notification
                     $client = User::find($userId);
-                    if ($client) {
+                    if ($client && !$this->automationService->hasActiveTrigger('SHOOT_BOOKED')) {
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
                         $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
                     }

@@ -2026,7 +2026,7 @@ class ShootController extends Controller
                     try {
                         $shoot->loadMissing(['client', 'photographer', 'services']);
                         $client = $shoot->client;
-                        if ($client) {
+                        if ($client && !$automationService->hasActiveTrigger('SHOOT_BOOKED')) {
                             $paymentLink = $mailService->generatePaymentLink($shoot);
                             $mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
                         }
@@ -2410,12 +2410,16 @@ class ShootController extends Controller
                 $this->automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $context);
             }
 
-            if ($shoot->client) {
+            if ($shoot->client && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')) {
                 $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $shootChangeSummary['summary']);
             }
 
-            // Send notification to photographer when assigned
-            if ($shoot->photographer) {
+            // Send legacy photographer notification only when assignment automation is not active.
+            if (
+                $shoot->photographer
+                && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')
+                && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
+            ) {
                 $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
             }
 
@@ -2525,12 +2529,16 @@ class ShootController extends Controller
             $this->automationService->handleEvent('SHOOT_BOOKED', $context);
             $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
 
-            if ($shoot->client) {
+            if ($shoot->client && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')) {
                 $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $shootChangeSummary['summary']);
             }
 
-            // Send notification to photographer when shoot is approved/scheduled
-            if ($shoot->photographer) {
+            // Send legacy photographer notification only when assignment automation is not active.
+            if (
+                $shoot->photographer
+                && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')
+                && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
+            ) {
                 $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
             }
 
@@ -2982,7 +2990,7 @@ class ShootController extends Controller
 
             // Send shoot updated email to client and photographer
             try {
-                if ($client) {
+                if ($client && !$automationService->hasActiveTrigger('SHOOT_UPDATED')) {
                     $mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary, $notifyClient, $notifyPhotographer);
                 }
             } catch (\Exception $e) {
@@ -2993,7 +3001,11 @@ class ShootController extends Controller
             }
 
             // Send booking email to newly assigned photographer (first assignment)
-            if ($photographerNewlyAssigned && $shoot->photographer) {
+            if (
+                $photographerNewlyAssigned
+                && $shoot->photographer
+                && !$automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
+            ) {
                 try {
                     $paymentLink = $mailService->generatePaymentLink($shoot);
                     $mailService->sendShootScheduledEmail($shoot->photographer, $shoot, $paymentLink ?? '');
@@ -3523,8 +3535,18 @@ class ShootController extends Controller
 
     public function setCoverMedia(Shoot $shoot, ShootFile $file)
     {
+        $user = auth()->user();
+
         $this->authorizeFile($shoot, $file);
-        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer', 'editor', 'client']);
+        $this->authorizeClientShootAccess($shoot, $user);
+
+        if ($this->isClientUser($user) && !$this->isClientHeroEligibleFile($file)) {
+            abort(422, 'Clients can only set hero images from visible edited photo media.');
+        }
+
+        $existingCoverId = $shoot->files()->where('is_cover', true)->value('id');
+        $previousHeroImage = $shoot->hero_image;
 
         $shoot->files()->where('is_cover', true)->update(['is_cover' => false]);
         $file->is_cover = true;
@@ -3535,6 +3557,22 @@ class ShootController extends Controller
         $heroImageUrl = $this->resolveOptimizedFileUrl($freshFile);
         $shoot->hero_image = $heroImageUrl;
         $shoot->save();
+
+        $this->clearShootFilesCache($shoot, $user);
+
+        if ((string) $existingCoverId !== (string) $freshFile->id || $previousHeroImage !== $heroImageUrl) {
+            $this->activityLogger->log(
+                $shoot,
+                'hero_image_updated',
+                [
+                    'by' => $user?->name,
+                    'actor_role' => $user?->role,
+                    'file_id' => $freshFile->id,
+                    'filename' => $freshFile->filename,
+                ],
+                $user
+            );
+        }
 
         return response()->json([
             'message' => 'Cover updated',
@@ -3921,6 +3959,121 @@ class ShootController extends Controller
         if ($file->shoot_id !== $shoot->id) {
             abort(404, 'File does not belong to this shoot');
         }
+    }
+
+    protected function isClientUser(?User $user): bool
+    {
+        return strtolower((string) ($user?->role ?? '')) === 'client';
+    }
+
+    protected function authorizeClientShootAccess(Shoot $shoot, ?User $user = null): void
+    {
+        $user = $user ?? auth()->user();
+
+        if (!$this->isClientUser($user)) {
+            return;
+        }
+
+        if ((string) $shoot->client_id !== (string) $user?->id) {
+            abort(403, 'Forbidden');
+        }
+    }
+
+    protected function isRawCameraFile(ShootFile $file): bool
+    {
+        $rawExtensions = [
+            'raw', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2',
+            'orf', 'pef', 'srw', '3fr', 'fff', 'iiq', 'rwl', 'x3f',
+        ];
+        $rawMimeFragments = [
+            'canon-raw', 'canon-cr2', 'canon-cr3', 'nikon-nef', 'sony-arw',
+            'adobe-dng', 'phaseone-iiq', 'raw',
+        ];
+
+        $nameCandidates = [
+            strtolower((string) $file->filename),
+            strtolower((string) $file->stored_filename),
+        ];
+
+        foreach ($nameCandidates as $name) {
+            foreach ($rawExtensions as $extension) {
+                if ($name !== '' && Str::endsWith($name, '.' . $extension)) {
+                    return true;
+                }
+            }
+        }
+
+        if (($file->media_type ?? null) === 'raw') {
+            return true;
+        }
+
+        $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        foreach ($rawMimeFragments as $fragment) {
+            if ($mime !== '' && Str::contains($mime, $fragment)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function isImageMediaFile(ShootFile $file): bool
+    {
+        $name = strtolower((string) $file->filename);
+        $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+
+        if ($mime !== '' && Str::startsWith($mime, 'image/')) {
+            return true;
+        }
+
+        return (bool) preg_match('/\.(jpg|jpeg|png|gif|webp|tiff|tif|heic|heif)$/', $name);
+    }
+
+    protected function isVideoMediaFile(ShootFile $file): bool
+    {
+        if (($file->media_type ?? null) === 'video') {
+            return true;
+        }
+
+        $name = strtolower((string) $file->filename);
+        $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+
+        if ($mime !== '' && Str::startsWith($mime, 'video/')) {
+            return true;
+        }
+
+        return (bool) preg_match('/\.(mp4|mov|avi|mkv|wmv|webm)$/', $name);
+    }
+
+    protected function isClientManageableEditedFile(ShootFile $file): bool
+    {
+        if ($file->is_hidden) {
+            return false;
+        }
+
+        if (!in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)) {
+            return false;
+        }
+
+        return !$this->isRawCameraFile($file);
+    }
+
+    protected function isClientHeroEligibleFile(ShootFile $file): bool
+    {
+        if (!$this->isClientManageableEditedFile($file)) {
+            return false;
+        }
+
+        $mediaType = strtolower((string) ($file->media_type ?? ''));
+        if (in_array($mediaType, ['extra', 'floorplan'], true)) {
+            return false;
+        }
+
+        if ($this->isVideoMediaFile($file)) {
+            return false;
+        }
+
+        return $this->isImageMediaFile($file);
     }
 
     protected function authorizeRole(array $roles): void
@@ -5909,43 +6062,6 @@ class ShootController extends Controller
             });
         }
 
-        $isRawCameraFile = function (ShootFile $file): bool {
-            $rawExtensions = [
-                'raw', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2',
-                'orf', 'pef', 'srw', '3fr', 'fff', 'iiq', 'rwl', 'x3f',
-            ];
-            $rawMimeFragments = [
-                'canon-raw', 'canon-cr2', 'canon-cr3', 'nikon-nef', 'sony-arw',
-                'adobe-dng', 'phaseone-iiq', 'raw',
-            ];
-
-            $nameCandidates = [
-                strtolower((string) $file->filename),
-                strtolower((string) $file->stored_filename),
-            ];
-
-            foreach ($nameCandidates as $name) {
-                foreach ($rawExtensions as $extension) {
-                    if ($name !== '' && Str::endsWith($name, '.' . $extension)) {
-                        return true;
-                    }
-                }
-            }
-
-            if (($file->media_type ?? null) === 'raw') {
-                return true;
-            }
-
-            $mime = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
-            foreach ($rawMimeFragments as $fragment) {
-                if ($mime !== '' && Str::contains($mime, $fragment)) {
-                    return true;
-                }
-            }
-
-            return false;
-        };
-
         if ($type === 'raw') {
             // RAW uploads live in the TODO stage (older data may have null workflow_stage)
             $filesQuery->where(function ($q) {
@@ -5960,7 +6076,7 @@ class ShootController extends Controller
         $files = $filesQuery->get();
 
         if ($type === 'edited') {
-            $files = $files->reject($isRawCameraFile)->values();
+            $files = $files->reject(fn (ShootFile $file) => $this->isRawCameraFile($file))->values();
         }
         
         Log::debug('getFiles query result', [
@@ -6544,8 +6660,10 @@ class ShootController extends Controller
         $user = $request->user();
         $role = strtolower($user->role ?? '');
 
-        // Only admin, superadmin, editing_manager, and salesRep can view activity logs
-        if (!in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'])) {
+        $this->authorizeClientShootAccess($shoot, $user);
+
+        // Only admin, superadmin, editing_manager, salesRep, and the owning client can view activity logs
+        if (!in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'client'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -7529,12 +7647,29 @@ class ShootController extends Controller
      */
     public function reorderFiles(Request $request, Shoot $shoot)
     {
+        $user = $request->user();
+
         $request->validate([
             'file_ids' => 'required|array|min:1',
             'file_ids.*' => 'integer',
         ]);
 
+        $this->authorizeRole(['admin', 'superadmin', 'editing_manager', 'photographer', 'editor', 'client']);
+        $this->authorizeClientShootAccess($shoot, $user);
+
         $fileIds = $request->input('file_ids');
+
+        if ($this->isClientUser($user)) {
+            $manageableCount = $shoot->files()
+                ->whereIn('id', $fileIds)
+                ->get()
+                ->filter(fn (ShootFile $file) => $this->isClientManageableEditedFile($file))
+                ->count();
+
+            if ($manageableCount !== count(array_unique($fileIds))) {
+                abort(422, 'Clients can only reorder visible edited media from their own shoot.');
+            }
+        }
 
         DB::transaction(function () use ($shoot, $fileIds) {
             foreach ($fileIds as $index => $fileId) {
@@ -7544,7 +7679,7 @@ class ShootController extends Controller
             }
         });
 
-        $this->clearShootFilesCache($shoot);
+        $this->clearShootFilesCache($shoot, $user);
 
         return response()->json([
             'message' => 'File order saved',

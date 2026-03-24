@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>welcome to the R/E Pro Photos dashboard.</strong></p>
+<p class="intro"><strong>Welcome to the R/E Pro Photos dashboard.</strong></p>
 
     <div class="button-row">
         <a href="{{ $resetLink }}" class="button">Create Password</a>

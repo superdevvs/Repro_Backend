@@ -14,7 +14,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}{{ !empty($isPhotographer) ? '' : ',' }}<strong>{{ !empty($isPhotographer) ? ' your upcoming assignment is ready.' : ' thanks for scheduling with us.' }}</strong></p>
+<p class="intro"><strong>{{ !empty($isPhotographer) ? 'Your upcoming assignment is ready.' : 'Thanks for scheduling with us.' }}</strong></p>
 
     <div class="button-row">
         <a href="{{ $shoot->dashboard_url }}" class="button">{{ !empty($isPhotographer) ? 'Open Dashboard' : 'View Shoot' }}</a>

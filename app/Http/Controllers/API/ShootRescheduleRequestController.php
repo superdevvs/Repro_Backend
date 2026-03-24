@@ -127,7 +127,7 @@ class ShootRescheduleRequestController extends Controller
         $automationService->handleEvent('SHOOT_SCHEDULED', $context);
         $automationService->handleEvent('SHOOT_UPDATED', $context);
 
-        if ($shoot->client) {
+        if ($shoot->client && !$automationService->hasActiveTrigger('SHOOT_UPDATED')) {
             $mailService->sendShootUpdatedEmail($shoot->client, $shoot, $changesSummary);
         }
         

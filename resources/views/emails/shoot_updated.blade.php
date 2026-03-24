@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>please review the latest shoot details below.</strong></p>
+<p class="intro"><strong>Please review the latest shoot details below.</strong></p>
 
     <div class="button-row">
         <a href="{{ $shoot->dashboard_url }}" class="button">Review in Dashboard</a>

@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hello {{ $admin->name }}, <strong>there is an invoice waiting for your decision.</strong></p>
+<p class="intro"><strong>There is an invoice waiting for your decision.</strong></p>
 
     <div class="section-card">
         <div class="section-pad">

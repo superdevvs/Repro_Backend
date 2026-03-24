@@ -61,9 +61,12 @@ class ShootPaidEmailViewTest extends TestCase
         $this->assertStringContainsString('max-width:680px', $html);
         $this->assertStringContainsString('display:inline-block; padding:14px 24px;', $html);
         $this->assertStringContainsString('border:1px solid #dbe6f3; border-radius:22px;', $html);
+        $this->assertStringContainsString('content="light dark"', $html);
+        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
+        $this->assertStringContainsString('@media only screen and (max-width: 640px)', $html);
 
-        $this->assertStringNotContainsString('<style>', $html);
         $this->assertStringNotContainsString('hero-card', $html);
         $this->assertStringNotContainsString('section-card', $html);
+        $this->assertStringNotContainsString('@extends(', $html);
     }
 }

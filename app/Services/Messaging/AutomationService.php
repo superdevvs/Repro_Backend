@@ -186,6 +186,10 @@ class AutomationService
         $recipients = [];
         $recipientTypes = $rule->recipients_json ?? [];
 
+        if (in_array($rule->trigger_type, ['SHOOT_REQUESTED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_DECLINED'], true)) {
+            $recipientTypes = array_values(array_filter($recipientTypes, fn ($type) => $type === 'client'));
+        }
+
         foreach ($recipientTypes as $type) {
             switch ($type) {
                 case 'client':

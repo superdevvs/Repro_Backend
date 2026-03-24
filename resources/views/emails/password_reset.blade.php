@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hi {{ $user->first_name }}, <strong>your reset link is ready.</strong></p>
+<p class="intro"><strong>Your reset link is ready.</strong></p>
 
     <div class="button-row">
         <a href="{!! $resetLink !!}" class="button">Reset Password</a>

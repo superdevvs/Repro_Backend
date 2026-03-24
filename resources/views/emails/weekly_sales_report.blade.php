@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hello {{ $salesRep->name }}, <strong>here is your weekly sales report.</strong></p>
+<p class="intro"><strong>Here is your weekly sales report.</strong></p>
 
     <div class="button-row">
         <a href="https://reprodashboard.com" class="button">Open Dashboard</a>

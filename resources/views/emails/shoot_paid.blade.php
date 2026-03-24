@@ -1,5 +1,4 @@
 @php
-    $greetingName = trim((string) ($user->first_name ?? $user->name ?? 'there'));
     $supportEmail = $shoot->support_email ?? 'contact@reprophotos.com';
     $supportPhone = $shoot->support_phone ?? '202-868-1663';
     $dashboardUrl = $shoot->dashboard_url ?? 'https://reprodashboard.com';
@@ -16,31 +15,93 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="light">
-    <meta name="supported-color-schemes" content="light">
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
     <title>Your Shoot Has Been Marked as Paid</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            supported-color-schemes: light dark;
+        }
+        @media only screen and (max-width: 640px) {
+            .email-shell {
+                width: 100% !important;
+            }
+            .email-card-cell {
+                padding: 24px !important;
+            }
+            .email-heading {
+                font-size: 27px !important;
+                line-height: 1.15 !important;
+            }
+        }
+        @media (prefers-color-scheme: dark) {
+            body,
+            .email-bg {
+                background-color: #0b1220 !important;
+            }
+            .email-card {
+                background-color: #111c2e !important;
+                border-color: #24344d !important;
+            }
+            .email-heading,
+            .email-strong,
+            .email-card strong {
+                color: #f5f7fb !important;
+            }
+            .email-copy,
+            .email-muted,
+            .email-card td,
+            .email-card div,
+            .email-card li {
+                color: #a9b8cb !important;
+            }
+            .email-footer-card {
+                background-color: #102847 !important;
+            }
+        }
+        [data-ogsc] body,
+        [data-ogsc] .email-bg {
+            background-color: #0b1220 !important;
+        }
+        [data-ogsc] .email-card {
+            background-color: #111c2e !important;
+            border-color: #24344d !important;
+        }
+        [data-ogsc] .email-heading,
+        [data-ogsc] .email-strong,
+        [data-ogsc] .email-card strong {
+            color: #f5f7fb !important;
+        }
+        [data-ogsc] .email-copy,
+        [data-ogsc] .email-muted,
+        [data-ogsc] .email-card td,
+        [data-ogsc] .email-card div,
+        [data-ogsc] .email-card li {
+            color: #a9b8cb !important;
+        }
+    </style>
 </head>
 <body style="margin:0; padding:0; background-color:#eef3f8; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color:#10233b;">
     <div style="display:none; max-height:0; overflow:hidden; opacity:0; mso-hide:all; color:transparent;">
-        This shoot has now been marked paid.
+        &zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;
     </div>
 
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse; background-color:#eef3f8;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-bg" style="width:100%; border-collapse:collapse; background-color:#eef3f8;">
         <tr>
             <td align="center" style="padding:24px 12px;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; max-width:680px; border-collapse:collapse; margin:0 auto;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-shell" style="width:100%; max-width:680px; border-collapse:collapse; margin:0 auto;">
                     <tr>
                         <td style="padding-bottom:16px;">
-                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; background-color:#ffffff; border:1px solid #dbe6f3; border-radius:28px;">
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; background-color:#ffffff; border:1px solid #dbe6f3; border-radius:28px;">
                                 <tr>
-                                    <td style="padding:32px;">
+                                    <td class="email-card-cell" style="padding:32px;">
                                         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
                                             <tr>
                                                 <td valign="top">
                                                     <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos" width="154" style="display:block; width:154px; max-width:154px; height:auto; border:0;">
                                                 </td>
                                                 <td valign="top" align="right" style="padding-left:16px; color:#6f86a4; font-size:13px; line-height:1.5; font-weight:700;">
-                                                    <div style="font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:#7f90a7;">Email Update</div>
                                                     <div style="font-size:16px; line-height:1.4; color:#1d2940; font-weight:800;">R/E Pro Photos</div>
                                                 </td>
                                             </tr>
@@ -49,10 +110,10 @@
                                         <div style="margin-top:24px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">
                                             Paid in Full
                                         </div>
-                                        <div style="margin-top:12px; font-size:40px; line-height:1.08; letter-spacing:-1.6px; color:#10192f; font-weight:300;">
+                                        <div class="email-heading" style="margin-top:12px; font-size:34px; line-height:1.08; letter-spacing:-1.6px; color:#10192f; font-weight:300;">
                                             This shoot has been marked as paid.
                                         </div>
-                                        <div style="margin-top:16px; font-size:15px; line-height:1.8; color:#667a96;">
+                                        <div class="email-copy" style="margin-top:16px; font-size:15px; line-height:1.8; color:#667a96;">
                                             Your account now reflects a paid status for the appointment below, and any delivery access tied to payment can proceed normally.
                                         </div>
                                     </td>
@@ -63,14 +124,14 @@
 
                     <tr>
                         <td>
-                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; background-color:#ffffff; border:1px solid #dbe6f3; border-radius:28px;">
+                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; background-color:#ffffff; border:1px solid #dbe6f3; border-radius:28px;">
                                 <tr>
-                                    <td style="padding:32px;">
-                                        <div style="font-size:16px; line-height:1.75; color:#2d4769; margin:0 0 18px 0;">
-                                            Hi {{ $greetingName }}, <strong style="color:#071223;">good news: this shoot is now marked paid.</strong>
+                                    <td class="email-card-cell" style="padding:32px;">
+                                        <div class="email-copy" style="font-size:16px; line-height:1.75; color:#2d4769; margin:0 0 18px 0;">
+                                            <strong class="email-strong" style="color:#071223;">Good news:</strong> this shoot is now marked paid.
                                         </div>
 
-                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
+                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
                                             <tr>
                                                 <td style="padding:20px 22px;">
                                                     <div style="font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Payment Update</div>
@@ -97,7 +158,7 @@
                                             </tr>
                                         </table>
 
-                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
+                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
                                             <tr>
                                                 <td style="padding:20px 22px;">
                                                     <div style="font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Shoot Overview</div>
@@ -122,7 +183,7 @@
                                         </table>
 
                                         @if(!empty($propertyHighlights))
-                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
                                                 <tr>
                                                     <td style="padding:20px 22px;">
                                                         <div style="font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Property</div>
@@ -140,7 +201,7 @@
                                         @endif
 
                                         @if(!empty($services))
-                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
                                                 <tr>
                                                     <td style="padding:20px 22px;">
                                                         <div style="font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Services</div>
@@ -185,7 +246,7 @@
                                         @endif
 
                                         @if(!empty($accessDetails))
-                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; border:1px solid #dbe6f3; border-radius:22px; background-color:#ffffff; margin:0 0 18px 0;">
                                                 <tr>
                                                     <td style="padding:20px 22px;">
                                                         <div style="font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Access</div>
@@ -203,7 +264,7 @@
                                         @endif
 
                                         @if(!empty($notesLines))
-                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; border:1px solid #dbe7f8; border-radius:18px; background-color:#f8fbff; margin:0 0 18px 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-card" style="width:100%; border-collapse:separate; border:1px solid #dbe7f8; border-radius:18px; background-color:#f8fbff; margin:0 0 18px 0;">
                                                 <tr>
                                                     <td style="padding:18px;">
                                                         <div style="font-size:13px; line-height:1.5; letter-spacing:1.3px; text-transform:uppercase; color:#60799a; font-weight:800;">Client-facing notes</div>
@@ -220,7 +281,7 @@
                                 </tr>
                                 <tr>
                                     <td style="padding:0 32px 32px 32px;">
-                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:separate; background-color:#102847; border-radius:26px;">
+                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="email-footer-card" style="width:100%; border-collapse:separate; background-color:#102847; border-radius:26px;">
                                             <tr>
                                                 <td style="padding:24px 26px;">
                                                     <div style="color:#ffffff; font-size:18px; line-height:1.5; font-weight:800;">Need help with a shoot, invoice, or account question?</div>

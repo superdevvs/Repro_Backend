@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hello {{ $client->name }}, <strong>a cancellation fee has been added to your account.</strong></p>
+<p class="intro"><strong>A cancellation fee has been added to your account.</strong></p>
 
     <table class="stats-row" role="presentation">
         <tr>

@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hello {{ $client->name }}, <strong>a new contact form submission just came in.</strong></p>
+<p class="intro"><strong>A new contact form submission just came in.</strong></p>
 
     <div class="section-card">
         <div class="section-pad">

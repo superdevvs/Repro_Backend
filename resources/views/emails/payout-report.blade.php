@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">{{ $recipientName }}, <strong>here is your payout recap.</strong></p>
+<p class="intro"><strong>Here is your payout recap.</strong></p>
 
     <div class="button-row">
         <a href="https://reprodashboard.com" class="button">Open Dashboard</a>

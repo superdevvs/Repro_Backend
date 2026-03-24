@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-    <p class="intro">Hello {{ $submission->sender_name }}, <strong>we have your message on file.</strong></p>
+<p class="intro"><strong>We have your message on file.</strong></p>
 
     <div class="section-card">
         <div class="section-pad">
