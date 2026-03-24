@@ -3,6 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\Admin\PermissionController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceGroupController;
@@ -44,6 +45,8 @@ use App\Http\Controllers\StripePaymentController;
 Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
+
+Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
 Route::get('/ping', function () {
     return response()->json([
@@ -291,6 +294,8 @@ Route::middleware('auth:sanctum')->get('/debug/user-role', function (Request $re
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users', [UserController::class, 'index']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/admin/permissions', [PermissionController::class, 'index']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permissions', [PermissionController::class, 'update']);
 
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
