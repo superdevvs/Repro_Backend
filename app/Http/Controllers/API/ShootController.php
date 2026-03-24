@@ -444,9 +444,11 @@ class ShootController extends Controller
             $this->workflowService->cancel($shoot, $user, $validated['reason'] ?? 'Cancelled by admin');
 
             // Send notification to client if requested
-            if (!empty($validated['notify_client']) && $shoot->client && $shoot->client->email) {
+            $systemEmailAlreadySent = false;
+            if ($shoot->client && $shoot->client->email) {
                 try {
                     $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
+                    $systemEmailAlreadySent = true;
                 } catch (\Throwable $e) {
                     \Log::warning('Failed to send cancellation email: ' . $e->getMessage());
                 }
@@ -457,6 +459,7 @@ class ShootController extends Controller
                 $this->automationService->handleEvent('SHOOT_CANCELED', [
                     'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
                     'user' => $user,
+                    'system_email_already_sent' => $systemEmailAlreadySent,
                 ]);
             } catch (\Exception $e) {
                 \Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
@@ -542,11 +545,22 @@ class ShootController extends Controller
             $shoot->cancellation_requested_by = null;
             $shoot->save();
 
+            $systemEmailAlreadySent = false;
+            if ($shoot->client && $shoot->client->email) {
+                try {
+                    $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
+                    $systemEmailAlreadySent = true;
+                } catch (\Throwable $e) {
+                    \Log::warning('Failed to send cancellation email: ' . $e->getMessage());
+                }
+            }
+
             // Trigger automation
             try {
                 $this->automationService->handleEvent('SHOOT_CANCELED', [
                     'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
                     'user' => $user,
+                    'system_email_already_sent' => $systemEmailAlreadySent,
                 ]);
             } catch (\Exception $e) {
                 \Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
@@ -698,6 +712,35 @@ class ShootController extends Controller
         try {
             $this->workflowService->markCompleted($shoot, $user);
 
+            $systemEmailAlreadySent = false;
+            $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
+
+            if ($shoot->client && $shoot->client->email) {
+                try {
+                    $this->mailService->sendShootReadyEmail($shoot->client, $shoot);
+                    $systemEmailAlreadySent = true;
+                } catch (\Throwable $e) {
+                    Log::warning('Failed to send completion email', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            try {
+                $context = $this->automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $context['system_email_already_sent'] = $systemEmailAlreadySent;
+                $this->automationService->handleEvent('SHOOT_COMPLETED', $context);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to trigger completion automation', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return response()->json([
                 'message' => 'Shoot has been completed and delivered.',
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services']))
@@ -727,12 +770,25 @@ class ShootController extends Controller
             $this->workflowService->decline($shoot, $user, $validated['reason'] ?? null);
 
             // Send notification to client (reuse removed email template)
+            $systemEmailAlreadySent = false;
             if ($shoot->client && $shoot->client->email) {
                 try {
                     $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
+                    $systemEmailAlreadySent = true;
                 } catch (\Throwable $e) {
                     \Log::warning('Failed to send decline email: ' . $e->getMessage());
                 }
+            }
+
+            // Trigger automation
+            try {
+                $this->automationService->handleEvent('SHOOT_CANCELED', [
+                    'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
+                    'user' => $user,
+                    'system_email_already_sent' => $systemEmailAlreadySent,
+                ]);
+            } catch (\Exception $e) {
+                \Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
             }
 
             return response()->json([
@@ -2316,9 +2372,6 @@ class ShootController extends Controller
         }
     }
 
-    /**
-     * Calculate expected raw count from final count and bracket mode
-     */
     protected function calculateExpectedRawCount(?int $expectedFinal, ?int $bracketMode): int
     {
         if ($expectedFinal && $bracketMode) {
@@ -2333,7 +2386,6 @@ class ShootController extends Controller
      */
     public function schedule(UpdateShootStatusRequest $request, Shoot $shoot)
     {
-        $validated = $request->validated();
         $user = $request->user();
         $originalPhotographerId = $shoot->photographer_id;
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
@@ -2953,7 +3005,7 @@ class ShootController extends Controller
             }
         }
 
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
+        $shoot->loadMissing(['client', 'rep', 'photographer', 'service', 'services']);
         $shootChangeSummary = $this->mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
         $changesSummary = $shootChangeSummary['summary'];
         $changesHtml = $shootChangeSummary['html'];
@@ -3004,6 +3056,7 @@ class ShootController extends Controller
             if (
                 $photographerNewlyAssigned
                 && $shoot->photographer
+                && !$automationService->hasActiveTrigger('SHOOT_UPDATED')
                 && !$automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
             ) {
                 try {
@@ -3019,6 +3072,7 @@ class ShootController extends Controller
             }
 
             // Send cancellation/removal email if status changed to cancelled/declined
+            $systemEmailAlreadySent = false;
             if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
                 if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
                     || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
@@ -3026,9 +3080,25 @@ class ShootController extends Controller
                         $removedRecipient = $client ?? User::find($shoot->client_id);
                         if ($removedRecipient) {
                             $mailService->sendShootRemovedEmail($removedRecipient, $shoot);
+                            $systemEmailAlreadySent = true;
                         }
                     } catch (\Exception $e) {
                         \Log::error('Failed to send shoot removed email', [
+                            'shoot_id' => $shoot->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
+                if ($shoot->status === Shoot::STATUS_DELIVERED || $shoot->workflow_status === Shoot::STATUS_DELIVERED) {
+                    try {
+                        $deliveredRecipient = $client ?? User::find($shoot->client_id);
+                        if ($deliveredRecipient) {
+                            $mailService->sendShootReadyEmail($deliveredRecipient, $shoot);
+                            $systemEmailAlreadySent = true;
+                        }
+                    } catch (\Exception $e) {
+                        \Log::error('Failed to send shoot ready email', [
                             'shoot_id' => $shoot->id,
                             'error' => $e->getMessage(),
                         ]);
@@ -3044,6 +3114,7 @@ class ShootController extends Controller
                 }
                 $context['shoot_changes'] = $changesSummary;
                 $context['shoot_changes_html'] = $changesHtml;
+                $context['system_email_already_sent'] = $systemEmailAlreadySent;
 
                 $automationService->handleEvent('SHOOT_UPDATED', $context);
 
@@ -3101,9 +3172,12 @@ class ShootController extends Controller
         if ($shoot->rep) {
             $context['rep'] = $shoot->rep;
         }
+        $systemEmailAlreadySent = false;
         if ($shoot->client) {
             $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
+            $systemEmailAlreadySent = true;
         }
+        $context['system_email_already_sent'] = $systemEmailAlreadySent;
         $this->automationService->handleEvent('SHOOT_REMOVED', $context);
 
         // Log shoot_deleted activity before deleting

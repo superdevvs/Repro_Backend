@@ -384,12 +384,29 @@ class AutomationWorkflowExecutor
         };
     }
 
+    private function shouldSkipCoreSystemEmailAutomation(AutomationRule $automation, array $context): bool
+    {
+        if (empty($context['system_email_already_sent'])) {
+            return false;
+        }
+
+        return in_array($automation->trigger_type, ['SHOOT_COMPLETED', 'SHOOT_REMOVED', 'SHOOT_CANCELED', 'SHOOT_CANCELLED', 'SHOOT_PAID'], true);
+    }
+
     private function executeEmailAction(AutomationRule $automation, array $node, array $context): array
     {
         $config = is_array($node['config'] ?? null) ? $node['config'] : [];
         $template = !empty($config['templateId'])
             ? MessageTemplate::find($config['templateId'])
             : null;
+
+        if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
+            return [
+                'channel' => 'email',
+                'sent_to' => [],
+                'skipped' => true,
+            ];
+        }
 
         $rendered = $template
             ? $this->templateRenderer->render($template, $context)

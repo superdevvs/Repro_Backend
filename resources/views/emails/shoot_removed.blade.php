@@ -1,12 +1,12 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Photo Shoot Cancelled')
-@section('preheader', 'A scheduled shoot has been cancelled or removed.')
+@section('title', 'Your Shoot Has Been Cancelled')
+@section('preheader', 'Your scheduled shoot has been cancelled and the latest details are included for your records.')
 
 @section('hero')
-    <div class="eyebrow">Shoot Cancelled</div>
-    <h1 class="hero-title">This appointment is no longer on the schedule.</h1>
-    <p class="hero-copy">The shoot shown below has been cancelled or removed. The last confirmed details are included here for your records.</p>
+    <div class="eyebrow">Cancelled</div>
+    <h1 class="hero-title">Your shoot has been cancelled.</h1>
+    <p class="hero-copy">The last confirmed details are included below for your records, along with the fastest way to rebook if needed.</p>
 @endsection
 
 @section('content')

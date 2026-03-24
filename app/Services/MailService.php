@@ -15,6 +15,10 @@ use App\Services\Messaging\TemplateRenderer;
 
 class MailService
 {
+    private const SHOOT_DELIVERED_SUBJECT = 'Your Photos Are Ready';
+    private const SHOOT_CANCELLED_SUBJECT = 'Your Shoot Has Been Cancelled';
+    private const SHOOT_PAID_SUBJECT = 'Payment Confirmed for Your Shoot';
+
     /**
      * Send account created email
      */
@@ -196,27 +200,13 @@ class MailService
                 'user' => $user,
                 'shoot' => $shootData,
             ])->render();
-            $this->sendViaCakemail($user->email, 'Photo Shoot Cancelled', $html, 'SHOOT_REMOVED');
+            $this->sendViaCakemail($user->email, self::SHOOT_CANCELLED_SUBJECT, $html, 'SHOOT_REMOVED');
             
             Log::info('Shoot removed email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
-
-            // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_removed', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Photo Shoot Cancelled', $htmlPhoto, 'SHOOT_REMOVED');
-                Log::info('Shoot removed email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
-            }
             
             return true;
         } catch (\Exception $e) {
@@ -244,27 +234,13 @@ class MailService
                 'user' => $user,
                 'shoot' => $shootData,
             ])->render();
-            $this->sendViaCakemail($user->email, 'Your Shoot Has Been Delivered', $html, 'SHOOT_READY');
+            $this->sendViaCakemail($user->email, self::SHOOT_DELIVERED_SUBJECT, $html, 'SHOOT_READY');
             
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
-
-            // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_delivered', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Your Shoot Has Been Delivered', $htmlPhoto, 'SHOOT_READY');
-                Log::info('Shoot ready email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
-            }
             
             return true;
         } catch (\Exception $e) {
@@ -1253,7 +1229,7 @@ class MailService
                     'shoot' => $shootData,
                     'amount' => $amount,
                 ])->render();
-                $this->sendViaCakemail($user->email, 'Your Shoot Has Been Marked as Paid', $html, 'SHOOT_PAID');
+                $this->sendViaCakemail($user->email, self::SHOOT_PAID_SUBJECT, $html, 'SHOOT_PAID');
                 
                 Log::info('Shoot paid email sent', [
                     'user_id' => $user->id,
@@ -1266,21 +1242,6 @@ class MailService
                     'user_id' => $user->id,
                     'shoot_id' => $shoot->id,
                     'amount' => $amount,
-                ]);
-            }
-
-            // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_paid', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                    'amount' => $amount,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Your Shoot Has Been Marked as Paid', $htmlPhoto, 'SHOOT_PAID');
-                Log::info('Shoot paid email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
                 ]);
             }
             
@@ -1310,27 +1271,13 @@ class MailService
                 'user' => $user,
                 'shoot' => $shootData,
             ])->render();
-            $this->sendViaCakemail($user->email, 'Photo Shoot Cancelled', $html, 'SHOOT_CANCELLED');
+            $this->sendViaCakemail($user->email, self::SHOOT_CANCELLED_SUBJECT, $html, 'SHOOT_CANCELLED');
             
             Log::info('Shoot cancelled email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
-
-            // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_removed', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Photo Shoot Cancelled', $htmlPhoto, 'SHOOT_CANCELLED');
-                Log::info('Shoot cancelled email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
-            }
             
             return true;
         } catch (\Exception $e) {

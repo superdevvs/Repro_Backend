@@ -1,16 +1,16 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Your Shoot Has Been Delivered')
-@section('preheader', 'Your final media has been delivered and is ready to review.')
+@section('title', 'Your Photos Are Ready')
+@section('preheader', 'Your photos are ready to review and download in the dashboard.')
 
 @section('hero')
-    <div class="eyebrow">Delivery Complete</div>
-    <h1 class="hero-title">Your shoot has been delivered.</h1>
-    <p class="hero-copy">The final media package is now available in your dashboard, along with the latest property delivery details.</p>
+    <div class="eyebrow">Photos Ready</div>
+    <h1 class="hero-title">Your photos are ready.</h1>
+    <p class="hero-copy">Your final media package is now available in the dashboard, along with the latest property delivery details.</p>
 @endsection
 
 @section('content')
-<p class="intro"><strong>Your finished photos are now delivered and ready for download.</strong></p>
+<p class="intro"><strong>Your finished photos are ready for review and download.</strong></p>
 
     <div class="button-row">
         <a href="{{ $shoot->dashboard_url }}" class="button button-large">Open Deliverables</a>

@@ -126,9 +126,11 @@ class FinalizeShootJob implements ShouldQueue
 
             // Send shoot ready email to client
             $client = User::find($shoot->client_id);
+            $systemEmailAlreadySent = false;
             if ($client) {
                 try {
                     $mailService->sendShootReadyEmail($client, $shoot);
+                    $systemEmailAlreadySent = true;
                 } catch (\Exception $mailEx) {
                     Log::warning('Shoot ready email failed (non-blocking)', [
                         'shoot_id' => $shoot->id,
@@ -160,6 +162,7 @@ class FinalizeShootJob implements ShouldQueue
             if ($shoot->rep) {
                 $context['rep'] = $shoot->rep;
             }
+            $context['system_email_already_sent'] = $systemEmailAlreadySent;
             $automationService->handleEvent('SHOOT_COMPLETED', $context);
 
             $shoot->workflowLogs()->create([

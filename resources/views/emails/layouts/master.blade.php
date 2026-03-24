@@ -624,7 +624,7 @@
     @yield('extra-styles')
 </head>
 <body>
-    <div class="preheader">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
+    <div class="preheader">@yield('preheader', 'Updates from R/E Pro Photos')&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
     <div class="page">
         <div class="shell">
             <div class="card">
@@ -632,10 +632,7 @@
                     <div class="hero-card">
                         <div class="hero-brand">
                             <div class="hero-logo">
-                                <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos">
-                            </div>
-                            <div class="hero-brand-copy">
-                                R/E Pro Photos
+                                <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos" width="154" style="display:block; width:154px; max-width:154px; height:auto; border:0;">
                             </div>
                         </div>
                         <div class="hero-panel">
