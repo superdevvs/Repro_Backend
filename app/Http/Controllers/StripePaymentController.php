@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Stripe\Stripe;
+use Stripe\Customer as StripeCustomer;
 use Stripe\Checkout\Session as StripeSession;
 use Stripe\Webhook;
 use Stripe\Refund;
@@ -70,6 +71,7 @@ class StripePaymentController extends Controller
 
             $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
             $currency = config('services.stripe.currency', 'USD');
+            $client = User::find($shoot->client_id);
 
             $sessionParams = [
                 'payment_method_types' => ['card'],
@@ -91,15 +93,12 @@ class StripePaymentController extends Controller
                     'shoot_id' => (string) $shoot->id,
                     'type' => 'single',
                 ],
-                'success_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true',
+                'client_reference_id' => 'shoot:' . $shoot->id,
+                'success_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true&session_id={CHECKOUT_SESSION_ID}',
                 'cancel_url'  => $frontendUrl . '/payment/' . $shoot->id,
             ];
 
-            // Pre-fill customer email if available
-            $client = User::find($shoot->client_id);
-            if ($client && $client->email) {
-                $sessionParams['customer_email'] = $client->email;
-            }
+            $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $client);
 
             $session = StripeSession::create($sessionParams);
 
@@ -143,6 +142,7 @@ class StripePaymentController extends Controller
 
             $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
             $currency = config('services.stripe.currency', 'USD');
+            $client = User::find($shoot->client_id);
 
             $sessionParams = [
                 'payment_method_types' => ['card'],
@@ -165,13 +165,11 @@ class StripePaymentController extends Controller
                     'shoot_id' => (string) $shoot->id,
                     'type' => 'single',
                 ],
-                'return_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true',
+                'client_reference_id' => 'shoot:' . $shoot->id,
+                'return_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true&session_id={CHECKOUT_SESSION_ID}',
             ];
 
-            $client = User::find($shoot->client_id);
-            if ($client && $client->email) {
-                $sessionParams['customer_email'] = $client->email;
-            }
+            $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $client);
 
             $session = StripeSession::create($sessionParams);
 
@@ -241,8 +239,7 @@ class StripePaymentController extends Controller
             }
 
             $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
-
-            $session = StripeSession::create([
+            $sessionParams = [
                 'payment_method_types' => ['card'],
                 'mode' => 'payment',
                 'line_items' => $lineItems,
@@ -250,9 +247,14 @@ class StripePaymentController extends Controller
                     'shoot_ids' => implode(',', $shootIds),
                     'type' => 'multiple',
                 ],
-                'success_url' => $frontendUrl . '/shoot-history?payment=success',
+                'client_reference_id' => 'shoots:' . implode(',', $shootIds),
+                'success_url' => $frontendUrl . '/shoot-history?payment=success&session_id={CHECKOUT_SESSION_ID}',
                 'cancel_url'  => $frontendUrl . '/shoot-history',
-            ]);
+            ];
+
+            $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $request->user());
+
+            $session = StripeSession::create($sessionParams);
 
             return response()->json([
                 'checkoutUrl' => $session->url,
@@ -322,8 +324,7 @@ class StripePaymentController extends Controller
             }
 
             $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
-
-            $session = StripeSession::create([
+            $sessionParams = [
                 'payment_method_types' => ['card'],
                 'mode' => 'payment',
                 'ui_mode' => 'embedded',
@@ -332,8 +333,13 @@ class StripePaymentController extends Controller
                     'shoot_ids' => implode(',', $shootIds),
                     'type' => 'multiple',
                 ],
-                'return_url' => $frontendUrl . '/shoot-history?payment=success',
-            ]);
+                'client_reference_id' => 'shoots:' . implode(',', $shootIds),
+                'return_url' => $frontendUrl . '/shoot-history?payment=success&session_id={CHECKOUT_SESSION_ID}',
+            ];
+
+            $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $request->user());
+
+            $session = StripeSession::create($sessionParams);
 
             return response()->json([
                 'clientSecret' => $session->client_secret,
@@ -380,9 +386,13 @@ class StripePaymentController extends Controller
 
         Log::info('Stripe webhook received', ['type' => $event->type, 'id' => $event->id]);
 
+        $handled = false;
+
         switch ($event->type) {
             case 'checkout.session.completed':
-                return $this->handleCheckoutCompleted($event->data->object);
+            case 'checkout.session.async_payment_succeeded':
+                $handled = $this->handleCheckoutCompleted($event->data->object);
+                break;
 
             case 'checkout.session.expired':
                 Log::info('Stripe checkout session expired', ['session_id' => $event->data->object->id]);
@@ -392,7 +402,111 @@ class StripePaymentController extends Controller
                 Log::info('Stripe webhook unhandled event type', ['type' => $event->type]);
         }
 
-        return response()->json(['status' => 'success'], 200);
+        return response()->json(['status' => 'success', 'handled' => $handled], 200);
+    }
+
+    public function confirmCheckoutSession(Request $request, Shoot $shoot)
+    {
+        $validated = $request->validate([
+            'session_id' => 'required|string',
+        ]);
+
+        try {
+            $result = $this->reconcileShootPayments($shoot, $validated['session_id']);
+
+            return response()->json([
+                'data' => $result,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Stripe checkout session confirmation failed', [
+                'shoot_id' => $shoot->id,
+                'session_id' => $validated['session_id'],
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'error' => 'Could not confirm Stripe payment session.',
+            ], 500);
+        }
+    }
+
+    public function reconcileShootPayments(Shoot $shoot, ?string $sessionId = null): array
+    {
+        $shoot = $shoot->fresh(['payments', 'client']) ?? $shoot->loadMissing(['payments', 'client']);
+        $summary = $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: 'stripe');
+
+        if (($summary['remaining_balance'] ?? 0) <= 0) {
+            return [
+                'reconciled' => false,
+                'session_id' => null,
+                'total_paid' => $summary['total_paid'],
+                'payment_status' => $summary['payment_status'],
+                'remaining_balance' => $summary['remaining_balance'],
+            ];
+        }
+
+        $lock = Cache::lock('stripe_reconcile_shoot_' . $shoot->id, 10);
+
+        if (!$lock->get()) {
+            return [
+                'reconciled' => false,
+                'session_id' => null,
+                'total_paid' => $summary['total_paid'],
+                'payment_status' => $summary['payment_status'],
+                'remaining_balance' => $summary['remaining_balance'],
+            ];
+        }
+
+        try {
+            $session = $sessionId
+                ? $this->retrieveCheckoutSession($sessionId)
+                : $this->findRecentPaidSessionForShoot($shoot);
+
+            if (!$session) {
+                return [
+                    'reconciled' => false,
+                    'session_id' => null,
+                    'total_paid' => $summary['total_paid'],
+                    'payment_status' => $summary['payment_status'],
+                    'remaining_balance' => $summary['remaining_balance'],
+                ];
+            }
+
+            $matchedShootId = $session->metadata->shoot_id ?? null;
+            if ($matchedShootId !== null && (string) $matchedShootId !== (string) $shoot->id) {
+                return [
+                    'reconciled' => false,
+                    'session_id' => $session->id,
+                    'total_paid' => $summary['total_paid'],
+                    'payment_status' => $summary['payment_status'],
+                    'remaining_balance' => $summary['remaining_balance'],
+                ];
+            }
+
+            if (($session->payment_status ?? null) !== 'paid') {
+                return [
+                    'reconciled' => false,
+                    'session_id' => $session->id,
+                    'total_paid' => $summary['total_paid'],
+                    'payment_status' => $summary['payment_status'],
+                    'remaining_balance' => $summary['remaining_balance'],
+                ];
+            }
+
+            $reconciled = $this->handleCheckoutCompleted($session);
+            $freshShoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
+            $freshSummary = $freshShoot->syncPaymentStatusFromRecords('stripe');
+
+            return [
+                'reconciled' => $reconciled,
+                'session_id' => $session->id,
+                'total_paid' => $freshSummary['total_paid'],
+                'payment_status' => $freshSummary['payment_status'],
+                'remaining_balance' => $freshSummary['remaining_balance'],
+            ];
+        } finally {
+            optional($lock)->release();
+        }
     }
 
     /**
@@ -405,9 +519,9 @@ class StripePaymentController extends Controller
         $metadata = $session->metadata;
 
         // Prevent duplicate processing
-        if (Payment::where('stripe_session_id', $sessionId)->exists()) {
+        if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
             Log::info('Stripe webhook: Session already processed', ['session_id' => $sessionId]);
-            return response()->json(['status' => 'success'], 200);
+            return false;
         }
 
         $type = $metadata->type ?? 'single';
@@ -432,7 +546,7 @@ class StripePaymentController extends Controller
 
         if (!$shootId) {
             Log::warning('Stripe webhook: No shoot_id in session metadata', ['session_id' => $sessionId]);
-            return response()->json(['status' => 'success'], 200);
+            return false;
         }
 
         try {
@@ -441,12 +555,12 @@ class StripePaymentController extends Controller
 
                 if (!$shoot) {
                     Log::warning('Stripe webhook: Shoot not found', ['shoot_id' => $shootId]);
-                    return response()->json(['status' => 'success'], 200);
+                    return false;
                 }
 
                 // Double-check for duplicates inside transaction
-                if (Payment::where('stripe_session_id', $sessionId)->exists()) {
-                    return response()->json(['status' => 'success'], 200);
+                if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
+                    return false;
                 }
 
                 $payment = Payment::create([
@@ -462,7 +576,7 @@ class StripePaymentController extends Controller
 
                 $this->updateShootPaymentStatus($shoot, $payment, $amountTotal);
 
-                return response()->json(['status' => 'success'], 200);
+                return true;
             });
         } catch (\Exception $e) {
             Log::error('Stripe webhook single shoot processing error', [
@@ -471,7 +585,7 @@ class StripePaymentController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 200);
+            return false;
         }
     }
 
@@ -487,7 +601,7 @@ class StripePaymentController extends Controller
 
         if (empty($shootIdsStr)) {
             Log::warning('Stripe webhook: No shoot_ids in session metadata', ['session_id' => $sessionId]);
-            return response()->json(['status' => 'success'], 200);
+            return false;
         }
 
         $shootIds = array_filter(explode(',', $shootIdsStr));
@@ -499,8 +613,8 @@ class StripePaymentController extends Controller
 
             return DB::transaction(function () use ($shootIds, $paymentIntentId, $currency, $sessionId, $lineItems) {
                 // Double-check for duplicates inside transaction
-                if (Payment::where('stripe_session_id', $sessionId)->exists()) {
-                    return response()->json(['status' => 'success'], 200);
+                if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
+                    return false;
                 }
 
                 $shoots = Shoot::whereIn('id', $shootIds)->get()->keyBy('id');
@@ -532,7 +646,7 @@ class StripePaymentController extends Controller
                     $this->updateShootPaymentStatus($shoot, $payment, $amount);
                 }
 
-                return response()->json(['status' => 'success'], 200);
+                return true;
             });
         } catch (\Exception $e) {
             Log::error('Stripe webhook multi-shoot processing error', [
@@ -541,8 +655,143 @@ class StripePaymentController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 200);
+            return false;
         }
+    }
+
+    protected function applyCheckoutCustomerParams(array $sessionParams, ?User $client): array
+    {
+        if (!$client || !$client->email) {
+            return $sessionParams;
+        }
+
+        $stripeCustomerId = $this->findOrCreateStripeCustomer($client);
+
+        if ($stripeCustomerId) {
+            $sessionParams['customer'] = $stripeCustomerId;
+            return $sessionParams;
+        }
+
+        $sessionParams['customer_creation'] = 'always';
+        $sessionParams['customer_email'] = $client->email;
+
+        return $sessionParams;
+    }
+
+    protected function findOrCreateStripeCustomer(User $client): ?string
+    {
+        $metadata = $client->metadata ?? [];
+        $stripeCustomerId = $metadata['stripe_customer_id'] ?? null;
+
+        if (is_string($stripeCustomerId) && $stripeCustomerId !== '') {
+            return $stripeCustomerId;
+        }
+
+        try {
+            $customers = StripeCustomer::all([
+                'email' => $client->email,
+                'limit' => 1,
+            ]);
+
+            $existingCustomer = $customers->data[0] ?? null;
+            if ($existingCustomer && !empty($existingCustomer->id)) {
+                $this->storeStripeCustomerId($client, $existingCustomer->id);
+                return $existingCustomer->id;
+            }
+
+            $createdCustomer = StripeCustomer::create([
+                'email' => $client->email,
+                'name' => $client->name,
+                'phone' => $client->phone ?? $client->phonenumber,
+                'metadata' => [
+                    'user_id' => (string) $client->id,
+                    'app_role' => (string) $client->role,
+                ],
+            ]);
+
+            if (!empty($createdCustomer->id)) {
+                $this->storeStripeCustomerId($client, $createdCustomer->id);
+                return $createdCustomer->id;
+            }
+        } catch (\Exception $e) {
+            Log::warning('Failed to resolve Stripe customer for checkout session', [
+                'user_id' => $client->id,
+                'email' => $client->email,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    protected function storeStripeCustomerId(User $client, string $stripeCustomerId): void
+    {
+        $metadata = $client->metadata ?? [];
+
+        if (($metadata['stripe_customer_id'] ?? null) === $stripeCustomerId) {
+            return;
+        }
+
+        $metadata['stripe_customer_id'] = $stripeCustomerId;
+        $client->forceFill([
+            'metadata' => $metadata,
+        ])->save();
+    }
+
+    protected function hasProcessedSession(string $sessionId, ?string $paymentIntentId = null): bool
+    {
+        return Payment::query()
+            ->where(function ($query) use ($sessionId, $paymentIntentId) {
+                $query->where('stripe_session_id', $sessionId)
+                    ->orWhere('stripe_session_id', 'like', $sessionId . '_shoot_%');
+
+                if (!empty($paymentIntentId)) {
+                    $query->orWhere('stripe_payment_id', $paymentIntentId);
+                }
+            })
+            ->exists();
+    }
+
+    protected function retrieveCheckoutSession(string $sessionId)
+    {
+        $this->initStripe();
+
+        return StripeSession::retrieve($sessionId);
+    }
+
+    protected function findRecentPaidSessionForShoot(Shoot $shoot)
+    {
+        $this->initStripe();
+
+        $checkedCount = 0;
+        $sessions = StripeSession::all(['limit' => 100]);
+
+        foreach ($sessions->autoPagingIterator() as $session) {
+            $checkedCount++;
+
+            if ($checkedCount > 300) {
+                break;
+            }
+
+            $type = $session->metadata->type ?? 'single';
+            $shootId = $session->metadata->shoot_id ?? null;
+
+            if ($type !== 'single') {
+                continue;
+            }
+
+            if ((string) $shootId !== (string) $shoot->id) {
+                continue;
+            }
+
+            if (($session->payment_status ?? null) !== 'paid') {
+                continue;
+            }
+
+            return $this->retrieveCheckoutSession($session->id);
+        }
+
+        return null;
     }
 
     /**

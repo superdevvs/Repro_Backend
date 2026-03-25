@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\StripePaymentController;
 use Illuminate\Http\Request;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -4994,6 +4995,8 @@ class ShootController extends Controller
     // ----- Public assets (read-only, no auth) -----
     private function buildPublicAssets(\App\Models\Shoot $shoot)
     {
+        $shoot = $this->reconcileStripePaymentState($shoot, ['files', 'client', 'payments']);
+
         // Prefer verified > completed > todo files
         $files = $shoot->files;
         $verified = $files->where('workflow_stage', \App\Models\ShootFile::STAGE_VERIFIED);
@@ -5113,6 +5116,31 @@ class ShootController extends Controller
                 'cubicasa' => null,
             ],
         ];
+    }
+
+    private function reconcileStripePaymentState(Shoot $shoot, array $relations = []): Shoot
+    {
+        $shoot->loadMissing(array_values(array_unique(array_merge($relations, ['payments', 'client']))));
+
+        $summary = $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: null);
+        if (($summary['remaining_balance'] ?? 0) <= 0) {
+            return $shoot;
+        }
+
+        try {
+            app(StripePaymentController::class)->reconcileShootPayments($shoot);
+        } catch (\Throwable $exception) {
+            Log::warning('Stripe payment reconciliation failed while preparing shoot response', [
+                'shoot_id' => $shoot->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+
+        $refreshRelations = array_values(array_unique(array_merge($relations, ['payments', 'client'])));
+        $shoot = $shoot->fresh($refreshRelations) ?? $shoot->loadMissing($refreshRelations);
+        $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: null);
+
+        return $shoot;
     }
 
     private function resolvePublicShoot(Request $request, $shootId = null): ?Shoot
@@ -7720,6 +7748,7 @@ class ShootController extends Controller
     public function getPaymentDetails(Shoot $shoot)
     {
         $shoot->load(['client', 'services', 'payments']);
+        $shoot = $this->reconcileStripePaymentState($shoot, ['client', 'services', 'payments']);
 
         return response()->json([
             'data' => [
