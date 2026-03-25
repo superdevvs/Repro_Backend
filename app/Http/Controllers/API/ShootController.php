@@ -2633,13 +2633,49 @@ class ShootController extends Controller
         $isRep = $user->role === 'salesRep';
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
+        $clientEditableKeys = [
+            'is_private_listing',
+            'listing_type',
+            'property_status',
+            'bedrooms',
+            'bathrooms',
+            'sqft',
+            'tour_links',
+        ];
+        $clientEditableTourLinkKeys = [
+            'property_description',
+            'property_mls',
+            'property_price',
+            'property_lot_size',
+            // Intentionally exclude video_* keys and video_link so only admins can manage video pages/embeds.
+        ];
 
         if (!$isAdmin) {
-            if (!$onlyPrivateListing) {
-                return response()->json(['message' => 'Forbidden'], 403);
-            }
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
+
+            if ($ownsShoot) {
+                $onlyClientEditableFields = count($requestKeys) > 0 && count(array_diff($requestKeys, $clientEditableKeys)) === 0;
+
+                if (!$onlyClientEditableFields) {
+                    return response()->json(['message' => 'Forbidden'], 403);
+                }
+
+                $requestedTourLinks = $request->input('tour_links', []);
+                if (!is_array($requestedTourLinks)) {
+                    return response()->json(['message' => 'Invalid tour_links payload'], 422);
+                }
+
+                $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $clientEditableTourLinkKeys);
+                if (!empty($invalidTourLinkKeys)) {
+                    return response()->json(['message' => 'Forbidden'], 403);
+                }
+            } else {
+                if (!$onlyPrivateListing) {
+                    return response()->json(['message' => 'Forbidden'], 403);
+                }
+            }
+
             if (!$ownsShoot && !$assignedRep) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
