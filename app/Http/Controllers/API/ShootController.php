@@ -2387,6 +2387,7 @@ class ShootController extends Controller
     public function schedule(UpdateShootStatusRequest $request, Shoot $shoot)
     {
         $user = $request->user();
+        $validated = $request->validated();
         $originalPhotographerId = $shoot->photographer_id;
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
 
