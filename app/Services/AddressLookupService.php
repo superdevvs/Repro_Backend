@@ -11,6 +11,7 @@ class AddressLookupService
     private $provider;
     private $googleApiKey;
     private $googleBaseUrl = 'https://maps.googleapis.com/maps/api';
+    private ZillowPropertyService $zillowPropertyService;
 
     private $locationIqKey;
     private $locationIqBaseUrl;
@@ -23,10 +24,11 @@ class AddressLookupService
     private $zillowServerToken;
     private $zillowBaseUrl;
 
-    public function __construct()
+    public function __construct(ZillowPropertyService $zillowPropertyService)
     {
+        $this->zillowPropertyService = $zillowPropertyService;
         // Try to get provider from database settings, fallback to config
-        $this->provider = $this->getProviderFromSettings() ?? config('services.address.provider', 'zillow');
+        $this->provider = $this->getProviderFromSettings() ?? config('services.address.provider', 'google');
         $this->googleApiKey = config('services.google.places_api_key');
 
         $this->locationIqKey = config('services.locationiq.key');
@@ -73,10 +75,25 @@ class AddressLookupService
         $cacheKey = 'address_search_' . md5($this->provider . '|' . $query . serialize($options));
 
         return Cache::remember($cacheKey, 120, function () use ($query, $options) {
+            if (!empty($this->googleApiKey)) {
+                try {
+                    $googleResults = $this->googleAutocomplete($query, $options);
+                    if (!empty($googleResults)) {
+                        return $googleResults;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Google autocomplete failed, falling back to configured provider', [
+                        'query' => $query,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             try {
-                return $this->zillowAutocomplete($query, $options);
+                return $this->searchWithConfiguredProvider($query, $options);
             } catch (\Exception $e) {
-                Log::warning('Zillow autocomplete failed', [
+                Log::warning('Address autocomplete failed', [
+                    'provider' => $this->provider,
                     'query' => $query,
                     'error' => $e->getMessage(),
                 ]);
@@ -94,7 +111,20 @@ class AddressLookupService
         $cacheKey = 'address_details_' . $this->provider . '_' . $placeId;
         return Cache::remember($cacheKey, 3600, function () use ($placeId) {
             try {
+                if (!empty($this->googleApiKey)) {
+                    $googleDetails = $this->googleDetails($placeId);
+                    if ($googleDetails) {
+                        return $this->mergeWithZillowPropertyDetails($googleDetails);
+                    }
+                }
+
                 switch ($this->provider) {
+                    case 'google':
+                        if (empty($this->googleApiKey)) {
+                            throw new \Exception('Google Places API key not configured');
+                        }
+                        return $this->mergeWithZillowPropertyDetails($this->googleDetails($placeId));
+
                     case 'locationiq':
                         if (empty($this->locationIqKey)) {
                             throw new \Exception('LocationIQ API key not configured');
@@ -117,6 +147,167 @@ class AddressLookupService
                 return null;
             }
         });
+    }
+
+    private function searchWithConfiguredProvider(string $query, array $options = []): array
+    {
+        switch ($this->provider) {
+            case 'google':
+                if (empty($this->googleApiKey)) {
+                    throw new \Exception('Google Places API key not configured');
+                }
+                return $this->googleAutocomplete($query, $options);
+
+            case 'locationiq':
+                if (empty($this->locationIqKey)) {
+                    throw new \Exception('LocationIQ API key not configured');
+                }
+                return $this->locationIqAutocomplete($query, $options);
+
+            case 'geoapify':
+                if (empty($this->geoapifyKey)) {
+                    throw new \Exception('Geoapify API key not configured');
+                }
+                return $this->geoapifyAutocomplete($query, $options);
+
+            case 'zillow':
+            default:
+                return $this->zillowAutocomplete($query, $options);
+        }
+    }
+
+    private function mergeWithZillowPropertyDetails(?array $details): ?array
+    {
+        if (!$details) {
+            return null;
+        }
+
+        $zillowDetails = $this->lookupZillowDetailsByAddress($details);
+        if (!$zillowDetails) {
+            return $details;
+        }
+
+        $merged = $details;
+        foreach (['formatted_address', 'address', 'city', 'state', 'zip', 'country', 'latitude', 'longitude'] as $field) {
+            if (empty($merged[$field]) && !empty($zillowDetails[$field])) {
+                $merged[$field] = $zillowDetails[$field];
+            }
+        }
+
+        foreach (['bedrooms', 'bathrooms', 'sqft', 'garage_cars', 'garage_sqft', 'property_details', 'zpid'] as $field) {
+            if (array_key_exists($field, $zillowDetails) && $zillowDetails[$field] !== null) {
+                $merged[$field] = $zillowDetails[$field];
+            }
+        }
+
+        return $merged;
+    }
+
+    private function lookupZillowDetailsByAddress(array $details): ?array
+    {
+        if (empty($this->zillowServerToken)) {
+            return null;
+        }
+
+        $candidates = array_values(array_unique(array_filter([
+            $details['formatted_address'] ?? null,
+            $this->formatAddressForApi($details),
+            trim(($details['address'] ?? '') . ', ' . ($details['city'] ?? '') . ', ' . ($details['state'] ?? '') . ' ' . ($details['zip'] ?? '')),
+        ])));
+
+        foreach ($candidates as $candidate) {
+            $propertyId = $this->findBridgePropertyIdByAddress($candidate);
+            if ($propertyId) {
+                $zillowDetails = $this->zillowDetails($propertyId);
+                if ($zillowDetails) {
+                    return $zillowDetails;
+                }
+            }
+        }
+
+        try {
+            $addressQuery = $this->formatAddressForApi($details);
+            if ($addressQuery) {
+                $property = $this->zillowPropertyService->fetchPropertyDetails($addressQuery);
+                if ($property) {
+                    return [
+                        'bedrooms' => isset($property['beds']) ? (float) $property['beds'] : null,
+                        'bathrooms' => isset($property['baths']) ? (float) $property['baths'] : null,
+                        'sqft' => isset($property['sqft']) ? (int) $property['sqft'] : null,
+                        'property_details' => $property['raw_data'] ?? $property,
+                    ];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Zillow property fallback failed', [
+                'address' => $details,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    private function findBridgePropertyIdByAddress(string $searchAddress): ?string
+    {
+        $normalizedAddress = trim($searchAddress);
+        if ($normalizedAddress === '') {
+            return null;
+        }
+
+        try {
+            $filter = "contains(tolower(UnparsedAddress), '" . str_replace("'", "''", strtolower($normalizedAddress)) . "')";
+            $response = Http::withoutVerifying()->get($this->zillowBaseUrl . '/OData/pub/Property', [
+                'access_token' => $this->zillowServerToken,
+                '$filter' => $filter,
+                '$top' => 1,
+                '$select' => 'ListingKey,UnparsedAddress',
+            ]);
+
+            if ($response->successful()) {
+                $results = $response->json('value', []);
+                $firstResult = $results[0] ?? null;
+                if ($firstResult) {
+                    $listingKey = $firstResult['ListingKey'] ?? null;
+                    if ($listingKey) {
+                        return (string) $listingKey;
+                    }
+
+                    $odataId = data_get($firstResult, '@odata.id');
+                    if (is_string($odataId) && str_contains($odataId, '/')) {
+                        return (string) collect(explode('/', trim($odataId, '/')))->last();
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Bridge RESO address search failed', [
+                'address' => $normalizedAddress,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        try {
+            $response = Http::withoutVerifying()->get($this->zillowBaseUrl . '/pub/parcels', [
+                'access_token' => $this->zillowServerToken,
+                'address.full' => $normalizedAddress,
+                'limit' => 1,
+            ]);
+
+            if ($response->successful()) {
+                $bundle = $response->json('bundle', []);
+                $firstParcel = $bundle[0] ?? null;
+                if ($firstParcel && !empty($firstParcel['id'])) {
+                    return (string) $firstParcel['id'];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Bridge parcel search failed', [
+                'address' => $normalizedAddress,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
     }
 
     /**
@@ -1177,6 +1368,87 @@ class AddressLookupService
         }
     }
 
+    private function getAreaSquareFeet(array $area): ?int
+    {
+        if (!isset($area['areaSquareFeet']) || $area['areaSquareFeet'] === null) {
+            return null;
+        }
+
+        $value = (int) round((float) $area['areaSquareFeet']);
+
+        return $value > 0 ? $value : null;
+    }
+
+    private function getPreferredFinishedSqft(array $areas): ?int
+    {
+        if (empty($areas)) {
+            return null;
+        }
+
+        $areaTypePriority = [
+            'Living Building Area',
+            'Finished Building Area',
+            'Zillow Calculated Finished Area',
+            'Base Building Area',
+            'Gross Building Area',
+        ];
+
+        $supplementalFinishedAreaTypes = [
+            'Basement Finished',
+            'Game Room/Recreation',
+            'Lower Level Finished',
+            'Finished Basement',
+            'Basement Partially Finished',
+            'Finished Rec Room',
+        ];
+
+        $primarySqft = null;
+        $primaryType = null;
+
+        foreach ($areaTypePriority as $type) {
+            $typeValues = [];
+
+            foreach ($areas as $area) {
+                if (($area['type'] ?? null) !== $type) {
+                    continue;
+                }
+
+                $sqft = $this->getAreaSquareFeet($area);
+                if ($sqft !== null) {
+                    $typeValues[] = $sqft;
+                }
+            }
+
+            if (!empty($typeValues)) {
+                $primarySqft = max($typeValues);
+                $primaryType = $type;
+                break;
+            }
+        }
+
+        if ($primarySqft === null) {
+            return null;
+        }
+
+        if ($primaryType !== 'Living Building Area') {
+            return $primarySqft;
+        }
+
+        $supplementalSqft = 0;
+        foreach ($areas as $area) {
+            if (!in_array($area['type'] ?? null, $supplementalFinishedAreaTypes, true)) {
+                continue;
+            }
+
+            $sqft = $this->getAreaSquareFeet($area);
+            if ($sqft !== null) {
+                $supplementalSqft += $sqft;
+            }
+        }
+
+        return $primarySqft + $supplementalSqft;
+    }
+
     private function zillowDetails(string $placeId): ?array
     {
         // Bridge Data API endpoint for parcel details
@@ -1237,26 +1509,9 @@ class AddressLookupService
                     if ($bathrooms == 0) $bathrooms = null;
                 }
                 
-                // Get living area from areas data - check multiple area types in priority order
-                // Priority: Living Building Area (houses) → Finished Building Area (condos) → Zillow Calculated → Base → Gross
-                $sqft = null;
-                if (!empty($areas)) {
-                    $areaTypePriority = [
-                        'Living Building Area',
-                        'Finished Building Area', 
-                        'Zillow Calculated Finished Area',
-                        'Base Building Area',
-                        'Gross Building Area'
-                    ];
-                    
-                    foreach ($areas as $area) {
-                        $areaType = $area['type'] ?? '';
-                        if (in_array($areaType, $areaTypePriority) && isset($area['areaSquareFeet'])) {
-                            $sqft = $area['areaSquareFeet'];
-                            break;
-                        }
-                    }
-                }
+                // Prefer finished building area types, and add finished lower-level space
+                // when the parcel only exposes the main-floor living area as the base.
+                $sqft = $this->getPreferredFinishedSqft($areas);
 
                 // Get garage information
                 $garageCars = null;

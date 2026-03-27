@@ -77,8 +77,8 @@ return [
 
     // Address provider selector
     'address' => [
-        // Supported: locationiq, zillow
-        'provider' => env('ADDRESS_PROVIDER', 'zillow'),
+        // Supported: google, locationiq, geoapify, zillow
+        'provider' => env('ADDRESS_PROVIDER', 'google'),
     ],
 
     'resend' => [
@@ -110,14 +110,12 @@ return [
             : 'https://qa-customers.cubi.casa/api/integrate/v3'),
     ],
 
-    'mightycall' => [
-        'api_key' => env('MIGHTYCALL_API_KEY', 'a2ef1a6d-842a-4848-9777-0372d5fe5de0'),
-        'secret_key' => env('MIGHTYCALL_SECRET_KEY'),
-        'base_url' => env('MIGHTYCALL_BASE_URL', 'https://ccapi.mightycall.com/v4'),
-        'webhook_secret' => env('MIGHTYCALL_WEBHOOK_SECRET'),
-        'default_number' => env('MIGHTYCALL_DEFAULT_NUMBER'),
-        'default_label' => env('MIGHTYCALL_DEFAULT_LABEL', 'MightyCall'),
-        'default_user_key' => env('MIGHTYCALL_DEFAULT_USER_KEY'),
+    'twilio' => [
+        'account_sid' => env('TWILIO_ACCOUNT_SID'),
+        'auth_token' => env('TWILIO_AUTH_TOKEN'),
+        'from_number' => env('TWILIO_FROM_NUMBER'),
+        'phone_number_sid' => env('TWILIO_PHONE_NUMBER_SID'),
+        'default_label' => env('TWILIO_DEFAULT_LABEL', 'Twilio SMS'),
     ],
 
     // Bright MLS Integration

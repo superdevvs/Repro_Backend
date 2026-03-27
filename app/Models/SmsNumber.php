@@ -10,9 +10,10 @@ class SmsNumber extends Model
     use HasFactory;
 
     protected $fillable = [
-        'mighty_call_key',
+        'provider',
         'phone_number',
         'label',
+        'twilio_phone_number_sid',
         'owner_type',
         'owner_id',
         'is_default',

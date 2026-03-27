@@ -26,7 +26,7 @@ class MessagingService
 {
     public function __construct(
         private readonly TemplateRenderer $renderer,
-        private readonly Providers\MightyCallSmsProvider $mightyCallProvider,
+        private readonly Providers\TwilioSmsProvider $twilioProvider,
         private readonly Providers\CakemailProvider $cakemailProvider,
     ) {
     }
@@ -105,11 +105,11 @@ class MessagingService
             'SMS',
             direction: 'OUTBOUND',
             status: 'QUEUED',
-            providerOverride: 'MIGHTYCALL'
+            providerOverride: 'TWILIO'
         );
 
         try {
-            $providerMessageId = $this->mightyCallProvider->send($number, [
+            $providerMessageId = $this->twilioProvider->send($number, [
                 'to' => $payload['to'],
                 'text' => $payload['body_text'] ?? '',
             ]);
@@ -122,6 +122,8 @@ class MessagingService
         } catch (\Exception $e) {
             $message->update([
                 'status' => 'FAILED',
+                'failed_at' => now(),
+                'error_message' => $e->getMessage(),
             ]);
             
             Log::error('SMS send failed', [
@@ -192,7 +194,7 @@ class MessagingService
             'body_html' => $payload['body_html'] ?? null,
             'attachments_json' => $payload['attachments_json'] ?? null,
             'status' => $status,
-            'send_source' => $payload['send_source'] ?? null,
+            'send_source' => $payload['send_source'] ?? 'MANUAL',
             'tags_json' => $payload['tags_json'] ?? null,
             'scheduled_at' => $payload['scheduled_at'] ?? null,
             'created_by' => $payload['user_id'] ?? null,
@@ -430,4 +432,3 @@ class MessagingService
         return $message->refresh();
     }
 }
-

@@ -467,6 +467,13 @@ class AutomationWorkflowExecutor
                 'to' => $recipient['phone'],
                 'body_text' => $rendered['body_text'] ?? '',
                 'sender_display_name' => $automation->name,
+                'send_source' => 'AUTOMATION',
+                'related_shoot_id' => $context['shoot_id'] ?? null,
+                'related_account_id' => $context['account_id'] ?? null,
+                'related_invoice_id' => $context['invoice_id'] ?? null,
+                'contact_phone' => $recipient['phone'],
+                'contact_name' => $recipient['name'] ?? 'Recipient',
+                'contact_type' => $recipient['type'] ?? 'other',
             ]);
 
             $sentTo[] = $recipient['phone'];

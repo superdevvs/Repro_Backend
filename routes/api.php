@@ -24,6 +24,7 @@ use App\Http\Controllers\API\Messaging\MessageTemplateController;
 use App\Http\Controllers\API\Messaging\MessagingSettingsController;
 use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
+use App\Http\Controllers\API\Messaging\TwilioWebhookController;
 use App\Http\Controllers\API\CouponController;
 use App\Http\Controllers\API\ShootMessageController;
 use App\Http\Controllers\API\TourAnalyticsController;
@@ -162,9 +163,11 @@ Route::post('shoots/{shoot}/create-stripe-embedded-checkout', [StripePaymentCont
 Route::post('shoots/{shoot}/confirm-stripe-session', [StripePaymentController::class, 'confirmCheckoutSession'])
     ->name('api.shoots.stripe.confirm-session');
 
-// MightyCall SMS Webhooks (no auth - webhook verification handled in controller)
-Route::match(['get', 'post'], 'webhooks/mightycall', [App\Http\Controllers\API\Messaging\MightyCallWebhookController::class, 'handle'])
-    ->name('webhooks.mightycall');
+// Twilio SMS Webhooks (no auth - webhook verification handled in controller)
+Route::post('webhooks/twilio/messaging', [TwilioWebhookController::class, 'messaging'])
+    ->name('webhooks.twilio.messaging');
+Route::post('webhooks/twilio/status', [TwilioWebhookController::class, 'status'])
+    ->name('webhooks.twilio.status');
 
 // Cakemail Email Webhooks (no auth - webhook verification handled in controller)
 Route::match(['get', 'post'], 'webhooks/cakemail', [App\Http\Controllers\API\CakemailWebhookController::class, 'handle'])
@@ -812,7 +815,6 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/settings/sms/test-connection', [MessagingSettingsController::class, 'testSmsConnection']);
         Route::post('/settings/sms/test-send', [MessagingSettingsController::class, 'testSmsSend']);
         Route::delete('/settings/sms/numbers/{smsNumber}', [MessagingSettingsController::class, 'deleteSmsNumber']);
-        Route::post('/settings/sms/sync', [MessagingSettingsController::class, 'syncSmsMessages']);
     });
 
     Route::middleware('role:superadmin,admin,editing_manager,sales_rep,photographer')->group(function () {

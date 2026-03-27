@@ -5916,6 +5916,15 @@ class ShootController extends Controller
         
         // Set as attribute so it's included in JSON serialization
         $shoot->setAttribute('services_list', $servicesArray);
+        
+        // Add photo counts for frontend display
+        $shoot->setAttribute('raw_photo_count', $shoot->raw_photo_count ?? 0);
+        $shoot->setAttribute('edited_photo_count', $shoot->edited_photo_count ?? 0);
+        $shoot->setAttribute('raw_missing_count', $shoot->raw_missing_count ?? 0);
+        $shoot->setAttribute('edited_missing_count', $shoot->edited_missing_count ?? 0);
+        $shoot->setAttribute('expected_raw_count', $shoot->expected_raw_count ?? 0);
+        $shoot->setAttribute('missing_raw', (bool) $shoot->missing_raw);
+        $shoot->setAttribute('missing_final', (bool) $shoot->missing_final);
 
         return $shoot;
     }

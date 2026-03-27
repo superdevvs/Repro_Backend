@@ -20,7 +20,7 @@ class AddressProviderSettingsController extends Controller
                 ->where('key', 'address_provider')
                 ->first();
 
-            $provider = $setting ? json_decode($setting->value, true) : 'zillow';
+            $provider = $setting ? json_decode($setting->value, true) : 'google';
 
             return response()->json([
                 'success' => true,
@@ -44,7 +44,7 @@ class AddressProviderSettingsController extends Controller
     public function updateProvider(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
-            'provider' => 'required|string|in:locationiq,geoapify,zillow',
+            'provider' => 'required|string|in:google,locationiq,geoapify,zillow',
         ]);
 
         if ($validator->fails()) {
@@ -105,6 +105,15 @@ class AddressProviderSettingsController extends Controller
     {
         return [
             [
+                'id' => 'google',
+                'name' => 'Google Places',
+                'description' => 'Uses Google Places Autocomplete and Place Details to validate the selected address, then lets the app enrich it with property data from Zillow/Bridge.',
+                'requires_api_key' => true,
+                'is_open_source' => false,
+                'rate_limit' => 'Depends on Google Maps Platform quota and billing',
+                'cost' => 'Usage-based pricing',
+            ],
+            [
                 'id' => 'locationiq',
                 'name' => 'LocationIQ',
                 'description' => 'Commercial service with free tier. Requires API key. Based on OpenStreetMap data. Good for general address lookup.',
@@ -140,6 +149,7 @@ class AddressProviderSettingsController extends Controller
     private function getApiKeyForProvider(string $provider): ?string
     {
         return match ($provider) {
+            'google' => config('services.google.places_api_key'),
             'locationiq' => config('services.locationiq.key'),
             'geoapify' => config('services.geoapify.key'),
             'zillow' => config('services.zillow.server_token'),
