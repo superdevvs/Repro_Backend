@@ -75,28 +75,30 @@ class AddressLookupService
         $cacheKey = 'address_search_' . md5($this->provider . '|' . $query . serialize($options));
 
         return Cache::remember($cacheKey, 120, function () use ($query, $options) {
-            foreach ($this->getAutocompleteProviderOrder() as $provider) {
+            if (!empty($this->googleApiKey)) {
                 try {
-                    $results = $this->searchWithProvider($provider, $query, $options);
-                    if (!empty($results)) {
-                        return $results;
+                    $googleResults = $this->googleAutocomplete($query, $options);
+                    if (!empty($googleResults)) {
+                        return $googleResults;
                     }
                 } catch (\Exception $e) {
-                    Log::warning('Address autocomplete provider failed', [
-                        'provider' => $provider,
-                        'configured_provider' => $this->provider,
+                    Log::warning('Google autocomplete failed, falling back to configured provider', [
                         'query' => $query,
                         'error' => $e->getMessage(),
                     ]);
                 }
             }
 
-            Log::warning('Address autocomplete returned no suggestions from any provider', [
-                'configured_provider' => $this->provider,
-                'query' => $query,
-            ]);
-
-            return [];
+            try {
+                return $this->searchWithConfiguredProvider($query, $options);
+            } catch (\Exception $e) {
+                Log::warning('Address autocomplete failed', [
+                    'provider' => $this->provider,
+                    'query' => $query,
+                    'error' => $e->getMessage(),
+                ]);
+                return [];
+            }
         });
     }
 
@@ -107,153 +109,53 @@ class AddressLookupService
     public function getAddressDetails(string $placeId): ?array
     {
         $cacheKey = 'address_details_' . $this->provider . '_' . $placeId;
-
-        // Bust any previously cached null/empty result so the fallback chain can retry
-        $cached = Cache::get($cacheKey);
-        if ($cached === null || (is_array($cached) && empty(array_filter($cached)))) {
-            Cache::forget($cacheKey);
-        }
-
         return Cache::remember($cacheKey, 3600, function () use ($placeId) {
-            // Determine provider order: prefer provider that issued the place_id
-            $providerOrder = $this->getDetailsProviderOrder($placeId);
-
-            foreach ($providerOrder as $provider) {
-                try {
-                    $details = $this->getDetailsFromProvider($provider, $placeId);
-                    if ($details) {
-                        return $this->mergeWithZillowPropertyDetails($details);
+            try {
+                if (!empty($this->googleApiKey)) {
+                    $googleDetails = $this->googleDetails($placeId);
+                    if ($googleDetails) {
+                        return $this->mergeWithZillowPropertyDetails($googleDetails);
                     }
-                } catch (\Exception $e) {
-                    Log::warning('Address details provider failed', [
-                        'provider' => $provider,
-                        'place_id' => $placeId,
-                        'error' => $e->getMessage(),
-                    ]);
                 }
-            }
 
-            Log::warning('Address details returned null from all providers', [
-                'place_id' => $placeId,
-                'providers_tried' => $providerOrder,
-            ]);
+                switch ($this->provider) {
+                    case 'google':
+                        if (empty($this->googleApiKey)) {
+                            throw new \Exception('Google Places API key not configured');
+                        }
+                        return $this->mergeWithZillowPropertyDetails($this->googleDetails($placeId));
 
-            return null;
-        });
-    }
-
-    private function getDetailsProviderOrder(string $placeId): array
-    {
-        // If the place_id looks like a numeric OSM id, try locationiq first
-        $isNumericId = ctype_digit($placeId);
-        // Google place_ids typically start with "ChIJ" or "Eh"
-        $looksLikeGoogle = str_starts_with($placeId, 'ChIJ') || str_starts_with($placeId, 'Eh');
-
-        $providers = [];
-
-        if ($looksLikeGoogle && !empty($this->googleApiKey)) {
-            $providers[] = 'google';
-        }
-
-        if ($isNumericId && !empty($this->locationIqKey)) {
-            $providers[] = 'locationiq';
-        }
-
-        // Always add the configured provider and remaining available ones
-        $providers[] = $this->provider;
-
-        if (!empty($this->googleApiKey)) {
-            $providers[] = 'google';
-        }
-        if (!empty($this->locationIqKey)) {
-            $providers[] = 'locationiq';
-        }
-        if (!empty($this->zillowServerToken)) {
-            $providers[] = 'zillow';
-        }
-
-        return array_values(array_unique($providers));
-    }
-
-    private function getDetailsFromProvider(string $provider, string $placeId): ?array
-    {
-        switch ($provider) {
-            case 'google':
-                if (empty($this->googleApiKey)) {
-                    return null;
+                    case 'zillow':
+                    default:
+                        if (empty($this->zillowServerToken)) {
+                            throw new \Exception('Zillow API token not configured');
+                        }
+                        return $this->zillowDetails($placeId);
                 }
-                return $this->googleDetails($placeId);
-
-            case 'locationiq':
-                if (empty($this->locationIqKey)) {
-                    return null;
-                }
-                return $this->locationIqDetails($placeId);
-
-            case 'zillow':
-                if (empty($this->zillowServerToken)) {
-                    return null;
-                }
-                return $this->zillowDetails($placeId);
-
-            default:
+            } catch (\Exception $e) {
+                Log::error('Address details lookup failed', [
+                    'provider' => $this->provider,
+                    'place_id' => $placeId,
+                    'error' => $e->getMessage()
+                ]);
                 return null;
-        }
+            }
+        });
     }
 
     private function searchWithConfiguredProvider(string $query, array $options = []): array
     {
-        return $this->searchWithProvider($this->provider, $query, $options);
-    }
-
-    private function searchWithProvider(string $provider, string $query, array $options = []): array
-    {
-        switch ($provider) {
+        switch ($this->provider) {
             case 'google':
                 if (empty($this->googleApiKey)) {
                     throw new \Exception('Google Places API key not configured');
                 }
                 return $this->googleAutocomplete($query, $options);
 
-            case 'locationiq':
-                if (empty($this->locationIqKey)) {
-                    throw new \Exception('LocationIQ API key not configured');
-                }
-                return $this->locationIqAutocomplete($query, $options);
-
-            case 'geoapify':
-                if (empty($this->geoapifyKey)) {
-                    throw new \Exception('Geoapify API key not configured');
-                }
-                return $this->geoapifyAutocomplete($query, $options);
-
             case 'zillow':
             default:
                 return $this->zillowAutocomplete($query, $options);
         }
-    }
-
-    private function getAutocompleteProviderOrder(): array
-    {
-        $providers = [$this->provider];
-
-        if (!empty($this->googleApiKey)) {
-            array_unshift($providers, 'google');
-        }
-
-        if (!empty($this->locationIqKey)) {
-            $providers[] = 'locationiq';
-        }
-
-        if (!empty($this->geoapifyKey)) {
-            $providers[] = 'geoapify';
-        }
-
-        if (!empty($this->zillowServerToken)) {
-            $providers[] = 'zillow';
-        }
-
-        return array_values(array_unique($providers));
     }
 
     private function mergeWithZillowPropertyDetails(?array $details): ?array
