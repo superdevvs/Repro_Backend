@@ -73,6 +73,7 @@ return [
         'server_token' => env('ZILLOW_SERVER_TOKEN', '78c8cbd5fbbba256de6dc99f22e77d92'),
         'browser_token' => env('ZILLOW_BROWSER_TOKEN', '4f3d8422267deb1e05e83cc409b6bb61'),
         'base_url' => env('ZILLOW_BASE_URL', 'https://api.bridgedataoutput.com/api/v2'),
+        'legacy_lookup_url' => env('ZILLOW_LEGACY_LOOKUP_URL', 'https://pro.reprophotos.com/get_zillow_info.php'),
     ],
 
     // Address provider selector

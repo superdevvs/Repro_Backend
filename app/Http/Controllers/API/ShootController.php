@@ -1909,6 +1909,25 @@ class ShootController extends Controller
             }
 
             // 6. Create shoot
+            $propertyDetailsPayload = is_array($validated['property_details'] ?? null)
+                ? $validated['property_details']
+                : [];
+            $autoPropertyTourLinks = array_filter([
+                'property_mls' => $validated['mls_id']
+                    ?? data_get($propertyDetailsPayload, 'mls_id')
+                    ?? data_get($propertyDetailsPayload, 'mlsId'),
+                'property_price' => data_get($propertyDetailsPayload, 'price'),
+                'property_lot_size' => data_get($propertyDetailsPayload, 'lot_size')
+                    ?? data_get($propertyDetailsPayload, 'lotSize'),
+            ], static fn ($value) => $value !== null && $value !== '');
+            $initialTourLinks = [];
+            if (array_key_exists('tour_links', $validated) && is_array($validated['tour_links'])) {
+                $initialTourLinks = $validated['tour_links'];
+            }
+            if (!empty($autoPropertyTourLinks)) {
+                $initialTourLinks = array_merge($autoPropertyTourLinks, $initialTourLinks);
+            }
+
             $shoot = Shoot::create([
                 'client_id' => $validated['client_id'],
                 'rep_id' => $repId,
@@ -1918,9 +1937,12 @@ class ShootController extends Controller
                 'city' => $validated['city'],
                 'state' => $validated['state'],
                 'zip' => $validated['zip'],
-                'mls_id' => $validated['mls_id'] ?? null,
+                'mls_id' => $validated['mls_id']
+                    ?? data_get($propertyDetailsPayload, 'mls_id')
+                    ?? data_get($propertyDetailsPayload, 'mlsId'),
                 'listing_source' => $validated['listing_source'] ?? null,
                 'property_details' => $validated['property_details'] ?? null,
+                'tour_links' => !empty($initialTourLinks) ? $initialTourLinks : null,
                 'scheduled_at' => $scheduledAt,
                 'scheduled_date' => $scheduledAt ? $scheduledAt->format('Y-m-d') : null, // Legacy
                 'time' => $scheduledAt ? $scheduledAt->format('H:i') : ($validated['time'] ?? null), // Legacy
@@ -2889,6 +2911,10 @@ class ShootController extends Controller
         
         if ($propertyDetailsUpdated) {
             $shoot->property_details = $pd;
+            $shoot->mls_id = $validated['mls_id']
+                ?? data_get($pd, 'mls_id')
+                ?? data_get($pd, 'mlsId')
+                ?? $shoot->mls_id;
             $invoiceNeedsRefresh = true;
         }
 
@@ -2897,6 +2923,26 @@ class ShootController extends Controller
         }
         if (array_key_exists('property_status', $validated)) {
             $shoot->property_status = $validated['property_status'];
+        }
+
+        $autoPropertyTourLinks = [];
+        if ($propertyDetailsUpdated) {
+            $autoPropertyTourLinks = array_filter([
+                'property_mls' => $validated['mls_id']
+                    ?? data_get($pd, 'mls_id')
+                    ?? data_get($pd, 'mlsId'),
+                'property_price' => data_get($pd, 'price'),
+                'property_lot_size' => data_get($pd, 'lot_size')
+                    ?? data_get($pd, 'lotSize'),
+            ], static fn ($value) => $value !== null && $value !== '');
+        }
+
+        if (!empty($autoPropertyTourLinks)) {
+            $currentTourLinks = $shoot->tour_links ?? [];
+            if (is_string($currentTourLinks)) {
+                $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
+            }
+            $shoot->tour_links = array_merge($currentTourLinks, $autoPropertyTourLinks);
         }
 
         if (array_key_exists('tour_links', $validated) && is_array($validated['tour_links'])) {

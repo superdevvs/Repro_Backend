@@ -166,6 +166,19 @@ class AddressLookupService
 
         $zillowDetails = $this->lookupZillowDetailsByAddress($details);
         if (!$zillowDetails) {
+            $details['source'] = 'google_places_only';
+            $details['confidence'] = 0.35;
+            $details['field_sources'] = [
+                'formatted_address' => 'google_places',
+                'address' => 'google_places',
+                'city' => 'google_places',
+                'state' => 'google_places',
+                'zip' => 'google_places',
+                'country' => 'google_places',
+                'latitude' => 'google_places',
+                'longitude' => 'google_places',
+            ];
+            $details['property_source_chain'] = ['google_places'];
             return $details;
         }
 
@@ -176,11 +189,50 @@ class AddressLookupService
             }
         }
 
-        foreach (['bedrooms', 'bathrooms', 'sqft', 'garage_cars', 'garage_sqft', 'property_details', 'zpid'] as $field) {
+        foreach ([
+            'bedrooms',
+            'bathrooms',
+            'sqft',
+            'mls_id',
+            'price',
+            'lot_size',
+            'year_built',
+            'property_type',
+            'garage_cars',
+            'garage_sqft',
+            'property_details',
+            'raw_parcel_data',
+            'raw_assessment_data',
+            'raw_legacy_data',
+            'manual_override',
+            'override_applied',
+            'override_fields',
+            'zpid',
+        ] as $field) {
             if (array_key_exists($field, $zillowDetails) && $zillowDetails[$field] !== null) {
                 $merged[$field] = $zillowDetails[$field];
             }
         }
+
+        $merged['source'] = $zillowDetails['source'] ?? 'google_plus_zillow';
+        $merged['confidence'] = $zillowDetails['confidence'] ?? 0.8;
+        $merged['field_sources'] = array_merge(
+            [
+                'formatted_address' => 'google_places',
+                'address' => 'google_places',
+                'city' => 'google_places',
+                'state' => 'google_places',
+                'zip' => 'google_places',
+                'country' => 'google_places',
+                'latitude' => 'google_places',
+                'longitude' => 'google_places',
+            ],
+            $zillowDetails['field_sources'] ?? []
+        );
+        $merged['property_source_chain'] = array_values(array_unique(array_merge(
+            ['google_places'],
+            $zillowDetails['property_source_chain'] ?? [$merged['source']]
+        )));
 
         return $merged;
     }
@@ -216,7 +268,30 @@ class AddressLookupService
                         'bedrooms' => isset($property['beds']) ? (float) $property['beds'] : null,
                         'bathrooms' => isset($property['baths']) ? (float) $property['baths'] : null,
                         'sqft' => isset($property['sqft']) ? (int) $property['sqft'] : null,
-                        'property_details' => $property['raw_data'] ?? $property,
+                        'mls_id' => $property['mls_id'] ?? null,
+                        'price' => isset($property['price']) ? (float) $property['price'] : null,
+                        'lot_size' => isset($property['lot_size']) ? (int) $property['lot_size'] : null,
+                        'year_built' => isset($property['year_built']) ? (int) $property['year_built'] : null,
+                        'property_type' => $property['property_type'] ?? null,
+                        'garage_cars' => isset($property['garage_cars']) ? (int) $property['garage_cars'] : null,
+                        'garage_sqft' => isset($property['garage_sqft']) ? (int) $property['garage_sqft'] : null,
+                        'property_details' => array_merge(
+                            $property,
+                            [
+                                'raw_data' => $property['raw_data'] ?? null,
+                            ]
+                        ),
+                        'raw_parcel_data' => $property['raw_parcel'] ?? data_get($property, 'raw_data.parcel'),
+                        'raw_assessment_data' => $property['raw_assessment'] ?? data_get($property, 'raw_data.assessment'),
+                        'raw_legacy_data' => $property['raw_legacy_lookup'] ?? data_get($property, 'raw_data.legacy_lookup'),
+                        'manual_override' => $property['manual_override'] ?? data_get($property, 'raw_data.manual_override'),
+                        'override_applied' => (bool) ($property['override_applied'] ?? false),
+                        'override_fields' => $property['override_fields'] ?? [],
+                        'zpid' => isset($property['zpid']) ? (string) $property['zpid'] : (isset($property['raw_data']['zpid']) ? (string) $property['raw_data']['zpid'] : null),
+                        'source' => $property['source'] ?? null,
+                        'confidence' => $property['confidence'] ?? null,
+                        'field_sources' => $this->mapPropertyFieldSourcesToAddressFields($property['field_sources'] ?? []),
+                        'property_source_chain' => $property['property_source_chain'] ?? [],
                     ];
                 }
             }
@@ -228,6 +303,32 @@ class AddressLookupService
         }
 
         return null;
+    }
+
+    private function mapPropertyFieldSourcesToAddressFields(array $fieldSources): array
+    {
+        $mapping = [
+            'beds' => 'bedrooms',
+            'baths' => 'bathrooms',
+            'sqft' => 'sqft',
+            'mls_id' => 'mls_id',
+            'price' => 'price',
+            'lot_size' => 'lot_size',
+            'year_built' => 'year_built',
+            'property_type' => 'property_type',
+            'garage_cars' => 'garage_cars',
+            'garage_sqft' => 'garage_sqft',
+            'zpid' => 'zpid',
+        ];
+
+        $mapped = [];
+        foreach ($mapping as $propertyField => $addressField) {
+            if (!empty($fieldSources[$propertyField])) {
+                $mapped[$addressField] = $fieldSources[$propertyField];
+            }
+        }
+
+        return $mapped;
     }
 
     private function findBridgePropertyIdByAddress(string $searchAddress): ?string
@@ -1450,7 +1551,40 @@ class AddressLookupService
             }
         }
 
-        return $primarySqft + $supplementalSqft;
+        if ($supplementalSqft > 0) {
+            return $primarySqft + $supplementalSqft;
+        }
+
+        $hasFinishedAreaMarker = false;
+        foreach ($areas as $area) {
+            $type = (string) ($area['type'] ?? '');
+            if (str_ends_with($type, ' Finished') || str_starts_with($type, 'Finished ')) {
+                $hasFinishedAreaMarker = true;
+                break;
+            }
+        }
+
+        if (!$hasFinishedAreaMarker) {
+            return $primarySqft;
+        }
+
+        $basementCandidates = [];
+        foreach ($areas as $area) {
+            if (($area['type'] ?? null) !== 'Basement') {
+                continue;
+            }
+
+            $sqft = $this->getAreaSquareFeet($area);
+            if ($sqft !== null) {
+                $basementCandidates[] = $sqft;
+            }
+        }
+
+        if (empty($basementCandidates)) {
+            return $primarySqft;
+        }
+
+        return $primarySqft + max($basementCandidates);
     }
 
     private function zillowDetails(string $placeId): ?array
@@ -1512,10 +1646,32 @@ class AddressLookupService
                     
                     if ($bathrooms == 0) $bathrooms = null;
                 }
-                
+
+                $yearBuilt = null;
+                if (!empty($building) && isset($building[0])) {
+                    $yearBuilt = isset($building[0]['yearBuilt']) ? (int) $building[0]['yearBuilt'] : null;
+                }
+
                 // Prefer finished building area types, and add finished lower-level space
                 // when the parcel only exposes the main-floor living area as the base.
                 $sqft = $this->getPreferredFinishedSqft($areas);
+                $lotSize = isset($property['lotSizeSquareFeet']) ? (int) $property['lotSizeSquareFeet'] : null;
+                $propertyType = $property['landUseDescription'] ?? $property['propertyType'] ?? null;
+                $propertyDetails = array_merge($property, [
+                    'beds' => $bedrooms !== null ? (float) $bedrooms : null,
+                    'bedrooms' => $bedrooms !== null ? (float) $bedrooms : null,
+                    'baths' => $bathrooms !== null ? (float) $bathrooms : null,
+                    'bathrooms' => $bathrooms !== null ? (float) $bathrooms : null,
+                    'sqft' => $sqft !== null ? (int) $sqft : null,
+                    'squareFeet' => $sqft !== null ? (int) $sqft : null,
+                    'lot_size' => $lotSize,
+                    'lotSize' => $lotSize,
+                    'year_built' => $yearBuilt,
+                    'yearBuilt' => $yearBuilt,
+                    'property_type' => $propertyType,
+                    'propertyType' => $propertyType,
+                    'zpid' => $property['zpid'] ?? null,
+                ]);
 
                 // Get garage information
                 $garageCars = null;
@@ -1562,10 +1718,27 @@ class AddressLookupService
                     'bedrooms' => $bedrooms !== null ? (float)$bedrooms : null,
                     'bathrooms' => $bathrooms !== null ? (float)$bathrooms : null,
                     'sqft' => $sqft !== null ? (int)$sqft : null,
+                    'lot_size' => $lotSize,
+                    'year_built' => $yearBuilt,
+                    'property_type' => $propertyType,
                     'garage_cars' => $garageCars,
                     'garage_sqft' => $garageSqft,
-                    'property_details' => $property,
+                    'property_details' => $propertyDetails,
                     'zpid' => $placeId,
+                    'source' => 'bridge_parcel_id',
+                    'confidence' => 0.9,
+                    'field_sources' => array_filter([
+                        'bedrooms' => $bedrooms !== null ? 'bridge_parcel_id' : null,
+                        'bathrooms' => $bathrooms !== null ? 'bridge_parcel_id' : null,
+                        'sqft' => $sqft !== null ? 'bridge_parcel_id' : null,
+                        'lot_size' => $lotSize !== null ? 'bridge_parcel_id' : null,
+                        'year_built' => $yearBuilt !== null ? 'bridge_parcel_id' : null,
+                        'property_type' => $propertyType !== null ? 'bridge_parcel_id' : null,
+                        'garage_cars' => $garageCars !== null ? 'bridge_parcel_id' : null,
+                        'garage_sqft' => $garageSqft !== null ? 'bridge_parcel_id' : null,
+                        'zpid' => 'bridge_parcel_id',
+                    ]),
+                    'property_source_chain' => ['bridge_parcel_id'],
                 ];
             }
         } catch (\Exception $e) {

@@ -122,6 +122,10 @@ class AddressLookupController extends Controller
                     'sqft' => null,
                     'property_details' => null,
                     'zpid' => $request->input('place_id'),
+                    'source' => 'lookup_failed',
+                    'confidence' => 0.0,
+                    'field_sources' => [],
+                    'property_source_chain' => [],
                 ];
             }
 
