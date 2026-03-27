@@ -109,11 +109,11 @@ class AddressLookupController extends Controller
                 ]);
                 
                 $details = [
-                    'formatted_address' => '',
-                    'address' => '',
-                    'city' => '',
-                    'state' => '',
-                    'zip' => '',
+                    'formatted_address' => null,
+                    'address' => null,
+                    'city' => null,
+                    'state' => null,
+                    'zip' => null,
                     'country' => 'US',
                     'latitude' => null,
                     'longitude' => null,
