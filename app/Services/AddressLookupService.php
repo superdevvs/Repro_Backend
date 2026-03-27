@@ -75,30 +75,28 @@ class AddressLookupService
         $cacheKey = 'address_search_' . md5($this->provider . '|' . $query . serialize($options));
 
         return Cache::remember($cacheKey, 120, function () use ($query, $options) {
-            if (!empty($this->googleApiKey)) {
+            foreach ($this->getAutocompleteProviderOrder() as $provider) {
                 try {
-                    $googleResults = $this->googleAutocomplete($query, $options);
-                    if (!empty($googleResults)) {
-                        return $googleResults;
+                    $results = $this->searchWithProvider($provider, $query, $options);
+                    if (!empty($results)) {
+                        return $results;
                     }
                 } catch (\Exception $e) {
-                    Log::warning('Google autocomplete failed, falling back to configured provider', [
+                    Log::warning('Address autocomplete provider failed', [
+                        'provider' => $provider,
+                        'configured_provider' => $this->provider,
                         'query' => $query,
                         'error' => $e->getMessage(),
                     ]);
                 }
             }
 
-            try {
-                return $this->searchWithConfiguredProvider($query, $options);
-            } catch (\Exception $e) {
-                Log::warning('Address autocomplete failed', [
-                    'provider' => $this->provider,
-                    'query' => $query,
-                    'error' => $e->getMessage(),
-                ]);
-                return [];
-            }
+            Log::warning('Address autocomplete returned no suggestions from any provider', [
+                'configured_provider' => $this->provider,
+                'query' => $query,
+            ]);
+
+            return [];
         });
     }
 
@@ -151,7 +149,12 @@ class AddressLookupService
 
     private function searchWithConfiguredProvider(string $query, array $options = []): array
     {
-        switch ($this->provider) {
+        return $this->searchWithProvider($this->provider, $query, $options);
+    }
+
+    private function searchWithProvider(string $provider, string $query, array $options = []): array
+    {
+        switch ($provider) {
             case 'google':
                 if (empty($this->googleApiKey)) {
                     throw new \Exception('Google Places API key not configured');
@@ -174,6 +177,29 @@ class AddressLookupService
             default:
                 return $this->zillowAutocomplete($query, $options);
         }
+    }
+
+    private function getAutocompleteProviderOrder(): array
+    {
+        $providers = [$this->provider];
+
+        if (!empty($this->googleApiKey)) {
+            array_unshift($providers, 'google');
+        }
+
+        if (!empty($this->locationIqKey)) {
+            $providers[] = 'locationiq';
+        }
+
+        if (!empty($this->geoapifyKey)) {
+            $providers[] = 'geoapify';
+        }
+
+        if (!empty($this->zillowServerToken)) {
+            $providers[] = 'zillow';
+        }
+
+        return array_values(array_unique($providers));
     }
 
     private function mergeWithZillowPropertyDetails(?array $details): ?array
