@@ -1068,38 +1068,60 @@ class AddressLookupService
 
     private function locationIqDetails(string $placeId): ?array
     {
+        // Try OSM-style lookup first (N/W/R prefix + osm_id)
+        $osmPrefixes = ['W', 'N', 'R'];
+        foreach ($osmPrefixes as $prefix) {
+            try {
+                $params = [
+                    'key' => $this->locationIqKey,
+                    'osm_type' => $prefix,
+                    'osm_id' => $placeId,
+                    'format' => 'json',
+                    'addressdetails' => 1,
+                ];
+                $response = Http::withOptions(['verify' => false])
+                    ->get($this->locationIqBaseUrl . '/reverse', $params);
+                if ($response->successful()) {
+                    $data = $response->json();
+                    if (is_array($data) && !empty($data['address'] ?? null)) {
+                        return $this->parseLocationIqAddress($data);
+                    }
+                }
+            } catch (\Exception $e) {
+                // Try next prefix
+            }
+        }
+
+        // Try the place_id lookup endpoint as a fallback
         $params = [
             'key' => $this->locationIqKey,
             'place_id' => $placeId,
             'format' => 'json',
         ];
-
         $urls = [
             $this->locationIqBaseUrl . '/lookup',
             $this->locationIqBaseUrl . '/lookup.php',
         ];
-
-        $response = null;
         foreach ($urls as $url) {
-            $response = Http::withOptions(['verify' => false])->get($url, $params);
-            if ($response->successful()) break;
+            try {
+                $response = Http::withOptions(['verify' => false])->get($url, $params);
+                if ($response->successful()) {
+                    $data = $response->json();
+                    if (isset($data[0])) $data = $data[0];
+                    if (is_array($data) && !empty($data['address'] ?? null)) {
+                        return $this->parseLocationIqAddress($data);
+                    }
+                }
+            } catch (\Exception $e) {
+                // Try next url
+            }
         }
 
-        if (!$response || !$response->successful()) {
-            Log::error('LocationIQ details lookup failed', [
-                'place_id' => $placeId,
-                'urls' => $urls,
-                'status' => $response ? $response->status() : 'no response',
-                'body' => $response ? $response->body() : null,
-            ]);
-            throw new \Exception('LocationIQ details lookup failed');
-        }
+        Log::warning('LocationIQ details lookup exhausted all methods', [
+            'place_id' => $placeId,
+        ]);
 
-        $data = $response->json();
-        if (isset($data[0])) $data = $data[0];
-        if (!is_array($data)) return null;
-
-        return $this->parseLocationIqAddress($data);
+        return null;
     }
 
 
