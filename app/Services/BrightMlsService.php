@@ -57,10 +57,7 @@ class BrightMlsService
         // Try to load from database settings first, fallback to config
         $settings = $this->loadSettings('integrations.bright_mls');
 
-        $this->mode = strtolower((string) ($settings['apiMode'] ?? config('services.bright_mls.api_mode', self::MODE_LEGACY)));
-        if (!in_array($this->mode, [self::MODE_LEGACY, self::MODE_NEW], true)) {
-            $this->mode = self::MODE_LEGACY;
-        }
+        $this->mode = $this->resolveConfiguredMode($settings);
 
         $this->environment = strtolower((string) ($settings['environment'] ?? config('services.bright_mls.environment', 't1')));
         $defaults = $this->resolveEnvironmentDefaults($this->mode, $this->environment);
@@ -82,6 +79,33 @@ class BrightMlsService
         );
         $this->enabled = $settings['enabled'] ?? config('services.bright_mls.enabled', true);
         $this->strategy = $this->buildStrategy();
+    }
+
+    private function resolveConfiguredMode(array $settings): string
+    {
+        $savedMode = strtolower((string) ($settings['apiMode'] ?? ''));
+        if (in_array($savedMode, [self::MODE_LEGACY, self::MODE_NEW], true)) {
+            return $savedMode;
+        }
+
+        $savedApiUrl = strtolower(trim((string) ($settings['apiUrl'] ?? '')));
+        $savedImportUrlBase = strtolower(trim((string) ($settings['importUrlBase'] ?? '')));
+        $savedCombinedUrls = $savedApiUrl . ' ' . $savedImportUrlBase;
+
+        if (str_contains($savedCombinedUrls, 'bright-solutions.co')) {
+            return self::MODE_NEW;
+        }
+
+        if (str_contains($savedCombinedUrls, 'brightmls.com')) {
+            return self::MODE_LEGACY;
+        }
+
+        $configMode = strtolower((string) config('services.bright_mls.api_mode', self::MODE_NEW));
+        if (!in_array($configMode, [self::MODE_LEGACY, self::MODE_NEW], true)) {
+            return self::MODE_NEW;
+        }
+
+        return $configMode;
     }
 
     private function buildStrategy(): BrightMlsStrategyInterface

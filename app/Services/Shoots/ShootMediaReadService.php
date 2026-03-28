@@ -1,0 +1,312 @@
+<?php
+
+namespace App\Services\Shoots;
+
+use App\Models\Shoot;
+use App\Models\ShootFile;
+use App\Models\User;
+use App\Services\DropboxWorkflowService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+
+class ShootMediaReadService
+{
+    public function __construct(
+        protected DropboxWorkflowService $dropboxService,
+        protected ShootFileAccessService $shootFileAccessService,
+        protected ShootAuthorizationSupport $authorizationSupport,
+        protected ShootPaymentStatusSupport $paymentStatusSupport
+    ) {
+    }
+
+    public function previewFileResponse(ShootFile $file)
+    {
+        if ($file->path && Storage::disk('public')->exists($file->path)) {
+            $path = Storage::disk('public')->path($file->path);
+            $mimeType = mime_content_type($path) ?: 'image/jpeg';
+
+            return response()->file($path, ['Content-Type' => $mimeType]);
+        }
+
+        if ($file->url && Str::startsWith($file->url, 'http')) {
+            return redirect($file->url);
+        }
+
+        if ($file->dropbox_path) {
+            try {
+                $url = $this->dropboxService->getTemporaryLink($file->dropbox_path);
+                if ($url) {
+                    return redirect($url);
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to get Dropbox preview link', [
+                    'file_id' => $file->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return response()->json(['message' => 'File not available'], 404);
+    }
+
+    public function getFilesPayload(Shoot $shoot, Request $request): array
+    {
+        $type = strtolower((string) $request->query('type', ''));
+        $user = $request->user();
+        $userId = $user ? $user->id : 'guest';
+        $userRole = $user ? $user->role : 'guest';
+        $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole;
+
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            return ['data' => $cached];
+        }
+
+        Log::debug('getFiles called', [
+            'shoot_id' => $shoot->id,
+            'user_id' => $userId,
+            'user_role' => $userRole,
+            'type' => $type,
+        ]);
+
+        $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
+        if ($this->authorizationSupport->isClientUser($user)) {
+            $filesQuery->where(function ($query) {
+                $query->where('is_hidden', false)->orWhereNull('is_hidden');
+            });
+        }
+
+        if ($type === 'raw') {
+            $filesQuery->where(function ($query) {
+                $query->where('workflow_stage', ShootFile::STAGE_TODO)->orWhereNull('workflow_stage');
+            });
+        } elseif ($type === 'edited') {
+            $filesQuery->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]);
+        }
+
+        $files = $filesQuery->get();
+        if ($type === 'edited') {
+            $files = $files
+                ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
+                ->values();
+        }
+
+        $dropboxUrls = $this->resolveDropboxUrls($files);
+        $needsWatermark = $this->needsWatermark($shoot, $user);
+
+        $formattedFiles = $files->map(function (ShootFile $file) use ($dropboxUrls, $needsWatermark) {
+            return $this->formatFile($file, $dropboxUrls, $needsWatermark);
+        })->values()->all();
+
+        Cache::put($cacheKey, $formattedFiles, now()->addSeconds(30));
+
+        return [
+            'data' => $formattedFiles,
+            'count' => count($formattedFiles),
+        ];
+    }
+
+    public function listMediaPayload(Shoot $shoot, string $type): array
+    {
+        return [
+            'data' => $this->dropboxService->listShootFiles($shoot, $type),
+            'counts' => [
+                'raw_photo_count' => $shoot->raw_photo_count,
+                'edited_photo_count' => $shoot->edited_photo_count,
+                'extra_photo_count' => $shoot->extra_photo_count,
+                'expected_raw_count' => $shoot->expected_raw_count,
+                'expected_final_count' => $shoot->expected_final_count,
+                'raw_missing_count' => $shoot->raw_missing_count,
+                'edited_missing_count' => $shoot->edited_missing_count,
+                'bracket_mode' => $shoot->bracket_mode,
+            ],
+        ];
+    }
+
+    public function resolveBulkDownloadUrls(Shoot $shoot, array $fileIds): array
+    {
+        $files = $shoot->files()->whereIn('id', $fileIds)->get();
+
+        return $files->map(fn (ShootFile $file) => $this->shootFileAccessService->resolveFileUrl($file))
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    protected function resolveDropboxUrls($files): array
+    {
+        $dropboxUrls = [];
+        $dropboxFiles = $files->filter(fn (ShootFile $file) => $file->dropbox_path && !$file->url && !$file->path);
+
+        foreach ($dropboxFiles as $file) {
+            try {
+                $urlCacheKey = 'dropbox_url_' . md5($file->dropbox_path);
+                $url = Cache::remember($urlCacheKey, now()->addHours(4), function () use ($file) {
+                    return $this->dropboxService->getTemporaryLink($file->dropbox_path);
+                });
+                if ($url) {
+                    $dropboxUrls[$file->id] = $url;
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to get Dropbox link', [
+                    'file_id' => $file->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $dropboxUrls;
+    }
+
+    protected function needsWatermark(Shoot $shoot, ?User $user): bool
+    {
+        $isClient = $this->authorizationSupport->isClientUser($user);
+        $paymentStatus = $shoot->payment_status;
+        if (!$paymentStatus || $paymentStatus === 'pending') {
+            $paymentStatus = $this->paymentStatusSupport->calculatePaymentStatus(
+                (float) ($shoot->total_paid ?? 0),
+                (float) ($shoot->total_quote ?? 0)
+            );
+        }
+
+        return $isClient && !$shoot->bypass_paywall && $paymentStatus !== 'paid';
+    }
+
+    protected function formatFile(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
+    {
+        $url = null;
+        $thumbUrl = null;
+        $mediumUrl = null;
+        $largeUrl = null;
+        $originalUrl = null;
+
+        if ($needsWatermark) {
+            $thumbUrl = $this->resolvePreviewPath($file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path);
+            $mediumUrl = $this->resolvePreviewPath(
+                $file->watermarked_web_path ?? $file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path
+            );
+            $largeUrl = $mediumUrl;
+            $url = $mediumUrl ?? $thumbUrl;
+            $originalUrl = $url;
+
+            if (!$thumbUrl && !$mediumUrl && $file->shouldBeWatermarked()) {
+                $this->queueWatermark($file);
+            }
+        } else {
+            $originalUrl = $dropboxUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
+            $url = $originalUrl;
+            $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
+            $mediumUrl = $this->resolvePreviewPath($file->web_path ?? $file->thumbnail_path ?? $file->placeholder_path);
+            $largeUrl = $mediumUrl;
+
+            if (!$thumbUrl) {
+                $thumbUrl = $mediumUrl ?? $originalUrl;
+            }
+            if (!$mediumUrl) {
+                $mediumUrl = $thumbUrl ?? $originalUrl;
+                $largeUrl = $mediumUrl;
+            }
+        }
+
+        $fileData = [
+            'id' => $file->id,
+            'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
+            'stored_filename' => $file->stored_filename,
+            'url' => $url,
+            'path' => $needsWatermark ? null : $file->path,
+            'file_type' => $file->file_type ?? $file->mime_type,
+            'fileType' => $file->file_type ?? $file->mime_type,
+            'workflow_stage' => $file->workflow_stage,
+            'workflowStage' => $file->workflow_stage,
+            'is_extra' => ($file->media_type ?? 'raw') === 'extra',
+            'isExtra' => ($file->media_type ?? 'raw') === 'extra',
+            'is_cover' => $file->is_cover ?? false,
+            'is_favorite' => $file->is_favorite ?? false,
+            'file_size' => $file->file_size,
+            'fileSize' => $file->file_size,
+            'sort_order' => $file->sort_order ?? 0,
+            'is_hidden' => $file->is_hidden ?? false,
+            'media_type' => $file->media_type,
+            'thumbnail_path' => $needsWatermark ? null : $file->thumbnail_path,
+            'web_path' => $needsWatermark ? null : $file->web_path,
+            'placeholder_path' => $needsWatermark ? null : $file->placeholder_path,
+            'watermarked_storage_path' => $file->watermarked_storage_path,
+            'watermarked_thumbnail_path' => $file->watermarked_thumbnail_path,
+            'watermarked_web_path' => $file->watermarked_web_path,
+            'watermarked_placeholder_path' => $file->watermarked_placeholder_path,
+            'processed_at' => $file->processed_at,
+            'created_at' => $file->created_at?->toIso8601String(),
+            'uploaded_at' => $file->uploaded_at?->toIso8601String() ?? $file->created_at?->toIso8601String(),
+        ];
+
+        foreach ([
+            'thumb_url' => $thumbUrl,
+            'thumb' => $thumbUrl,
+            'medium_url' => $mediumUrl,
+            'medium' => $mediumUrl,
+            'large_url' => $largeUrl,
+            'large' => $largeUrl,
+            'original_url' => $originalUrl,
+            'original' => $originalUrl,
+        ] as $key => $value) {
+            if ($value) {
+                $fileData[$key] = $value;
+            }
+        }
+
+        if (is_array($file->metadata)) {
+            foreach (['width', 'height', 'captured_at'] as $key) {
+                if (array_key_exists($key, $file->metadata)) {
+                    $fileData[$key] = $file->metadata[$key];
+                }
+            }
+        }
+
+        return $fileData;
+    }
+
+    protected function resolvePreviewPath(?string $path): ?string
+    {
+        if (!$path) {
+            return null;
+        }
+        if (preg_match('/^https?:\/\//i', $path)) {
+            return $path;
+        }
+
+        $clean = ltrim($path, '/');
+        if (Str::startsWith($clean, 'storage/')) {
+            $clean = substr($clean, 8);
+        }
+
+        if (Storage::disk('public')->exists($clean)) {
+            return $this->shootFileAccessService->resolvePublicStorageUrl($clean);
+        }
+
+        try {
+            return $this->dropboxService->getTemporaryLink($path);
+        } catch (\Exception $e) {
+            Log::warning('Failed to resolve preview path', [
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    protected function queueWatermark(ShootFile $file): void
+    {
+        try {
+            \App\Jobs\GenerateWatermarkedImageJob::dispatch($file->fresh())->onQueue('watermarks');
+        } catch (\Exception $e) {
+            Log::warning('Failed to queue watermark job', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+}

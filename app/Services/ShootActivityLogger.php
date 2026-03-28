@@ -22,6 +22,8 @@ class ShootActivityLogger
         'shoot_completed',
         'shoot_delivered',
         'shoot_cancelled',
+        'cancellation_requested',
+        'cancellation_rejected',
         'shoot_updated',
         'shoot_deleted',
         'shoot_put_on_hold',
@@ -121,6 +123,8 @@ class ShootActivityLogger
 
             // Cancellation
             'shoot_cancelled' => 'Shoot cancelled' . $by . (isset($metadata['reason']) && $metadata['reason'] ? ": {$metadata['reason']}" : ''),
+            'cancellation_requested' => 'Cancellation requested' . $by . (isset($metadata['reason']) && $metadata['reason'] ? ": {$metadata['reason']}" : ''),
+            'cancellation_rejected' => 'Cancellation request rejected' . $by . (isset($metadata['rejection_reason']) && $metadata['rejection_reason'] ? ": {$metadata['rejection_reason']}" : ''),
 
             // Assignments
             'photographer_assigned' => 'Photographer assigned' . (isset($metadata['photographer_name']) && $metadata['photographer_name'] ? ": {$metadata['photographer_name']}" : '') . $by,

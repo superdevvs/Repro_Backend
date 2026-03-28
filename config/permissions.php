@@ -213,6 +213,13 @@ return [
                     'default_roles' => ['superadmin'],
                 ],
                 [
+                    'resource' => 'system-overview',
+                    'action' => 'view',
+                    'label' => 'System Overview',
+                    'description' => 'Open the superadmin system overview and observability workspace.',
+                    'default_roles' => ['superadmin'],
+                ],
+                [
                     'resource' => 'ai-editing',
                     'action' => 'view',
                     'label' => 'AI Editing',

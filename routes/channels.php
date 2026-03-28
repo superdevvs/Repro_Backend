@@ -69,3 +69,7 @@ Broadcast::channel('email.inbox', function ($user) use ($normalizeNotificationRo
 Broadcast::channel('email.user.{userId}', function ($user, $userId) {
     return $user && $user->id === (int) $userId;
 });
+
+Broadcast::channel('system-overview.superadmin', function ($user) {
+    return $user && $user->role === 'superadmin';
+});

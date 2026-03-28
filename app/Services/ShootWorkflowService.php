@@ -375,7 +375,6 @@ class ShootWorkflowService
             'review' => self::STATUS_EDITING,
             'ready_for_client' => self::STATUS_DELIVERED,
             'admin_verified' => self::STATUS_DELIVERED,
-            'ready' => self::STATUS_DELIVERED,
             'hold_on' => self::STATUS_ON_HOLD,
         ];
         if (isset($legacyMap[$currentStatus])) {
@@ -426,4 +425,3 @@ class ShootWorkflowService
         return $editors->sortBy(fn($e) => $loadMap[$e->id] ?? 0)->first()->id;
     }
 }
-

@@ -231,9 +231,10 @@ class DropboxWorkflowService
     /**
      * Upload file to ToDo folder
      */
-    public function uploadToTodo(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null)
+    public function uploadToTodo(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null)
     {
-        $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
+        $mediaType = $mediaTypeOverride
+            ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
 
         return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
     }
@@ -249,18 +250,25 @@ class DropboxWorkflowService
         ?string $mediaTypeOverride = null
     ): ShootFile
     {
-        $isExtra = $mediaTypeOverride === 'extra';
-        $prefix = $isExtra
-            ? 'EXTRA_'
-            : ($stage === ShootFile::STAGE_COMPLETED ? 'COMPLETED_' : 'TODO_');
+        $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging'], true)
+            ? $mediaTypeOverride
+            : null;
+        $prefix = match ($storageMediaType) {
+            'extra' => 'EXTRA_',
+            'floorplan' => 'FLOORPLAN_',
+            'virtual_staging' => 'VIRTUAL_STAGING_',
+            default => $stage === ShootFile::STAGE_COMPLETED ? 'COMPLETED_' : 'TODO_',
+        };
         $filename = $prefix . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
-        $dir = $isExtra
-            ? "shoots/{$shoot->id}/extra"
-            : "shoots/{$shoot->id}/" . ($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo');
+        $dir = match ($storageMediaType) {
+            'extra' => "shoots/{$shoot->id}/extra",
+            'floorplan' => "shoots/{$shoot->id}/floorplan",
+            'virtual_staging' => "shoots/{$shoot->id}/virtual_staging",
+            default => "shoots/{$shoot->id}/" . ($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
+        };
         $serverPath = $dir . '/' . $filename;
-        $defaultMediaType = $isExtra
-            ? 'extra'
-            : ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
+        $defaultMediaType = $storageMediaType
+            ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
 
         $existingFile = ShootFile::where('shoot_id', $shoot->id)
@@ -863,9 +871,10 @@ class DropboxWorkflowService
     /**
      * Upload file directly to Completed folder (for edited files)
      */
-    public function uploadToCompleted(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null)
+    public function uploadToCompleted(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null)
     {
-        $mediaType = $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
+        $mediaType = $mediaTypeOverride
+            ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
 
         return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
     }

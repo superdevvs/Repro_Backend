@@ -7,9 +7,11 @@ use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Console\Scheduling\Schedule;
 use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\ImpersonationMiddleware;
+use App\Http\Middleware\SystemOverviewTelemetryMiddleware;
 use App\Http\Middleware\ValidateExternalApiKey;
 use App\Jobs\BackupToDropboxJob;
 use App\Jobs\DispatchScheduledMessages;
+use App\Services\SystemOverviewTelemetryService;
 
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -30,6 +32,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(0, '05:00');
+        $schedule->command('system-overview:prune')->hourly();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
@@ -37,6 +40,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // Append impersonation middleware to run after auth
         $middleware->api(append: [
             ImpersonationMiddleware::class,
+            SystemOverviewTelemetryMiddleware::class,
         ]);
         
         $middleware->alias([
@@ -76,6 +80,14 @@ return Application::configure(basePath: dirname(__DIR__))
                 } elseif ($e instanceof \Illuminate\Auth\AuthenticationException) {
                     $status = 401;
                 }
+
+                if ($request->user()) {
+                    try {
+                        app(SystemOverviewTelemetryService::class)->recordException($request, $e, $status);
+                    } catch (\Throwable $telemetryError) {
+                        // Never let telemetry capture break the error response.
+                    }
+                }
                 
                 return response()->json([
                     'message' => $e->getMessage() ?: 'An error occurred',
@@ -88,7 +100,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 ], $status)
                 ->header('Access-Control-Allow-Origin', $origin)
                 ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-                ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id')
+                ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route')
                 ->header('Access-Control-Allow-Credentials', 'true');
             }
         });

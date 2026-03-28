@@ -1,0 +1,150 @@
+<?php
+
+namespace App\Services\Shoots;
+
+use App\Models\Shoot;
+use App\Models\ShootFile;
+use App\Models\User;
+use App\Services\Shoots\Actions\DeleteShootMediaAction;
+use Illuminate\Support\Facades\DB;
+
+class ShootMediaInteractionService
+{
+    public function __construct(
+        protected DeleteShootMediaAction $deleteShootMediaAction,
+        protected ShootMediaMutationSupportService $shootMediaMutationSupportService
+    ) {
+    }
+
+    public function toggleFavorite(ShootFile $file): array
+    {
+        $file->is_favorite = !$file->is_favorite;
+        $file->save();
+
+        return [
+            'message' => 'Favorite updated',
+            'file' => $file->fresh(),
+        ];
+    }
+
+    public function flagMedia(Shoot $shoot, ShootFile $file, ?string $reason, bool $clearFlag): array
+    {
+        if ($clearFlag) {
+            $file->flag_reason = null;
+            if ($file->workflow_stage === ShootFile::STAGE_FLAGGED) {
+                $file->workflow_stage = ShootFile::STAGE_TODO;
+            }
+            $file->save();
+
+            if ($shoot->files()->whereNotNull('flag_reason')->count() === 0) {
+                $shoot->is_flagged = false;
+                $shoot->admin_issue_notes = null;
+                $shoot->save();
+            }
+
+            return [
+                'message' => 'Flag cleared',
+                'file' => $file->fresh(),
+            ];
+        }
+
+        $file->flag_reason = $reason ?: 'Flagged via dashboard';
+        $file->workflow_stage = ShootFile::STAGE_FLAGGED;
+        $file->save();
+
+        $shoot->is_flagged = true;
+        $shoot->admin_issue_notes = $file->flag_reason;
+        $shoot->save();
+
+        return [
+            'message' => 'File flagged',
+            'file' => $file->fresh(),
+        ];
+    }
+
+    public function addComment(ShootFile $file, string $author, string $comment): array
+    {
+        $comments = $file->metadata['comments'] ?? [];
+        $comments[] = [
+            'author' => $author,
+            'comment' => $comment,
+            'timestamp' => now()->toIso8601String(),
+        ];
+
+        $file->metadata = array_merge($file->metadata ?? [], ['comments' => $comments]);
+        $file->save();
+
+        return [
+            'message' => 'Comment added',
+            'file' => $file->fresh(),
+        ];
+    }
+
+    public function bulkDelete(Shoot $shoot, iterable $files): array
+    {
+        $errors = [];
+
+        foreach ($files as $file) {
+            try {
+                $this->deleteShootMediaAction->execute($shoot, $file);
+            } catch (\Exception $e) {
+                $errors[] = $file->id;
+            }
+        }
+
+        return [
+            'payload' => [
+                'message' => empty($errors) ? 'Files deleted' : 'Some files failed to delete',
+                'failed_ids' => $errors,
+            ],
+            'status' => empty($errors) ? 200 : 207,
+        ];
+    }
+
+    public function reorderFiles(Shoot $shoot, array $fileIds, ?User $user = null): array
+    {
+        DB::transaction(function () use ($shoot, $fileIds) {
+            foreach ($fileIds as $index => $fileId) {
+                ShootFile::where('shoot_id', $shoot->id)
+                    ->where('id', $fileId)
+                    ->update(['sort_order' => $index]);
+            }
+        });
+
+        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, $user);
+
+        return [
+            'message' => 'File order saved',
+            'count' => count($fileIds),
+        ];
+    }
+
+    public function toggleHidden(Shoot $shoot, array $fileIds, bool $hidden): array
+    {
+        $updated = ShootFile::where('shoot_id', $shoot->id)
+            ->whereIn('id', $fileIds)
+            ->update(['is_hidden' => $hidden]);
+
+        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot);
+
+        return [
+            'message' => $hidden ? "Hidden {$updated} file(s)" : "Unhidden {$updated} file(s)",
+            'updated_count' => $updated,
+            'hidden' => $hidden,
+        ];
+    }
+
+    public function reclassify(Shoot $shoot, array $fileIds, string $mediaType): array
+    {
+        $updated = ShootFile::where('shoot_id', $shoot->id)
+            ->whereIn('id', $fileIds)
+            ->update(['media_type' => $mediaType]);
+
+        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot);
+
+        return [
+            'message' => "Reclassified {$updated} file(s) as {$mediaType}",
+            'updated_count' => $updated,
+        ];
+    }
+}

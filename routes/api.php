@@ -3,12 +3,18 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\API\ShootIssuesController;
+use App\Http\Controllers\API\ShootMediaController;
+use App\Http\Controllers\API\ShootNotesController;
+use App\Http\Controllers\API\ShootPaymentsController;
+use App\Http\Controllers\API\ShootPublicAssetsController;
 use App\Http\Controllers\Admin\PermissionController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceGroupController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\API\ShootController;
+use App\Http\Controllers\API\ShootWorkflowController;
 use App\Http\Controllers\API\DashboardController;
 use App\Http\Controllers\PhotographerAvailabilityController;
 use App\Http\Controllers\PhotographerShootController;
@@ -38,6 +44,9 @@ use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\FotelloController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\EditorRatesController;
+use App\Http\Controllers\API\WeatherController;
+use App\Http\Controllers\API\SystemTelemetryController;
+use App\Http\Controllers\API\Admin\SystemOverviewController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
 use App\Http\Controllers\StripePaymentController;
@@ -56,6 +65,9 @@ Route::get('/ping', function () {
         'message' => 'API is working V1'
     ]);
 });
+
+Route::get('/weather', [WeatherController::class, 'show'])
+    ->middleware('throttle:60,1');
 
 // Debug route to check PHP upload limits
 Route::get('/php-limits', function () {
@@ -207,7 +219,7 @@ Route::get('square/config', [App\Http\Controllers\TestSquareController::class, '
     ->name('api.square.config');
 
 // Public payment page endpoint (no auth required - for email payment links)
-Route::get('shoots/{shoot}/payment-details', [App\Http\Controllers\API\ShootController::class, 'getPaymentDetails'])
+Route::get('shoots/{shoot}/payment-details', [ShootPaymentsController::class, 'getPaymentDetails'])
     ->name('api.shoots.payment-details');
 
 // Address lookup endpoints
@@ -282,6 +294,7 @@ Route::post('/password/forgot', [AuthController::class, 'forgotPassword']);
 Route::post('/password/reset', [AuthController::class, 'resetPasswordWithToken']);
 
 Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
+Route::middleware('auth:sanctum')->post('/system-telemetry/events', [SystemTelemetryController::class, 'store']);
 
 // Self profile update (authenticated user updates their own profile)
 Route::middleware('auth:sanctum')->put('/profile', [AuthController::class, 'updateProfile']);
@@ -309,6 +322,14 @@ Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->pos
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->put('/admin/users/{id}', [UserController::class, 'update']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
 Route::middleware(['auth:sanctum'])->post('/admin/users', [UserController::class, 'store']);
+
+Route::middleware(['auth:sanctum', 'role:superadmin'])->prefix('admin/system-overview')->group(function () {
+    Route::get('/snapshot', [SystemOverviewController::class, 'snapshot']);
+    Route::get('/history', [SystemOverviewController::class, 'history']);
+    Route::get('/users/live', [SystemOverviewController::class, 'liveUsers']);
+    Route::get('/routes', [SystemOverviewController::class, 'routes']);
+    Route::get('/traces/{traceId}', [SystemOverviewController::class, 'trace']);
+});
 
 // Account Linking Routes - Admin endpoints
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->group(function () {
@@ -421,88 +442,88 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/history', [ShootController::class, 'history']);
     Route::get('/shoots/history/export', [ShootController::class, 'exportHistory']);
     // Pending cancellations must come before /shoots/{shoot} to avoid route conflict
-    Route::get('/shoots/pending-cancellations', [ShootController::class, 'pendingCancellations']);
+    Route::get('/shoots/pending-cancellations', [ShootWorkflowController::class, 'pendingCancellations']);
     Route::get('/shoots/{shoot}', [ShootController::class, 'show']);
-    Route::get('/shoots/{shoot}/invoice', [ShootController::class, 'getOrCreateInvoice']);
+    Route::get('/shoots/{shoot}/invoice', [ShootPaymentsController::class, 'getOrCreateInvoice']);
     // Minimal update endpoint for status/workflow updates
     Route::patch('/shoots/{shoot}', [ShootController::class, 'update']);
     // Mark shoot as paid (Admin and Super Admin)
-    Route::post('/shoots/{shoot}/mark-paid', [ShootController::class, 'markAsPaid'])->middleware('role:admin,superadmin');
+    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware('role:admin,superadmin');
     // State transition endpoints
     Route::post('/shoots/{shoot}/schedule', [ShootController::class, 'schedule']);
-    Route::post('/shoots/{shoot}/assign-editor', [ShootController::class, 'assignEditor'])
+    Route::post('/shoots/{shoot}/assign-editor', [ShootWorkflowController::class, 'assignEditor'])
         ->middleware('role:admin,superadmin,editing_manager');
-    Route::post('/shoots/{shoot}/start-editing', [ShootController::class, 'startEditing']);
-    Route::post('/shoots/{shoot}/ready-for-review', [ShootController::class, 'readyForReview']);
-    Route::post('/shoots/{shoot}/complete', [ShootController::class, 'complete']);
-    Route::post('/shoots/{shoot}/put-on-hold', [ShootController::class, 'putOnHold']);
+    Route::post('/shoots/{shoot}/start-editing', [ShootWorkflowController::class, 'startEditing']);
+    Route::post('/shoots/{shoot}/ready-for-review', [ShootWorkflowController::class, 'readyForReview']);
+    Route::post('/shoots/{shoot}/complete', [ShootWorkflowController::class, 'complete']);
+    Route::post('/shoots/{shoot}/put-on-hold', [ShootWorkflowController::class, 'putOnHold']);
     Route::post('/shoots/{shoot}/approve', [ShootController::class, 'approve']);
-    Route::post('/shoots/{shoot}/decline', [ShootController::class, 'decline']);
+    Route::post('/shoots/{shoot}/decline', [ShootWorkflowController::class, 'decline']);
     
     // Per-service photographer assignment (multi-photographer per shoot)
     Route::post('/shoots/{shoot}/assign-service-photographer', [ShootController::class, 'assignServicePhotographer']);
     Route::post('/shoots/{shoot}/assign-service-photographers', [ShootController::class, 'assignServicePhotographers']);
     
     // Cancellation request endpoints
-    Route::post('/shoots/{shoot}/request-cancellation', [ShootController::class, 'requestCancellation']);
-    Route::post('/shoots/{shoot}/approve-cancellation', [ShootController::class, 'approveCancellation']);
-    Route::post('/shoots/{shoot}/reject-cancellation', [ShootController::class, 'rejectCancellation']);
+    Route::post('/shoots/{shoot}/request-cancellation', [ShootWorkflowController::class, 'requestCancellation']);
+    Route::post('/shoots/{shoot}/approve-cancellation', [ShootWorkflowController::class, 'approveCancellation']);
+    Route::post('/shoots/{shoot}/reject-cancellation', [ShootWorkflowController::class, 'rejectCancellation']);
     // Hold request endpoints
-    Route::post('/shoots/{shoot}/request-hold', [ShootController::class, 'requestHold']);
-    Route::post('/shoots/{shoot}/approve-hold', [ShootController::class, 'approveHold']);
-    Route::post('/shoots/{shoot}/reject-hold', [ShootController::class, 'rejectHold']);
+    Route::post('/shoots/{shoot}/request-hold', [ShootWorkflowController::class, 'requestHold']);
+    Route::post('/shoots/{shoot}/approve-hold', [ShootWorkflowController::class, 'approveHold']);
+    Route::post('/shoots/{shoot}/reject-hold', [ShootWorkflowController::class, 'rejectHold']);
     // Direct cancel endpoint for admin use
-    Route::post('/shoots/{shoot}/cancel', [ShootController::class, 'cancel'])->middleware('role:admin,superadmin');
+    Route::post('/shoots/{shoot}/cancel', [ShootWorkflowController::class, 'cancel'])->middleware('role:admin,superadmin');
     
     // Photographer availability
     Route::get('/photographers/{id}/availability', [ShootController::class, 'getPhotographerAvailability']);
     
     // Media albums
-    Route::post('/shoots/{shoot}/albums', [ShootController::class, 'createAlbum']);
-    Route::get('/shoots/{shoot}/albums', [ShootController::class, 'listAlbums']);
-    Route::post('/shoots/{shoot}/media', [ShootController::class, 'uploadMedia']);
+    Route::post('/shoots/{shoot}/albums', [ShootMediaController::class, 'createAlbum']);
+    Route::get('/shoots/{shoot}/albums', [ShootMediaController::class, 'listAlbums']);
+    Route::post('/shoots/{shoot}/media', [ShootMediaController::class, 'uploadMedia']);
     
     // Notes
-    Route::get('/shoots/{shoot}/notes', [ShootController::class, 'getNotes']);
-    Route::post('/shoots/{shoot}/notes', [ShootController::class, 'storeNote']);
-    Route::patch('/shoots/{shoot}/notes', [ShootController::class, 'updateNotesSimple']);
+    Route::get('/shoots/{shoot}/notes', [ShootNotesController::class, 'getNotes']);
+    Route::post('/shoots/{shoot}/notes', [ShootNotesController::class, 'storeNote']);
+    Route::patch('/shoots/{shoot}/notes', [ShootNotesController::class, 'updateNotesSimple']);
     
     // Activity Log
-    Route::get('/shoots/{shoot}/activity-log', [ShootController::class, 'getActivityLog']);
+    Route::get('/shoots/{shoot}/activity-log', [ShootNotesController::class, 'getActivityLog']);
     Route::delete('/shoots/{shoot}', [ShootController::class, 'destroy'])->middleware('role:admin,superadmin,editing_manager');
     
     // File workflow endpoints
-    Route::post('/shoots/{shoot}/upload', [ShootController::class, 'uploadFiles']);
-    Route::post('/shoots/{shoot}/upload-extra', [ShootController::class, 'uploadExtra']);
-    Route::get('/shoots/{shoot}/files', [ShootController::class, 'getFiles']);
-    Route::post('/shoots/{shoot}/files/download', [ShootController::class, 'downloadSelectedFiles']);
-    Route::get('/shoots/{shoot}/files/{file}/preview', [ShootController::class, 'previewFile']);
-    Route::get('/shoots/{shoot}/media', [ShootController::class, 'listMedia']);
-    Route::get('/shoots/{shoot}/media/download-zip', [ShootController::class, 'downloadMediaZip']);
-    Route::get('/shoots/{shoot}/editor-download-raw', [ShootController::class, 'editorDownloadRaw'])->middleware('role:editor');
-    Route::post('/shoots/{shoot}/generate-share-link', [ShootController::class, 'generateShareLink'])->middleware('role:editor');
-    Route::get('/shoots/{shoot}/share-links', [ShootController::class, 'listShareLinks']);
-    Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootController::class, 'revokeShareLink']);
-    Route::post('/shoots/{shoot}/archive', [ShootController::class, 'archiveShoot'])->middleware('role:admin,superadmin,editing_manager');
-    Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootController::class, 'moveFileToCompleted']);
-    Route::post('/shoots/{shoot}/files/{file}/verify', [ShootController::class, 'verifyFile']);
-    Route::post('/shoots/{shoot}/files/{file}/extra', [ShootController::class, 'toggleFileExtra']);
-    Route::post('/shoots/{shoot}/generate-description', [ShootController::class, 'generatePropertyDescription']);
+    Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
+    Route::post('/shoots/{shoot}/upload-extra', [ShootMediaController::class, 'uploadExtra']);
+    Route::get('/shoots/{shoot}/files', [ShootMediaController::class, 'getFiles']);
+    Route::post('/shoots/{shoot}/files/download', [ShootMediaController::class, 'downloadSelectedFiles']);
+    Route::get('/shoots/{shoot}/files/{file}/preview', [ShootMediaController::class, 'previewFile']);
+    Route::get('/shoots/{shoot}/media', [ShootMediaController::class, 'listMedia']);
+    Route::get('/shoots/{shoot}/media/download-zip', [ShootMediaController::class, 'downloadMediaZip']);
+    Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor');
+    Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');
+    Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
+    Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootMediaController::class, 'revokeShareLink']);
+    Route::post('/shoots/{shoot}/archive', [ShootMediaController::class, 'archiveShoot'])->middleware('role:admin,superadmin,editing_manager');
+    Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootMediaController::class, 'moveFileToCompleted']);
+    Route::post('/shoots/{shoot}/files/{file}/verify', [ShootMediaController::class, 'verifyFile']);
+    Route::post('/shoots/{shoot}/files/{file}/extra', [ShootMediaController::class, 'toggleFileExtra']);
+    Route::post('/shoots/{shoot}/generate-description', [ShootPublicAssetsController::class, 'generatePropertyDescription']);
     Route::get('/shoots/{shoot}/tour-analytics', [TourAnalyticsController::class, 'summary']);
-    Route::patch('/shoots/{shoot}/files/reclassify', [ShootController::class, 'reclassifyFiles']);
-    Route::patch('/shoots/{shoot}/files/reorder', [ShootController::class, 'reorderFiles']);
-    Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootController::class, 'toggleFileHidden']);
-    Route::get('/shoots/{shoot}/workflow-status', [ShootController::class, 'getWorkflowStatus']);
+    Route::patch('/shoots/{shoot}/files/reclassify', [ShootMediaController::class, 'reclassifyFiles']);
+    Route::patch('/shoots/{shoot}/files/reorder', [ShootMediaController::class, 'reorderFiles']);
+    Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootMediaController::class, 'toggleFileHidden']);
+    Route::get('/shoots/{shoot}/workflow-status', [ShootWorkflowController::class, 'getWorkflowStatus']);
     Route::prefix('/shoots/{shoot}/media')->group(function () {
-        Route::post('{file}/favorite', [ShootController::class, 'favoriteMedia']);
-        Route::post('{file}/cover', [ShootController::class, 'setCoverMedia']);
-        Route::post('{file}/flag', [ShootController::class, 'flagMedia']);
-        Route::post('{file}/comment', [ShootController::class, 'commentMedia']);
-        Route::delete('{file}', [ShootController::class, 'deleteMedia']);
-        Route::get('{file}/download', [ShootController::class, 'downloadMedia']);
-        Route::post('bulk-download', [ShootController::class, 'bulkDownloadMedia']);
-        Route::post('bulk-delete', [ShootController::class, 'bulkDeleteMedia']);
-        Route::post('reorder', [ShootController::class, 'reorderMedia']);
+        Route::post('{file}/favorite', [ShootMediaController::class, 'favoriteMedia']);
+        Route::post('{file}/cover', [ShootMediaController::class, 'setCoverMedia']);
+        Route::post('{file}/flag', [ShootMediaController::class, 'flagMedia']);
+        Route::post('{file}/comment', [ShootMediaController::class, 'commentMedia']);
+        Route::delete('{file}', [ShootMediaController::class, 'deleteMedia']);
+        Route::get('{file}/download', [ShootMediaController::class, 'downloadMedia']);
+        Route::post('bulk-download', [ShootMediaController::class, 'bulkDownloadMedia']);
+        Route::post('bulk-delete', [ShootMediaController::class, 'bulkDeleteMedia']);
+        Route::post('reorder', [ShootMediaController::class, 'reorderMedia']);
     });
     
     // Enhanced file upload endpoints
@@ -511,17 +532,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/dropbox/browse', [App\Http\Controllers\FileUploadController::class, 'listDropboxFiles']);
 
     // Finalize a shoot (admin toggle triggers this)
-    Route::post('/shoots/{shoot}/finalize', [ShootController::class, 'finalize']);
+    Route::post('/shoots/{shoot}/finalize', [ShootPaymentsController::class, 'finalize']);
     
     // Shoot approval workflow endpoints
-    Route::post('/shoots/{shoot}/mark-issues-resolved', [ShootController::class, 'markIssuesResolved']);
-    Route::get('/shoots/{shoot}/issues', [ShootController::class, 'getIssues']);
-    Route::post('/shoots/{shoot}/issues', [ShootController::class, 'createIssue']);
-    Route::patch('/shoots/{shoot}/issues/{issue}', [ShootController::class, 'updateIssue']);
-    Route::post('/shoots/{shoot}/issues/{issue}/assign', [ShootController::class, 'assignIssue']);
+    Route::post('/shoots/{shoot}/mark-issues-resolved', [ShootIssuesController::class, 'markIssuesResolved']);
+    Route::get('/shoots/{shoot}/issues', [ShootIssuesController::class, 'getIssues']);
+    Route::post('/shoots/{shoot}/issues', [ShootIssuesController::class, 'createIssue']);
+    Route::patch('/shoots/{shoot}/issues/{issue}', [ShootIssuesController::class, 'updateIssue']);
+    Route::post('/shoots/{shoot}/issues/{issue}/assign', [ShootIssuesController::class, 'assignIssue']);
     
     // Client requests for admin dashboard
-    Route::get('/client-requests', [ShootController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager');
+    Route::get('/client-requests', [ShootIssuesController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager');
 
     // Media uploads
     Route::post('/uploads/image', [MediaUploadController::class, 'uploadImage']);
@@ -839,13 +860,13 @@ Route::middleware(['auth:sanctum'])->group(function () {
 // Public read-only endpoints for client-facing pages
 Route::prefix('public/shoots')->group(function () {
     // Address-based routes (address, city, state, zip query params)
-    Route::get('branded', [ShootController::class, 'publicBranded']);
-    Route::get('mls', [ShootController::class, 'publicMls']);
-    Route::get('g-mls', [ShootController::class, 'publicGenericMls']);
+Route::get('branded', [ShootPublicAssetsController::class, 'publicBranded']);
+Route::get('mls', [ShootPublicAssetsController::class, 'publicMls']);
+Route::get('g-mls', [ShootPublicAssetsController::class, 'publicGenericMls']);
 
-    Route::get('{shoot}/branded', [ShootController::class, 'publicBranded']);
-    Route::get('{shoot}/mls', [ShootController::class, 'publicMls']);
-    Route::get('{shoot}/g-mls', [ShootController::class, 'publicGenericMls']);
+Route::get('{shoot}/branded', [ShootPublicAssetsController::class, 'publicBranded']);
+Route::get('{shoot}/mls', [ShootPublicAssetsController::class, 'publicMls']);
+Route::get('{shoot}/g-mls', [ShootPublicAssetsController::class, 'publicGenericMls']);
 });
 
 // Public tour analytics tracking (unauthenticated, rate-limited)
@@ -853,7 +874,7 @@ Route::post('public/tour-events', [TourAnalyticsController::class, 'trackEvent']
 
 // Client profile (requires authentication and authorization)
 Route::middleware('auth:sanctum')->prefix('public')->group(function () {
-    Route::get('/clients/{client}/profile', [ShootController::class, 'publicClientProfile']);
+Route::get('/clients/{client}/profile', [ShootPublicAssetsController::class, 'publicClientProfile']);
 });
 
 // Public contact form submission (no auth required)
