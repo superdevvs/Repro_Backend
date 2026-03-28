@@ -33,7 +33,7 @@ class CouponController extends Controller
         $coupon = Coupon::create($validated);
 
         return response()->json([
-            'message' => 'Coupon created successfully.',
+            'message' => 'Discount created successfully.',
             'data' => $coupon,
         ], 201);
     }
@@ -52,7 +52,7 @@ class CouponController extends Controller
         $coupon->update($validated);
 
         return response()->json([
-            'message' => 'Coupon updated successfully.',
+            'message' => 'Discount updated successfully.',
             'data' => $coupon->fresh(),
         ]);
     }
@@ -62,7 +62,7 @@ class CouponController extends Controller
         $coupon->delete();
 
         return response()->json([
-            'message' => 'Coupon deleted successfully.',
+            'message' => 'Discount deleted successfully.',
         ]);
     }
 
@@ -72,7 +72,7 @@ class CouponController extends Controller
         $coupon->save();
 
         return response()->json([
-            'message' => 'Coupon status updated.',
+            'message' => 'Discount status updated.',
             'data' => $coupon->fresh(),
         ]);
     }
@@ -92,21 +92,21 @@ class CouponController extends Controller
         if (!$coupon) {
             return response()->json([
                 'valid' => false,
-                'message' => 'Invalid coupon code.',
+                'message' => 'Invalid discount code.',
             ], 404);
         }
 
         if ($coupon->valid_until && $coupon->valid_until->isPast()) {
             return response()->json([
                 'valid' => false,
-                'message' => 'This coupon has expired.',
+                'message' => 'This discount code has expired.',
             ], 422);
         }
 
         if ($coupon->max_uses !== null && (int) $coupon->current_uses >= (int) $coupon->max_uses) {
             return response()->json([
                 'valid' => false,
-                'message' => 'This coupon is no longer available.',
+                'message' => 'This discount code is no longer available.',
             ], 422);
         }
 
