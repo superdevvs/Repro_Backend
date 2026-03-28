@@ -296,24 +296,9 @@ class DropboxWorkflowService
         $placeholderPath = null;
         $originalFilename = $file->getClientOriginalName();
         
-        if ($this->shouldProcessImage($file)) {
-            $tempPath = $file->getRealPath();
-            if ($tempPath && file_exists($tempPath)) {
-                $imageService = app(\App\Services\ImageProcessingService::class);
-                $processedPaths = $imageService->processImageFromPath($shoot->id, $originalFilename, $tempPath);
-                $thumbnailPath = $processedPaths['thumbnail'] ?? null;
-                $webPath = $processedPaths['web'] ?? null;
-                $placeholderPath = $processedPaths['placeholder'] ?? null;
-                
-                Log::info('Local storage thumbnail generation', [
-                    'shoot_id' => $shoot->id,
-                    'filename' => $originalFilename,
-                    'thumbnail_path' => $thumbnailPath,
-                    'web_path' => $webPath,
-                ]);
-            }
-        } elseif ($this->rawThumbnailService->isRawFile($originalFilename)) {
-            // For RAW files, use the RAW thumbnail service
+        if ($this->rawThumbnailService->isRawFile($originalFilename)) {
+            // Use the dedicated RAW thumbnail extractor first. It is more reliable for
+            // CR3 and other camera formats than the generic image processor.
             $tempPath = $file->getRealPath();
             if ($tempPath && file_exists($tempPath)) {
                 $thumbnailDir = "shoots/{$shoot->id}/thumbnails";
@@ -327,6 +312,22 @@ class DropboxWorkflowService
                     'shoot_id' => $shoot->id,
                     'filename' => $originalFilename,
                     'thumbnail_path' => $thumbnailPath,
+                ]);
+            }
+        } elseif ($this->shouldProcessImage($file)) {
+            $tempPath = $file->getRealPath();
+            if ($tempPath && file_exists($tempPath)) {
+                $imageService = app(\App\Services\ImageProcessingService::class);
+                $processedPaths = $imageService->processImageFromPath($shoot->id, $originalFilename, $tempPath);
+                $thumbnailPath = $processedPaths['thumbnail'] ?? null;
+                $webPath = $processedPaths['web'] ?? null;
+                $placeholderPath = $processedPaths['placeholder'] ?? null;
+
+                Log::info('Local storage thumbnail generation', [
+                    'shoot_id' => $shoot->id,
+                    'filename' => $originalFilename,
+                    'thumbnail_path' => $thumbnailPath,
+                    'web_path' => $webPath,
                 ]);
             }
         }
@@ -361,7 +362,14 @@ class DropboxWorkflowService
         ]);
         $shootFile->save();
 
-        if ($this->shouldProcessImage($file) && !$shootFile->thumbnail_path && !$shootFile->web_path && !$shootFile->placeholder_path) {
+        if (
+            $this->shouldProcessImage($file)
+            && (
+                !$shootFile->thumbnail_path
+                || !$shootFile->web_path
+                || !$shootFile->placeholder_path
+            )
+        ) {
             ProcessImageJob::dispatch($shootFile);
         }
 

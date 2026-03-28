@@ -19,6 +19,8 @@ class Message extends Model
         'message_channel_id',
         'from_address',
         'to_address',
+        'cc_addresses_json',
+        'bcc_addresses_json',
         'reply_to_email',
         'subject',
         'body_text',
@@ -51,6 +53,8 @@ class Message extends Model
         'failed_at' => 'datetime',
         'attachments_json' => 'array',
         'tags_json' => 'array',
+        'cc_addresses_json' => 'array',
+        'bcc_addresses_json' => 'array',
     ];
 
     public function thread(): BelongsTo

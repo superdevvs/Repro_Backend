@@ -189,14 +189,14 @@ return [
                     'action' => 'view',
                     'label' => 'Coupons',
                     'description' => 'Open the coupons tab and coupon tools.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep'],
                 ],
                 [
                     'resource' => 'coupons',
                     'action' => 'create',
                     'label' => 'Create Coupons',
                     'description' => 'Create and manage coupons.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep'],
                 ],
                 [
                     'resource' => 'watermark-settings',

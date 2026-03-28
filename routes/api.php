@@ -466,6 +466,7 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Cancellation request endpoints
     Route::post('/shoots/{shoot}/request-cancellation', [ShootWorkflowController::class, 'requestCancellation']);
+    Route::post('/shoots/{shoot}/withdraw-request', [ShootWorkflowController::class, 'withdrawRequested']);
     Route::post('/shoots/{shoot}/approve-cancellation', [ShootWorkflowController::class, 'approveCancellation']);
     Route::post('/shoots/{shoot}/reject-cancellation', [ShootWorkflowController::class, 'rejectCancellation']);
     // Hold request endpoints
@@ -733,7 +734,9 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->gr
     Route::delete('/categories/{id}', [CategoryController::class, 'destroy']);
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('coupons')->group(function () {
+Route::post('coupons/validate', [CouponController::class, 'validateCoupon']);
+
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->prefix('coupons')->group(function () {
     Route::get('/', [CouponController::class, 'index']);
     Route::post('/', [CouponController::class, 'store']);
     Route::patch('{coupon}', [CouponController::class, 'update']);

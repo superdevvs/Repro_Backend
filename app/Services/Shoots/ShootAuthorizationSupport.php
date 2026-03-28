@@ -53,6 +53,36 @@ class ShootAuthorizationSupport
         }
     }
 
+    public function canAccessShootMedia(Shoot $shoot, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+            return true;
+        }
+
+        if ($this->hasRole($user, ['salesRep', 'rep', 'representative'])) {
+            return (string) $shoot->rep_id === (string) $user->id;
+        }
+
+        if ($this->hasRole($user, ['photographer'])) {
+            return (string) $shoot->photographer_id === (string) $user->id;
+        }
+
+        if ($this->hasRole($user, ['editor'])) {
+            return (string) $shoot->editor_id === (string) $user->id;
+        }
+
+        if ($this->isClientUser($user)) {
+            return (string) $shoot->client_id === (string) $user->id;
+        }
+
+        return false;
+    }
+
     public function isRawCameraFile(ShootFile $file): bool
     {
         $rawExtensions = ['raw', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw', '3fr', 'fff', 'iiq', 'rwl', 'x3f'];
@@ -106,6 +136,11 @@ class ShootAuthorizationSupport
             return false;
         }
 
+        return $this->isClientInteractableEditedFile($file);
+    }
+
+    public function isClientInteractableEditedFile(ShootFile $file): bool
+    {
         if (!in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)) {
             return false;
         }
@@ -129,6 +164,20 @@ class ShootAuthorizationSupport
         }
 
         return $this->isImageMediaFile($file);
+    }
+
+    public function canInteractWithShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        if (!$this->canAccessShootMedia($shoot, $user)) {
+            return false;
+        }
+
+        if ($this->isClientUser($user)) {
+            return $this->isClientInteractableEditedFile($file);
+        }
+
+        return true;
     }
 
     protected function normalizeRole(string $role): string

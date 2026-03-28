@@ -2,14 +2,15 @@
 
 namespace App\Services\Shoots\Actions;
 
-use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMutationSupportService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +20,7 @@ class UpdateShootAction
     public function __construct(
         protected ShootMutationSupportService $support,
         protected InvoiceService $invoiceService,
+        protected ShootEditablePayloadService $editablePayloadService,
         protected ShootActivityLogger $activityLogger,
         protected MailService $mailService,
         protected AutomationService $automationService
@@ -86,43 +88,16 @@ class UpdateShootAction
             }
         }
 
-        $validated = $request->validate([
+        $validated = $request->validate(array_merge(
+            $this->editablePayloadService->validationRules(),
+            [
             'status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
             'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
-            'scheduled_date' => 'nullable|date',
-            'scheduled_at' => 'nullable|date',
-            'time' => 'nullable|string',
-            'services' => 'nullable|array',
-            'services.*.id' => 'required_with:services|integer|exists:services,id',
-            'services.*.price' => 'nullable|numeric|min:0',
-            'services.*.quantity' => 'nullable|integer|min:1',
-            'address' => 'nullable|string|max:255',
-            'city' => 'nullable|string|max:255',
-            'state' => 'nullable|string|max:2',
-            'zip' => 'nullable|string|max:10',
-            'client_id' => 'nullable|exists:users,id',
-            'photographer_id' => 'nullable|exists:users,id',
-            'base_quote' => 'nullable|numeric|min:0',
-            'tax_amount' => 'nullable|numeric|min:0',
-            'total_quote' => 'nullable|numeric|min:0',
-            'property_details' => 'nullable|array',
-            'bedrooms' => 'nullable|integer|min:0',
-            'bathrooms' => 'nullable|numeric|min:0',
-            'sqft' => 'nullable|integer|min:0',
             'is_private_listing' => 'nullable|boolean',
-            'tour_links' => 'nullable|array',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,sold,rented',
-            'shoot_notes' => 'nullable|string',
-            'company_notes' => 'nullable|string',
-            'photographer_notes' => 'nullable|string',
-            'editor_notes' => 'nullable|string',
-            'notify_client' => 'nullable|boolean',
-            'notify_photographer' => 'nullable|boolean',
-            'service_photographers' => 'nullable|array',
-            'service_photographers.*.service_id' => 'required_with:service_photographers|integer',
-            'service_photographers.*.photographer_id' => 'required_with:service_photographers|integer|exists:users,id',
-        ]);
+            ]
+        ));
 
         $previousPrivateListing = (bool) ($shoot->is_private_listing ?? false);
         $originalStatus = $shoot->status;
@@ -136,16 +111,6 @@ class UpdateShootAction
         $originalCompanyNotes = $shoot->company_notes;
         $originalPhotographerNotes = $shoot->photographer_notes;
         $originalEditorNotes = $shoot->editor_notes;
-        $invoiceNeedsRefresh = false;
-        $paymentFieldsProvided = array_key_exists('base_quote', $validated)
-            || array_key_exists('tax_amount', $validated)
-            || array_key_exists('total_quote', $validated);
-        $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
-        $targetServices = array_key_exists('services', $validated)
-            ? $validated['services']
-            : $shoot->services->map(fn ($service) => ['id' => $service->id])->values()->all();
-
-        $this->support->ensureClientCanBookServices($targetClientId, $targetServices);
 
         if (array_key_exists('is_private_listing', $validated)) {
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
@@ -163,15 +128,41 @@ class UpdateShootAction
         }
 
         $markDelivered = false;
-        if (array_key_exists('scheduled_at', $validated) && $validated['scheduled_at']) {
-            $scheduledAt = new \DateTime($validated['scheduled_at']);
-            $shoot->scheduled_at = $scheduledAt;
-        }
-        if (array_key_exists('scheduled_date', $validated)) {
-            $shoot->scheduled_date = $validated['scheduled_date'];
-        }
-        if (array_key_exists('time', $validated)) {
-            $shoot->time = $validated['time'];
+        $scheduledAtProvided = array_key_exists('scheduled_at', $validated);
+        $scheduledDateProvided = array_key_exists('scheduled_date', $validated);
+        $timeProvided = array_key_exists('time', $validated);
+
+        if ($scheduledAtProvided) {
+            if ($validated['scheduled_at']) {
+                $scheduledAt = Carbon::parse($validated['scheduled_at']);
+                $shoot->scheduled_at = $scheduledAt;
+                $shoot->scheduled_date = $scheduledAt->copy()->toDateString();
+                $shoot->time = $scheduledAt->copy()->format('H:i');
+            } else {
+                $shoot->scheduled_at = null;
+                $shoot->scheduled_date = null;
+                $shoot->time = null;
+            }
+        } else {
+            if ($scheduledDateProvided) {
+                $shoot->scheduled_date = $validated['scheduled_date'];
+            }
+            if ($timeProvided) {
+                $shoot->time = $validated['time'];
+            }
+
+            if ($scheduledDateProvided || $timeProvided) {
+                $normalizedScheduledDate = $validated['scheduled_date']
+                    ?? $shoot->scheduled_date?->toDateString()
+                    ?? $shoot->scheduled_date;
+                $normalizedTime = $validated['time'] ?? $shoot->time;
+
+                if ($normalizedScheduledDate) {
+                    $shoot->scheduled_at = Carbon::parse(
+                        trim(sprintf('%s %s', $normalizedScheduledDate, $normalizedTime ?: '00:00'))
+                    );
+                }
+            }
         }
         if (array_key_exists('workflow_status', $validated)) {
             $shoot->workflow_status = $validated['workflow_status'];
@@ -191,141 +182,7 @@ class UpdateShootAction
             }
         }
 
-        if (array_key_exists('services', $validated) && is_array($validated['services'])) {
-            $this->support->attachServices($shoot, $validated['services']);
-            $invoiceNeedsRefresh = true;
-
-            if (!$paymentFieldsProvided) {
-                $taxCalculation = $this->support->buildTaxCalculation(
-                    $validated['services'],
-                    $shoot->state ?? null,
-                    $shoot->tax_region ?: null
-                );
-
-                $shoot->base_quote = $taxCalculation['base_quote'];
-                $shoot->tax_region = $taxCalculation['tax_region'];
-                $shoot->tax_percent = $taxCalculation['tax_percent'];
-                $shoot->tax_amount = $taxCalculation['tax_amount'];
-                $shoot->total_quote = $taxCalculation['total_quote'];
-            }
-        }
-
-        if (array_key_exists('address', $validated)) {
-            $shoot->address = $validated['address'];
-        }
-        if (array_key_exists('city', $validated)) {
-            $shoot->city = $validated['city'];
-        }
-        if (array_key_exists('state', $validated)) {
-            $shoot->state = $validated['state'];
-        }
-        if (array_key_exists('zip', $validated)) {
-            $shoot->zip = $validated['zip'];
-        }
-        if (array_key_exists('client_id', $validated)) {
-            $shoot->client_id = $validated['client_id'];
-        }
-        if (array_key_exists('photographer_id', $validated)) {
-            $shoot->photographer_id = $validated['photographer_id'];
-        }
-        if (array_key_exists('base_quote', $validated)) {
-            $shoot->base_quote = $validated['base_quote'];
-        }
-        if (array_key_exists('tax_amount', $validated)) {
-            $shoot->tax_amount = $validated['tax_amount'];
-        }
-        if (array_key_exists('total_quote', $validated)) {
-            $shoot->total_quote = $validated['total_quote'];
-        }
-        if ($paymentFieldsProvided) {
-            $invoiceNeedsRefresh = true;
-        }
-
-        $propertyDetails = $shoot->property_details ?? [];
-        if (is_string($propertyDetails)) {
-            $propertyDetails = json_decode($propertyDetails, true) ?? [];
-        }
-
-        $propertyDetailsUpdated = false;
-        if (array_key_exists('property_details', $validated) && is_array($validated['property_details'])) {
-            $propertyDetails = array_merge($propertyDetails, $validated['property_details']);
-            $propertyDetailsUpdated = true;
-        }
-        if (array_key_exists('bedrooms', $validated)) {
-            $propertyDetails['bedrooms'] = $validated['bedrooms'];
-            $propertyDetails['beds'] = $validated['bedrooms'];
-            $propertyDetailsUpdated = true;
-        }
-        if (array_key_exists('bathrooms', $validated)) {
-            $propertyDetails['bathrooms'] = $validated['bathrooms'];
-            $propertyDetails['baths'] = $validated['bathrooms'];
-            $propertyDetailsUpdated = true;
-        }
-        if (array_key_exists('sqft', $validated)) {
-            $propertyDetails['sqft'] = $validated['sqft'];
-            $propertyDetails['squareFeet'] = $validated['sqft'];
-            $propertyDetailsUpdated = true;
-        }
-
-        if ($propertyDetailsUpdated) {
-            $shoot->property_details = $propertyDetails;
-            $shoot->mls_id = $validated['mls_id']
-                ?? data_get($propertyDetails, 'mls_id')
-                ?? data_get($propertyDetails, 'mlsId')
-                ?? $shoot->mls_id;
-            $invoiceNeedsRefresh = true;
-        }
-
-        if (array_key_exists('listing_type', $validated)) {
-            $shoot->listing_type = $validated['listing_type'];
-        }
-        if (array_key_exists('property_status', $validated)) {
-            $shoot->property_status = $validated['property_status'];
-        }
-
-        $autoPropertyTourLinks = [];
-        if ($propertyDetailsUpdated) {
-            $autoPropertyTourLinks = array_filter([
-                'property_mls' => $validated['mls_id']
-                    ?? data_get($propertyDetails, 'mls_id')
-                    ?? data_get($propertyDetails, 'mlsId'),
-                'property_price' => data_get($propertyDetails, 'price'),
-                'property_lot_size' => data_get($propertyDetails, 'lot_size')
-                    ?? data_get($propertyDetails, 'lotSize'),
-            ], static fn ($value) => $value !== null && $value !== '');
-        }
-
-        if (!empty($autoPropertyTourLinks)) {
-            $currentTourLinks = $shoot->tour_links ?? [];
-            if (is_string($currentTourLinks)) {
-                $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
-            }
-            $shoot->tour_links = array_merge($currentTourLinks, $autoPropertyTourLinks);
-        }
-
-        if (array_key_exists('tour_links', $validated) && is_array($validated['tour_links'])) {
-            $currentTourLinks = $shoot->tour_links ?? [];
-            if (is_string($currentTourLinks)) {
-                $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
-            }
-            $shoot->tour_links = array_merge($currentTourLinks, $validated['tour_links']);
-        }
-
-        if (array_key_exists('shoot_notes', $validated)) {
-            $shoot->shoot_notes = $validated['shoot_notes'];
-        }
-        if (array_key_exists('company_notes', $validated)) {
-            $shoot->company_notes = $validated['company_notes'];
-        }
-        if (array_key_exists('photographer_notes', $validated)) {
-            $shoot->photographer_notes = $validated['photographer_notes'];
-        }
-        if (array_key_exists('editor_notes', $validated)) {
-            $shoot->editor_notes = $validated['editor_notes'];
-        }
-
-        $shoot->save();
-        $this->support->assignServicePhotographers($shoot, $validated['service_photographers'] ?? null);
+        $this->editablePayloadService->apply($shoot, $validated);
 
         try {
             $changes = [];
@@ -391,20 +248,6 @@ class UpdateShootAction
             }
         } catch (\Exception $e) {
             Log::warning('Failed to log shoot update activity: ' . $e->getMessage());
-        }
-
-        if ($invoiceNeedsRefresh) {
-            try {
-                $hasInvoice = Invoice::where('shoot_id', $shoot->id)->exists();
-                if ($hasInvoice) {
-                    $this->invoiceService->generateForShoot($shoot->fresh());
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to refresh invoice after shoot update', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         if ($previousPrivateListing !== (bool) ($shoot->is_private_listing ?? false)) {

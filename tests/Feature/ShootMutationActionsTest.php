@@ -191,6 +191,175 @@ class ShootMutationActionsTest extends TestCase
     }
 
     /** @test */
+    public function admin_can_approve_a_requested_shoot_with_inline_edits_after_refactor(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $servicePhotographer = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Category Photographer',
+            'email' => 'category-photographer@test.com',
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'address' => '10 Request Lane',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'shoot_notes' => 'Original note',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $scheduledAt = now()->addDays(7)->setTime(11, 30)->format('Y-m-d H:i:s');
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'address' => '900 Approval Way',
+            'city' => 'Washington',
+            'state' => 'DC',
+            'zip' => '20001',
+            'scheduled_at' => $scheduledAt,
+            'photographer_id' => $this->photographer->id,
+            'services' => [
+                ['id' => $this->secondService->id, 'quantity' => 1, 'price' => 90],
+            ],
+            'service_photographers' => [
+                ['service_id' => $this->secondService->id, 'photographer_id' => $servicePhotographer->id],
+            ],
+            'shoot_notes' => 'Gate code is 1234',
+            'company_notes' => 'Internal dispatch note',
+            'photographer_notes' => 'Bring a drone if weather is clear',
+            'editor_notes' => 'Prioritize twilight tones',
+            'bedrooms' => 4,
+            'bathrooms' => 3.5,
+            'sqft' => 2450,
+            'base_quote' => 90,
+            'tax_amount' => 5.40,
+            'total_quote' => 95.40,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.id', (string) $shoot->id);
+
+        $shoot->refresh()->load('services');
+
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+        $this->assertSame('900 Approval Way', $shoot->address);
+        $this->assertSame('Washington', $shoot->city);
+        $this->assertSame('DC', $shoot->state);
+        $this->assertSame('20001', $shoot->zip);
+        $this->assertSame($scheduledAt, $shoot->scheduled_at?->format('Y-m-d H:i:s'));
+        $this->assertSame($this->photographer->id, $shoot->photographer_id);
+        $this->assertSame('Gate code is 1234', $shoot->shoot_notes);
+        $this->assertSame('Internal dispatch note', $shoot->company_notes);
+        $this->assertSame('Bring a drone if weather is clear', $shoot->photographer_notes);
+        $this->assertSame('Prioritize twilight tones', $shoot->editor_notes);
+        $this->assertEquals(90.0, (float) $shoot->base_quote);
+        $this->assertEquals(5.4, (float) $shoot->tax_amount);
+        $this->assertEquals(95.4, (float) $shoot->total_quote);
+        $this->assertCount(1, $shoot->services);
+        $this->assertSame($this->secondService->id, $shoot->services->first()->id);
+        $this->assertDatabaseHas('shoot_service', [
+            'shoot_id' => $shoot->id,
+            'service_id' => $this->secondService->id,
+            'photographer_id' => $servicePhotographer->id,
+        ]);
+
+        $propertyDetails = is_array($shoot->property_details)
+            ? $shoot->property_details
+            : json_decode((string) $shoot->property_details, true);
+
+        $this->assertSame(4, $propertyDetails['bedrooms'] ?? null);
+        $this->assertSame(3.5, $propertyDetails['bathrooms'] ?? null);
+        $this->assertSame(2450, $propertyDetails['sqft'] ?? null);
+    }
+
+    /** @test */
+    public function admin_can_approve_a_requested_shoot_without_notifications_after_refactor(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootUpdatedEmail')->never();
+            $mailService->shouldReceive('sendShootScheduledEmail')->never();
+        });
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'scheduled_at' => now()->addDays(2)->setTime(13, 0)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+            'notify_client' => false,
+            'notify_photographer' => false,
+        ]);
+
+        $response->assertOk();
+        $shoot->refresh();
+
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame($this->photographer->id, $shoot->photographer_id);
+    }
+
+    /** @test */
+    public function admin_can_approve_a_requested_shoot_with_notifications_after_refactor(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->rebindMailService(function ($mailService) use ($shoot) {
+            $mailService->shouldReceive('sendShootUpdatedEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $approvedShoot, ?string $summary, ?bool $notifyClient, ?bool $notifyPhotographer) use ($shoot) {
+                    return $recipient->is($this->client)
+                        && $approvedShoot->id === $shoot->id
+                        && $summary === 'Shoot details updated'
+                        && $notifyClient === true
+                        && $notifyPhotographer === false;
+                })
+                ->andReturnTrue();
+
+            $mailService->shouldReceive('sendShootScheduledEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $approvedShoot, string $paymentLink) use ($shoot) {
+                    return $recipient->is($this->photographer)
+                        && $approvedShoot->id === $shoot->id
+                        && $paymentLink === '';
+                })
+                ->andReturnTrue();
+        });
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'scheduled_at' => now()->addDays(4)->setTime(9, 30)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+            'notify_client' => true,
+            'notify_photographer' => true,
+        ]);
+
+        $response->assertOk();
+        $shoot->refresh();
+
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame($this->photographer->id, $shoot->photographer_id);
+    }
+
+    /** @test */
     public function admin_can_update_a_shoot_and_emit_the_dynamic_refresh_signal(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -346,5 +515,22 @@ class ShootMutationActionsTest extends TestCase
         $availabilityService->shouldIgnoreMissing();
         $availabilityService->shouldReceive('isAvailable')->zeroOrMoreTimes()->andReturnTrue();
         $this->app->instance(PhotographerAvailabilityService::class, $availabilityService);
+    }
+
+    protected function rebindMailService(callable $configure): void
+    {
+        $mailService = Mockery::mock(MailService::class);
+        $mailService->shouldIgnoreMissing();
+        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->andReturn([]);
+        $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
+            'summary' => 'Shoot details updated',
+            'html' => '<p>Shoot details updated</p>',
+        ]);
+        $mailService->shouldReceive('sendShootRemovedEmail')->zeroOrMoreTimes()->andReturnTrue();
+        $mailService->shouldReceive('generatePaymentLink')->zeroOrMoreTimes()->andReturn('https://example.test/payment');
+
+        $configure($mailService);
+
+        $this->app->instance(MailService::class, $mailService);
     }
 }

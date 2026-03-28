@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\API\Messaging;
 
 use App\Http\Controllers\Controller;
+use App\Models\Invoice;
 use App\Models\Message;
 use App\Models\MessageTemplate;
+use App\Models\Shoot;
+use App\Models\User;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
@@ -83,6 +86,10 @@ class EmailMessagingController extends Controller
 
         $rules = [
             'to' => [$isAdmin ? 'required' : 'nullable', 'email'],
+            'cc' => ['nullable', 'array'],
+            'cc.*' => ['email'],
+            'bcc' => ['nullable', 'array'],
+            'bcc.*' => ['email'],
             'subject' => ['nullable', 'string'],
             'body_html' => ['nullable', 'string'],
             'body_text' => ['nullable', 'string'],
@@ -96,6 +103,8 @@ class EmailMessagingController extends Controller
         ];
 
         $data = $request->validate($rules);
+        $data['cc'] = $this->mergeShootCcEmails($data);
+        $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
 
         if (empty($data['body_html']) && empty($data['body_text']) && empty($data['template_id'])) {
             throw ValidationException::withMessages([
@@ -182,12 +191,22 @@ class EmailMessagingController extends Controller
 
         $data = $request->validate([
             'to' => ['required', 'email'],
+            'cc' => ['nullable', 'array'],
+            'cc.*' => ['email'],
+            'bcc' => ['nullable', 'array'],
+            'bcc.*' => ['email'],
             'subject' => ['nullable', 'string'],
             'body_html' => ['nullable', 'string'],
             'body_text' => ['nullable', 'string'],
             'scheduled_at' => ['required', 'date', 'after:now'],
             'channel_id' => ['nullable', 'exists:message_channels,id'],
+            'reply_to' => ['nullable', 'email'],
+            'related_shoot_id' => ['nullable', 'integer'],
+            'related_account_id' => ['nullable', 'integer'],
+            'related_invoice_id' => ['nullable', 'integer'],
         ]);
+        $data['cc'] = $this->mergeShootCcEmails($data);
+        $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
 
         $scheduledAt = \Carbon\Carbon::parse($data['scheduled_at']);
 
@@ -219,6 +238,8 @@ class EmailMessagingController extends Controller
 
         $newMessage = $this->messaging->sendEmail([
             'to' => $message->to_address,
+            'cc' => $message->cc_addresses_json ?? [],
+            'bcc' => $message->bcc_addresses_json ?? [],
             'subject' => $message->subject,
             'body_html' => $message->body_html,
             'body_text' => $message->body_text,
@@ -262,6 +283,69 @@ class EmailMessagingController extends Controller
         $message->update(['status' => 'CANCELLED']);
 
         return response()->json($message->fresh());
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<int, string>
+     */
+    private function mergeShootCcEmails(array $data): array
+    {
+        return collect([
+            ...$this->normalizeEmailAddresses($data['cc'] ?? []),
+            ...$this->resolveRelatedShootCcEmails($data),
+        ])->unique()->values()->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<int, string>
+     */
+    private function resolveRelatedShootCcEmails(array $data): array
+    {
+        $client = null;
+
+        if (!empty($data['related_shoot_id'])) {
+            $client = Shoot::query()
+                ->with('client')
+                ->find($data['related_shoot_id'])
+                ?->client;
+        }
+
+        if (!$client && !empty($data['related_account_id'])) {
+            $account = User::find($data['related_account_id']);
+            if ($account && $account->role === 'client') {
+                $client = $account;
+            }
+        }
+
+        if (!$client && !empty($data['related_invoice_id'])) {
+            $invoice = Invoice::query()
+                ->with(['client', 'shoot.client'])
+                ->find($data['related_invoice_id']);
+
+            $client = $invoice?->shoot?->client ?? $invoice?->client;
+        }
+
+        return $this->normalizeEmailAddresses($client?->shoot_cc_emails ?? [], $client?->email);
+    }
+
+    /**
+     * @param  mixed  $emails
+     * @return array<int, string>
+     */
+    private function normalizeEmailAddresses(mixed $emails, ?string $exclude = null): array
+    {
+        $excluded = is_string($exclude) ? strtolower(trim($exclude)) : null;
+
+        return collect(is_array($emails) ? $emails : [])
+            ->filter(fn ($email) => is_string($email) && trim($email) !== '')
+            ->map(fn ($email) => strtolower(trim($email)))
+            ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->reject(fn ($email) => $excluded !== null && $email === $excluded)
+            ->unique()
+            ->values()
+            ->all();
     }
 }
 

@@ -263,7 +263,12 @@ class ShootPaymentsController extends Controller
                 'scheduled_date' => $shoot->scheduled_date?->toISOString(),
                 'time' => $shoot->time,
                 'total_quote' => (float) ($shoot->total_quote ?? 0),
+                'service_subtotal' => (float) (($shoot->base_quote ?? 0) + ($shoot->discount_amount ?? 0)),
                 'base_quote' => (float) ($shoot->base_quote ?? 0),
+                'discount_type' => $shoot->discount_type,
+                'discount_value' => $shoot->discount_value !== null ? (float) $shoot->discount_value : null,
+                'discount_amount' => (float) ($shoot->discount_amount ?? 0),
+                'discounted_subtotal' => (float) ($shoot->base_quote ?? 0),
                 'tax_amount' => (float) ($shoot->tax_amount ?? 0),
                 'services' => $shoot->services->map(fn ($service) => [
                     'name' => $service->name,

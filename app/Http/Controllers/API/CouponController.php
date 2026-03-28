@@ -76,6 +76,60 @@ class CouponController extends Controller
             'data' => $coupon->fresh(),
         ]);
     }
+
+    public function validateCoupon(Request $request)
+    {
+        $validated = $request->validate([
+            'code' => 'required|string|max:50',
+            'amount' => 'nullable|numeric|min:0',
+        ]);
+
+        $coupon = Coupon::query()
+            ->whereRaw('LOWER(code) = ?', [strtolower(trim($validated['code']))])
+            ->where('is_active', true)
+            ->first();
+
+        if (!$coupon) {
+            return response()->json([
+                'valid' => false,
+                'message' => 'Invalid coupon code.',
+            ], 404);
+        }
+
+        if ($coupon->valid_until && $coupon->valid_until->isPast()) {
+            return response()->json([
+                'valid' => false,
+                'message' => 'This coupon has expired.',
+            ], 422);
+        }
+
+        if ($coupon->max_uses !== null && (int) $coupon->current_uses >= (int) $coupon->max_uses) {
+            return response()->json([
+                'valid' => false,
+                'message' => 'This coupon is no longer available.',
+            ], 422);
+        }
+
+        $amount = max((float) ($validated['amount'] ?? 0), 0);
+        $discountAmount = 0.0;
+
+        if ($amount > 0) {
+            $discountAmount = match ($coupon->type) {
+                'percentage' => round($amount * min((float) $coupon->amount, 100) / 100, 2),
+                'fixed' => round(min((float) $coupon->amount, $amount), 2),
+                default => 0.0,
+            };
+        }
+
+        return response()->json([
+            'valid' => true,
+            'code' => $coupon->code,
+            'discount' => (float) $coupon->amount,
+            'discount_type' => $coupon->type,
+            'discount_amount' => $discountAmount,
+            'data' => $coupon,
+        ]);
+    }
 }
 
 

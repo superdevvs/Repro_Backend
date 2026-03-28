@@ -35,10 +35,13 @@ class CreateShootAction
         $this->support->ensureClientCanBookServices((int) $validated['client_id'], $validated['services']);
 
         $result = DB::transaction(function () use ($validated, $user, $request) {
-            $taxCalculation = $this->support->buildTaxCalculation(
+            $client = User::findOrFail((int) $validated['client_id']);
+            $pricingCalculation = $this->support->buildPricingCalculation(
                 $validated['services'],
+                $client,
                 $validated['state'] ?? null,
-                $validated['tax_region'] ?? null
+                $validated['tax_region'] ?? null,
+                $validated['coupon_code'] ?? null
             );
             $repId = $validated['rep_id'] ?? $this->support->getClientRep($validated['client_id']);
             $scheduledAt = !empty($validated['scheduled_at'])
@@ -128,11 +131,14 @@ class CreateShootAction
                 'time' => $scheduledAt ? $scheduledAt->format('H:i') : ($validated['time'] ?? null),
                 'status' => $initialStatus,
                 'workflow_status' => $workflowStatus,
-                'base_quote' => $taxCalculation['base_quote'],
-                'tax_region' => $taxCalculation['tax_region'],
-                'tax_percent' => $taxCalculation['tax_percent'],
-                'tax_amount' => $taxCalculation['tax_amount'],
-                'total_quote' => $taxCalculation['total_quote'],
+                'base_quote' => $pricingCalculation['base_quote'],
+                'discount_type' => $pricingCalculation['discount_type'],
+                'discount_value' => $pricingCalculation['discount_value'],
+                'discount_amount' => $pricingCalculation['discount_amount'],
+                'tax_region' => $pricingCalculation['tax_region'],
+                'tax_percent' => $pricingCalculation['tax_percent'],
+                'tax_amount' => $pricingCalculation['tax_amount'],
+                'total_quote' => $pricingCalculation['total_quote'],
                 'bypass_paywall' => $validated['bypass_paywall'] ?? false,
                 'payment_status' => 'unpaid',
                 'created_by' => $user->name,
@@ -152,6 +158,13 @@ class CreateShootAction
 
             $this->support->attachServices($shoot, $validated['services']);
             $this->support->assignServicePhotographers($shoot, $request->input('service_photographers'));
+
+            if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
+                $coupon = $this->support->resolveCoupon($pricingCalculation['coupon_code']);
+                if ($coupon) {
+                    $coupon->increment('current_uses');
+                }
+            }
 
             if ($scheduledAt && !$treatAsClientRequest) {
                 try {

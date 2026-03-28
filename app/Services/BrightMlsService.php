@@ -886,6 +886,7 @@ class BrightMlsService
             $dropbox = $this->dropboxService;
             $dropboxEnabled = $dropbox && config('services.dropbox.enabled', false);
             $photoOptions = $photos->map(function ($file) use ($dropboxEnabled, $dropbox) {
+                $commentDescription = $this->latestMediaCommentDescription($file);
                 // Try fields that are already full HTTP URLs
                 foreach (['url', 'web_path', 'storage_path', 'path'] as $field) {
                     $val = $file->{$field} ?? null;
@@ -893,7 +894,7 @@ class BrightMlsService
                         return [
                             'url' => $val,
                             'filename' => $file->filename ?? basename($val),
-                            'description' => '',
+                            'description' => $commentDescription,
                             'roomType' => '',
                             'selected' => true,
                         ];
@@ -907,7 +908,7 @@ class BrightMlsService
                         return [
                             'url' => $tempUrl,
                             'filename' => $file->filename ?? basename($file->dropbox_path),
-                            'description' => '',
+                            'description' => $commentDescription,
                             'roomType' => '',
                             'selected' => true,
                         ];
@@ -922,7 +923,7 @@ class BrightMlsService
                 return [
                     'url' => $url,
                     'filename' => $file->filename ?? basename($url ?? ''),
-                    'description' => '',
+                    'description' => $commentDescription,
                     'roomType' => '',
                     'selected' => true,
                 ];
@@ -1047,6 +1048,29 @@ class BrightMlsService
         }
 
         return substr($trimmed, 0, $maxLength);
+    }
+
+    private function latestMediaCommentDescription(\App\Models\ShootFile $file): string
+    {
+        $metadata = is_array($file->metadata) ? $file->metadata : [];
+        $comments = $metadata['comments'] ?? null;
+        if (!is_array($comments)) {
+            return '';
+        }
+
+        for ($index = count($comments) - 1; $index >= 0; $index--) {
+            $entry = $comments[$index];
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $comment = trim((string) ($entry['comment'] ?? ''));
+            if ($comment !== '') {
+                return $this->trimText($comment, 50);
+            }
+        }
+
+        return '';
     }
 }
 

@@ -40,7 +40,11 @@ class ProcessImageJob implements ShouldQueue
     public function handle(ImageProcessingService $imageService, DropboxWorkflowService $dropboxService): void
     {
         try {
-            if ($this->shootFile->processed_at && $this->shootFile->thumbnail_path) {
+            if (
+                $this->shootFile->processed_at
+                && $this->shootFile->thumbnail_path
+                && $this->shootFile->web_path
+            ) {
                 Log::info("Image already processed, skipping", [
                     'file_id' => $this->shootFile->id,
                     'filename' => $this->shootFile->filename,

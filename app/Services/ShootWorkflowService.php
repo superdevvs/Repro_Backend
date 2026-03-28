@@ -268,6 +268,9 @@ class ShootWorkflowService
 
         DB::transaction(function () use ($shoot, $user, $reason) {
             $shoot->status = self::STATUS_CANCELLED;
+            $shoot->workflow_status = self::STATUS_CANCELLED;
+            $shoot->cancellation_requested_at = null;
+            $shoot->cancellation_requested_by = null;
             $shoot->updated_by = $user?->id ?? auth()->id();
             $shoot->save();
 

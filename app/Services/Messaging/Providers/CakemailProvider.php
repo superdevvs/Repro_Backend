@@ -39,96 +39,17 @@ class CakemailProvider implements EmailProviderInterface
 
         $senderId = $channel->config_json['cakemail_sender_id'] ?? $this->defaultSenderId;
         $listId = $channel->config_json['cakemail_list_id'] ?? $this->defaultListId;
+        $messageId = $this->sendSingleEmail($token, $channel, $payload, (string) $payload['to'], $senderId, $listId);
 
-        $contentType = $payload['type'] ?? 'transactional';
-
-        $emailPayload = [
-            'sender' => [
-                'id' => $senderId,
-                'name' => $payload['sender_name'] ?? $channel->display_name ?? config('mail.from.name', 'R/E Pro Photos'),
-            ],
-            'content' => [
-                'type' => $contentType,
-                'subject' => $payload['subject'] ?? 'Message from Repro HQ',
-                'html' => $payload['html'] ?? $payload['body_html'] ?? '',
-                'text' => $payload['text'] ?? $payload['body_text'] ?? strip_tags($payload['html'] ?? ''),
-                'encoding' => $payload['encoding'] ?? 'utf-8',
-            ],
-            'email' => $payload['to'],
-            'tracking' => [
-                'opens' => true,
-                'clicks_html' => true,
-                'clicks_text' => true,
-            ],
-        ];
-
-        // Always include list_id when available (Cakemail API requires it)
-        if ($listId) {
-            $emailPayload['list_id'] = (int) $listId;
+        foreach ($this->normalizeRecipientList($payload['cc'] ?? []) as $ccEmail) {
+            $this->sendSingleEmail($token, $channel, $payload, $ccEmail, $senderId, $listId);
         }
 
-        // Add tags if provided
-        if (!empty($payload['tags'])) {
-            $emailPayload['tags'] = $payload['tags'];
+        foreach ($this->normalizeRecipientList($payload['bcc'] ?? []) as $bccEmail) {
+            $this->sendSingleEmail($token, $channel, $payload, $bccEmail, $senderId, $listId);
         }
 
-        // Add attachments if provided
-        if (!empty($payload['attachments'])) {
-            $emailPayload['attachment'] = array_map(function ($attachment) {
-                return [
-                    'filename' => $attachment['filename'] ?? 'attachment',
-                    'content' => base64_encode($attachment['content'] ?? ''),
-                    'content_type' => $attachment['content_type'] ?? 'application/octet-stream',
-                ];
-            }, $payload['attachments']);
-        }
-
-        // Add reply-to if provided
-        if (!empty($payload['reply_to'])) {
-            $emailPayload['additional_headers'] = [
-                ['name' => 'Reply-To', 'value' => $payload['reply_to']],
-            ];
-        }
-
-        Log::info('Cakemail: Sending email', [
-            'to' => $payload['to'],
-            'subject' => $emailPayload['content']['subject'],
-            'sender_id' => $senderId,
-        ]);
-
-        $response = Http::withoutVerifying()
-            ->withToken($token)
-            ->timeout(30)
-            ->post("{$this->baseUrl}/v2/emails", $emailPayload);
-
-        if ($response->failed()) {
-            $responseJson = $response->json() ?? [];
-            Log::error('Cakemail email send failed', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'response' => $responseJson,
-                'to' => $payload['to'],
-            ]);
-
-            $errorMessage = $responseJson['detail'] ?? $responseJson['message'] ?? $response->body();
-            if (is_array($errorMessage)) {
-                $errorMessage = json_encode($errorMessage);
-            }
-            throw new \RuntimeException('Failed to send email via Cakemail: ' . $errorMessage);
-        }
-
-        $responseData = $response->json();
-        $messageId = $responseData['data']['id'] 
-            ?? $responseData['id'] 
-            ?? Str::uuid()->toString();
-
-        Log::info('Cakemail: Email sent successfully', [
-            'message_id' => $messageId,
-            'to' => $payload['to'],
-            'status' => $responseData['data']['status'] ?? 'queued',
-        ]);
-
-        return (string) $messageId;
+        return $messageId;
     }
 
     /**
@@ -699,5 +620,115 @@ class CakemailProvider implements EmailProviderInterface
         Cache::forget($cacheKey);
         Cache::forget($cacheKey . '_refresh');
         Cache::forget($cacheKey . '_accounts');
+    }
+
+    protected function sendSingleEmail(
+        string $token,
+        MessageChannel $channel,
+        array $payload,
+        string $recipientEmail,
+        ?string $senderId,
+        ?int $listId
+    ): string {
+        $contentType = $payload['type'] ?? 'transactional';
+
+        $emailPayload = [
+            'sender' => [
+                'id' => $senderId,
+                'name' => $payload['sender_name'] ?? $channel->display_name ?? config('mail.from.name', 'R/E Pro Photos'),
+            ],
+            'content' => [
+                'type' => $contentType,
+                'subject' => $payload['subject'] ?? 'Message from Repro HQ',
+                'html' => $payload['html'] ?? $payload['body_html'] ?? '',
+                'text' => $payload['text'] ?? $payload['body_text'] ?? strip_tags($payload['html'] ?? ''),
+                'encoding' => $payload['encoding'] ?? 'utf-8',
+            ],
+            'email' => $recipientEmail,
+            'tracking' => [
+                'opens' => true,
+                'clicks_html' => true,
+                'clicks_text' => true,
+            ],
+        ];
+
+        if ($listId) {
+            $emailPayload['list_id'] = (int) $listId;
+        }
+
+        if (!empty($payload['tags'])) {
+            $emailPayload['tags'] = $payload['tags'];
+        }
+
+        if (!empty($payload['attachments'])) {
+            $emailPayload['attachment'] = array_map(function ($attachment) {
+                return [
+                    'filename' => $attachment['filename'] ?? 'attachment',
+                    'content' => base64_encode($attachment['content'] ?? ''),
+                    'content_type' => $attachment['content_type'] ?? 'application/octet-stream',
+                ];
+            }, $payload['attachments']);
+        }
+
+        if (!empty($payload['reply_to'])) {
+            $emailPayload['additional_headers'] = [
+                ['name' => 'Reply-To', 'value' => $payload['reply_to']],
+            ];
+        }
+
+        Log::info('Cakemail: Sending email', [
+            'to' => $recipientEmail,
+            'subject' => $emailPayload['content']['subject'],
+            'sender_id' => $senderId,
+        ]);
+
+        $response = Http::withoutVerifying()
+            ->withToken($token)
+            ->timeout(30)
+            ->post("{$this->baseUrl}/v2/emails", $emailPayload);
+
+        if ($response->failed()) {
+            $responseJson = $response->json() ?? [];
+            Log::error('Cakemail email send failed', [
+                'status' => $response->status(),
+                'body' => $response->body(),
+                'response' => $responseJson,
+                'to' => $recipientEmail,
+            ]);
+
+            $errorMessage = $responseJson['detail'] ?? $responseJson['message'] ?? $response->body();
+            if (is_array($errorMessage)) {
+                $errorMessage = json_encode($errorMessage);
+            }
+            throw new \RuntimeException('Failed to send email via Cakemail: ' . $errorMessage);
+        }
+
+        $responseData = $response->json();
+        $messageId = $responseData['data']['id']
+            ?? $responseData['id']
+            ?? Str::uuid()->toString();
+
+        Log::info('Cakemail: Email sent successfully', [
+            'message_id' => $messageId,
+            'to' => $recipientEmail,
+            'status' => $responseData['data']['status'] ?? 'queued',
+        ]);
+
+        return (string) $messageId;
+    }
+
+    /**
+     * @param  mixed  $recipients
+     * @return array<int, string>
+     */
+    protected function normalizeRecipientList(mixed $recipients): array
+    {
+        return collect(is_array($recipients) ? $recipients : [])
+            ->filter(fn ($email) => is_string($email) && trim($email) !== '')
+            ->map(fn ($email) => strtolower(trim($email)))
+            ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->unique()
+            ->values()
+            ->all();
     }
 }

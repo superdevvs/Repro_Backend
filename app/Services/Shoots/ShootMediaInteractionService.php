@@ -20,6 +20,10 @@ class ShootMediaInteractionService
     {
         $file->is_favorite = !$file->is_favorite;
         $file->save();
+        $shoot = $file->relationLoaded('shoot') ? $file->shoot : Shoot::find($file->shoot_id);
+        if ($shoot) {
+            $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
+        }
 
         return [
             'message' => 'Favorite updated',
@@ -64,15 +68,20 @@ class ShootMediaInteractionService
 
     public function addComment(ShootFile $file, string $author, string $comment): array
     {
-        $comments = $file->metadata['comments'] ?? [];
+        $metadata = is_array($file->metadata) ? $file->metadata : [];
+        $comments = is_array($metadata['comments'] ?? null) ? $metadata['comments'] : [];
         $comments[] = [
             'author' => $author,
-            'comment' => $comment,
+            'comment' => trim($comment),
             'timestamp' => now()->toIso8601String(),
         ];
 
-        $file->metadata = array_merge($file->metadata ?? [], ['comments' => $comments]);
+        $file->metadata = array_merge($metadata, ['comments' => $comments]);
         $file->save();
+        $shoot = $file->relationLoaded('shoot') ? $file->shoot : Shoot::find($file->shoot_id);
+        if ($shoot) {
+            $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
+        }
 
         return [
             'message' => 'Comment added',

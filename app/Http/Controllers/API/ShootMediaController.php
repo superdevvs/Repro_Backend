@@ -129,7 +129,11 @@ class ShootMediaController extends Controller
 
     public function favoriteMedia(Shoot $shoot, ShootFile $file)
     {
+        $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         return response()->json($this->shootMediaInteractionService->toggleFavorite($file));
     }
@@ -174,14 +178,18 @@ class ShootMediaController extends Controller
 
     public function commentMedia(Request $request, Shoot $shoot, ShootFile $file)
     {
+        $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
         $request->validate([
             'comment' => 'required|string|max:1000',
         ]);
 
         return response()->json($this->shootMediaInteractionService->addComment(
             $file,
-            auth()->user()->name ?? 'User',
+            $user?->name ?? 'User',
             $request->input('comment')
         ));
     }
@@ -230,7 +238,11 @@ class ShootMediaController extends Controller
 
     public function downloadMedia(Shoot $shoot, ShootFile $file)
     {
+        $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
         $url = $this->downloadShootMediaAction->execute($file);
 
         if (!$url) {
@@ -466,11 +478,29 @@ class ShootMediaController extends Controller
 
     public function toggleFileHidden(Request $request, Shoot $shoot)
     {
+        $user = $request->user();
         $request->validate([
             'file_ids' => 'required|array|min:1',
             'file_ids.*' => 'integer',
             'hidden' => 'required|boolean',
         ]);
+
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($this->shootAuthorizationSupport->isClientUser($user)) {
+            $fileIds = $request->input('file_ids', []);
+            $manageableCount = $shoot->files()
+                ->whereIn('id', $fileIds)
+                ->get()
+                ->filter(fn (ShootFile $file) => $this->shootAuthorizationSupport->isClientInteractableEditedFile($file))
+                ->count();
+
+            if ($manageableCount !== count(array_unique($fileIds))) {
+                return response()->json(['message' => 'Clients can only update edited media from their own shoot.'], 422);
+            }
+        }
 
         return response()->json($this->shootMediaInteractionService->toggleHidden(
             $shoot,

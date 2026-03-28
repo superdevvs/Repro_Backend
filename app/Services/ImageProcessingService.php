@@ -193,23 +193,26 @@ class ImageProcessingService
             return $this->createRawPlaceholder();
             
         } else {
-            // Handle regular image files
-            $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
-            
-            switch ($extension) {
-                case 'jpg':
-                case 'jpeg':
-                    return imagecreatefromjpeg($filePath);
-                case 'png':
-                    return imagecreatefrompng($filePath);
-                case 'gif':
-                    return imagecreatefromgif($filePath);
-                case 'webp':
-                    return imagecreatefromwebp($filePath);
-                default:
-                    Log::error("Unsupported image format: {$extension}");
-                    return false;
+            // Uploaded files are often stored as extensionless temp files, so rely on
+            // the actual bytes instead of the temporary filename suffix.
+            $imageData = @file_get_contents($filePath);
+            if ($imageData === false) {
+                Log::error("Failed to read image file: {$filePath}");
+                return false;
             }
+
+            $image = @imagecreatefromstring($imageData);
+            if ($image !== false) {
+                return $image;
+            }
+
+            $extension = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+            $mimeType = @mime_content_type($filePath) ?: 'unknown';
+            Log::error("Unsupported image format: {$extension}", [
+                'path' => $filePath,
+                'mime_type' => $mimeType,
+            ]);
+            return false;
         }
     }
     

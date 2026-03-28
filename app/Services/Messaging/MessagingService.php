@@ -37,12 +37,18 @@ class MessagingService
     public function sendEmail(array $payload): Message
     {
         $channel = $this->resolveEmailChannel($payload);
+        $cc = $this->normalizeEmailAddresses($payload['cc'] ?? []);
+        $bcc = $this->normalizeEmailAddresses($payload['bcc'] ?? []);
+        $payload['cc'] = $cc;
+        $payload['bcc'] = $bcc;
 
         $message = $this->storeMessageRecord($payload, $channel, 'EMAIL');
 
         $provider = $this->getEmailProvider($channel);
         $providerMessageId = $provider->send($channel, [
             'to' => $payload['to'],
+            'cc' => $cc,
+            'bcc' => $bcc,
             'subject' => $payload['subject'] ?? $message->subject,
             'html' => $payload['body_html'] ?? $message->body_html,
             'text' => $payload['body_text'] ?? $message->body_text,
@@ -188,6 +194,8 @@ class MessagingService
             'provider' => $providerOverride ?? $channel?->provider,
             'from_address' => $payload['from'] ?? $channel?->from_email,
             'to_address' => $payload['to'],
+            'cc_addresses_json' => $this->normalizeEmailAddresses($payload['cc'] ?? []),
+            'bcc_addresses_json' => $this->normalizeEmailAddresses($payload['bcc'] ?? []),
             'reply_to_email' => $payload['reply_to'] ?? null,
             'subject' => $payload['subject'] ?? null,
             'body_text' => $payload['body_text'] ?? null,
@@ -417,6 +425,8 @@ class MessagingService
 
         $providerMessageId = $provider->send($channel, [
             'to' => $message->to_address,
+            'cc' => $this->normalizeEmailAddresses($message->cc_addresses_json ?? []),
+            'bcc' => $this->normalizeEmailAddresses($message->bcc_addresses_json ?? []),
             'subject' => $message->subject ?? '',
             'html' => $message->body_html ?? '',
             'text' => $message->body_text ?? '',
@@ -430,5 +440,20 @@ class MessagingService
         ]);
 
         return $message->refresh();
+    }
+
+    /**
+     * @param  mixed  $emails
+     * @return array<int, string>
+     */
+    protected function normalizeEmailAddresses(mixed $emails): array
+    {
+        return collect(is_array($emails) ? $emails : [])
+            ->filter(fn ($email) => is_string($email) && trim($email) !== '')
+            ->map(fn ($email) => strtolower(trim($email)))
+            ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->unique()
+            ->values()
+            ->all();
     }
 }

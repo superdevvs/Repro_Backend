@@ -19,6 +19,7 @@ use App\Services\Shoots\Actions\RequestCancellationAction;
 use App\Services\Shoots\Actions\RequestHoldAction;
 use App\Services\Shoots\Actions\StartEditingAction;
 use App\Services\Shoots\Actions\SubmitForReviewAction;
+use App\Services\Shoots\Actions\WithdrawRequestedShootAction;
 use Illuminate\Http\Request;
 
 class ShootWorkflowController extends Controller
@@ -36,7 +37,8 @@ class ShootWorkflowController extends Controller
         protected RequestHoldAction $requestHoldAction,
         protected ApproveHoldAction $approveHoldAction,
         protected RejectHoldAction $rejectHoldAction,
-        protected AssignEditorAction $assignEditorAction
+        protected AssignEditorAction $assignEditorAction,
+        protected WithdrawRequestedShootAction $withdrawRequestedShootAction
     ) {
     }
 
@@ -81,7 +83,9 @@ class ShootWorkflowController extends Controller
     public function requestCancellation(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if ($shoot->client_id !== $user->id && !in_array($user->role, ['admin', 'superadmin', 'client'], true)) {
+        $isPrivilegedUser = in_array($user->role, ['admin', 'superadmin', 'salesRep', 'rep', 'representative'], true);
+        $isClientOwner = $user->role === 'client' && (string) $shoot->client_id === (string) $user->id;
+        if (!$isPrivilegedUser && !$isClientOwner) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -90,6 +94,25 @@ class ShootWorkflowController extends Controller
 
             return response()->json([
                 'message' => 'Cancellation request submitted. Pending approval.',
+                'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    public function withdrawRequested(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+        if ($user->role !== 'client' || (string) $shoot->client_id !== (string) $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        try {
+            $this->withdrawRequestedShootAction->execute($request, $shoot, $user);
+
+            return response()->json([
+                'message' => 'Shoot request cancelled.',
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
@@ -231,7 +254,7 @@ class ShootWorkflowController extends Controller
     public function requestHold(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if ($shoot->client_id !== $user->id && $user->role !== 'client') {
+        if ($user->role !== 'client' || (string) $shoot->client_id !== (string) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

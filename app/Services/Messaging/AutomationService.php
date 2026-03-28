@@ -87,6 +87,7 @@ class AutomationService
 
         $payload = [
             'to' => $recipient['email'] ?? $recipient['phone'] ?? null,
+            'cc' => $this->resolveRelatedShootCcEmails($recipient, $context),
             'subject' => $rendered['subject'] ?? $rule->template->subject,
             'body_html' => $rendered['body_html'] ?? null,
             'body_text' => $rendered['body_text'] ?? null,
@@ -433,6 +434,76 @@ class AutomationService
         $notes = array_filter($notes, fn($note) => trim((string) $note) !== '');
 
         return $notes ? implode("\n", $notes) : 'N/A';
+    }
+
+    /**
+     * @param  array<string, mixed>  $recipient
+     * @param  array<string, mixed>  $context
+     * @return array<int, string>
+     */
+    private function resolveRelatedShootCcEmails(array $recipient, array $context): array
+    {
+        if (($recipient['type'] ?? null) !== 'client') {
+            return [];
+        }
+
+        $client = null;
+
+        if (!empty($context['client'])) {
+            if ($context['client'] instanceof User) {
+                $client = $context['client'];
+            } elseif (is_array($context['client'])) {
+                if (!empty($context['client']['shoot_cc_emails']) || !empty($context['client']['shootCcEmails'])) {
+                    return $this->normalizeEmailAddresses(
+                        $context['client']['shoot_cc_emails'] ?? $context['client']['shootCcEmails'] ?? [],
+                        $recipient['email'] ?? $context['client']['email'] ?? null
+                    );
+                }
+
+                $client = User::find($context['client']['id'] ?? null);
+            }
+        }
+
+        if (!$client && !empty($context['account_id'])) {
+            $account = User::find($context['account_id']);
+            if ($account && $account->role === 'client') {
+                $client = $account;
+            }
+        }
+
+        if (!$client && !empty($context['shoot_id'])) {
+            $client = Shoot::query()
+                ->with('client')
+                ->find($context['shoot_id'])
+                ?->client;
+        }
+
+        if (!$client && !empty($context['invoice_id'])) {
+            $invoice = Invoice::query()
+                ->with(['client', 'shoot.client'])
+                ->find($context['invoice_id']);
+            $client = $invoice?->shoot?->client ?? $invoice?->client;
+        }
+
+        return $this->normalizeEmailAddresses($client?->shoot_cc_emails ?? [], $recipient['email'] ?? $client?->email);
+    }
+
+    /**
+     * @param  mixed  $emails
+     * @return array<int, string>
+     */
+    private function normalizeEmailAddresses(mixed $emails, ?string $exclude = null): array
+    {
+        $excluded = is_string($exclude) ? strtolower(trim($exclude)) : null;
+
+        return collect(is_array($emails) ? $emails : [])
+            ->filter(fn ($email) => is_string($email) && trim($email) !== '')
+            ->map(fn ($email) => strtolower(trim($email)))
+            ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->reject(fn ($email) => $excluded !== null && $email === $excluded)
+            ->unique()
+            ->values()
+            ->all();
     }
 }
 

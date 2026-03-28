@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots;
 
+use App\Models\Coupon;
 use App\Models\Service;
 use App\Models\ServiceGroup;
 use App\Models\Shoot;
@@ -38,10 +39,36 @@ class ShootMutationSupportService
 
     public function buildTaxCalculation(array $services, ?string $state, ?string $taxRegion = null): array
     {
-        $baseQuote = $this->calculateBaseQuote($services);
-        $resolvedTaxRegion = $taxRegion ?? $this->taxService->determineTaxRegion((string) $state);
+        return $this->buildPricingCalculation($services, null, $state, $taxRegion);
+    }
 
-        return $this->taxService->calculateTotal($baseQuote, $resolvedTaxRegion);
+    public function buildPricingCalculation(
+        array $services,
+        ?User $client,
+        ?string $state,
+        ?string $taxRegion = null,
+        ?string $couponCode = null
+    ): array {
+        $serviceSubtotal = $this->calculateBaseQuote($services);
+        $discountSnapshot = $this->resolveDiscountSnapshot($serviceSubtotal, $client, $couponCode);
+        $resolvedTaxRegion = $taxRegion ?? $this->taxService->determineTaxRegion((string) $state);
+        $taxCalculation = $this->taxService->calculateTotal($discountSnapshot['discounted_subtotal'], $resolvedTaxRegion);
+
+        return array_merge($taxCalculation, [
+            'service_subtotal' => $serviceSubtotal,
+            'base_quote' => (float) $taxCalculation['base_quote'],
+            'discount_type' => $discountSnapshot['discount_type'],
+            'discount_value' => $discountSnapshot['discount_value'],
+            'discount_amount' => $discountSnapshot['discount_amount'],
+            'discounted_subtotal' => (float) $taxCalculation['base_quote'],
+            'client_discount_type' => $discountSnapshot['client_discount_type'],
+            'client_discount_value' => $discountSnapshot['client_discount_value'],
+            'client_discount_amount' => $discountSnapshot['client_discount_amount'],
+            'coupon_code' => $discountSnapshot['coupon_code'],
+            'coupon_discount_type' => $discountSnapshot['coupon_discount_type'],
+            'coupon_discount_value' => $discountSnapshot['coupon_discount_value'],
+            'coupon_discount_amount' => $discountSnapshot['coupon_discount_amount'],
+        ]);
     }
 
     public function getClientRep(int $clientId): ?int
@@ -243,6 +270,107 @@ class ShootMutationSupportService
             $shoot->state,
             $shoot->zip
         ), ', ');
+    }
+
+    public function sanitizeEmailList(?array $emails): array
+    {
+        return collect($emails ?? [])
+            ->filter(fn ($email) => is_string($email) && trim($email) !== '')
+            ->map(fn ($email) => strtolower(trim($email)))
+            ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    public function resolveDiscountSnapshot(
+        float $serviceSubtotal,
+        ?User $client,
+        ?string $couponCode = null
+    ): array {
+        $clientDiscountType = $client?->client_discount_type ?: null;
+        $clientDiscountValue = $client?->client_discount_value !== null
+            ? (float) $client->client_discount_value
+            : null;
+        $clientDiscountAmount = $this->calculateDiscountAmount(
+            $serviceSubtotal,
+            $clientDiscountType,
+            $clientDiscountValue
+        );
+
+        $subtotalAfterClientDiscount = max($serviceSubtotal - $clientDiscountAmount, 0);
+        $coupon = $this->resolveCoupon($couponCode);
+        $couponDiscountType = $coupon?->type ?: null;
+        $couponDiscountValue = $coupon?->amount !== null ? (float) $coupon->amount : null;
+        $couponDiscountAmount = $this->calculateDiscountAmount(
+            $subtotalAfterClientDiscount,
+            $couponDiscountType,
+            $couponDiscountValue
+        );
+
+        $discountAmount = round($clientDiscountAmount + $couponDiscountAmount, 2);
+        $discountedSubtotal = round(max($serviceSubtotal - $discountAmount, 0), 2);
+        $primaryDiscountType = $clientDiscountAmount > 0 ? $clientDiscountType : $couponDiscountType;
+        $primaryDiscountValue = $clientDiscountAmount > 0 ? $clientDiscountValue : $couponDiscountValue;
+
+        return [
+            'discount_type' => $primaryDiscountType,
+            'discount_value' => $primaryDiscountValue,
+            'discount_amount' => $discountAmount,
+            'discounted_subtotal' => $discountedSubtotal,
+            'client_discount_type' => $clientDiscountType,
+            'client_discount_value' => $clientDiscountValue,
+            'client_discount_amount' => $clientDiscountAmount,
+            'coupon_code' => $coupon?->code,
+            'coupon_discount_type' => $couponDiscountType,
+            'coupon_discount_value' => $couponDiscountValue,
+            'coupon_discount_amount' => $couponDiscountAmount,
+        ];
+    }
+
+    public function resolveCoupon(?string $couponCode): ?Coupon
+    {
+        if (!is_string($couponCode) || trim($couponCode) === '') {
+            return null;
+        }
+
+        $coupon = Coupon::query()
+            ->whereRaw('LOWER(code) = ?', [strtolower(trim($couponCode))])
+            ->where('is_active', true)
+            ->first();
+
+        if (!$coupon) {
+            return null;
+        }
+
+        if ($coupon->valid_until && $coupon->valid_until->isPast()) {
+            return null;
+        }
+
+        if ($coupon->max_uses !== null && (int) $coupon->current_uses >= (int) $coupon->max_uses) {
+            return null;
+        }
+
+        return $coupon;
+    }
+
+    public function calculateDiscountAmount(float $subtotal, ?string $discountType, ?float $discountValue): float
+    {
+        $normalizedType = is_string($discountType) ? strtolower(trim($discountType)) : null;
+        $value = $discountValue !== null ? max((float) $discountValue, 0) : 0;
+        $subtotal = max($subtotal, 0);
+
+        if ($subtotal <= 0 || !$normalizedType || $value <= 0) {
+            return 0.0;
+        }
+
+        $amount = match ($normalizedType) {
+            'percent', 'percentage' => $subtotal * min($value, 100) / 100,
+            'fixed', '$' => $value,
+            default => 0,
+        };
+
+        return round(min($amount, $subtotal), 2);
     }
 
     protected function serviceGroupsFeatureAvailable(): bool

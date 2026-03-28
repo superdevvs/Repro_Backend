@@ -151,7 +151,12 @@ class ShootResource extends JsonResource
             'status' => $this->status,
             'workflowStatus' => $this->workflow_status,
             'payment' => [
+                'serviceSubtotal' => (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
                 'baseQuote' => (float) $this->base_quote,
+                'discountType' => $this->discount_type,
+                'discountValue' => $this->discount_value !== null ? (float) $this->discount_value : null,
+                'discountAmount' => (float) ($this->discount_amount ?? 0),
+                'discountedSubtotal' => (float) $this->base_quote,
                 'taxRegion' => $this->tax_region ?? 'none',
                 'taxPercent' => (float) ($this->tax_percent ?? 0),
                 'taxAmount' => (float) $this->tax_amount,

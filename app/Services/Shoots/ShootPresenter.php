@@ -120,6 +120,12 @@ class ShootPresenter
             $shoot->payment_status = $this->calculatePaymentStatus($totalPaid, $totalQuote);
         }
 
+        $shoot->setAttribute('service_subtotal', (float) (($shoot->base_quote ?? 0) + ($shoot->discount_amount ?? 0)));
+        $shoot->setAttribute('discount_type', $shoot->discount_type);
+        $shoot->setAttribute('discount_value', $shoot->discount_value !== null ? (float) $shoot->discount_value : null);
+        $shoot->setAttribute('discount_amount', (float) ($shoot->discount_amount ?? 0));
+        $shoot->setAttribute('discounted_subtotal', (float) ($shoot->base_quote ?? 0));
+
         $createdByName = 'Unknown';
         if ($shoot->created_by) {
             $createdByUser = $shoot->createdByUser ?? User::find($shoot->created_by);

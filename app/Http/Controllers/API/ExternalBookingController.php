@@ -13,6 +13,7 @@ use App\Services\ShootTaxService;
 use App\Services\ShootWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\ShootMutationSupportService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -24,15 +25,18 @@ class ExternalBookingController extends Controller
     protected ShootTaxService $taxService;
     protected ShootActivityLogger $activityLogger;
     protected AutomationService $automationService;
+    protected ShootMutationSupportService $shootSupport;
 
     public function __construct(
         ShootTaxService $taxService,
         ShootActivityLogger $activityLogger,
-        AutomationService $automationService
+        AutomationService $automationService,
+        ShootMutationSupportService $shootSupport
     ) {
         $this->taxService = $taxService;
         $this->activityLogger = $activityLogger;
         $this->automationService = $automationService;
+        $this->shootSupport = $shootSupport;
     }
 
     /**
@@ -50,15 +54,17 @@ class ExternalBookingController extends Controller
             $result = DB::transaction(function () use ($validated, $request) {
                 // 1. Find or create client by email
                 $client = $this->findOrCreateClient($validated);
-                $this->ensureClientCanBookServices($client, $validated['services']);
+                $this->shootSupport->ensureClientCanBookServices($client->id, $validated['services']);
 
-                // 2. Calculate pricing from service catalog
+                // 2. Calculate pricing from service catalog and client defaults
                 $services = $validated['services'];
-                $baseQuote = $this->calculateBaseQuote($services);
-
-                // 3. Determine tax
-                $taxRegion = $this->taxService->determineTaxRegion($validated['state']);
-                $taxCalculation = $this->taxService->calculateTotal($baseQuote, $taxRegion);
+                $pricingCalculation = $this->shootSupport->buildPricingCalculation(
+                    $services,
+                    $client,
+                    $validated['state'],
+                    null,
+                    $validated['coupon_code'] ?? null
+                );
 
                 // 4. Build scheduled_at if preferred date/time provided
                 $scheduledAt = null;
@@ -95,11 +101,14 @@ class ExternalBookingController extends Controller
                     'time' => $scheduledAt ? $scheduledAt->format('H:i') : null,
                     'status' => Shoot::STATUS_REQUESTED,
                     'workflow_status' => Shoot::STATUS_REQUESTED,
-                    'base_quote' => $taxCalculation['base_quote'],
-                    'tax_region' => $taxCalculation['tax_region'],
-                    'tax_percent' => $taxCalculation['tax_percent'],
-                    'tax_amount' => $taxCalculation['tax_amount'],
-                    'total_quote' => $taxCalculation['total_quote'],
+                    'base_quote' => $pricingCalculation['base_quote'],
+                    'discount_type' => $pricingCalculation['discount_type'],
+                    'discount_value' => $pricingCalculation['discount_value'],
+                    'discount_amount' => $pricingCalculation['discount_amount'],
+                    'tax_region' => $pricingCalculation['tax_region'],
+                    'tax_percent' => $pricingCalculation['tax_percent'],
+                    'tax_amount' => $pricingCalculation['tax_amount'],
+                    'total_quote' => $pricingCalculation['total_quote'],
                     'bypass_paywall' => false,
                     'payment_status' => 'unpaid',
                     'created_by' => "External ({$source})",
@@ -108,7 +117,14 @@ class ExternalBookingController extends Controller
                 ]);
 
                 // 8. Attach services with catalog prices
-                $this->attachServices($shoot, $services);
+                $this->shootSupport->attachServices($shoot, $services);
+
+                if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
+                    $coupon = $this->shootSupport->resolveCoupon($pricingCalculation['coupon_code']);
+                    if ($coupon) {
+                        $coupon->increment('current_uses');
+                    }
+                }
 
                 // 9. Log activity
                 $this->activityLogger->log(
@@ -237,35 +253,6 @@ class ExternalBookingController extends Controller
         return response()->json(['data' => $services]);
     }
 
-    protected function ensureClientCanBookServices(User $client, array $services): void
-    {
-        if (!$this->serviceGroupsFeatureAvailable()) {
-            return;
-        }
-
-        if (!$client->loadMissing('serviceGroups')->hasServiceGroupRestrictions()) {
-            return;
-        }
-
-        $requestedIds = collect($services)
-            ->pluck('id')
-            ->map(fn ($id) => (int) $id)
-            ->unique()
-            ->values();
-
-        $visibleIds = Service::visibleIdsForClient($client, $requestedIds->all())
-            ->map(fn ($id) => (int) $id)
-            ->values();
-
-        $invalidIds = $requestedIds->diff($visibleIds)->values()->all();
-
-        if (!empty($invalidIds)) {
-            throw ValidationException::withMessages([
-                'services' => ['One or more selected services are not available for this client.'],
-            ]);
-        }
-    }
-
     protected function serviceGroupsFeatureAvailable(): bool
     {
         try {
@@ -321,25 +308,6 @@ class ExternalBookingController extends Controller
     }
 
     /**
-     * Calculate base quote from service catalog prices.
-     */
-    protected function calculateBaseQuote(array $services): float
-    {
-        $total = 0;
-        $serviceIds = collect($services)->pluck('id');
-        $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
-
-        foreach ($services as $service) {
-            $serviceModel = $serviceModels->get($service['id']);
-            $price = $serviceModel?->price ?? 0;
-            $quantity = $service['quantity'] ?? 1;
-            $total += $price * $quantity;
-        }
-
-        return round($total, 2);
-    }
-
-    /**
      * Get client's rep from most recent shoot.
      */
     protected function getClientRep(int $clientId): ?int
@@ -350,25 +318,4 @@ class ExternalBookingController extends Controller
             ->value('rep_id');
     }
 
-    /**
-     * Attach services to shoot pivot table.
-     */
-    protected function attachServices(Shoot $shoot, array $services): void
-    {
-        $serviceIds = collect($services)->pluck('id');
-        $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
-
-        $pivotData = collect($services)->mapWithKeys(function ($service) use ($serviceModels) {
-            $serviceModel = $serviceModels->get($service['id']);
-            return [
-                $service['id'] => [
-                    'price' => $serviceModel?->price ?? 0,
-                    'quantity' => $service['quantity'] ?? 1,
-                    'photographer_pay' => null,
-                ],
-            ];
-        })->toArray();
-
-        $shoot->services()->sync($pivotData);
-    }
 }

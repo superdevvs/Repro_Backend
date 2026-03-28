@@ -152,6 +152,11 @@ class UserController extends Controller
             'zip' => 'nullable|string|max:20',
             'license_number' => 'nullable|string|max:100',
             'company_notes' => 'nullable|string',
+            'shoot_cc_emails' => 'nullable|array',
+            'shoot_cc_emails.*' => 'email',
+            'clear_shoot_cc_emails' => 'nullable|boolean',
+            'client_discount_type' => 'nullable|in:fixed,percent',
+            'client_discount_value' => 'nullable|numeric|min:0',
             'role' => 'required|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|image|max:2048',
@@ -199,6 +204,18 @@ class UserController extends Controller
             $validated['phonenumber'] = $validated['phone_number'];
             unset($validated['phone_number']);
         }
+
+        if (($validated['clear_shoot_cc_emails'] ?? false) && !array_key_exists('shoot_cc_emails', $validated)) {
+            $validated['shoot_cc_emails'] = [];
+        }
+        unset($validated['clear_shoot_cc_emails']);
+
+        $validated['shoot_cc_emails'] = $this->sanitizeShootCcEmails($validated['shoot_cc_emails'] ?? []);
+        [$validated['client_discount_type'], $validated['client_discount_value']] = $this->normalizeClientDiscount(
+            $validated['role'] ?? null,
+            $validated['client_discount_type'] ?? null,
+            $validated['client_discount_value'] ?? null
+        );
 
         // Ensure username exists even if frontend omits it
         if (empty($validated['username'] ?? null)) {
@@ -358,6 +375,14 @@ class UserController extends Controller
             }
 
             $clientData['service_group_ids'] = $client->getAssignedServiceGroupIds();
+            $clientData['shoot_cc_emails'] = $this->sanitizeShootCcEmails($clientData['shoot_cc_emails'] ?? []);
+            $clientData['client_discount_type'] = $clientData['client_discount_type'] ?? null;
+            $clientData['client_discount_value'] = $clientData['client_discount_value'] !== null
+                ? (float) $clientData['client_discount_value']
+                : null;
+            $clientData['shootCcEmails'] = $clientData['shoot_cc_emails'];
+            $clientData['clientDiscountType'] = $clientData['client_discount_type'];
+            $clientData['clientDiscountValue'] = $clientData['client_discount_value'];
 
             return $clientData;
         });
@@ -423,6 +448,11 @@ class UserController extends Controller
             'zip' => 'nullable|string|max:20',
             'license_number' => 'nullable|string|max:100',
             'company_notes' => 'nullable|string',
+            'shoot_cc_emails' => 'nullable|array',
+            'shoot_cc_emails.*' => 'email',
+            'clear_shoot_cc_emails' => 'nullable|boolean',
+            'client_discount_type' => 'nullable|in:fixed,percent',
+            'client_discount_value' => 'nullable|numeric|min:0',
             'role' => 'sometimes|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|string',
@@ -471,6 +501,27 @@ class UserController extends Controller
         if (array_key_exists('phone_number', $validated)) {
             $validated['phonenumber'] = $validated['phone_number'];
             unset($validated['phone_number']);
+        }
+
+        if (($validated['clear_shoot_cc_emails'] ?? false) && !array_key_exists('shoot_cc_emails', $validated)) {
+            $validated['shoot_cc_emails'] = [];
+        }
+        unset($validated['clear_shoot_cc_emails']);
+
+        if (array_key_exists('shoot_cc_emails', $validated)) {
+            $validated['shoot_cc_emails'] = $this->sanitizeShootCcEmails($validated['shoot_cc_emails'] ?? []);
+        }
+
+        if (
+            array_key_exists('client_discount_type', $validated)
+            || array_key_exists('client_discount_value', $validated)
+            || array_key_exists('role', $validated)
+        ) {
+            [$validated['client_discount_type'], $validated['client_discount_value']] = $this->normalizeClientDiscount(
+                $validated['role'] ?? $user->role,
+                $validated['client_discount_type'] ?? $user->client_discount_type,
+                $validated['client_discount_value'] ?? $user->client_discount_value
+            );
         }
 
         // Handle metadata
@@ -655,6 +706,44 @@ class UserController extends Controller
         ]);
     }
 
+    protected function sanitizeShootCcEmails(array $emails): array
+    {
+        return collect($emails)
+            ->filter(fn ($email) => is_string($email) && trim($email) !== '')
+            ->map(fn ($email) => strtolower(trim($email)))
+            ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function normalizeClientDiscount(?string $role, mixed $discountType, mixed $discountValue): array
+    {
+        if ($role !== 'client') {
+            return [null, null];
+        }
+
+        $normalizedType = is_string($discountType) ? strtolower(trim($discountType)) : null;
+        if (!in_array($normalizedType, ['fixed', 'percent'], true)) {
+            return [null, null];
+        }
+
+        if ($discountValue === null || $discountValue === '') {
+            return [null, null];
+        }
+
+        $numericValue = round(max((float) $discountValue, 0), 2);
+        if ($normalizedType === 'percent') {
+            $numericValue = min($numericValue, 100);
+        }
+
+        if ($numericValue <= 0) {
+            return [null, null];
+        }
+
+        return [$normalizedType, $numericValue];
+    }
+
     protected function presentUserForViewer(User $user, User $viewer): array
     {
         $payload = $user->attributesToArray();
@@ -680,6 +769,14 @@ class UserController extends Controller
         if (isset($payload['company_notes'])) {
             $payload['companyNotes'] = $payload['company_notes'];
         }
+        $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
+        $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
+        $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
+        $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
+            ? (float) $payload['client_discount_value']
+            : null;
+        $payload['clientDiscountType'] = $payload['client_discount_type'];
+        $payload['clientDiscountValue'] = $payload['client_discount_value'];
         if (isset($payload['zip'])) {
             $payload['zipcode'] = $payload['zip'];
         }
@@ -921,6 +1018,14 @@ class UserController extends Controller
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
         }
+        $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
+        $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
+        $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
+        $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
+            ? (float) $payload['client_discount_value']
+            : null;
+        $payload['clientDiscountType'] = $payload['client_discount_type'];
+        $payload['clientDiscountValue'] = $payload['client_discount_value'];
         
         // Get linked accounts from pre-loaded data
         $userLinks = $allLinks->get($user->id, collect());

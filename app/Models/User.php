@@ -32,6 +32,9 @@ class User extends Authenticatable
         'zip',
         'license_number',
         'company_notes',
+        'shoot_cc_emails',
+        'client_discount_type',
+        'client_discount_value',
         'role',
         'secondary_roles',
         'avatar',
@@ -72,6 +75,8 @@ class User extends Authenticatable
             'password' => 'hashed',
             'metadata' => 'array',
             'secondary_roles' => 'array',
+            'shoot_cc_emails' => 'array',
+            'client_discount_value' => 'decimal:2',
         ];
     }
 

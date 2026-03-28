@@ -257,6 +257,14 @@ class ShootMediaReadService
             }
         }
 
+        $comments = $this->extractComments($file);
+        $latestComment = !empty($comments) ? $comments[count($comments) - 1] : null;
+        if (!empty($comments)) {
+            $fileData['comments'] = $comments;
+            $fileData['comment_count'] = count($comments);
+            $fileData['latest_comment'] = $latestComment;
+        }
+
         if (is_array($file->metadata)) {
             foreach (['width', 'height', 'captured_at'] as $key) {
                 if (array_key_exists($key, $file->metadata)) {
@@ -266,6 +274,25 @@ class ShootMediaReadService
         }
 
         return $fileData;
+    }
+
+    protected function extractComments(ShootFile $file): array
+    {
+        $metadata = is_array($file->metadata) ? $file->metadata : [];
+        $comments = $metadata['comments'] ?? [];
+        if (!is_array($comments)) {
+            return [];
+        }
+
+        return collect($comments)
+            ->filter(fn ($comment) => is_array($comment) && trim((string) ($comment['comment'] ?? '')) !== '')
+            ->map(fn (array $comment) => [
+                'author' => isset($comment['author']) ? (string) $comment['author'] : null,
+                'comment' => trim((string) ($comment['comment'] ?? '')),
+                'timestamp' => isset($comment['timestamp']) ? (string) $comment['timestamp'] : null,
+            ])
+            ->values()
+            ->all();
     }
 
     protected function resolvePreviewPath(?string $path): ?string
