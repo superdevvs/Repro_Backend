@@ -3,12 +3,16 @@
 namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
+use App\Http\Controllers\API\ShootWorkflowController;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\BrightMlsService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\Actions\ApproveCancellationAction;
+use App\Services\Shoots\Actions\RequestCancellationAction;
+use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -180,6 +184,70 @@ class ShootWorkflowActionsTest extends TestCase
             return $event->shoot->id === $shoot->id
                 && $event->activityType === 'shoot_cancelled';
         });
+    }
+
+    /** @test */
+    public function cancellation_request_side_effects_notify_client_and_photographer(): void
+    {
+        $requestedRecipientIds = [];
+        $this->rebindWorkflowSupportMailService(function ($mailService) use (&$requestedRecipientIds): void {
+            $mailService->shouldReceive('sendShootCancellationRequestedEmail')
+                ->twice()
+                ->andReturnUsing(function (User $recipient, Shoot $shoot) use (&$requestedRecipientIds) {
+                    $requestedRecipientIds[] = (int) $recipient->id;
+                    $this->assertSame((int) $this->client->id, (int) $shoot->client_id);
+                    $this->assertSame((int) $this->photographer->id, (int) $shoot->photographer_id);
+
+                    return true;
+                });
+        });
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'cancellation_reason' => 'Seller postponed listing',
+        ]);
+
+        $this->app->make(ShootWorkflowTransitionSupportService::class)
+            ->sendCancellationRequestSideEffects($shoot, $this->client);
+
+        sort($requestedRecipientIds);
+        $this->assertSame(
+            [(int) $this->client->id, (int) $this->photographer->id],
+            $requestedRecipientIds
+        );
+    }
+
+    /** @test */
+    public function cancellation_completion_side_effects_notify_client_and_photographer(): void
+    {
+        $cancelledRecipientIds = [];
+        $this->rebindWorkflowSupportMailService(function ($mailService) use (&$cancelledRecipientIds): void {
+            $mailService->shouldReceive('sendShootCancelledEmail')
+                ->twice()
+                ->andReturnUsing(function (User $recipient, Shoot $shoot) use (&$cancelledRecipientIds) {
+                    $cancelledRecipientIds[] = (int) $recipient->id;
+                    $this->assertSame((int) $this->client->id, (int) $shoot->client_id);
+                    $this->assertSame((int) $this->photographer->id, (int) $shoot->photographer_id);
+
+                    return true;
+                });
+        });
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_CANCELLED,
+            'workflow_status' => Shoot::STATUS_CANCELLED,
+            'cancellation_reason' => 'Client request',
+        ]);
+
+        $this->app->make(ShootWorkflowTransitionSupportService::class)
+            ->sendCancellationSideEffects($shoot, $this->admin);
+
+        sort($cancelledRecipientIds);
+        $this->assertSame(
+            [(int) $this->client->id, (int) $this->photographer->id],
+            $cancelledRecipientIds
+        );
     }
 
     /** @test */
@@ -474,6 +542,7 @@ class ShootWorkflowActionsTest extends TestCase
     {
         $mailService = Mockery::mock(MailService::class);
         $mailService->shouldIgnoreMissing();
+        $mailService->shouldReceive('sendShootCancellationRequestedEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('sendShootCancelledEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('sendShootRemovedEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('sendShootReadyEmail')->zeroOrMoreTimes()->andReturnTrue();
@@ -496,5 +565,23 @@ class ShootWorkflowActionsTest extends TestCase
         $brightMlsService->shouldIgnoreMissing();
         $brightMlsService->shouldReceive('isAutoPublishAvailable')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(BrightMlsService::class, $brightMlsService);
+    }
+
+    protected function rebindWorkflowSupportMailService(callable $configure): void
+    {
+        $this->app->forgetInstance(MailService::class);
+        $this->app->forgetInstance(ShootWorkflowTransitionSupportService::class);
+        $this->app->forgetInstance(RequestCancellationAction::class);
+        $this->app->forgetInstance(ApproveCancellationAction::class);
+        $this->app->forgetInstance(ShootWorkflowController::class);
+
+        $mailService = Mockery::mock(MailService::class);
+        $mailService->shouldIgnoreMissing();
+        $mailService->shouldReceive('sendShootRemovedEmail')->zeroOrMoreTimes()->andReturnTrue();
+        $mailService->shouldReceive('sendShootReadyEmail')->zeroOrMoreTimes()->andReturnTrue();
+
+        $configure($mailService);
+
+        $this->app->instance(MailService::class, $mailService);
     }
 }

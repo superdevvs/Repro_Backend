@@ -66,6 +66,8 @@ class Invoice extends Model
         'period_end' => 'date',
         'billing_period_start' => 'date',
         'billing_period_end' => 'date',
+        'issue_date' => 'date',
+        'due_date' => 'date',
         'total_amount' => 'decimal:2',
         'amount_paid' => 'decimal:2',
         'is_sent' => 'boolean',

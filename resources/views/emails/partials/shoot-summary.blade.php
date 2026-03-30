@@ -4,183 +4,234 @@
     $isPhotographer = $isPhotographer ?? false;
 @endphp
 
-<div class="section-card">
-    <div class="section-pad">
-        <div class="section-kicker">Shoot Overview</div>
-        <div class="section-title">{{ $shoot->location }}</div>
-        <p class="section-copy">Everything currently scheduled for this property is organized below, including the service lineup and assigned team.</p>
+{{-- Shoot Overview Section Card --}}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+    <tr>
+        <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
+            <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Shoot Overview</p>
+            <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">{{ $shoot->location }}</p>
+            <p class="dark-body" style="margin:12px 0 0; font-size:15px; line-height:1.75; color:#4f6886;">Everything currently scheduled for this property is organized below, including the service lineup and assigned team.</p>
 
-        <div style="margin-top:14px;">
-            @if(!empty($shoot->status_label))
-                <span class="status-pill{{ in_array(strtolower((string) $shoot->status_label), ['cancelled', 'declined']) ? ' status-danger' : (in_array(strtolower((string) $shoot->status_label), ['on hold', 'pending']) ? ' status-warning' : '') }}">{{ $shoot->status_label }}</span>
-            @endif
-            @if(!empty($shoot->service_category))
-                <span class="pill">{{ $shoot->service_category }}</span>
-            @endif
-            @if(!empty($shoot->is_private_listing))
-                <span class="pill">Exclusive Listing</span>
-            @endif
-        </div>
-
-        <div class="divider"></div>
-
-        <table class="detail-table" role="presentation">
-            <tr>
-                <td class="detail-label">Schedule</td>
-                <td class="detail-value">
-                    {{ $shoot->date }}
-                    @if(!empty($shoot->time) && $shoot->time !== 'TBD')
-                        <span class="detail-subvalue">Call time: {{ $shoot->time }}</span>
-                    @endif
-                </td>
-            </tr>
-            <tr>
-                <td class="detail-label">Client</td>
-                <td class="detail-value">
-                    {{ $shoot->client_name ?? 'N/A' }}
-                    @if(!empty($shoot->client_email))
-                        <span class="detail-subvalue">{{ $shoot->client_email }}</span>
-                    @endif
-                </td>
-            </tr>
-            @if(!empty($shoot->rep_name))
+            {{-- Status pills --}}
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
                 <tr>
-                    <td class="detail-label">Sales Rep</td>
-                    <td class="detail-value">{{ $shoot->rep_name }}</td>
-                </tr>
-            @endif
-            <tr>
-                <td class="detail-label">{{ $isPhotographer ? 'Assigned Team' : 'Photographers' }}</td>
-                <td class="detail-value">
-                    {{ $shoot->photographers_label ?: 'TBD' }}
-                    @if(!empty($shoot->primary_photographer) && count($shoot->photographers ?? []) > 1)
-                        <span class="detail-subvalue">Primary lead: {{ $shoot->primary_photographer }}</span>
+                    @if(!empty($shoot->status_label))
+                        @php
+                            $statusLower = strtolower((string) $shoot->status_label);
+                            $pillBg = '#edf4ff'; $pillBorder = '#d6e5ff'; $pillColor = '#295391';
+                            if (in_array($statusLower, ['cancelled', 'declined'])) { $pillBg = '#fff0f1'; $pillBorder = '#ffcbd1'; $pillColor = '#b42336'; }
+                            elseif (in_array($statusLower, ['on hold', 'pending'])) { $pillBg = '#fff5e8'; $pillBorder = '#ffd8a8'; $pillColor = '#ab5b00'; }
+                        @endphp
+                        <td style="padding-right:8px; padding-bottom:8px;">
+                            <span class="pill-bg" style="display:inline-block; padding:6px 12px; border-radius:999px; font-size:12px; line-height:1.2; font-weight:700; background-color:{{ $pillBg }}; border:1px solid {{ $pillBorder }}; color:{{ $pillColor }};">{{ $shoot->status_label }}</span>
+                        </td>
                     @endif
-                </td>
-            </tr>
-        </table>
-    </div>
-</div>
+                    @if(!empty($shoot->service_category))
+                        <td style="padding-right:8px; padding-bottom:8px;">
+                            <span class="pill-bg" style="display:inline-block; padding:6px 12px; border-radius:999px; font-size:12px; line-height:1.2; font-weight:700; background-color:#edf4ff; border:1px solid #d6e5ff; color:#295391;">{{ $shoot->service_category }}</span>
+                        </td>
+                    @endif
+                    @if(!empty($shoot->is_private_listing))
+                        <td style="padding-bottom:8px;">
+                            <span class="pill-bg" style="display:inline-block; padding:6px 12px; border-radius:999px; font-size:12px; line-height:1.2; font-weight:700; background-color:#edf4ff; border:1px solid #d6e5ff; color:#295391;">Exclusive Listing</span>
+                        </td>
+                    @endif
+                </tr>
+            </table>
 
+            {{-- Divider --}}
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0;">
+                <tr><td class="divider-bg" style="height:1px; background-color:#edf2f7; font-size:0; line-height:0;">&nbsp;</td></tr>
+            </table>
+
+            {{-- Detail rows --}}
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                <tr>
+                    <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Schedule</td>
+                    <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">
+                        {{ $shoot->date }}
+                        @if(!empty($shoot->time) && $shoot->time !== 'TBD')
+                            <span class="dark-muted" style="display:block; margin-top:3px; color:#7086a3; font-weight:400; font-size:12px;">Call time: {{ $shoot->time }}</span>
+                        @endif
+                    </td>
+                </tr>
+                <tr>
+                    <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Client</td>
+                    <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">
+                        {{ $shoot->client_name ?? 'N/A' }}
+                        @if(!empty($shoot->client_email))
+                            <span class="dark-muted" style="display:block; margin-top:3px; color:#7086a3; font-weight:400; font-size:12px;">{{ $shoot->client_email }}</span>
+                        @endif
+                    </td>
+                </tr>
+                @if(!empty($shoot->rep_name))
+                <tr>
+                    <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Sales Rep</td>
+                    <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $shoot->rep_name }}</td>
+                </tr>
+                @endif
+                <tr>
+                    <td class="detail-label-td dark-muted" width="34%" style="padding:10px 14px 10px 0; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">{{ $isPhotographer ? 'Assigned Team' : 'Photographers' }}</td>
+                    <td class="detail-value-td dark-heading" style="padding:10px 0; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">
+                        {{ $shoot->photographers_label ?: 'TBD' }}
+                        @if(!empty($shoot->primary_photographer) && count($shoot->photographers ?? []) > 1)
+                            <span class="dark-muted" style="display:block; margin-top:3px; color:#7086a3; font-weight:400; font-size:12px;">Primary lead: {{ $shoot->primary_photographer }}</span>
+                        @endif
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>
+
+{{-- Property highlights --}}
 @if(!empty($shoot->property_highlights))
-    <table class="stats-row" role="presentation">
-        <tr>
-            @foreach($shoot->property_highlights as $highlight)
-                <td>
-                    <div class="stat-card">
-                        <div class="stat-label">{{ $highlight['label'] }}</div>
-                        <div class="stat-value">{{ $highlight['value'] }}</div>
-                    </div>
-                </td>
-            @endforeach
-        </tr>
-    </table>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+    <tr>
+        @foreach($shoot->property_highlights as $highlight)
+            <td class="stat-td stat-card-bg" style="padding:0 8px 10px 0; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                    <tr>
+                        <td style="border-radius:14px; background-color:#f5f9ff; border:1px solid #dbe6f3; padding:16px 16px 14px;">
+                            <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">{{ $highlight['label'] }}</p>
+                            <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.2; font-weight:800; color:#071223;">{{ $highlight['value'] }}</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        @endforeach
+    </tr>
+</table>
 @endif
 
+{{-- Services --}}
 @if(!empty($shoot->services))
-    <div class="section-card">
-        <div class="section-pad">
-            <div class="section-kicker">Services</div>
-            <div class="section-title">Booked deliverables</div>
-            <p class="section-copy">Each service line shows quantity, pricing, and the assigned photographer whenever one has been selected.</p>
-            <div class="divider"></div>
-            <table class="line-table" role="presentation">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+    <tr>
+        <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
+            <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Services</p>
+            <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">Booked deliverables</p>
+            <p class="dark-body" style="margin:12px 0 0; font-size:15px; line-height:1.75; color:#4f6886;">Each service line shows quantity, pricing, and the assigned photographer whenever one has been selected.</p>
+
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0 0;">
+                <tr><td class="divider-bg" style="height:1px; background-color:#edf2f7; font-size:0; line-height:0;">&nbsp;</td><td class="divider-bg" style="height:1px; background-color:#edf2f7; font-size:0; line-height:0;">&nbsp;</td></tr>
+            </table>
+
+            {{-- Service line items --}}
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                 <tr>
-                    <th>Service</th>
-                    <th style="text-align:right;">Total</th>
+                    <td class="line-th dark-muted" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:left; vertical-align:top; font-size:11px; line-height:1.4; letter-spacing:1.4px; text-transform:uppercase; color:#7b91ac; font-weight:800;">Service</td>
+                    <td class="line-th amount-td dark-muted" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; font-size:11px; line-height:1.4; letter-spacing:1.4px; text-transform:uppercase; color:#7b91ac; font-weight:800;">Total</td>
                 </tr>
                 @foreach($shoot->services as $service)
-                    <tr>
-                        <td>
-                            <span class="line-name">{{ $service['display_name'] }}</span>
-                            @if(!empty($service['meta']))
-                                <span class="line-meta">{{ $service['meta'] }}</span>
-                            @endif
-                            @if(!empty($service['photographer_name']))
-                                <span class="line-meta">Assigned photographer: {{ $service['photographer_name'] }}</span>
-                            @endif
-                        </td>
-                        <td class="amount-cell">{{ $service['formatted_total'] }}</td>
-                    </tr>
+                <tr>
+                    <td class="line-td detail-border" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:left; vertical-align:top;">
+                        <span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">{{ $service['display_name'] }}</span>
+                        @if(!empty($service['meta']))
+                            <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">{{ $service['meta'] }}</span>
+                        @endif
+                        @if(!empty($service['photographer_name']))
+                            <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">Assigned photographer: {{ $service['photographer_name'] }}</span>
+                        @endif
+                    </td>
+                    <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $service['formatted_total'] }}</td>
+                </tr>
                 @endforeach
                 @if($showFinancials)
-                    <tr>
-                        <td>
-                            <span class="line-name">Subtotal</span>
-                        </td>
-                        <td class="amount-cell">{{ $shoot->formatted_subtotal }}</td>
-                    </tr>
-                    @if(($shoot->tax ?? 0) > 0)
-                        <tr>
-                            <td>
-                                <span class="line-name">Tax</span>
-                                @if(($shoot->tax_rate ?? 0) > 0)
-                                    <span class="line-meta">{{ number_format((float) $shoot->tax_rate, 2) }}%</span>
-                                @endif
-                            </td>
-                            <td class="amount-cell">{{ $shoot->formatted_tax }}</td>
-                        </tr>
-                    @endif
-                    <tr>
-                        <td>
-                            <span class="line-name">Total</span>
-                        </td>
-                        <td class="amount-cell">{{ $shoot->formatted_grand_total }}</td>
-                    </tr>
+                <tr>
+                    <td class="line-td detail-border" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:left; vertical-align:top;">
+                        <span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">Subtotal</span>
+                    </td>
+                    <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $shoot->formatted_subtotal }}</td>
+                </tr>
+                @if(($shoot->tax ?? 0) > 0)
+                <tr>
+                    <td class="line-td detail-border" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:left; vertical-align:top;">
+                        <span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">Tax</span>
+                        @if(($shoot->tax_rate ?? 0) > 0)
+                            <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">{{ number_format((float) $shoot->tax_rate, 2) }}%</span>
+                        @endif
+                    </td>
+                    <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $shoot->formatted_tax }}</td>
+                </tr>
+                @endif
+                <tr>
+                    <td class="line-td" style="padding:12px 0; text-align:left; vertical-align:top;">
+                        <span class="dark-heading" style="color:#071223; font-weight:700; font-size:14px;">Total</span>
+                    </td>
+                    <td class="line-td amount-td dark-heading" style="padding:12px 0; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $shoot->formatted_grand_total }}</td>
+                </tr>
                 @endif
             </table>
-        </div>
-    </div>
+        </td>
+    </tr>
+</table>
 @endif
 
+{{-- Access details --}}
 @if(!empty($shoot->access_details))
-    <div class="section-card">
-        <div class="section-pad">
-            <div class="section-kicker">Access</div>
-            <div class="section-title">Property access details</div>
-            <table class="detail-table" role="presentation" style="margin-top:12px;">
-                @foreach($shoot->access_details as $detail)
-                    <tr>
-                        <td class="detail-label">{{ $detail['label'] }}</td>
-                        <td class="detail-value">{{ $detail['value'] }}</td>
-                    </tr>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+    <tr>
+        <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
+            <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Access</p>
+            <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">Property access details</p>
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:12px;">
+                @foreach($shoot->access_details as $i => $detail)
+                <tr>
+                    <td class="detail-label-td dark-muted {{ $loop->last ? '' : 'detail-border' }}" width="34%" style="padding:10px 14px 10px 0; {{ $loop->last ? '' : 'border-bottom:1px solid #edf2f7;' }} vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">{{ $detail['label'] }}</td>
+                    <td class="detail-value-td dark-heading {{ $loop->last ? '' : 'detail-border' }}" style="padding:10px 0; {{ $loop->last ? '' : 'border-bottom:1px solid #edf2f7;' }} vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $detail['value'] }}</td>
+                </tr>
                 @endforeach
             </table>
-        </div>
-    </div>
+        </td>
+    </tr>
+</table>
 @endif
 
+{{-- Notes --}}
 @if($showNotes && (!empty($shoot->notes_lines) || ($isPhotographer && (!empty($shoot->company_notes_lines) || !empty($shoot->photographer_notes_lines)))))
     @if(!empty($shoot->notes_lines))
-        <div class="note-card">
-            <div class="note-title">Client-facing notes</div>
-            <ul class="bullet-list">
-                @foreach($shoot->notes_lines as $line)
-                    <li>{{ $line }}</li>
-                @endforeach
-            </ul>
-        </div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;">
+        <tr>
+            <td class="note-card-bg" style="border-radius:14px; background-color:#f8fbff; border:1px solid #dbe7f8; padding:18px;">
+                <p class="dark-muted" style="margin:0 0 8px; font-size:13px; line-height:1.5; letter-spacing:1.3px; text-transform:uppercase; color:#60799a; font-weight:800;">Client-facing notes</p>
+                <ul class="dark-body" style="margin:0; padding-left:18px; color:#35506f; font-size:14px; line-height:1.7;">
+                    @foreach($shoot->notes_lines as $line)
+                        <li style="margin-bottom:8px;">{{ $line }}</li>
+                    @endforeach
+                </ul>
+            </td>
+        </tr>
+    </table>
     @endif
 
     @if($isPhotographer && !empty($shoot->company_notes_lines))
-        <div class="note-card">
-            <div class="note-title">Company notes</div>
-            <ul class="bullet-list">
-                @foreach($shoot->company_notes_lines as $line)
-                    <li>{{ $line }}</li>
-                @endforeach
-            </ul>
-        </div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;">
+        <tr>
+            <td class="note-card-bg" style="border-radius:14px; background-color:#f8fbff; border:1px solid #dbe7f8; padding:18px;">
+                <p class="dark-muted" style="margin:0 0 8px; font-size:13px; line-height:1.5; letter-spacing:1.3px; text-transform:uppercase; color:#60799a; font-weight:800;">Company notes</p>
+                <ul class="dark-body" style="margin:0; padding-left:18px; color:#35506f; font-size:14px; line-height:1.7;">
+                    @foreach($shoot->company_notes_lines as $line)
+                        <li style="margin-bottom:8px;">{{ $line }}</li>
+                    @endforeach
+                </ul>
+            </td>
+        </tr>
+    </table>
     @endif
 
     @if($isPhotographer && !empty($shoot->photographer_notes_lines))
-        <div class="note-card">
-            <div class="note-title">Photographer notes</div>
-            <ul class="bullet-list">
-                @foreach($shoot->photographer_notes_lines as $line)
-                    <li>{{ $line }}</li>
-                @endforeach
-            </ul>
-        </div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;">
+        <tr>
+            <td class="note-card-bg" style="border-radius:14px; background-color:#f8fbff; border:1px solid #dbe7f8; padding:18px;">
+                <p class="dark-muted" style="margin:0 0 8px; font-size:13px; line-height:1.5; letter-spacing:1.3px; text-transform:uppercase; color:#60799a; font-weight:800;">Photographer notes</p>
+                <ul class="dark-body" style="margin:0; padding-left:18px; color:#35506f; font-size:14px; line-height:1.7;">
+                    @foreach($shoot->photographer_notes_lines as $line)
+                        <li style="margin-bottom:8px;">{{ $line }}</li>
+                    @endforeach
+                </ul>
+            </td>
+        </tr>
+    </table>
     @endif
 @endif

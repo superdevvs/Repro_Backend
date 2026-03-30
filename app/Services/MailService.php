@@ -17,6 +17,7 @@ class MailService
 {
     private const SHOOT_DELIVERED_SUBJECT = 'Your Photos Are Ready';
     private const SHOOT_CANCELLED_SUBJECT = 'Your Shoot Has Been Cancelled';
+    private const SHOOT_CANCELLATION_REQUESTED_SUBJECT = 'Shoot Cancellation Request Received';
     private const SHOOT_PAID_SUBJECT = 'Payment Confirmed for Your Shoot';
 
     /**
@@ -83,7 +84,7 @@ class MailService
                 $htmlPhoto = view('emails.shoot_scheduled', [
                     'user' => $shoot->photographer,
                     'shoot' => $shootData,
-                    'paymentLink' => $paymentLink,
+                    'paymentLink' => '',
                     'isPhotographer' => true,
                 ])->render();
                 $this->sendViaCakemail($shoot->photographer->email, 'New Shoot Scheduled', $htmlPhoto, 'SHOOT_SCHEDULED');
@@ -195,6 +196,7 @@ class MailService
     public function sendShootRemovedEmail(User $user, Shoot $shoot): bool
     {
         try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             
@@ -225,11 +227,57 @@ class MailService
     }
 
     /**
+     * Send shoot cancellation requested email
+     */
+    public function sendShootCancellationRequestedEmail(User $user, Shoot $shoot): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+            $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
+            $isPhotographer = $this->isPhotographerRecipient($user, $shoot);
+
+            $html = view('emails.shoot_cancellation_requested', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'isPhotographer' => $isPhotographer,
+                'cancellationReason' => $shoot->cancellation_reason,
+            ])->render();
+            $this->sendViaCakemail(
+                $user->email,
+                self::SHOOT_CANCELLATION_REQUESTED_SUBJECT,
+                $html,
+                'SHOOT_CANCELLATION_REQUESTED',
+                $clientCcEmails
+            );
+
+            Log::info('Shoot cancellation requested email sent', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'is_photographer' => $isPhotographer,
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send shoot cancellation requested email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
      * Send shoot ready email
      */
     public function sendShootReadyEmail(User $user, Shoot $shoot): bool
     {
         try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             
@@ -969,18 +1017,7 @@ class MailService
                 'resetLink' => $resetLink,
             ])->render();
 
-            $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
-
-            $messagingService = app(MessagingService::class);
-            $messagingService->sendEmail([
-                'to' => $user->email,
-                'subject' => 'Reset Your Password - R/E Pro Photos',
-                'body_html' => $html,
-                'body_text' => $text,
-                'send_source' => 'PASSWORD_RESET',
-                'tags' => ['password_reset'],
-                'sender_name' => 'R/E Pro Photos',
-            ]);
+            $this->sendViaCakemail($user->email, 'Reset Your Password - R/E Pro Photos', $html, 'PASSWORD_RESET');
             
             Log::info('Password reset email sent', [
                 'user_id' => $user->id,
@@ -1250,6 +1287,21 @@ class MailService
                     'amount' => $amount,
                 ]);
             }
+
+            // Also notify photographer
+            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                $htmlPhoto = view('emails.shoot_paid', [
+                    'user' => $shoot->photographer,
+                    'shoot' => $shootData,
+                    'amount' => $amount,
+                ])->render();
+                $this->sendViaCakemail($shoot->photographer->email, self::SHOOT_PAID_SUBJECT, $htmlPhoto, 'SHOOT_PAID');
+                Log::info('Shoot paid email sent to photographer', [
+                    'photographer_id' => $shoot->photographer->id,
+                    'shoot_id' => $shoot->id,
+                    'email' => $shoot->photographer->email
+                ]);
+            }
             
             return true;
         } catch (\Throwable $e) {
@@ -1265,38 +1317,11 @@ class MailService
     }
 
     /**
-     * Send shoot cancelled/deleted email
+     * Send shoot cancelled/deleted email (delegates to sendShootRemovedEmail)
      */
     public function sendShootCancelledEmail(User $user, Shoot $shoot): bool
     {
-        try {
-            $shootData = $this->formatShootData($shoot);
-            $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
-            
-            // Send to client
-            $html = view('emails.shoot_removed', [
-                'user' => $user,
-                'shoot' => $shootData,
-            ])->render();
-            $this->sendViaCakemail($user->email, self::SHOOT_CANCELLED_SUBJECT, $html, 'SHOOT_CANCELLED', $clientCcEmails);
-            
-            Log::info('Shoot cancelled email sent', [
-                'user_id' => $user->id,
-                'shoot_id' => $shoot->id,
-                'email' => $user->email
-            ]);
-            
-            return true;
-        } catch (\Exception $e) {
-            Log::error('Failed to send shoot cancelled email', [
-                'user_id' => $user->id,
-                'shoot_id' => $shoot->id,
-                'email' => $user->email,
-                'error' => $e->getMessage()
-            ]);
-            
-            return false;
-        }
+        return $this->sendShootRemovedEmail($user, $shoot);
     }
 
     /**
@@ -1306,7 +1331,7 @@ class MailService
     {
         try {
             $shoot = $invoice->shoot;
-            $address = $shoot?->address ?? 'Property';
+            $address = $shoot ? ($this->formatFullAddress($shoot) ?: ($shoot->address ?? 'Property')) : 'Property';
             $clientCcEmails = $shoot ? $this->resolveShootCcEmailsForRecipient($shoot, $client) : $this->sanitizeEmailAddresses($client->shoot_cc_emails ?? [], $client->email);
 
             $html = view('emails.cancellation_fee_invoice', [
@@ -1390,13 +1415,16 @@ class MailService
 
     private function formatFullAddress(Shoot $shoot): string
     {
-        return trim(sprintf(
-            '%s, %s, %s %s',
-            $shoot->address ?? '',
-            $shoot->city ?? '',
-            $shoot->state ?? '',
-            $shoot->zip ?? ''
-        ), ', ');
+        $parts = array_filter([
+            trim((string) ($shoot->address ?? '')),
+            trim((string) ($shoot->city ?? '')),
+            trim(implode(' ', array_filter([
+                trim((string) ($shoot->state ?? '')),
+                trim((string) ($shoot->zip ?? '')),
+            ]))),
+        ]);
+
+        return implode(', ', $parts);
     }
 
     private function formatServicesForComparison(Shoot $shoot): array

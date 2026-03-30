@@ -5,12 +5,15 @@ namespace App\Services\Shoots\Actions;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Illuminate\Http\Request;
 
 class RequestCancellationAction
 {
-    public function __construct(protected ShootActivityLogger $activityLogger)
-    {
+    public function __construct(
+        protected ShootActivityLogger $activityLogger,
+        protected ShootWorkflowTransitionSupportService $support
+    ) {
     }
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
@@ -53,6 +56,8 @@ class RequestCancellationAction
             ],
             $user
         );
+
+        $this->support->sendCancellationRequestSideEffects($shoot, $user);
 
         return $shoot;
     }

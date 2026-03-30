@@ -17,6 +17,39 @@ class ShootWorkflowTransitionSupportService
     ) {
     }
 
+    public function sendCancellationRequestSideEffects(Shoot $shoot, User $user): void
+    {
+        $shoot->loadMissing(['client', 'photographer', 'services']);
+
+        if ($shoot->client && $shoot->client->email) {
+            try {
+                $this->mailService->sendShootCancellationRequestedEmail($shoot->client, $shoot);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to send cancellation request email to client', [
+                    'shoot_id' => $shoot->id,
+                    'client_id' => $shoot->client->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if (
+            $shoot->photographer
+            && $shoot->photographer->email
+            && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
+        ) {
+            try {
+                $this->mailService->sendShootCancellationRequestedEmail($shoot->photographer, $shoot);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to send cancellation request email to photographer', [
+                    'shoot_id' => $shoot->id,
+                    'photographer_id' => $shoot->photographer->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
     public function sendCancellationSideEffects(Shoot $shoot, User $user): void
     {
         $shoot->loadMissing(['client', 'photographer', 'services']);
@@ -28,6 +61,22 @@ class ShootWorkflowTransitionSupportService
                 $systemEmailAlreadySent = true;
             } catch (\Throwable $e) {
                 Log::warning('Failed to send cancellation email: ' . $e->getMessage());
+            }
+        }
+
+        if (
+            $shoot->photographer
+            && $shoot->photographer->email
+            && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
+        ) {
+            try {
+                $this->mailService->sendShootCancelledEmail($shoot->photographer, $shoot);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to send cancellation email to photographer', [
+                    'shoot_id' => $shoot->id,
+                    'photographer_id' => $shoot->photographer->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
 

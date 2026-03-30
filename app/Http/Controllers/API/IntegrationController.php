@@ -385,8 +385,13 @@ class IntegrationController extends Controller
             'photos.*.description' => 'nullable|string',
             'photos.*.roomType' => 'nullable|string',
             'photos.*.selected' => 'nullable|boolean',
+            'photos.*.sortOrder' => 'nullable|numeric',
             'iguide_tour_url' => 'nullable|string',
             'slideshow_url' => 'nullable|string',
+            'matterport_url' => 'nullable|string',
+            'cubicasa_url' => 'nullable|string',
+            'additional_tour_urls' => 'nullable|array',
+            'additional_tour_urls.*' => 'nullable|string',
             'documents' => 'nullable|array',
             'documents.*.id' => 'nullable|integer|exists:shoot_files,id',
             'documents.*.url' => 'nullable|string',
@@ -401,13 +406,30 @@ class IntegrationController extends Controller
 
             $resolvedPhotos = $this->resolveBrightMlsPhotos($shoot, $request->photos ?? []);
             $resolvedDocuments = $this->resolveBrightMlsDocuments($shoot, $request->documents ?? []);
+            $defaultOptions = $this->resolveBrightMlsPublishDefaults($shoot);
+            $requestAdditionalTourUrls = collect($request->input('additional_tour_urls', []))
+                ->filter(fn ($url, $label) => is_string($label) && is_string($url) && filter_var($url, FILTER_VALIDATE_URL))
+                ->all();
 
             // Build manifest data
             $options = [
                 'photos' => $resolvedPhotos,
-                'iguide_tour_url' => $request->iguide_tour_url ?? $shoot->iguide_tour_url,
-                'slideshow_url' => $request->slideshow_url,
-                'documents' => $resolvedDocuments,
+                'iguide_tour_url' => $request->filled('iguide_tour_url')
+                    ? $request->input('iguide_tour_url')
+                    : ($defaultOptions['iguide_tour_url'] ?? $shoot->iguide_tour_url),
+                'slideshow_url' => $request->filled('slideshow_url')
+                    ? $request->input('slideshow_url')
+                    : ($defaultOptions['slideshow_url'] ?? null),
+                'matterport_url' => $request->filled('matterport_url')
+                    ? $request->input('matterport_url')
+                    : ($defaultOptions['matterport_url'] ?? null),
+                'cubicasa_url' => $request->filled('cubicasa_url')
+                    ? $request->input('cubicasa_url')
+                    : ($defaultOptions['cubicasa_url'] ?? null),
+                'additional_tour_urls' => array_replace($defaultOptions['additional_tour_urls'] ?? [], $requestAdditionalTourUrls),
+                'documents' => !empty($resolvedDocuments)
+                    ? $resolvedDocuments
+                    : ($defaultOptions['documents'] ?? []),
             ];
 
             $manifestData = $this->brightMlsService->buildManifestFromShoot($shoot->toArray(), $options);
@@ -620,7 +642,16 @@ class IntegrationController extends Controller
     private function resolveBrightMlsPhotos(Shoot $shoot, array $photos): array
     {
         return collect($photos)
-            ->map(function ($photo) use ($shoot) {
+            ->values()
+            ->map(fn ($photo, $index) => ['photo' => $photo, 'index' => $index])
+            ->sortBy(function ($entry) {
+                $sortOrder = $entry['photo']['sortOrder'] ?? $entry['photo']['sort_order'] ?? null;
+
+                return is_numeric($sortOrder) ? (float) $sortOrder : $entry['index'];
+            })
+            ->values()
+            ->map(function ($entry) use ($shoot) {
+                $photo = $entry['photo'];
                 $file = null;
                 if (!empty($photo['id'])) {
                     $file = $shoot->files->firstWhere('id', $photo['id']);
@@ -649,6 +680,65 @@ class IntegrationController extends Controller
             ->filter()
             ->values()
             ->all();
+    }
+
+    private function resolveBrightMlsPublishDefaults(Shoot $shoot): array
+    {
+        $documentOptions = [];
+        if ($shoot->iguide_floorplans && is_array($shoot->iguide_floorplans)) {
+            foreach ($shoot->iguide_floorplans as $floorplan) {
+                $floorplanUrl = is_array($floorplan) ? ($floorplan['url'] ?? null) : $floorplan;
+                if ($floorplanUrl) {
+                    $documentOptions[] = [
+                        'url' => $floorplanUrl,
+                        'filename' => is_array($floorplan) ? ($floorplan['filename'] ?? 'floorplan.pdf') : 'floorplan.pdf',
+                        'type' => 'floor_plan',
+                        'visibility' => 'private',
+                        'description' => 'Floor plan',
+                    ];
+                }
+            }
+        }
+
+        $tourLinks = $shoot->tour_links ?? [];
+        if (is_string($tourLinks)) {
+            $tourLinks = json_decode($tourLinks, true) ?? [];
+        }
+
+        $iguideUrl = $shoot->iguide_tour_url
+            ?? $tourLinks['iguide_mls'] ?? $tourLinks['iguide_branded']
+            ?? $tourLinks['iGuide'] ?? $tourLinks['iguide'] ?? null;
+        $cubicasaUrl = $tourLinks['cubicasa'] ?? $tourLinks['cubicasa_url'] ?? null;
+        $matterportUrl = $tourLinks['matterport_mls'] ?? $tourLinks['matterport_branded']
+            ?? $tourLinks['matterport'] ?? null;
+        $slideshowUrl = $tourLinks['slideshow'] ?? $tourLinks['slideshow_url']
+            ?? $tourLinks['neo_tour'] ?? $tourLinks['neotour']
+            ?? $tourLinks['video_mls'] ?? $tourLinks['video_generic'] ?? $tourLinks['video_link'] ?? null;
+
+        $handledKeys = [
+            'iguide_mls', 'iguide_branded', 'iguide', 'iGuide',
+            'cubicasa', 'cubicasa_url',
+            'matterport_mls', 'matterport_branded', 'matterport',
+            'slideshow', 'slideshow_url', 'neo_tour', 'neotour',
+            'video_mls', 'video_generic', 'video_link',
+            'embeds', 'tour_style',
+        ];
+
+        $additionalTourUrls = [];
+        foreach ($tourLinks as $key => $value) {
+            if (!in_array($key, $handledKeys, true) && is_string($value) && filter_var($value, FILTER_VALIDATE_URL)) {
+                $additionalTourUrls[ucwords(str_replace(['_', '-'], ' ', $key))] = $value;
+            }
+        }
+
+        return [
+            'iguide_tour_url' => $iguideUrl,
+            'slideshow_url' => $slideshowUrl,
+            'matterport_url' => $matterportUrl,
+            'cubicasa_url' => $cubicasaUrl,
+            'additional_tour_urls' => $additionalTourUrls,
+            'documents' => $documentOptions,
+        ];
     }
 
     private function resolveBrightMlsDocuments(Shoot $shoot, array $documents): array
