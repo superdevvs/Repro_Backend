@@ -4,7 +4,6 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
-use App\Models\ShootFile;
 use App\Services\Shoots\ShootIssueParsingService;
 use Illuminate\Http\Request;
 
@@ -89,52 +88,49 @@ class ShootIssuesController extends Controller
             $mediaIds = [$validated['mediaId']];
         }
 
+        $requestId = $this->shootIssueParsingService->generateRequestId($shoot);
         $this->shootIssueParsingService->appendIssueRequest(
             $shoot,
-            $this->shootIssueParsingService->buildRequestEntry($user, $validated['note'], $mediaIds)
+            $this->shootIssueParsingService->buildRequestEntry(
+                $user,
+                $validated['note'],
+                $mediaIds,
+                $requestId,
+                'open',
+                $validated['assignedToRole'] ?? null,
+            )
         );
 
-        $mediaFiles = [];
-        if (!empty($mediaIds)) {
-            $files = ShootFile::whereIn('id', $mediaIds)->get();
-            foreach ($files as $file) {
-                $mediaFiles[] = [
-                    'id' => (string) $file->id,
-                    'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
-                ];
-            }
-        }
+        $createdRequest = collect(
+            $this->shootIssueParsingService->parseShootRequests($shoot->fresh(), $request->user())
+        )->firstWhere('id', $requestId);
 
         return response()->json([
             'message' => 'Request created successfully',
-            'data' => [
-                'id' => 'temp_' . time(),
-                'shootId' => $shoot->id,
-                'note' => $validated['note'],
-                'mediaId' => !empty($mediaIds) ? (string) $mediaIds[0] : null,
-                'mediaIds' => array_map('strval', $mediaIds),
-                'mediaFiles' => $mediaFiles,
-                'raisedBy' => [
-                    'id' => (string) $user->id,
-                    'name' => $user->name,
-                    'role' => $user->role,
-                ],
-                'status' => 'open',
-                'createdAt' => now()->toISOString(),
-                'updatedAt' => now()->toISOString(),
-            ],
+            'data' => $createdRequest,
         ], 201);
     }
 
     public function updateIssue($shootId, $issueId, Request $request)
     {
-        Shoot::findOrFail($shootId);
-        $request->validate([
+        $shoot = Shoot::findOrFail($shootId);
+        $validated = $request->validate([
             'status' => 'nullable|in:open,in-progress,resolved',
         ]);
 
+        $updatedRequest = $this->shootIssueParsingService->updateIssueStatus(
+            $shoot,
+            (string) $issueId,
+            $validated['status'] ?? 'open',
+        );
+
+        if (!$updatedRequest) {
+            return response()->json(['message' => 'Request not found'], 404);
+        }
+
         return response()->json([
             'message' => 'Request updated successfully',
+            'data' => $updatedRequest,
         ]);
     }
 
@@ -152,11 +148,20 @@ class ShootIssuesController extends Controller
             'assignedToUserId' => 'nullable|exists:users,id',
         ]);
 
-        $this->shootIssueParsingService->assignIssueRole($shoot, $validated['assignedToRole']);
+        $updatedRequest = $this->shootIssueParsingService->assignIssueRole(
+            $shoot,
+            (string) $issueId,
+            $validated['assignedToRole'],
+        );
+
+        if (!$updatedRequest) {
+            return response()->json(['message' => 'Request not found'], 404);
+        }
 
         return response()->json([
             'message' => 'Request assigned successfully',
             'assignedTo' => $validated['assignedToRole'],
+            'data' => $updatedRequest,
         ]);
     }
 
