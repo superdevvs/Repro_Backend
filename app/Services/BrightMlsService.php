@@ -638,6 +638,7 @@ class BrightMlsService
                         $listItems[] = [
                             'fileName' => $fileName,
                             'docUrl' => $doc['url'],
+                            'docVisibility' => $doc['visibility'] ?? $this->defaultDocVisibility,
                             'lastModified' => now()->toIso8601String(),
                             'mediaType' => 'floor_plan',
                             'description' => $this->trimText($doc['description'] ?? 'Floor plan', 50),
@@ -660,11 +661,8 @@ class BrightMlsService
         }
 
         return [
-            'propertyAddress' => ($shoot['address'] ?? '') . ', ' . 
-                                ($shoot['city'] ?? '') . ', ' . 
-                                ($shoot['state'] ?? '') . ' ' . 
-                                ($shoot['zip'] ?? ''),
-            'mlsId' => $shoot['mls_id'] ?? '',
+            'propertyAddress' => $this->buildPropertyAddressFromShoot($shoot),
+            'mlsId' => $this->extractMlsIdFromShoot($shoot),
             'vendorId' => $this->vendorId,
             'vendorName' => $this->vendorName,
             'dateFileCreated' => now()->toIso8601String(),
@@ -945,50 +943,15 @@ class BrightMlsService
                 }
             }
 
-            // Extract all tour links from shoot
-            $tourLinks = $shoot->tour_links ?? [];
-            if (is_string($tourLinks)) {
-                $tourLinks = json_decode($tourLinks, true) ?? [];
-            }
-
-            // Resolve iGuide URL: dedicated field first, then tour_links variants
-            $iguideUrl = $shoot->iguide_tour_url
-                ?? $tourLinks['iguide_mls'] ?? $tourLinks['iguide_branded']
-                ?? $tourLinks['iGuide'] ?? null;
-
-            // Resolve CubiCasa URL
-            $cubicasaUrl = $tourLinks['cubicasa'] ?? $tourLinks['cubicasa_url'] ?? null;
-
-            // Resolve Matterport URL (prefer MLS variant)
-            $matterportUrl = $tourLinks['matterport_mls'] ?? $tourLinks['matterport_branded']
-                ?? $tourLinks['matterport'] ?? null;
-
-            // Resolve slideshow/NeoTour URL
-            $slideshowUrl = $tourLinks['slideshow'] ?? $tourLinks['slideshow_url']
-                ?? $tourLinks['neo_tour'] ?? $tourLinks['neotour'] ?? null;
-
-            // Collect any remaining tour URLs not already handled above
-            $handledKeys = [
-                'iguide_mls', 'iguide_branded', 'iGuide',
-                'cubicasa', 'cubicasa_url',
-                'matterport_mls', 'matterport_branded', 'matterport',
-                'slideshow', 'slideshow_url', 'neo_tour', 'neotour',
-                'embeds', 'tour_style',
-            ];
-            $additionalTourUrls = [];
-            foreach ($tourLinks as $key => $value) {
-                if (!in_array($key, $handledKeys, true) && is_string($value) && filter_var($value, FILTER_VALIDATE_URL)) {
-                    $additionalTourUrls[ucwords(str_replace(['_', '-'], ' ', $key))] = $value;
-                }
-            }
+            $tourOptions = $this->extractTourOptionsFromShoot($shoot);
 
             $options = [
                 'photos' => $photoOptions,
-                'iguide_tour_url' => $iguideUrl,
-                'slideshow_url' => $slideshowUrl,
-                'cubicasa_url' => $cubicasaUrl,
-                'matterport_url' => $matterportUrl,
-                'additional_tour_urls' => $additionalTourUrls,
+                'iguide_tour_url' => $tourOptions['iguide_tour_url'],
+                'slideshow_url' => $tourOptions['slideshow_url'],
+                'cubicasa_url' => $tourOptions['cubicasa_url'],
+                'matterport_url' => $tourOptions['matterport_url'],
+                'additional_tour_urls' => $tourOptions['additional_tour_urls'],
                 'documents' => $documentOptions,
             ];
 
@@ -1037,7 +1000,187 @@ class BrightMlsService
             $item['fileName'] = $this->trimText($item['fileName'] ?? '', 25);
         }
 
+        if (in_array($item['mediaType'] ?? null, ['document', 'floor_plan'], true)) {
+            $item['docVisibility'] = $item['docVisibility'] ?? $this->defaultDocVisibility;
+        }
+
         return $item;
+    }
+
+    private function buildPropertyAddressFromShoot(array $shoot): string
+    {
+        $propertyDetails = $this->normalizeShootPropertyDetails($shoot['property_details'] ?? null);
+        $address = $this->normalizeTextValue($shoot['address'] ?? ($propertyDetails['address'] ?? null));
+        $city = $this->normalizeTextValue($shoot['city'] ?? ($propertyDetails['city'] ?? null));
+        $state = $this->normalizeTextValue($shoot['state'] ?? ($propertyDetails['state'] ?? null));
+        $zip = $this->normalizeTextValue($shoot['zip'] ?? ($propertyDetails['zip'] ?? $propertyDetails['zip_code'] ?? null));
+
+        $parts = array_values(array_filter([$address, $city, $state]));
+        $propertyAddress = implode(', ', $parts);
+
+        if ($zip !== '') {
+            $propertyAddress = trim($propertyAddress . ' ' . $zip);
+        }
+
+        return trim($propertyAddress, ", \t\n\r\0\x0B");
+    }
+
+    private function extractMlsIdFromShoot(array $shoot): string
+    {
+        $propertyDetails = $this->normalizeShootPropertyDetails($shoot['property_details'] ?? null);
+
+        return $this->normalizeTextValue(
+            $shoot['mls_id']
+                ?? $propertyDetails['mls_id']
+                ?? $propertyDetails['mlsId']
+                ?? $propertyDetails['mlsNumber']
+                ?? null
+        );
+    }
+
+    private function normalizeShootPropertyDetails(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return [];
+    }
+
+    private function normalizeTextValue(mixed $value): string
+    {
+        return trim((string) ($value ?? ''));
+    }
+
+    private function normalizeShootTourLinks(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        return [];
+    }
+
+    private function firstValidUrl(mixed ...$values): ?string
+    {
+        foreach ($values as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+
+            $candidate = trim($value);
+            if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_URL)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function formatTourLabel(string $key): string
+    {
+        return ucwords(str_replace(['_', '-'], ' ', trim($key)));
+    }
+
+    private function extractAdditionalEmbedTourUrls(array $tourLinks, array $handledKeys): array
+    {
+        $additionalTourUrls = [];
+
+        foreach ($tourLinks as $key => $value) {
+            if ($key === 'embeds' && is_array($value)) {
+                foreach ($value as $index => $embed) {
+                    if (!is_array($embed)) {
+                        continue;
+                    }
+
+                    $embedUrl = $this->firstValidUrl(
+                        $embed['mls'] ?? null,
+                        $embed['mls_embed'] ?? null,
+                        $embed['url'] ?? null,
+                        $embed['branded'] ?? null,
+                        $embed['branded_embed'] ?? null,
+                    );
+
+                    if ($embedUrl) {
+                        $title = $this->normalizeTextValue($embed['title'] ?? null);
+                        $additionalTourUrls[$title !== '' ? $title : 'Embed ' . ($index + 1)] = $embedUrl;
+                    }
+                }
+
+                continue;
+            }
+
+            if (in_array($key, $handledKeys, true) || !is_string($value)) {
+                continue;
+            }
+
+            $candidate = trim($value);
+            if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_URL)) {
+                $additionalTourUrls[$this->formatTourLabel((string) $key)] = $candidate;
+            }
+        }
+
+        return $additionalTourUrls;
+    }
+
+    private function extractTourOptionsFromShoot(object|array $shoot): array
+    {
+        $shootData = is_array($shoot) ? $shoot : $shoot->toArray();
+        $tourLinks = $this->normalizeShootTourLinks($shootData['tour_links'] ?? ($shoot->tour_links ?? []));
+
+        $handledKeys = [
+            'iguide_mls', 'iguide_branded', 'iguide', 'iGuide',
+            'cubicasa', 'cubicasa_url',
+            'matterport_mls', 'matterport_branded', 'matterport',
+            'slideshow', 'slideshow_url', 'neo_tour', 'neotour',
+            'video_mls', 'video_generic', 'video_link', 'video_branded',
+            'mls', 'generic_mls', 'genericMls',
+            'embeds', 'tour_style', 'featured_embed_id', 'featured_embed',
+        ];
+
+        return [
+            'iguide_tour_url' => $this->firstValidUrl(
+                $shootData['iguide_tour_url'] ?? ($shoot->iguide_tour_url ?? null),
+                $tourLinks['iguide_mls'] ?? null,
+                $tourLinks['iguide'] ?? null,
+                $tourLinks['iGuide'] ?? null,
+                $tourLinks['iguide_branded'] ?? null,
+            ),
+            'slideshow_url' => $this->firstValidUrl(
+                $tourLinks['slideshow'] ?? null,
+                $tourLinks['slideshow_url'] ?? null,
+                $tourLinks['neo_tour'] ?? null,
+                $tourLinks['neotour'] ?? null,
+                $tourLinks['video_mls'] ?? null,
+                $tourLinks['video_generic'] ?? null,
+                $tourLinks['video_link'] ?? null,
+                $tourLinks['video_branded'] ?? null,
+                $tourLinks['mls'] ?? null,
+                $tourLinks['generic_mls'] ?? null,
+                $tourLinks['genericMls'] ?? null,
+                $shootData['mls_compliant_link'] ?? ($shoot->mls_compliant_link ?? null),
+            ),
+            'matterport_url' => $this->firstValidUrl(
+                $tourLinks['matterport_mls'] ?? null,
+                $tourLinks['matterport'] ?? null,
+                $tourLinks['matterport_branded'] ?? null,
+            ),
+            'cubicasa_url' => $this->firstValidUrl(
+                $tourLinks['cubicasa_url'] ?? null,
+                $tourLinks['cubicasa'] ?? null,
+            ),
+            'additional_tour_urls' => $this->extractAdditionalEmbedTourUrls($tourLinks, $handledKeys),
+        ];
     }
 
     private function trimText(?string $value, int $maxLength): string
