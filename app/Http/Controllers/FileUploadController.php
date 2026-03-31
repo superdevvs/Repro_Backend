@@ -146,6 +146,15 @@ class FileUploadController extends Controller
             $shoot->missing_final = $shoot->edited_missing_count > 0;
             $shoot->save();
 
+            if (
+                $uploadType === 'edited' &&
+                count($uploadedFiles) > 0 &&
+                !in_array($shoot->workflow_status, [Shoot::STATUS_READY, Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified'], true)
+            ) {
+                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, auth()->id());
+                $shoot->refresh();
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Files processed successfully',
@@ -157,6 +166,7 @@ class FileUploadController extends Controller
                 'edited_photo_count' => $shoot->edited_photo_count,
                 'raw_missing_count' => $shoot->raw_missing_count,
                 'edited_missing_count' => $shoot->edited_missing_count,
+                'shoot_status' => $shoot->workflow_status,
             ]);
 
         } catch (\Exception $e) {

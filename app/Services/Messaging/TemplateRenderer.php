@@ -554,10 +554,7 @@ a { color: #1463ff; text-decoration: none; }
     <div class="hero-card">
       <div class="brand-row">
         <div class="brand-logo">
-          <img src="{$logoUrl}" alt="R/E Pro Photos">
-        </div>
-        <div class="brand-copy">
-          R/E Pro Photos
+          <img src="{$logoUrl}" alt="" role="presentation">
         </div>
       </div>
       <h1 class="hero-title">{$heroTitle}</h1>
