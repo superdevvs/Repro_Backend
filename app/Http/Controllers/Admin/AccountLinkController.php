@@ -371,8 +371,29 @@ class AccountLinkController extends Controller
             ->orderBy('name');
 
         $clientAccounts = $clientAccountsQuery
-            ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status', 'company_name'])
-            ->map(fn (User $user) => $this->serializeAccountOption($user))
+            ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status', 'company_name']);
+
+        $activeOwnerLinks = AccountLink::query()
+            ->active()
+            ->whereIn('linked_account_id', $clientAccounts->pluck('id'))
+            ->when($ownerId !== '', fn ($query) => $query->where('main_account_id', '!=', $ownerId))
+            ->with('mainAccount:id,name,email,role,avatar,account_status')
+            ->get()
+            ->groupBy('linked_account_id');
+
+        $clientAccounts = $clientAccounts
+            ->map(function (User $user) use ($activeOwnerLinks) {
+                $conflictingOwners = collect($activeOwnerLinks->get($user->id, collect()))
+                    ->map(fn (AccountLink $link) => $this->serializeOwnerSummary($link->mainAccount))
+                    ->filter(fn (?array $owner) => !empty($owner['id']))
+                    ->values();
+
+                return $this->serializeAccountOption($user, [
+                    'isLinkedToOtherOwners' => $conflictingOwners->isNotEmpty(),
+                    'activeOwnerLinkCount' => $conflictingOwners->count(),
+                    'activeOwnerLinks' => $conflictingOwners->all(),
+                ]);
+            })
             ->values();
 
         return response()->json([
@@ -399,21 +420,19 @@ class AccountLinkController extends Controller
         }
 
         $hasLinks = AccountLink::query()
-            ->where(function ($query) use ($user) {
-                $query->where('main_account_id', $user->id)
-                    ->orWhere('linked_account_id', $user->id);
-            })
+            ->where('linked_account_id', $user->id)
             ->where('status', 'active')
             ->exists();
 
         $linkedAccounts = [];
 
         if ($hasLinks) {
-            $linkedAccounts = AccountLink::forAccount($user->id)
+            $linkedAccounts = AccountLink::query()
+                ->where('linked_account_id', $user->id)
                 ->active()
                 ->with(['mainAccount', 'linkedAccount'])
                 ->get()
-                ->map(fn (AccountLink $link) => $this->serializeCounterpartyForUser($link, $user))
+                ->map(fn (AccountLink $link) => $this->serializeIncomingOwnerForUser($link))
                 ->filter()
                 ->values()
                 ->all();
@@ -437,48 +456,12 @@ class AccountLinkController extends Controller
             ], 401);
         }
 
-        $linkedAccounts = AccountLink::forAccount($user->id)
+        $linkedAccounts = AccountLink::query()
+            ->where('linked_account_id', $user->id)
             ->active()
             ->with(['mainAccount', 'linkedAccount'])
             ->get()
-            ->map(function (AccountLink $link) use ($user) {
-                $counterparty = (int) $link->main_account_id === (int) $user->id
-                    ? $link->linkedAccount
-                    : $link->mainAccount;
-
-                if (!$counterparty) {
-                    return null;
-                }
-
-                $sharedShoots = [];
-                if ($link->sharesDetail('shoots')) {
-                    $sharedShoots = Shoot::where('client_id', $counterparty->id)
-                        ->select(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'hero_image'])
-                        ->orderByDesc('scheduled_date')
-                        ->limit(10)
-                        ->get()
-                        ->map(function (Shoot $shoot) {
-                            return [
-                                'id' => (string) $shoot->id,
-                                'address' => $shoot->address,
-                                'city' => $shoot->city,
-                                'state' => $shoot->state,
-                                'scheduledDate' => $shoot->scheduled_date,
-                                'status' => $shoot->status,
-                                'hero_image' => $shoot->hero_image,
-                            ];
-                        })
-                        ->all();
-                }
-
-                return array_merge(
-                    $this->serializeCounterpartyForUser($link, $user) ?? [],
-                    [
-                        'sharedShoots' => $sharedShoots,
-                        'linkDirection' => (int) $link->main_account_id === (int) $user->id ? 'outgoing' : 'incoming',
-                    ],
-                );
-            })
+            ->map(fn (AccountLink $link) => $this->serializeIncomingOwnerForUser($link))
             ->filter()
             ->values()
             ->all();
@@ -487,6 +470,43 @@ class AccountLinkController extends Controller
             'success' => true,
             'linkedAccounts' => $linkedAccounts,
             'total' => count($linkedAccounts),
+        ]);
+    }
+
+    public function getMySharedData(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized',
+            ], 401);
+        }
+
+        $validated = $request->validate([
+            'ownerId' => 'required|exists:users,id',
+        ]);
+
+        $link = AccountLink::query()
+            ->where('main_account_id', $validated['ownerId'])
+            ->where('linked_account_id', $user->id)
+            ->active()
+            ->with(['mainAccount', 'linkedAccount'])
+            ->first();
+
+        if (!$link) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This owner is not linked to your account.',
+            ], 403);
+        }
+
+        return response()->json([
+            'success' => true,
+            'owner' => $this->serializeIncomingOwnerForUser($link),
+            'link' => $this->serializeLink($link),
+            'sharedData' => $this->buildOwnerScopedSharedData($link),
         ]);
     }
 
@@ -625,9 +645,9 @@ class AccountLinkController extends Controller
         ];
     }
 
-    private function serializeAccountOption(User $user): array
+    private function serializeAccountOption(User $user, array $extra = []): array
     {
-        return [
+        return array_merge([
             'id' => (string) $user->id,
             'name' => $user->name,
             'email' => $user->email,
@@ -635,7 +655,7 @@ class AccountLinkController extends Controller
             'avatar' => $user->avatar,
             'accountStatus' => $user->account_status ?? 'active',
             'company' => $user->company_name,
-        ];
+        ], $extra);
     }
 
     private function serializeCounterpartyForUser(AccountLink $link, User $user): ?array
@@ -657,6 +677,144 @@ class AccountLinkController extends Controller
             'status' => $link->status,
             'sharedDetails' => $link->getFormattedSharedDetails(),
         ];
+    }
+
+    private function serializeOwnerSummary(?User $owner): ?array
+    {
+        if (!$owner) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $owner->id,
+            'name' => $owner->name,
+            'email' => $owner->email,
+            'role' => $owner->role,
+            'avatar' => $owner->avatar,
+            'accountStatus' => $owner->account_status ?? 'active',
+        ];
+    }
+
+    private function serializeIncomingOwnerForUser(AccountLink $link): ?array
+    {
+        if (!$link->mainAccount) {
+            return null;
+        }
+
+        return array_merge(
+            $this->serializeOwnerSummary($link->mainAccount) ?? [],
+            [
+                'status' => $link->status,
+                'sharedDetails' => $link->getFormattedSharedDetails(),
+                'linkedAt' => $link->linked_at?->toISOString(),
+                'linkId' => (string) $link->id,
+                'linkDirection' => 'incoming',
+            ],
+        );
+    }
+
+    private function buildOwnerScopedSharedData(AccountLink $link): array
+    {
+        $ownerId = $link->main_account_id;
+        $sharedData = [
+            'totalShoots' => 0,
+            'totalSpent' => 0,
+            'properties' => [],
+            'paymentHistory' => [],
+            'lastActivity' => null,
+            'sharedShoots' => [],
+        ];
+
+        $lastActivityCandidates = [];
+
+        if ($link->sharesDetail('shoots')) {
+            $shoots = Shoot::query()
+                ->where('client_id', $ownerId)
+                ->orderByDesc('scheduled_date')
+                ->orderByDesc('updated_at')
+                ->get(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'workflow_status', 'hero_image', 'updated_at']);
+
+            $sharedData['totalShoots'] = $shoots->count();
+            $sharedData['sharedShoots'] = $shoots
+                ->take(8)
+                ->map(function (Shoot $shoot) {
+                    return [
+                        'id' => (string) $shoot->id,
+                        'address' => $shoot->address,
+                        'city' => $shoot->city,
+                        'state' => $shoot->state,
+                        'scheduledDate' => optional($shoot->scheduled_date)->toDateString(),
+                        'status' => $shoot->workflow_status ?: $shoot->status,
+                        'heroImage' => $shoot->hero_image,
+                    ];
+                })
+                ->values()
+                ->all();
+            $sharedData['properties'] = $shoots
+                ->groupBy(fn (Shoot $shoot) => strtolower(trim(($shoot->address ?? '') . '|' . ($shoot->city ?? '') . '|' . ($shoot->state ?? ''))))
+                ->map(function (Collection $group) {
+                    /** @var Shoot $first */
+                    $first = $group->first();
+
+                    return [
+                        'id' => null,
+                        'address' => $first->address ?? '',
+                        'city' => $first->city ?? '',
+                        'state' => $first->state ?? '',
+                        'shootCount' => $group->count(),
+                    ];
+                })
+                ->values()
+                ->all();
+
+            $shootLastActivity = $shoots->sortByDesc('updated_at')->first()?->updated_at?->toISOString();
+            if ($shootLastActivity) {
+                $lastActivityCandidates[] = $shootLastActivity;
+            }
+        }
+
+        if ($link->sharesDetail('invoices')) {
+            $sharedData['totalSpent'] = (float) (Shoot::query()
+                ->where('client_id', $ownerId)
+                ->sum('total_quote') ?? 0);
+
+            $payments = Payment::query()
+                ->whereHas('shoot', function ($query) use ($ownerId) {
+                    $query->where('client_id', $ownerId);
+                })
+                ->with('shoot')
+                ->orderByDesc('created_at')
+                ->take(10)
+                ->get();
+
+            $sharedData['paymentHistory'] = $payments
+                ->map(function (Payment $payment) {
+                    return [
+                        'id' => (string) $payment->id,
+                        'amount' => (float) $payment->amount,
+                        'status' => $payment->status,
+                        'created_at' => $payment->created_at?->toISOString(),
+                        'shoot' => $payment->shoot ? [
+                            'id' => (string) $payment->shoot->id,
+                            'address' => $payment->shoot->address,
+                        ] : null,
+                    ];
+                })
+                ->values()
+                ->all();
+
+            $paymentLastActivity = $payments->first()?->created_at?->toISOString();
+            if ($paymentLastActivity) {
+                $lastActivityCandidates[] = $paymentLastActivity;
+            }
+        }
+
+        if (!empty($lastActivityCandidates)) {
+            rsort($lastActivityCandidates);
+            $sharedData['lastActivity'] = $lastActivityCandidates[0];
+        }
+
+        return $sharedData;
     }
 
     private function buildBatchMessage(array $created, array $reactivated, array $skipped, array $errors): string

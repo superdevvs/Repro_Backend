@@ -346,6 +346,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->gr
 Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/account-links/has-linked', [AccountLinkController::class, 'hasLinkedAccounts']);
     Route::get('/account-links/my-linked-accounts', [AccountLinkController::class, 'getLinkedAccountsForUser']);
+    Route::get('/account-links/my-shared-data', [AccountLinkController::class, 'getMySharedData']);
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->get('/admin/clients', [UserController::class, 'getClients']);

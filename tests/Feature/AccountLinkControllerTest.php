@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\AccountLink;
+use App\Models\Payment;
 use App\Models\Setting;
 use App\Models\Shoot;
 use App\Models\User;
@@ -184,9 +185,10 @@ class AccountLinkControllerTest extends TestCase
     public function test_available_accounts_excludes_active_linked_clients_but_keeps_relinkable_inactive_ones(): void
     {
         $admin = User::factory()->admin()->create();
+        $otherOwner = User::factory()->create(['role' => 'client', 'name' => 'Other Owner']);
         $activeClient = User::factory()->create(['name' => 'Active Client']);
         $inactiveClient = User::factory()->create(['name' => 'Inactive Client']);
-        $freeClient = User::factory()->create(['name' => 'Free Client']);
+        $sharedClient = User::factory()->create(['name' => 'Shared Client']);
         $nonClientOwner = User::factory()->create(['role' => 'editor']);
 
         $this->grantAdminPermissions(['account-linking-view', 'account-linking-update']);
@@ -209,13 +211,22 @@ class AccountLinkControllerTest extends TestCase
             'created_by' => $admin->id,
         ]);
 
+        AccountLink::create([
+            'main_account_id' => $otherOwner->id,
+            'linked_account_id' => $sharedClient->id,
+            'shared_details' => ['shoots' => true, 'documents' => true],
+            'status' => 'active',
+            'linked_at' => now()->subHours(6),
+            'created_by' => $admin->id,
+        ]);
+
         Sanctum::actingAs($admin);
 
         $response = $this->getJson("/api/admin/account-links/available-accounts?ownerId={$admin->id}");
 
         $response->assertOk();
         $response->assertJsonFragment(['name' => 'Inactive Client']);
-        $response->assertJsonFragment(['name' => 'Free Client']);
+        $response->assertJsonFragment(['name' => 'Shared Client']);
         $this->assertNotContains(
             'Active Client',
             collect($response->json('clientAccounts'))->pluck('name')->all(),
@@ -224,6 +235,14 @@ class AccountLinkControllerTest extends TestCase
             (string) $nonClientOwner->id,
             collect($response->json('owners'))->pluck('id')->all(),
         );
+
+        $sharedClientOption = collect($response->json('clientAccounts'))
+            ->firstWhere('id', (string) $sharedClient->id);
+
+        $this->assertNotNull($sharedClientOption);
+        $this->assertTrue($sharedClientOption['isLinkedToOtherOwners']);
+        $this->assertSame(1, $sharedClientOption['activeOwnerLinkCount']);
+        $this->assertSame((string) $otherOwner->id, $sharedClientOption['activeOwnerLinks'][0]['id']);
     }
 
     public function test_admin_without_account_link_permissions_is_forbidden(): void
@@ -286,6 +305,103 @@ class AccountLinkControllerTest extends TestCase
         $response->assertJsonPath('sharedData.totalShoots', 1);
         $response->assertJsonPath('sharedData.totalSpent', 510);
         $response->assertJsonCount(2, 'sharedData.linkedAccounts');
+    }
+
+    public function test_has_linked_accounts_only_counts_incoming_owner_links(): void
+    {
+        $ownerClient = User::factory()->create(['role' => 'client']);
+        $linkedClient = User::factory()->create();
+        $outgoingOnlyClient = User::factory()->create();
+
+        AccountLink::create([
+            'main_account_id' => $ownerClient->id,
+            'linked_account_id' => $linkedClient->id,
+            'shared_details' => ['shoots' => true],
+            'status' => 'active',
+            'linked_at' => now(),
+            'created_by' => $ownerClient->id,
+        ]);
+
+        AccountLink::create([
+            'main_account_id' => $outgoingOnlyClient->id,
+            'linked_account_id' => User::factory()->create()->id,
+            'shared_details' => ['shoots' => true],
+            'status' => 'active',
+            'linked_at' => now(),
+            'created_by' => $outgoingOnlyClient->id,
+        ]);
+
+        Sanctum::actingAs($linkedClient);
+        $this->getJson('/api/account-links/has-linked')
+            ->assertOk()
+            ->assertJsonPath('hasLinkedAccounts', true)
+            ->assertJsonCount(1, 'linkedAccounts');
+
+        Sanctum::actingAs($outgoingOnlyClient);
+        $this->getJson('/api/account-links/has-linked')
+            ->assertOk()
+            ->assertJsonPath('hasLinkedAccounts', false)
+            ->assertJsonCount(0, 'linkedAccounts');
+    }
+
+    public function test_client_can_fetch_owner_scoped_shared_data(): void
+    {
+        $owner = User::factory()->create(['role' => 'client', 'name' => 'Owner Client']);
+        $linkedClient = User::factory()->create(['name' => 'Linked Client']);
+
+        AccountLink::create([
+            'main_account_id' => $owner->id,
+            'linked_account_id' => $linkedClient->id,
+            'shared_details' => ['shoots' => true, 'invoices' => true, 'documents' => true],
+            'status' => 'active',
+            'linked_at' => now(),
+            'created_by' => $owner->id,
+        ]);
+
+        $firstShoot = Shoot::factory()->create([
+            'client_id' => $owner->id,
+            'address' => '101 Main St',
+            'city' => 'Austin',
+            'state' => 'TX',
+            'total_quote' => 225.00,
+        ]);
+
+        Shoot::factory()->create([
+            'client_id' => $owner->id,
+            'address' => '101 Main St',
+            'city' => 'Austin',
+            'state' => 'TX',
+            'total_quote' => 510.00,
+        ]);
+
+        Payment::factory()->create([
+            'shoot_id' => $firstShoot->id,
+            'amount' => 225.00,
+            'status' => 'completed',
+        ]);
+
+        Sanctum::actingAs($linkedClient);
+
+        $this->getJson("/api/account-links/my-shared-data?ownerId={$owner->id}")
+            ->assertOk()
+            ->assertJsonPath('owner.id', (string) $owner->id)
+            ->assertJsonPath('link.mainAccountId', (string) $owner->id)
+            ->assertJsonPath('sharedData.totalShoots', 2)
+            ->assertJsonPath('sharedData.totalSpent', 735)
+            ->assertJsonCount(1, 'sharedData.properties')
+            ->assertJsonCount(1, 'sharedData.paymentHistory')
+            ->assertJsonCount(2, 'sharedData.sharedShoots');
+    }
+
+    public function test_client_shared_data_rejects_unlinked_owner(): void
+    {
+        $owner = User::factory()->create(['role' => 'client']);
+        $linkedClient = User::factory()->create();
+
+        Sanctum::actingAs($linkedClient);
+
+        $this->getJson("/api/account-links/my-shared-data?ownerId={$owner->id}")
+            ->assertForbidden();
     }
 
     private function grantAdminPermissions(array $adminPermissions): void
