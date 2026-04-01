@@ -9,6 +9,16 @@ use Carbon\Carbon;
 
 class AccountLink extends Model
 {
+    public const SHARE_DETAIL_KEYS = [
+        'shoots',
+        'invoices',
+        'clients',
+        'availability',
+        'settings',
+        'profile',
+        'documents',
+    ];
+
     protected $fillable = [
         'main_account_id',
         'linked_account_id', 
@@ -72,17 +82,7 @@ class AccountLink extends Model
      */
     public function getFormattedSharedDetails(): array
     {
-        $defaults = [
-            'shoots' => false,
-            'invoices' => false,
-            'clients' => false,
-            'availability' => false,
-            'settings' => false,
-            'profile' => false,
-            'documents' => false,
-        ];
-
-        return array_merge($defaults, $this->shared_details ?? []);
+        return array_merge(self::shareDetailDefaults(), $this->shared_details ?? []);
     }
 
     /**
@@ -139,5 +139,41 @@ class AccountLink extends Model
             })
             ->active()
             ->exists();
+    }
+
+    public static function shareDetailDefaults(): array
+    {
+        return array_fill_keys(self::SHARE_DETAIL_KEYS, false);
+    }
+
+    public static function normalizeSharedDetails(array $details): array
+    {
+        $defaults = self::shareDetailDefaults();
+
+        foreach (self::SHARE_DETAIL_KEYS as $key) {
+            if (array_key_exists($key, $details)) {
+                $defaults[$key] = filter_var($details[$key], FILTER_VALIDATE_BOOL);
+            }
+        }
+
+        return $defaults;
+    }
+
+    public static function getSharedAccountIdsForDetail(int $accountId, string $detail): array
+    {
+        return self::forAccount($accountId)
+            ->active()
+            ->get()
+            ->filter(fn (self $link) => $link->sharesDetail($detail))
+            ->map(function (self $link) use ($accountId) {
+                if ((int) $link->main_account_id === (int) $accountId) {
+                    return (int) $link->linked_account_id;
+                }
+
+                return (int) $link->main_account_id;
+            })
+            ->unique()
+            ->values()
+            ->all();
     }
 }

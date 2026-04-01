@@ -3,700 +3,719 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Auth;
 use App\Models\AccountLink;
-use App\Models\User;
-use App\Models\Shoot;
 use App\Models\Payment;
-use Carbon\Carbon;
+use App\Models\Shoot;
+use App\Models\User;
+use App\Services\RolePermissionService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 
 class AccountLinkController extends Controller
 {
-    /**
-     * Get all account links with formatted data for frontend
-     */
+    private const OWNER_ROLES = ['admin', 'superadmin', 'client'];
+
+    public function __construct(
+        private readonly RolePermissionService $permissions,
+    ) {
+    }
+
     public function index(Request $request): JsonResponse
     {
-        try {
-            // Check user role - allow editing_manager as well
-            $user = $request->user();
-            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized access restricted to specific roles'
-                ], 403);
-            }
-
-            // Load relationships and filter active links
-            $links = AccountLink::with(['mainAccount', 'linkedAccount'])
-                ->where('status', 'active')
-                ->get()
-                ->map(function ($link) {
-                    return [
-                        'id' => (string) $link->id,
-                        'accountId' => (string) $link->linked_account_id,
-                        'accountName' => $link->linkedAccount->name ?? 'Unknown',
-                        'accountEmail' => $link->linkedAccount->email ?? '',
-                        'accountAvatar' => $link->linkedAccount->avatar ?? null,
-                        'mainAccountId' => (string) $link->main_account_id,
-                        'mainAccountName' => $link->mainAccount->name ?? 'Unknown',
-                        'mainAccountEmail' => $link->mainAccount->email ?? '',
-                        'mainAccountAvatar' => $link->mainAccount->avatar ?? null,
-                        'sharedDetails' => $link->getFormattedSharedDetails(),
-                        'linkedAt' => $link->linked_at?->toISOString(),
-                        'status' => $link->status,
-                        'notes' => $link->notes,
-                    ];
-                });
-            
-            return response()->json([
-                'success' => true,
-                'links' => $links,
-                'total' => $links->count(),
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to fetch account links: ' . $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ], 500);
+        if ($response = $this->authorizeAdminAction($request, 'view')) {
+            return $response;
         }
+
+        $links = AccountLink::with(['mainAccount', 'linkedAccount'])
+            ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
+            ->orderByDesc('updated_at')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'links' => $links->map(fn (AccountLink $link) => $this->serializeLink($link))->values(),
+            'total' => $links->count(),
+            'summary' => [
+                'owners' => $links->pluck('main_account_id')->unique()->count(),
+                'linkedClients' => $links->pluck('linked_account_id')->unique()->count(),
+                'active' => $links->where('status', 'active')->count(),
+                'inactive' => $links->where('status', 'inactive')->count(),
+                'suspended' => $links->where('status', 'suspended')->count(),
+                'attention' => $links->where('status', '!=', 'active')->count(),
+            ],
+        ]);
     }
 
-    /**
-     * Create a new account link
-     */
     public function store(Request $request): JsonResponse
     {
-        try {
-            $validated = $request->validate([
-                'mainAccountId' => 'required|exists:users,id',
-                'clientAccountId' => 'required|exists:users,id|different:mainAccountId',
-                'sharedDetails' => 'required|array',
-                'notes' => 'nullable|string|max:500',
-            ]);
+        if ($response = $this->authorizeAdminAction($request, 'update')) {
+            return $response;
+        }
 
-            // Check if link already exists
-            $existingLink = AccountLink::where([
-                'main_account_id' => $validated['mainAccountId'],
-                'linked_account_id' => $validated['clientAccountId'],
-                'status' => 'active'
-            ])->first();
+        $validated = $request->validate([
+            'mainAccountId' => 'required|exists:users,id',
+            'clientAccountId' => 'required|exists:users,id|different:mainAccountId',
+            'sharedDetails' => 'required|array',
+            'notes' => 'nullable|string|max:500',
+        ]);
 
-            if ($existingLink) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'These accounts are already linked.',
-                ], 422);
-            }
+        $mainAccount = User::findOrFail($validated['mainAccountId']);
+        $clientAccount = User::findOrFail($validated['clientAccountId']);
+        $sharedDetails = AccountLink::normalizeSharedDetails($validated['sharedDetails']);
+        $notes = $validated['notes'] ?? null;
 
-            $link = AccountLink::create([
-                'main_account_id' => $validated['mainAccountId'],
-                'linked_account_id' => $validated['clientAccountId'],
-                'shared_details' => $validated['sharedDetails'],
-                'notes' => $validated['notes'] ?? null,
-                'status' => 'active',
-                'linked_at' => now(),
-                'created_by' => auth()->id(),
-            ]);
+        if ($response = $this->validateRelationship($mainAccount, $clientAccount)) {
+            return $response;
+        }
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Accounts linked successfully!',
-                'link' => [
-                    'id' => $link->id,
-                    'mainAccountId' => $link->main_account_id,
-                    'mainAccountName' => $link->mainAccount->name,
-                    'accountId' => $link->linked_account_id,
-                    'accountName' => $link->linkedAccount->name,
-                    'accountEmail' => $link->linkedAccount->email,
-                    'sharedDetails' => $link->getFormattedSharedDetails(),
-                    'linkedAt' => $link->linked_at->toISOString(),
-                    'notes' => $link->notes,
-                ],
-            ]);
-
-        } catch (\Exception $e) {
+        $result = $this->createOrReactivateLink($mainAccount, $clientAccount, $sharedDetails, $notes);
+        if ($result['result'] === 'skipped') {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to link accounts: ' . $e->getMessage(),
-            ], 500);
+                'message' => 'These accounts are already linked.',
+                'link' => $this->serializeLink($result['link']),
+            ], 422);
         }
+
+        return response()->json([
+            'success' => true,
+            'message' => $result['result'] === 'reactivated'
+                ? 'Account link reactivated successfully.'
+                : 'Accounts linked successfully.',
+            'result' => $result['result'],
+            'link' => $this->serializeLink($result['link']),
+        ], $result['result'] === 'created' ? 201 : 200);
     }
 
-    /**
-     * Create multiple account links at once
-     */
     public function batchStore(Request $request): JsonResponse
     {
-        try {
-            // Check user role
-            $user = $request->user();
-            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized access restricted to specific roles'
-                ], 403);
-            }
+        if ($response = $this->authorizeAdminAction($request, 'update')) {
+            return $response;
+        }
 
-            $validated = $request->validate([
-                'mainAccountId' => 'required|exists:users,id',
-                'clientAccountIds' => 'required|array|min:1',
-                'clientAccountIds.*' => 'exists:users,id|different:mainAccountId',
-                'sharedDetails' => 'required|array',
-                'notes' => 'nullable|string|max:500',
-            ]);
+        $validated = $request->validate([
+            'mainAccountId' => 'required|exists:users,id',
+            'clientAccountIds' => 'required|array|min:1',
+            'clientAccountIds.*' => 'exists:users,id|different:mainAccountId',
+            'sharedDetails' => 'required|array',
+            'notes' => 'nullable|string|max:500',
+        ]);
 
-            $mainAccountId = $validated['mainAccountId'];
-            $clientAccountIds = $validated['clientAccountIds'];
-            $sharedDetails = $validated['sharedDetails'];
-            $notes = $validated['notes'] ?? null;
+        $mainAccount = User::findOrFail($validated['mainAccountId']);
+        $sharedDetails = AccountLink::normalizeSharedDetails($validated['sharedDetails']);
+        $notes = $validated['notes'] ?? null;
 
-            $createdLinks = [];
-            $skippedLinks = [];
-            $errors = [];
+        if ($response = $this->validateRelationshipOwner($mainAccount)) {
+            return $response;
+        }
 
-            foreach ($clientAccountIds as $clientId) {
-                try {
-                    // Check if link already exists
-                    $existingLink = AccountLink::where([
-                        'main_account_id' => $mainAccountId,
-                        'linked_account_id' => $clientId,
-                        'status' => 'active'
-                    ])->first();
+        $created = [];
+        $reactivated = [];
+        $skipped = [];
+        $errors = [];
 
-                    if ($existingLink) {
-                        $skippedLinks[] = [
-                            'accountId' => $clientId,
-                            'reason' => 'Already linked'
-                        ];
-                        continue;
-                    }
+        foreach (collect($validated['clientAccountIds'])->unique()->values() as $clientId) {
+            try {
+                $clientAccount = User::findOrFail($clientId);
 
-                    $link = AccountLink::create([
-                        'main_account_id' => $mainAccountId,
-                        'linked_account_id' => $clientId,
-                        'shared_details' => $sharedDetails,
-                        'notes' => $notes,
-                        'status' => 'active',
-                        'linked_at' => now(),
-                        'created_by' => auth()->id(),
-                    ]);
-
-                    $createdLinks[] = [
-                        'id' => $link->id,
-                        'mainAccountId' => $link->main_account_id,
-                        'mainAccountName' => $link->mainAccount->name,
-                        'accountId' => $link->linked_account_id,
-                        'accountName' => $link->linkedAccount->name,
-                        'accountEmail' => $link->linkedAccount->email,
-                        'sharedDetails' => $link->getFormattedSharedDetails(),
-                        'linkedAt' => $link->linked_at->toISOString(),
-                    ];
-
-                } catch (\Exception $e) {
+                if ($response = $this->validateRelationship($mainAccount, $clientAccount)) {
+                    $payload = $response->getData(true);
                     $errors[] = [
-                        'accountId' => $clientId,
-                        'error' => $e->getMessage()
+                        'accountId' => (string) $clientId,
+                        'message' => $payload['message'] ?? 'Invalid account relationship.',
                     ];
+                    continue;
                 }
-            }
 
-            $message = "Batch linking completed. ";
-            if (count($createdLinks) > 0) {
-                $message .= count($createdLinks) . " account(s) linked successfully. ";
-            }
-            if (count($skippedLinks) > 0) {
-                $message .= count($skippedLinks) . " account(s) skipped. ";
-            }
-            if (count($errors) > 0) {
-                $message .= count($errors) . " account(s) failed.";
-            }
+                $result = $this->createOrReactivateLink($mainAccount, $clientAccount, $sharedDetails, $notes);
+                $serialized = $this->serializeLink($result['link']);
 
-            return response()->json([
-                'success' => true,
-                'message' => $message,
-                'created' => $createdLinks,
-                'skipped' => $skippedLinks,
-                'errors' => $errors,
-                'summary' => [
-                    'total' => count($clientAccountIds),
-                    'created' => count($createdLinks),
-                    'skipped' => count($skippedLinks),
-                    'failed' => count($errors),
-                ]
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Batch linking failed: ' . $e->getMessage(),
-            ], 500);
-        }
-    }
-
-    /**
-     * Update shared details for an existing link
-     */
-    public function update(Request $request, $id): JsonResponse
-    {
-        try {
-            $link = AccountLink::findOrFail($id);
-
-            $validated = $request->validate([
-                'sharedDetails' => 'required|array',
-                'notes' => 'nullable|string|max:500',
-                'status' => 'sometimes|in:active,inactive,suspended',
-            ]);
-
-            // Validate shared details format
-            $allowedDetails = ['shoots', 'invoices', 'clients', 'availability', 'settings', 'profile', 'documents'];
-            $sharedDetails = array_intersect_key($validated['sharedDetails'], array_flip($allowedDetails));
-
-            $updateData = [
-                'shared_details' => $sharedDetails,
-            ];
-
-            if (isset($validated['notes'])) {
-                $updateData['notes'] = $validated['notes'];
-            }
-
-            if (isset($validated['status'])) {
-                $updateData['status'] = $validated['status'];
-                if ($validated['status'] === 'inactive' || $validated['status'] === 'suspended') {
-                    $updateData['unlinked_at'] = now();
-                } else {
-                    $updateData['unlinked_at'] = null;
+                if ($result['result'] === 'created') {
+                    $created[] = $serialized;
+                    continue;
                 }
-            }
 
-            $link->update($updateData);
+                if ($result['result'] === 'reactivated') {
+                    $reactivated[] = $serialized;
+                    continue;
+                }
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Account link updated successfully!',
-                'link' => [
-                    'id' => $link->id,
-                    'sharedDetails' => $link->getFormattedSharedDetails(),
-                    'status' => $link->status,
-                    'notes' => $link->notes,
-                ],
-            ]);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Account link not found.',
-            ], 404);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to update account link: ' . $e->getMessage(),
-            ], 500);
-        }
-    }
-
-    /**
-     * Delete/unlink an account connection
-     */
-    public function destroy($id): JsonResponse
-    {
-        try {
-            $link = AccountLink::findOrFail($id);
-
-            // Soft delete by marking as inactive
-            $link->update([
-                'status' => 'inactive',
-                'unlinked_at' => now(),
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Account unlinked successfully!',
-            ]);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Account link not found.',
-            ], 404);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to unlink account: ' . $e->getMessage(),
-            ], 500);
-        }
-    }
-
-    /**
-     * Get shared data for a specific account (for viewing linked account details)
-     */
-    public function getSharedData(Request $request, $accountId): JsonResponse
-    {
-        try {
-            $user = User::findOrFail($accountId);
-            
-            // Get all linked account IDs
-            $linkedAccountIds = AccountLink::getLinkedAccountIds($accountId);
-            $allAccountIds = array_merge([$accountId], $linkedAccountIds);
-
-            // Get shared data based on link permissions
-            $sharedData = [
-                'linkedAccounts' => [],
-                'totalShoots' => 0,
-                'totalSpent' => 0,
-                'properties' => [],
-                'paymentHistory' => [],
-                'lastActivity' => null,
-            ];
-
-            // Get linked accounts info
-            $links = AccountLink::forAccount($accountId)
-                ->active()
-                ->with(['mainAccount', 'linkedAccount'])
-                ->get();
-
-            foreach ($links as $link) {
-                $linkedUser = $link->main_account_id === $accountId 
-                    ? $link->linkedAccount 
-                    : $link->mainAccount;
-
-                $sharedData['linkedAccounts'][] = [
-                    'id' => $linkedUser->id,
-                    'name' => $linkedUser->name,
-                    'email' => $linkedUser->email,
-                    'role' => $linkedUser->role,
-                    'account_status' => $linkedUser->account_status ?? 'active',
-                    'sharedDetails' => $link->getFormattedSharedDetails(),
-                    'linkedAt' => $link->linked_at->toISOString(),
+                $skipped[] = [
+                    'accountId' => $serialized['accountId'],
+                    'accountName' => $serialized['accountName'],
+                    'reason' => 'Already linked',
+                    'link' => $serialized,
+                ];
+            } catch (\Throwable $exception) {
+                $errors[] = [
+                    'accountId' => (string) $clientId,
+                    'message' => $exception->getMessage(),
                 ];
             }
-
-            // Aggregate shared data based on permissions
-            $canSeeShoots = $links->contains(function($link) use ($accountId) {
-                return $link->sharesDetail('shoots');
-            });
-
-            $canSeeInvoices = $links->contains(function($link) use ($accountId) {
-                return $link->sharesDetail('invoices');
-            });
-
-            if ($canSeeShoots) {
-                $sharedData['totalShoots'] = Shoot::whereIn('client_id', $allAccountIds)->count();
-                
-                // Get properties
-                $properties = Shoot::whereIn('client_id', $allAccountIds)
-                    ->with('location')
-                    ->get()
-                    ->groupBy('location_id')
-                    ->map(function($shoots) {
-                        $first = $shoots->first();
-                        return [
-                            'id' => $first->location->id ?? null,
-                            'address' => $first->location->fullAddress ?? 'N/A',
-                            'city' => $first->location->city ?? 'N/A',
-                            'state' => $first->location->state ?? 'N/A',
-                            'shootCount' => $shoots->count(),
-                        ];
-                    })
-                    ->values()
-                    ->toArray();
-
-                $sharedData['properties'] = $properties;
-                $sharedData['lastActivity'] = Shoot::whereIn('client_id', $allAccountIds)
-                    ->orderBy('updated_at', 'desc')
-                    ->first()?->updated_at?->toISOString();
-            }
-
-            if ($canSeeInvoices) {
-                $sharedData['totalSpent'] = Shoot::whereIn('client_id', $allAccountIds)
-                    ->sum('total_quote') ?? 0;
-
-                // Get payment history
-                $sharedData['paymentHistory'] = Payment::whereIn('user_id', $allAccountIds)
-                    ->with('shoot')
-                    ->orderBy('created_at', 'desc')
-                    ->take(10)
-                    ->get()
-                    ->map(function($payment) {
-                        return [
-                            'id' => $payment->id,
-                            'amount' => $payment->amount,
-                            'status' => $payment->status,
-                            'created_at' => $payment->created_at->toISOString(),
-                            'shoot' => $payment->shoot ? [
-                                'id' => $payment->shoot->id,
-                                'address' => $payment->shoot->location?->fullAddress ?? 'N/A',
-                            ] : null,
-                        ];
-                    })
-                    ->toArray();
-            }
-
-            return response()->json([
-                'success' => true,
-                'sharedData' => $sharedData,
-            ]);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'User not found.',
-            ], 404);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to get shared data: ' . $e->getMessage(),
-            ], 500);
         }
+
+        return response()->json([
+            'success' => true,
+            'message' => $this->buildBatchMessage($created, $reactivated, $skipped, $errors),
+            'created' => $created,
+            'reactivated' => $reactivated,
+            'skipped' => $skipped,
+            'errors' => $errors,
+            'summary' => [
+                'total' => count($validated['clientAccountIds']),
+                'created' => count($created),
+                'reactivated' => count($reactivated),
+                'skipped' => count($skipped),
+                'failed' => count($errors),
+            ],
+        ]);
     }
 
-    /**
-     * Get available accounts for linking (filtered by role and existing links)
-     */
+    public function update(Request $request, string $id): JsonResponse
+    {
+        if ($response = $this->authorizeAdminAction($request, 'update')) {
+            return $response;
+        }
+
+        $link = AccountLink::with(['mainAccount', 'linkedAccount'])->findOrFail($id);
+
+        $validated = $request->validate([
+            'sharedDetails' => 'required|array',
+            'notes' => 'nullable|string|max:500',
+            'status' => 'sometimes|in:active,inactive,suspended',
+        ]);
+
+        $status = $validated['status'] ?? $link->status;
+
+        $link->update([
+            'shared_details' => AccountLink::normalizeSharedDetails($validated['sharedDetails']),
+            'notes' => $validated['notes'] ?? $link->notes,
+            'status' => $status,
+            'linked_at' => $status === 'active' ? now() : $link->linked_at,
+            'unlinked_at' => $status === 'active' ? null : now(),
+        ]);
+
+        $link->refresh()->loadMissing(['mainAccount', 'linkedAccount']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Account link updated successfully.',
+            'link' => $this->serializeLink($link),
+        ]);
+    }
+
+    public function destroy(Request $request, string $id): JsonResponse
+    {
+        if ($response = $this->authorizeAdminAction($request, 'update')) {
+            return $response;
+        }
+
+        $link = AccountLink::with(['mainAccount', 'linkedAccount'])->findOrFail($id);
+
+        $link->update([
+            'status' => 'inactive',
+            'unlinked_at' => now(),
+        ]);
+
+        $link->refresh()->loadMissing(['mainAccount', 'linkedAccount']);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Account unlinked successfully.',
+            'link' => $this->serializeLink($link),
+        ]);
+    }
+
+    public function getSharedData(Request $request, string $accountId): JsonResponse
+    {
+        if ($response = $this->authorizeAdminAction($request, 'view')) {
+            return $response;
+        }
+
+        User::findOrFail($accountId);
+
+        $links = AccountLink::forAccount($accountId)
+            ->active()
+            ->with(['mainAccount', 'linkedAccount'])
+            ->get();
+
+        $shootAccountIds = array_merge(
+            [(int) $accountId],
+            AccountLink::getSharedAccountIdsForDetail((int) $accountId, 'shoots'),
+        );
+        $invoiceAccountIds = array_merge(
+            [(int) $accountId],
+            AccountLink::getSharedAccountIdsForDetail((int) $accountId, 'invoices'),
+        );
+
+        $sharedData = [
+            'linkedAccounts' => $links->map(function (AccountLink $link) use ($accountId) {
+                $linkedUser = (string) $link->main_account_id === (string) $accountId
+                    ? $link->linkedAccount
+                    : $link->mainAccount;
+
+                return [
+                    'id' => (string) $linkedUser?->id,
+                    'name' => $linkedUser?->name,
+                    'email' => $linkedUser?->email,
+                    'role' => $linkedUser?->role,
+                    'account_status' => $linkedUser?->account_status ?? 'active',
+                    'sharedDetails' => $link->getFormattedSharedDetails(),
+                    'linkedAt' => $link->linked_at?->toISOString(),
+                ];
+            })->filter(fn (array $account) => !empty($account['id']))->values()->all(),
+            'totalShoots' => 0,
+            'totalSpent' => 0,
+            'properties' => [],
+            'paymentHistory' => [],
+            'lastActivity' => null,
+        ];
+
+        if (count($shootAccountIds) > 1) {
+            $shoots = Shoot::whereIn('client_id', $shootAccountIds)->get();
+            $sharedData['totalShoots'] = $shoots->count();
+            $sharedData['properties'] = $shoots
+                ->groupBy(fn (Shoot $shoot) => strtolower(trim(($shoot->address ?? '') . '|' . ($shoot->city ?? '') . '|' . ($shoot->state ?? ''))))
+                ->map(function (Collection $group) {
+                    /** @var Shoot $first */
+                    $first = $group->first();
+
+                    return [
+                        'id' => null,
+                        'address' => $first->address ?? '',
+                        'city' => $first->city ?? '',
+                        'state' => $first->state ?? '',
+                        'shootCount' => $group->count(),
+                    ];
+                })
+                ->values()
+                ->all();
+            $sharedData['lastActivity'] = $shoots->sortByDesc('updated_at')->first()?->updated_at?->toISOString();
+        }
+
+        if (count($invoiceAccountIds) > 1) {
+            $sharedData['totalSpent'] = Shoot::whereIn('client_id', $invoiceAccountIds)->sum('total_quote') ?? 0;
+            $sharedData['paymentHistory'] = Payment::whereHas('shoot', function ($query) use ($invoiceAccountIds) {
+                    $query->whereIn('client_id', $invoiceAccountIds);
+                })
+                ->with('shoot')
+                ->orderByDesc('created_at')
+                ->take(10)
+                ->get()
+                ->map(function (Payment $payment) {
+                    return [
+                        'id' => (string) $payment->id,
+                        'amount' => (float) $payment->amount,
+                        'status' => $payment->status,
+                        'created_at' => $payment->created_at?->toISOString(),
+                        'shoot' => $payment->shoot ? [
+                            'id' => (string) $payment->shoot->id,
+                            'address' => $payment->shoot->address,
+                        ] : null,
+                    ];
+                })
+                ->all();
+        }
+
+        return response()->json([
+            'success' => true,
+            'sharedData' => $sharedData,
+        ]);
+    }
+
     public function getAvailableAccounts(Request $request): JsonResponse
     {
-        try {
-            $role = $request->get('role'); // 'main' or 'client'
-            $excludeId = $request->get('excludeId'); // Exclude this account from results
-
-            $query = User::query();
-
-            if ($role === 'main') {
-                $query->whereIn('role', ['admin', 'superadmin', 'client']);
-            } elseif ($role === 'client') {
-                $query->where('role', 'client');
-            }
-
-            if ($excludeId) {
-                $query->where('id', '!=', $excludeId);
-            }
-
-            $accounts = $query->select(['id', 'name', 'email', 'role'])
-                ->orderBy('name')
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'accounts' => $accounts,
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to get available accounts: ' . $e->getMessage(),
-            ], 500);
+        if ($response = $this->authorizeAdminAction($request, 'view')) {
+            return $response;
         }
+
+        $legacyRole = $request->string('role')->toString();
+        if ($legacyRole !== '') {
+            return $this->getLegacyAvailableAccountsResponse($request, $legacyRole);
+        }
+
+        $ownerId = $request->string('ownerId')->toString();
+        $ownerSearch = trim($request->string('ownerSearch')->toString());
+        $clientSearch = trim($request->string('clientSearch')->toString());
+
+        $owners = User::query()
+            ->whereIn('role', self::OWNER_ROLES)
+            ->when($ownerSearch !== '', function ($query) use ($ownerSearch) {
+                $query->where(function ($nested) use ($ownerSearch) {
+                    $nested->where('name', 'like', '%' . $ownerSearch . '%')
+                        ->orWhere('email', 'like', '%' . $ownerSearch . '%');
+                });
+            })
+            ->orderBy('name')
+            ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status'])
+            ->map(fn (User $user) => $this->serializeAccountOption($user))
+            ->values();
+
+        $clientAccountsQuery = User::query()
+            ->where('role', 'client')
+            ->when($ownerId !== '', function ($query) use ($ownerId) {
+                $query->where('id', '!=', $ownerId)
+                    ->whereNotIn('id', AccountLink::query()
+                        ->where('main_account_id', $ownerId)
+                        ->where('status', 'active')
+                        ->pluck('linked_account_id'));
+            })
+            ->when($clientSearch !== '', function ($query) use ($clientSearch) {
+                $query->where(function ($nested) use ($clientSearch) {
+                    $nested->where('name', 'like', '%' . $clientSearch . '%')
+                        ->orWhere('email', 'like', '%' . $clientSearch . '%')
+                        ->orWhere('company_name', 'like', '%' . $clientSearch . '%');
+                });
+            })
+            ->orderBy('name');
+
+        $clientAccounts = $clientAccountsQuery
+            ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status', 'company_name'])
+            ->map(fn (User $user) => $this->serializeAccountOption($user))
+            ->values();
+
+        return response()->json([
+            'success' => true,
+            'owners' => $owners,
+            'clientAccounts' => $clientAccounts,
+            'meta' => [
+                'ownerId' => $ownerId !== '' ? $ownerId : null,
+                'ownerCount' => $owners->count(),
+                'clientCount' => $clientAccounts->count(),
+            ],
+        ]);
     }
 
-    /**
-     * Check if current user has any linked accounts (for showing/hiding linked tab)
-     */
     public function hasLinkedAccounts(Request $request): JsonResponse
     {
-        try {
-            $user = $request->user();
-            
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'hasLinkedAccounts' => false,
-                ], 401);
-            }
+        $user = $request->user();
 
-            // Check if user is a main account with linked accounts
-            $asMainAccount = AccountLink::where('main_account_id', $user->id)
-                ->where('status', 'active')
-                ->exists();
-
-            // Check if user is a linked account
-            $asLinkedAccount = AccountLink::where('linked_account_id', $user->id)
-                ->where('status', 'active')
-                ->exists();
-
-            $hasLinks = $asMainAccount || $asLinkedAccount;
-
-            // If has links, also return basic info about linked accounts
-            $linkedAccounts = [];
-            if ($hasLinks) {
-                // Get accounts linked TO this user (user is main)
-                $linkedTo = AccountLink::with('linkedAccount')
-                    ->where('main_account_id', $user->id)
-                    ->where('status', 'active')
-                    ->get();
-
-                foreach ($linkedTo as $link) {
-                    $linkedUser = $link->linkedAccount;
-                    if ($linkedUser) {
-                        $linkedAccounts[] = [
-                            'id' => (string) $linkedUser->id,
-                            'name' => $linkedUser->name,
-                            'email' => $linkedUser->email,
-                            'role' => $linkedUser->role,
-                            'avatar' => $linkedUser->avatar,
-                            'sharedDetails' => $link->getFormattedSharedDetails(),
-                        ];
-                    }
-                }
-
-                // Get accounts this user is linked FROM (user is linked account)
-                $linkedFrom = AccountLink::with('mainAccount')
-                    ->where('linked_account_id', $user->id)
-                    ->where('status', 'active')
-                    ->get();
-
-                foreach ($linkedFrom as $link) {
-                    $mainUser = $link->mainAccount;
-                    if ($mainUser) {
-                        $linkedAccounts[] = [
-                            'id' => (string) $mainUser->id,
-                            'name' => $mainUser->name,
-                            'email' => $mainUser->email,
-                            'role' => $mainUser->role,
-                            'avatar' => $mainUser->avatar,
-                            'sharedDetails' => $link->getFormattedSharedDetails(),
-                        ];
-                    }
-                }
-            }
-
-            return response()->json([
-                'success' => true,
-                'hasLinkedAccounts' => $hasLinks,
-                'linkedAccounts' => $linkedAccounts,
-            ]);
-
-        } catch (\Exception $e) {
+        if (!$user) {
             return response()->json([
                 'success' => false,
                 'hasLinkedAccounts' => false,
-                'message' => 'Error checking linked accounts: ' . $e->getMessage(),
-            ], 500);
+            ], 401);
         }
+
+        $hasLinks = AccountLink::query()
+            ->where(function ($query) use ($user) {
+                $query->where('main_account_id', $user->id)
+                    ->orWhere('linked_account_id', $user->id);
+            })
+            ->where('status', 'active')
+            ->exists();
+
+        $linkedAccounts = [];
+
+        if ($hasLinks) {
+            $linkedAccounts = AccountLink::forAccount($user->id)
+                ->active()
+                ->with(['mainAccount', 'linkedAccount'])
+                ->get()
+                ->map(fn (AccountLink $link) => $this->serializeCounterpartyForUser($link, $user))
+                ->filter()
+                ->values()
+                ->all();
+        }
+
+        return response()->json([
+            'success' => true,
+            'hasLinkedAccounts' => $hasLinks,
+            'linkedAccounts' => $linkedAccounts,
+        ]);
     }
 
-    /**
-     * Get full linked accounts data with shared shoots for the linked tab
-     */
     public function getLinkedAccountsForUser(Request $request): JsonResponse
     {
-        try {
-            $user = $request->user();
-            
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized',
-                ], 401);
-            }
+        $user = $request->user();
 
-            $linkedAccounts = [];
-
-            // Get accounts linked TO this user (user is main account)
-            $linkedTo = AccountLink::with('linkedAccount')
-                ->where('main_account_id', $user->id)
-                ->where('status', 'active')
-                ->get();
-
-            foreach ($linkedTo as $link) {
-                $linkedUser = $link->linkedAccount;
-                if (!$linkedUser) continue;
-
-                $sharedDetails = $link->getFormattedSharedDetails();
-                $sharedShoots = [];
-
-                // If shoots are shared, get them
-                if (isset($sharedDetails['shoots']) && $sharedDetails['shoots']) {
-                    $sharedShoots = Shoot::where('client_id', $linkedUser->id)
-                        ->select(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'hero_image'])
-                        ->orderBy('scheduled_date', 'desc')
-                        ->limit(10)
-                        ->get()
-                        ->map(function ($shoot) {
-                            return [
-                                'id' => $shoot->id,
-                                'address' => $shoot->address,
-                                'city' => $shoot->city,
-                                'state' => $shoot->state,
-                                'scheduledDate' => $shoot->scheduled_date,
-                                'status' => $shoot->status,
-                                'hero_image' => $shoot->hero_image,
-                            ];
-                        });
-                }
-
-                $linkedAccounts[] = [
-                    'id' => (string) $linkedUser->id,
-                    'name' => $linkedUser->name,
-                    'email' => $linkedUser->email,
-                    'role' => $linkedUser->role,
-                    'avatar' => $linkedUser->avatar,
-                    'sharedDetails' => $sharedDetails,
-                    'sharedShoots' => $sharedShoots,
-                    'linkDirection' => 'outgoing', // This user is the main account
-                ];
-            }
-
-            // Get accounts this user is linked FROM (user is linked account)
-            $linkedFrom = AccountLink::with('mainAccount')
-                ->where('linked_account_id', $user->id)
-                ->where('status', 'active')
-                ->get();
-
-            foreach ($linkedFrom as $link) {
-                $mainUser = $link->mainAccount;
-                if (!$mainUser) continue;
-
-                $sharedDetails = $link->getFormattedSharedDetails();
-                $sharedShoots = [];
-
-                // If shoots are shared, get the main account's shoots
-                if (isset($sharedDetails['shoots']) && $sharedDetails['shoots']) {
-                    $sharedShoots = Shoot::where('client_id', $mainUser->id)
-                        ->select(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'hero_image'])
-                        ->orderBy('scheduled_date', 'desc')
-                        ->limit(10)
-                        ->get()
-                        ->map(function ($shoot) {
-                            return [
-                                'id' => $shoot->id,
-                                'address' => $shoot->address,
-                                'city' => $shoot->city,
-                                'state' => $shoot->state,
-                                'scheduledDate' => $shoot->scheduled_date,
-                                'status' => $shoot->status,
-                                'hero_image' => $shoot->hero_image,
-                            ];
-                        });
-                }
-
-                $linkedAccounts[] = [
-                    'id' => (string) $mainUser->id,
-                    'name' => $mainUser->name,
-                    'email' => $mainUser->email,
-                    'role' => $mainUser->role,
-                    'avatar' => $mainUser->avatar,
-                    'sharedDetails' => $sharedDetails,
-                    'sharedShoots' => $sharedShoots,
-                    'linkDirection' => 'incoming', // This user is the linked account
-                ];
-            }
-
-            return response()->json([
-                'success' => true,
-                'linkedAccounts' => $linkedAccounts,
-                'total' => count($linkedAccounts),
-            ]);
-
-        } catch (\Exception $e) {
+        if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to get linked accounts: ' . $e->getMessage(),
-            ], 500);
+                'message' => 'Unauthorized',
+            ], 401);
         }
+
+        $linkedAccounts = AccountLink::forAccount($user->id)
+            ->active()
+            ->with(['mainAccount', 'linkedAccount'])
+            ->get()
+            ->map(function (AccountLink $link) use ($user) {
+                $counterparty = (int) $link->main_account_id === (int) $user->id
+                    ? $link->linkedAccount
+                    : $link->mainAccount;
+
+                if (!$counterparty) {
+                    return null;
+                }
+
+                $sharedShoots = [];
+                if ($link->sharesDetail('shoots')) {
+                    $sharedShoots = Shoot::where('client_id', $counterparty->id)
+                        ->select(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'hero_image'])
+                        ->orderByDesc('scheduled_date')
+                        ->limit(10)
+                        ->get()
+                        ->map(function (Shoot $shoot) {
+                            return [
+                                'id' => (string) $shoot->id,
+                                'address' => $shoot->address,
+                                'city' => $shoot->city,
+                                'state' => $shoot->state,
+                                'scheduledDate' => $shoot->scheduled_date,
+                                'status' => $shoot->status,
+                                'hero_image' => $shoot->hero_image,
+                            ];
+                        })
+                        ->all();
+                }
+
+                return array_merge(
+                    $this->serializeCounterpartyForUser($link, $user) ?? [],
+                    [
+                        'sharedShoots' => $sharedShoots,
+                        'linkDirection' => (int) $link->main_account_id === (int) $user->id ? 'outgoing' : 'incoming',
+                    ],
+                );
+            })
+            ->filter()
+            ->values()
+            ->all();
+
+        return response()->json([
+            'success' => true,
+            'linkedAccounts' => $linkedAccounts,
+            'total' => count($linkedAccounts),
+        ]);
+    }
+
+    private function authorizeAdminAction(Request $request, string $action): ?JsonResponse
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized.',
+            ], 401);
+        }
+
+        if (!$this->permissions->userCan($user, 'account-linking', $action)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to manage account linking.',
+            ], 403);
+        }
+
+        return null;
+    }
+
+    private function validateRelationshipOwner(User $mainAccount): ?JsonResponse
+    {
+        if (!in_array($mainAccount->role, self::OWNER_ROLES, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only admin, superadmin, and client accounts can own linked client accounts.',
+            ], 422);
+        }
+
+        return null;
+    }
+
+    private function validateRelationship(User $mainAccount, User $clientAccount): ?JsonResponse
+    {
+        if ($mainAccount->id === $clientAccount->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'An account cannot be linked to itself.',
+            ], 422);
+        }
+
+        if ($response = $this->validateRelationshipOwner($mainAccount)) {
+            return $response;
+        }
+
+        if ($clientAccount->role !== 'client') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only client accounts can be linked as managed accounts.',
+            ], 422);
+        }
+
+        return null;
+    }
+
+    private function createOrReactivateLink(
+        User $mainAccount,
+        User $clientAccount,
+        array $sharedDetails,
+        ?string $notes,
+    ): array {
+        $existingLink = AccountLink::with(['mainAccount', 'linkedAccount'])
+            ->where('main_account_id', $mainAccount->id)
+            ->where('linked_account_id', $clientAccount->id)
+            ->first();
+
+        if ($existingLink && $existingLink->status === 'active') {
+            return [
+                'result' => 'skipped',
+                'link' => $existingLink,
+            ];
+        }
+
+        if ($existingLink) {
+            $existingLink->update([
+                'shared_details' => $sharedDetails,
+                'notes' => $notes ?? $existingLink->notes,
+                'status' => 'active',
+                'linked_at' => now(),
+                'unlinked_at' => null,
+            ]);
+
+            $existingLink->refresh()->loadMissing(['mainAccount', 'linkedAccount']);
+
+            return [
+                'result' => 'reactivated',
+                'link' => $existingLink,
+            ];
+        }
+
+        $link = AccountLink::create([
+            'main_account_id' => $mainAccount->id,
+            'linked_account_id' => $clientAccount->id,
+            'shared_details' => $sharedDetails,
+            'notes' => $notes,
+            'status' => 'active',
+            'linked_at' => now(),
+            'created_by' => auth()->id(),
+        ]);
+
+        $link->loadMissing(['mainAccount', 'linkedAccount']);
+
+        return [
+            'result' => 'created',
+            'link' => $link,
+        ];
+    }
+
+    private function serializeLink(AccountLink $link): array
+    {
+        $link->loadMissing(['mainAccount', 'linkedAccount']);
+
+        return [
+            'id' => (string) $link->id,
+            'accountId' => (string) $link->linked_account_id,
+            'accountName' => $link->linkedAccount?->name ?? 'Unknown',
+            'accountEmail' => $link->linkedAccount?->email ?? '',
+            'accountRole' => $link->linkedAccount?->role ?? null,
+            'accountAvatar' => $link->linkedAccount?->avatar ?? null,
+            'accountStatus' => $link->linkedAccount?->account_status ?? null,
+            'mainAccountId' => (string) $link->main_account_id,
+            'mainAccountName' => $link->mainAccount?->name ?? 'Unknown',
+            'mainAccountEmail' => $link->mainAccount?->email ?? '',
+            'mainAccountRole' => $link->mainAccount?->role ?? null,
+            'mainAccountAvatar' => $link->mainAccount?->avatar ?? null,
+            'mainAccountStatus' => $link->mainAccount?->account_status ?? null,
+            'sharedDetails' => $link->getFormattedSharedDetails(),
+            'linkedAt' => $link->linked_at?->toISOString(),
+            'unlinkedAt' => $link->unlinked_at?->toISOString(),
+            'status' => $link->status,
+            'notes' => $link->notes,
+        ];
+    }
+
+    private function serializeAccountOption(User $user): array
+    {
+        return [
+            'id' => (string) $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+            'avatar' => $user->avatar,
+            'accountStatus' => $user->account_status ?? 'active',
+            'company' => $user->company_name,
+        ];
+    }
+
+    private function serializeCounterpartyForUser(AccountLink $link, User $user): ?array
+    {
+        $counterparty = (int) $link->main_account_id === (int) $user->id
+            ? $link->linkedAccount
+            : $link->mainAccount;
+
+        if (!$counterparty) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $counterparty->id,
+            'name' => $counterparty->name,
+            'email' => $counterparty->email,
+            'role' => $counterparty->role,
+            'avatar' => $counterparty->avatar,
+            'status' => $link->status,
+            'sharedDetails' => $link->getFormattedSharedDetails(),
+        ];
+    }
+
+    private function buildBatchMessage(array $created, array $reactivated, array $skipped, array $errors): string
+    {
+        $parts = [];
+
+        if (count($created) > 0) {
+            $parts[] = count($created) . ' created';
+        }
+
+        if (count($reactivated) > 0) {
+            $parts[] = count($reactivated) . ' reactivated';
+        }
+
+        if (count($skipped) > 0) {
+            $parts[] = count($skipped) . ' already active';
+        }
+
+        if (count($errors) > 0) {
+            $parts[] = count($errors) . ' failed';
+        }
+
+        if ($parts === []) {
+            return 'No account links were changed.';
+        }
+
+        return 'Batch linking complete: ' . implode(', ', $parts) . '.';
+    }
+
+    private function getLegacyAvailableAccountsResponse(Request $request, string $role): JsonResponse
+    {
+        $excludeId = $request->string('excludeId')->toString();
+        $ownerId = $request->string('ownerId')->toString();
+
+        $query = User::query();
+
+        if ($role === 'main') {
+            $query->whereIn('role', self::OWNER_ROLES);
+        } elseif ($role === 'client') {
+            $query->where('role', 'client')
+                ->when($ownerId !== '', function ($builder) use ($ownerId) {
+                    $builder->whereNotIn('id', AccountLink::query()
+                        ->where('main_account_id', $ownerId)
+                        ->where('status', 'active')
+                        ->pluck('linked_account_id'));
+                });
+        }
+
+        if ($excludeId !== '') {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        return response()->json([
+            'success' => true,
+            'accounts' => $query
+                ->orderBy('name')
+                ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status'])
+                ->map(fn (User $user) => $this->serializeAccountOption($user))
+                ->values(),
+        ]);
     }
 }

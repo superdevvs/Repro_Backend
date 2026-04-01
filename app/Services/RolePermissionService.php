@@ -34,6 +34,15 @@ class RolePermissionService
         ];
     }
 
+    public function userCan(User $user, string $resource, string $action): bool
+    {
+        return in_array(
+            $this->permissionId($resource, $action),
+            $this->effectivePermissionIdsForUser($user),
+            true,
+        );
+    }
+
     public function updatePermissions(array $rolePermissions): array
     {
         $catalogIds = $this->catalogPermissionIds();

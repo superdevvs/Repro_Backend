@@ -917,8 +917,6 @@ class UserController extends Controller
      */
     protected function getSharedAccountData(User $user, array $linkedAccounts): array
     {
-        $accountIds = array_merge([$user->id], array_column($linkedAccounts, 'id'));
-
         $sharedData = [
             'totalShoots' => 0,
             'totalSpent' => 0,
@@ -933,12 +931,17 @@ class UserController extends Controller
             ],
         ];
 
-        $links = \App\Models\AccountLink::forAccount($user->id)->active()->get();
-        $canSeeShoots = $links->contains(fn ($link) => $link->sharesDetail('shoots'));
-        $canSeeInvoices = $links->contains(fn ($link) => $link->sharesDetail('invoices'));
+        $shootAccountIds = array_merge(
+            [$user->id],
+            \App\Models\AccountLink::getSharedAccountIdsForDetail((int) $user->id, 'shoots'),
+        );
+        $invoiceAccountIds = array_merge(
+            [$user->id],
+            \App\Models\AccountLink::getSharedAccountIdsForDetail((int) $user->id, 'invoices'),
+        );
 
-        if ($canSeeShoots) {
-            $shootQuery = \App\Models\Shoot::whereIn('client_id', $accountIds);
+        if (count($shootAccountIds) > 1) {
+            $shootQuery = \App\Models\Shoot::whereIn('client_id', $shootAccountIds);
             $sharedData['totalShoots'] = $shootQuery->count();
 
             // Group shoots by address to create properties list
@@ -963,16 +966,18 @@ class UserController extends Controller
                 ->toArray();
 
             $sharedData['properties'] = $properties;
-            $lastShoot = \App\Models\Shoot::whereIn('client_id', $accountIds)
+            $lastShoot = \App\Models\Shoot::whereIn('client_id', $shootAccountIds)
                 ->orderBy('updated_at', 'desc')
                 ->first();
             $sharedData['lastActivity'] = $lastShoot?->updated_at?->toISOString();
         }
 
-        if ($canSeeInvoices) {
-            $sharedData['totalSpent'] = \App\Models\Shoot::whereIn('client_id', $accountIds)->sum('total_quote') ?? 0;
+        if (count($invoiceAccountIds) > 1) {
+            $sharedData['totalSpent'] = \App\Models\Shoot::whereIn('client_id', $invoiceAccountIds)->sum('total_quote') ?? 0;
 
-            $sharedData['paymentHistory'] = \App\Models\Payment::whereIn('user_id', $accountIds)
+            $sharedData['paymentHistory'] = \App\Models\Payment::whereHas('shoot', function ($query) use ($invoiceAccountIds) {
+                    $query->whereIn('client_id', $invoiceAccountIds);
+                })
                 ->with('shoot')
                 ->orderBy('created_at', 'desc')
                 ->take(10)
