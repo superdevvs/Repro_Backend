@@ -456,6 +456,20 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Photographer Changed',
+                'slug' => 'photographer-changed',
+                'description' => 'Notify affected photographers when a shoot assignment changes',
+                'category' => 'BOOKING',
+                'subject' => 'Photographer Assignment Updated - [shoot_location]',
+                'body_html' => $this->getPhotographerChangedTemplate(),
+                'body_text' => $this->getPhotographerChangedPlainText(),
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'services_provided', 'services_provided_html', 'shoot_notes', 'portal_url', 'company_email', 'previous_photographer_name', 'new_photographer_name', 'shoot_change_summary'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
         ];
 
         $canonicalSlugs = collect($templates)
@@ -619,7 +633,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_COMPLETED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'photographer'],
+                'recipients_json' => ['client'],
             ],
             [
                 'name' => 'Shoot Cancelled Notification',
@@ -653,6 +667,14 @@ class MessagingSystemSeeder extends Seeder
                 'scope' => 'SYSTEM',
                 'recipients_json' => ['photographer'],
             ],
+            [
+                'name' => 'Photographer Change Notification',
+                'description' => 'Notify affected photographers when a shoot assignment changes',
+                'trigger_type' => 'PHOTOGRAPHER_CHANGED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['photographer'],
+            ],
         ];
 
         foreach ($automations as $automation) {
@@ -672,6 +694,7 @@ class MessagingSystemSeeder extends Seeder
                 'SHOOT_REMOVED' => 'shoot-deleted',
                 'PAYMENT_REFUNDED' => 'refund-submitted',
                 'PHOTOGRAPHER_ASSIGNED' => 'photographer-assigned',
+                'PHOTOGRAPHER_CHANGED' => 'photographer-changed',
             ];
 
             // For property contact reminders, use email template for email channel and SMS template for SMS
@@ -1865,6 +1888,78 @@ Services:
 Notes: [shoot_notes]
 
 You can view more details and manage this shoot by logging into your dashboard at [portal_url]
+
+If you have any questions, please email [company_email]
+
+Thank you!';
+    }
+
+    private function getPhotographerChangedTemplate(): string
+    {
+        $content = '
+            <p>[greeting]!</p>
+
+            <p>A photographer assignment has changed for the shoot below.</p>
+
+            <div class="info-box">
+                <p style="margin-top: 0;"><strong>Shoot Details:</strong></p>
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Previous Photographer:</span> [previous_photographer_name]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Current Photographer:</span> [new_photographer_name]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Services:</span><br>[services_provided_html]
+                </div>
+            </div>
+
+            <p><strong>What changed:</strong></p>
+            <p>[shoot_change_summary]</p>
+
+            <p><strong>Notes:</strong></p>
+            <p>[shoot_notes]</p>
+
+            <p>You can view the latest assignment details in your dashboard at <a href="[portal_url]">[portal_url]</a></p>
+
+            <p>If you have any questions, please email <a href="mailto:[company_email]">[company_email]</a></p>
+
+            <p>Thank you!</p>
+        ';
+
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getPhotographerChangedPlainText(): string
+    {
+        return 'Hello!
+
+A photographer assignment has changed for the shoot below.
+
+SHOOT DETAILS:
+Location: [shoot_location]
+Date: [shoot_date]
+Time: [shoot_time]
+Previous Photographer: [previous_photographer_name]
+Current Photographer: [new_photographer_name]
+Services:
+[services_provided]
+
+What changed:
+[shoot_change_summary]
+
+Notes: [shoot_notes]
+
+You can view the latest assignment details in your dashboard at [portal_url]
 
 If you have any questions, please email [company_email]
 

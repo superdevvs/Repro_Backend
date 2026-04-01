@@ -64,22 +64,6 @@ class ShootWorkflowTransitionSupportService
             }
         }
 
-        if (
-            $shoot->photographer
-            && $shoot->photographer->email
-            && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
-        ) {
-            try {
-                $this->mailService->sendShootCancelledEmail($shoot->photographer, $shoot);
-            } catch (\Throwable $e) {
-                Log::warning('Failed to send cancellation email to photographer', [
-                    'shoot_id' => $shoot->id,
-                    'photographer_id' => $shoot->photographer->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
         try {
             $this->automationService->handleEvent('SHOOT_CANCELED', [
                 'shoot' => $shoot->fresh(['client', 'photographer', 'services']),

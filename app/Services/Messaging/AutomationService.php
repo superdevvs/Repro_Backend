@@ -2,6 +2,7 @@
 
 namespace App\Services\Messaging;
 
+use App\Services\MailService;
 use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageTemplate;
@@ -21,6 +22,7 @@ class AutomationService
         private readonly TemplateRenderer $templateRenderer,
         private readonly TemplateVariableResolver $variableResolver,
         private readonly AutomationWorkflowExecutor $workflowExecutor,
+        private readonly ?MailService $mailService = null,
     ) {
     }
 
@@ -194,6 +196,9 @@ class AutomationService
         foreach ($recipientTypes as $type) {
             switch ($type) {
                 case 'client':
+                    if (!$this->shouldIncludeClientRecipient($rule, $context)) {
+                        break;
+                    }
                     if (!empty($context['client'])) {
                         $client = $context['client'];
                         $recipients[] = [
@@ -206,8 +211,11 @@ class AutomationService
                     break;
 
                 case 'photographer':
-                    if (!empty($context['photographer'])) {
-                        $photographer = $context['photographer'];
+                    if (!$this->shouldIncludePhotographerRecipient($rule, $context)) {
+                        break;
+                    }
+
+                    foreach ($this->resolvePhotographerRecipients($rule, $context) as $photographer) {
                         $recipients[] = [
                             'email' => $photographer['email'] ?? $photographer->email ?? null,
                             'name' => $photographer['name'] ?? $photographer->name ?? 'Photographer',
@@ -251,7 +259,11 @@ class AutomationService
             }
         }
 
-        return array_filter($recipients, fn($r) => !empty($r['email']) || !empty($r['phone']));
+        return collect($recipients)
+            ->filter(fn ($recipient) => !empty($recipient['email']) || !empty($recipient['phone']))
+            ->unique(fn ($recipient) => strtolower((string) ($recipient['email'] ?? $recipient['phone'] ?? '')))
+            ->values()
+            ->all();
     }
 
     /**
@@ -320,23 +332,75 @@ class AutomationService
      */
     public function triggerShootReminders(): void
     {
-        // Find shoots happening in the next 24-48 hours
-        $upcomingShootsDates = [
-            Carbon::now()->addHours(24),
-            Carbon::now()->addHours(2),
-        ];
+        $targetTime = Carbon::now()->addHours(24);
 
-        foreach ($upcomingShootsDates as $targetTime) {
-            $shoots = Shoot::whereBetween('scheduled_date', [
-                $targetTime->copy()->subMinutes(5),
-                $targetTime->copy()->addMinutes(5),
-            ])->get();
+        $shoots = Shoot::query()
+            ->where(function ($query) use ($targetTime) {
+                $query->whereBetween('scheduled_at', [
+                    $targetTime->copy()->subMinutes(5),
+                    $targetTime->copy()->addMinutes(5),
+                ])->orWhere(function ($fallback) use ($targetTime) {
+                    $fallback->whereNull('scheduled_at')
+                        ->whereNotNull('scheduled_date')
+                        ->whereBetween('scheduled_date', [
+                            $targetTime->copy()->subDay()->toDateString(),
+                            $targetTime->copy()->addDay()->toDateString(),
+                        ]);
+                });
+            })
+            ->with(['client', 'photographer', 'rep', 'service', 'services', 'notes'])
+            ->get();
 
-            foreach ($shoots as $shoot) {
-                $context = $this->buildShootContext($shoot);
-                $context['shoot_datetime'] = $shoot->scheduled_date;
+        foreach ($shoots as $shoot) {
+            $scheduledAt = $this->resolveShootDateTime($shoot);
+            if (!$scheduledAt) {
+                continue;
+            }
 
+            if ($scheduledAt->lt($targetTime->copy()->subMinutes(5)) || $scheduledAt->gt($targetTime->copy()->addMinutes(5))) {
+                continue;
+            }
+
+            $tag = sprintf(
+                'SHOOT_REMINDER:24H:shoot:%d:%s',
+                $shoot->id,
+                $scheduledAt->toIso8601String()
+            );
+
+            if ($this->hasSentAutomationTag($tag)) {
+                continue;
+            }
+
+            $context = $this->buildShootContext($shoot);
+            $context['shoot_datetime'] = $scheduledAt;
+            $context['tags_json'] = [$tag];
+
+            if ($this->hasActiveTrigger('SHOOT_REMINDER')) {
                 $this->handleEvent('SHOOT_REMINDER', $context);
+                continue;
+            }
+
+            if ($this->mailService && !empty($context['client'])) {
+                $this->mailService->sendShootReminderEmail(
+                    $context['client'],
+                    $shoot,
+                    $scheduledAt,
+                    [$tag]
+                );
+
+                continue;
+            }
+
+            if ($this->mailService && !empty($context['photographers'])) {
+                foreach ($context['photographers'] as $photographer) {
+                    $this->mailService->sendShootReminderEmail(
+                        $photographer,
+                        $shoot,
+                        $scheduledAt,
+                        [$tag],
+                        false
+                    );
+                }
             }
         }
     }
@@ -368,6 +432,7 @@ class AutomationService
     {
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services', 'notes']);
         $propertyDetails = $shoot->property_details ?? [];
+        $assignedPhotographers = $this->resolveAssignedPhotographers($shoot);
 
         return [
             'shoot' => $shoot,
@@ -375,14 +440,15 @@ class AutomationService
             'shoot_date' => $shoot->scheduled_date?->format('M j, Y')
                 ?? $shoot->scheduled_at?->format('M j, Y'),
             'shoot_time' => $this->formatShootTime($shoot),
-            'shoot_datetime' => $shoot->scheduled_at ?? $shoot->scheduled_date,
+            'shoot_datetime' => $this->resolveShootDateTime($shoot),
             'shoot_address' => $shoot->address ?? 'N/A',
             'shoot_services' => $shoot->services->count() > 0
                 ? $shoot->services->pluck('name')->implode(', ')
                 : ($shoot->service?->name ?? 'Photography'),
             'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
-            'photographer' => $shoot->photographer,
+            'photographer' => $assignedPhotographers[0] ?? $shoot->photographer,
+            'photographers' => $assignedPhotographers,
             'account_id' => $shoot->client_id,
             'property_details' => $propertyDetails,
             'presence_option' => $propertyDetails['presenceOption'] ?? null,
@@ -413,6 +479,33 @@ class AutomationService
         return 'TBD';
     }
 
+    private function resolveShootDateTime(Shoot $shoot): ?Carbon
+    {
+        if ($shoot->scheduled_at) {
+            return $shoot->scheduled_at instanceof Carbon
+                ? $shoot->scheduled_at->copy()
+                : Carbon::parse($shoot->scheduled_at);
+        }
+
+        if (!$shoot->scheduled_date) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse(
+                trim(sprintf(
+                    '%s %s',
+                    $shoot->scheduled_date instanceof \DateTimeInterface
+                        ? $shoot->scheduled_date->format('Y-m-d')
+                        : (string) $shoot->scheduled_date,
+                    $shoot->time ?: '00:00'
+                ))
+            );
+        } catch (\Exception) {
+            return null;
+        }
+    }
+
     private function formatShootNotes(Shoot $shoot): string
     {
         $notes = [];
@@ -434,6 +527,101 @@ class AutomationService
         $notes = array_filter($notes, fn($note) => trim((string) $note) !== '');
 
         return $notes ? implode("\n", $notes) : 'N/A';
+    }
+
+    private function shouldIncludeClientRecipient(AutomationRule $rule, array $context): bool
+    {
+        if (ShootEmailMatrix::hasEvent($rule->trigger_type) && !ShootEmailMatrix::includesClient($rule->trigger_type)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function shouldIncludePhotographerRecipient(AutomationRule $rule, array $context): bool
+    {
+        if (ShootEmailMatrix::hasEvent($rule->trigger_type) && !ShootEmailMatrix::includesPhotographer($rule->trigger_type)) {
+            return false;
+        }
+
+        if (
+            $rule->trigger_type === ShootEmailMatrix::SHOOT_UPDATED
+            && !empty($context['photographer_changed'])
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function resolvePhotographerRecipients(AutomationRule $rule, array $context): array
+    {
+        if ($rule->trigger_type === ShootEmailMatrix::PHOTOGRAPHER_CHANGED && !empty($context['affected_photographers'])) {
+            return collect($context['affected_photographers'])->filter()->values()->all();
+        }
+
+        if (!empty($context['photographers'])) {
+            return collect($context['photographers'])->filter()->values()->all();
+        }
+
+        if (!empty($context['photographer'])) {
+            return [$context['photographer']];
+        }
+
+        return [];
+    }
+
+    /**
+     * @return array<int, User>
+     */
+    private function resolveAssignedPhotographers(Shoot $shoot): array
+    {
+        $shoot->loadMissing(['photographer', 'services']);
+
+        $photographerIds = collect([
+            $shoot->photographer_id,
+            $shoot->photographer?->id,
+        ])
+            ->merge(
+                collect($shoot->services ?? [])
+                    ->pluck('pivot.photographer_id')
+                    ->filter()
+            )
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if ($photographerIds->isEmpty()) {
+            return [];
+        }
+
+        $photographers = User::query()
+            ->whereIn('id', $photographerIds->all())
+            ->get()
+            ->keyBy('id');
+
+        if ($shoot->photographer) {
+            $photographers->put($shoot->photographer->id, $shoot->photographer);
+        }
+
+        return $photographerIds
+            ->map(fn ($id) => $photographers->get((int) $id))
+            ->filter(fn ($user) => $user instanceof User)
+            ->unique('id')
+            ->values()
+            ->all();
+    }
+
+    private function hasSentAutomationTag(string $tag): bool
+    {
+        return Message::query()
+            ->where('send_source', 'AUTOMATION')
+            ->where('tags_json', 'like', '%' . $tag . '%')
+            ->exists();
     }
 
     /**

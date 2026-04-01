@@ -48,6 +48,43 @@ class AutomationServiceRecipientTest extends TestCase
         );
     }
 
+    public function test_photographer_changed_automations_only_resolve_affected_photographers(): void
+    {
+        $service = $this->makeService();
+        $rule = new AutomationRule([
+            'trigger_type' => 'PHOTOGRAPHER_CHANGED',
+            'recipients_json' => ['client', 'photographer'],
+        ]);
+
+        $recipients = $this->resolveRecipients($service, $rule, [
+            'client' => ['email' => 'client@example.com', 'name' => 'Client User'],
+            'affected_photographers' => [
+                ['email' => 'previous@example.com', 'name' => 'Previous Photographer'],
+                ['email' => 'new@example.com', 'name' => 'New Photographer'],
+            ],
+        ]);
+
+        $this->assertSame(
+            ['previous@example.com', 'new@example.com'],
+            array_values(array_column($recipients, 'email'))
+        );
+    }
+
+    public function test_non_matrix_triggers_keep_their_existing_recipient_behavior(): void
+    {
+        $service = $this->makeService();
+        $rule = new AutomationRule([
+            'trigger_type' => 'PHOTOGRAPHER_ASSIGNED',
+            'recipients_json' => ['photographer'],
+        ]);
+
+        $recipients = $this->resolveRecipients($service, $rule, [
+            'photographer' => ['email' => 'photographer@example.com', 'name' => 'Photographer User'],
+        ]);
+
+        $this->assertSame(['photographer@example.com'], array_values(array_column($recipients, 'email')));
+    }
+
     private function makeService(): AutomationService
     {
         return new AutomationService(

@@ -44,6 +44,21 @@ class TemplateVariableResolver
             $derived = array_merge($derived, $this->resolveUser($context['photographer'], 'photographer'));
         }
 
+        if (!isset($context['previous_photographer']) && !empty($context['previous_photographer_id'])) {
+            $context['previous_photographer'] = User::find($context['previous_photographer_id']);
+        }
+        if (!isset($context['new_photographer']) && !empty($context['new_photographer_id'])) {
+            $context['new_photographer'] = User::find($context['new_photographer_id']);
+        }
+
+        if (isset($context['previous_photographer']) && ($context['previous_photographer'] instanceof User || is_array($context['previous_photographer']))) {
+            $derived = array_merge($derived, $this->resolveUser($context['previous_photographer'], 'previous_photographer'));
+        }
+
+        if (isset($context['new_photographer']) && ($context['new_photographer'] instanceof User || is_array($context['new_photographer']))) {
+            $derived = array_merge($derived, $this->resolveUser($context['new_photographer'], 'new_photographer'));
+        }
+
         if (isset($context['rep'])) {
             $derived = array_merge($derived, $this->resolveUser($context['rep'], 'rep'));
         }
@@ -91,6 +106,8 @@ class TemplateVariableResolver
             $context['shoot_changes_html'] ?? null,
             $derived['shoot_changes']
         );
+        $derived['photographer_change_summary'] = $context['photographer_change_summary']
+            ?? $derived['shoot_change_summary'];
 
         $invoice = $this->resolveInvoice($context);
         if ($invoice) {

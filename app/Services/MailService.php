@@ -5,20 +5,26 @@ namespace App\Services;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
+use Carbon\CarbonInterface;
 use App\Models\MessageTemplate;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\ShootEmailMatrix;
 use App\Services\Messaging\TemplateRenderer;
 
 class MailService
 {
     private const SHOOT_DELIVERED_SUBJECT = 'Your Photos Are Ready';
+    private const SHOOT_REMINDER_SUBJECT = 'Shoot Reminder: 24 Hours to Go';
+    private const SHOOT_REMOVED_SUBJECT = 'Photo Shoot Removed from Schedule';
     private const SHOOT_CANCELLED_SUBJECT = 'Your Shoot Has Been Cancelled';
     private const SHOOT_CANCELLATION_REQUESTED_SUBJECT = 'Shoot Cancellation Request Received';
     private const SHOOT_PAID_SUBJECT = 'Payment Confirmed for Your Shoot';
+    private const PHOTOGRAPHER_CHANGED_SUBJECT = 'Photographer Assignment Updated';
 
     /**
      * Send account created email
@@ -53,7 +59,12 @@ class MailService
     /**
      * Send shoot scheduled email
      */
-    public function sendShootScheduledEmail(User $user, Shoot $shoot, string $paymentLink): bool
+    public function sendShootScheduledEmail(
+        User $user,
+        Shoot $shoot,
+        string $paymentLink,
+        ?bool $shouldNotifyPhotographer = true
+    ): bool
     {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
@@ -79,20 +90,24 @@ class MailService
                 'is_photographer' => $isDirectPhotographer,
             ]);
 
-            // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_scheduled', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                    'paymentLink' => '',
-                    'isPhotographer' => true,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'New Shoot Scheduled', $htmlPhoto, 'SHOOT_SCHEDULED');
-                Log::info('Shoot scheduled email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
+            if (
+                $shouldNotifyPhotographer !== false
+                && $this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_SCHEDULED)
+            ) {
+                foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $htmlPhoto = view('emails.shoot_scheduled', [
+                        'user' => $photographer,
+                        'shoot' => $shootData,
+                        'paymentLink' => '',
+                        'isPhotographer' => true,
+                    ])->render();
+                    $this->sendViaCakemail($photographer->email, 'New Shoot Scheduled', $htmlPhoto, 'SHOOT_SCHEDULED');
+                    Log::info('Shoot scheduled email sent to photographer', [
+                        'photographer_id' => $photographer->id,
+                        'shoot_id' => $shoot->id,
+                        'email' => $photographer->email,
+                    ]);
+                }
             }
             
             return true;
@@ -153,27 +168,26 @@ class MailService
             // Also send to photographer if assigned
             if (
                 $shouldNotifyPhotographer
-                && $shoot->photographer
-                && $shoot->photographer->email
-                && $shoot->photographer->id !== $user->id
+                && $this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_UPDATED)
             ) {
-                $htmlPhoto = view('emails.shoot_updated', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                    'changesSummary' => $normalizedChangesSummary,
-                    'isPhotographer' => true,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Scheduled Photo Shoot Updated', $htmlPhoto, 'SHOOT_UPDATED');
-                Log::info('Shoot updated email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
-            } elseif ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
+                foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $htmlPhoto = view('emails.shoot_updated', [
+                        'user' => $photographer,
+                        'shoot' => $shootData,
+                        'changesSummary' => $normalizedChangesSummary,
+                        'isPhotographer' => true,
+                    ])->render();
+                    $this->sendViaCakemail($photographer->email, 'Scheduled Photo Shoot Updated', $htmlPhoto, 'SHOOT_UPDATED');
+                    Log::info('Shoot updated email sent to photographer', [
+                        'photographer_id' => $photographer->id,
+                        'shoot_id' => $shoot->id,
+                        'email' => $photographer->email,
+                    ]);
+                }
+            } elseif ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_UPDATED)) {
                 Log::info('Shoot updated email skipped for photographer', [
-                    'photographer_id' => $shoot->photographer->id,
                     'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
+                    'excluded_user_id' => $user->id,
                 ]);
             }
             
@@ -186,6 +200,72 @@ class MailService
                 'error' => $e->getMessage()
             ]);
             
+            return false;
+        }
+    }
+
+    public function sendShootReminderEmail(
+        User $user,
+        Shoot $shoot,
+        ?CarbonInterface $scheduledAt = null,
+        array $tags = [],
+        ?bool $shouldNotifyPhotographer = true
+    ): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+            $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
+            $isDirectPhotographer = $this->isPhotographerRecipient($user, $shoot);
+
+            $html = view('emails.shoot_reminder', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'scheduledAt' => $scheduledAt,
+                'isPhotographer' => $isDirectPhotographer,
+            ])->render();
+
+            $this->sendViaCakemail(
+                $user->email,
+                self::SHOOT_REMINDER_SUBJECT,
+                $html,
+                'SHOOT_REMINDER',
+                $clientCcEmails,
+                $tags
+            );
+
+            if (
+                $shouldNotifyPhotographer !== false
+                && $this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMINDER)
+            ) {
+                foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $htmlPhoto = view('emails.shoot_reminder', [
+                        'user' => $photographer,
+                        'shoot' => $shootData,
+                        'scheduledAt' => $scheduledAt,
+                        'isPhotographer' => true,
+                    ])->render();
+
+                    $this->sendViaCakemail(
+                        $photographer->email,
+                        self::SHOOT_REMINDER_SUBJECT,
+                        $htmlPhoto,
+                        'SHOOT_REMINDER',
+                        [],
+                        $tags
+                    );
+                }
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send shoot reminder email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'error' => $e->getMessage(),
+            ]);
+
             return false;
         }
     }
@@ -205,13 +285,28 @@ class MailService
                 'user' => $user,
                 'shoot' => $shootData,
             ])->render();
-            $this->sendViaCakemail($user->email, self::SHOOT_CANCELLED_SUBJECT, $html, 'SHOOT_REMOVED', $clientCcEmails);
+            $this->sendViaCakemail($user->email, self::SHOOT_REMOVED_SUBJECT, $html, 'SHOOT_REMOVED', $clientCcEmails);
             
             Log::info('Shoot removed email sent', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email
             ]);
+
+            if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMOVED)) {
+                foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $htmlPhoto = view('emails.shoot_removed', [
+                        'user' => $photographer,
+                        'shoot' => $shootData,
+                    ])->render();
+                    $this->sendViaCakemail($photographer->email, self::SHOOT_REMOVED_SUBJECT, $htmlPhoto, 'SHOOT_REMOVED');
+                    Log::info('Shoot removed email sent to photographer', [
+                        'photographer_id' => $photographer->id,
+                        'shoot_id' => $shoot->id,
+                        'email' => $photographer->email,
+                    ]);
+                }
+            }
             
             return true;
         } catch (\Exception $e) {
@@ -286,7 +381,7 @@ class MailService
                 'user' => $user,
                 'shoot' => $shootData,
             ])->render();
-            $this->sendViaCakemail($user->email, self::SHOOT_DELIVERED_SUBJECT, $html, 'SHOOT_READY', $clientCcEmails);
+            $this->sendViaCakemail($user->email, self::SHOOT_DELIVERED_SUBJECT, $html, 'SHOOT_DELIVERED', $clientCcEmails);
             
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
@@ -331,22 +426,6 @@ class MailService
                 'payment_id' => $payment->id,
                 'email' => $user->email
             ]);
-
-            // Also send to photographer if assigned
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.payment_confirmation', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                    'payment' => $paymentData,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, 'Thank You for Your Payment!', $htmlPhoto, 'PAYMENT_CONFIRMATION');
-                Log::info('Payment confirmation email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
-            }
-            
             return true;
         } catch (\Exception $e) {
             Log::error('Failed to send payment confirmation email', [
@@ -892,6 +971,20 @@ class MailService
 
     private function isPhotographerRecipient(User $user, Shoot $shoot): bool
     {
+        return $this->resolveAssignedPhotographers($shoot)
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->contains((int) $user->id);
+    }
+
+    private function shouldSendAssignedPhotographerEmails(Shoot $shoot, User $primaryRecipient, string $event): bool
+    {
+        return ShootEmailMatrix::includesPhotographer($event)
+            && !$this->isPhotographerRecipient($primaryRecipient, $shoot);
+    }
+
+    private function resolveAssignedPhotographers(Shoot $shoot, ?int $excludeUserId = null): Collection
+    {
         $shoot->loadMissing(['photographer', 'services']);
 
         $photographerIds = collect([
@@ -908,7 +1001,26 @@ class MailService
             ->unique()
             ->values();
 
-        return $photographerIds->contains((int) $user->id);
+        if ($photographerIds->isEmpty()) {
+            return collect();
+        }
+
+        $photographers = User::query()
+            ->whereIn('id', $photographerIds->all())
+            ->whereNotNull('email')
+            ->get()
+            ->keyBy('id');
+
+        if ($shoot->photographer && $shoot->photographer->email) {
+            $photographers->put($shoot->photographer->id, $shoot->photographer);
+        }
+
+        return $photographerIds
+            ->map(fn ($id) => $photographers->get((int) $id))
+            ->filter(fn ($user) => $user instanceof User)
+            ->reject(fn (User $user) => $excludeUserId !== null && (int) $user->id === $excludeUserId)
+            ->unique('id')
+            ->values();
     }
 
     private function buildPropertyHighlightRows(array $propertyDetails): array
@@ -1288,21 +1400,6 @@ class MailService
                 ]);
             }
 
-            // Also notify photographer
-            if ($shoot->photographer && $shoot->photographer->email && $shoot->photographer->id !== $user->id) {
-                $htmlPhoto = view('emails.shoot_paid', [
-                    'user' => $shoot->photographer,
-                    'shoot' => $shootData,
-                    'amount' => $amount,
-                ])->render();
-                $this->sendViaCakemail($shoot->photographer->email, self::SHOOT_PAID_SUBJECT, $htmlPhoto, 'SHOOT_PAID');
-                Log::info('Shoot paid email sent to photographer', [
-                    'photographer_id' => $shoot->photographer->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $shoot->photographer->email
-                ]);
-            }
-            
             return true;
         } catch (\Throwable $e) {
             Log::error('Failed to send shoot paid email', [
@@ -1317,11 +1414,98 @@ class MailService
     }
 
     /**
-     * Send shoot cancelled/deleted email (delegates to sendShootRemovedEmail)
+     * Send shoot cancelled email
      */
     public function sendShootCancelledEmail(User $user, Shoot $shoot): bool
     {
-        return $this->sendShootRemovedEmail($user, $shoot);
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+            $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
+
+            $html = view('emails.shoot_removed', [
+                'user' => $user,
+                'shoot' => $shootData,
+            ])->render();
+            $this->sendViaCakemail($user->email, self::SHOOT_CANCELLED_SUBJECT, $html, 'SHOOT_CANCELLED', $clientCcEmails);
+
+            Log::info('Shoot cancelled email sent', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+            ]);
+
+            if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_CANCELLED)) {
+                foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $htmlPhoto = view('emails.shoot_removed', [
+                        'user' => $photographer,
+                        'shoot' => $shootData,
+                    ])->render();
+                    $this->sendViaCakemail($photographer->email, self::SHOOT_CANCELLED_SUBJECT, $htmlPhoto, 'SHOOT_CANCELLED');
+                    Log::info('Shoot cancelled email sent to photographer', [
+                        'photographer_id' => $photographer->id,
+                        'shoot_id' => $shoot->id,
+                        'email' => $photographer->email,
+                    ]);
+                }
+            }
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send shoot cancelled email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    public function sendPhotographerChangedEmail(
+        User $user,
+        Shoot $shoot,
+        ?User $previousPhotographer = null,
+        ?string $changesSummary = null
+    ): bool {
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+            $normalizedChangesSummary = $this->normalizeChangeSummaryText($changesSummary);
+            $isAssignedAfterChange = $this->resolveAssignedPhotographers($shoot)
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->contains((int) $user->id);
+
+            $html = view('emails.photographer_changed', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'changesSummary' => $normalizedChangesSummary,
+                'previousPhotographer' => $previousPhotographer,
+                'isAssignedAfterChange' => $isAssignedAfterChange,
+            ])->render();
+
+            $this->sendViaCakemail($user->email, self::PHOTOGRAPHER_CHANGED_SUBJECT, $html, 'PHOTOGRAPHER_CHANGED');
+
+            Log::info('Photographer changed email sent', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'is_assigned_after_change' => $isAssignedAfterChange,
+            ]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send photographer changed email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**
@@ -1557,15 +1741,21 @@ HTML;
         })->implode("\n");
     }
 
-    private function sendViaCakemail(?string $to, string $subject, string $html, string $sendSource, array $cc = []): void
+    private function sendViaCakemail(
+        ?string $to,
+        string $subject,
+        string $html,
+        string $sendSource,
+        array $cc = [],
+        array $tags = []
+    ): void
     {
         if (!is_string($to) || trim($to) === '') {
             throw new \InvalidArgumentException('Recipient email is required to send mail.');
         }
 
         $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
-        $messagingService = app(MessagingService::class);
-        $messagingService->sendEmail([
+        $payload = [
             'to' => $to,
             'cc' => $this->sanitizeEmailAddresses($cc, $to),
             'subject' => $subject,
@@ -1573,7 +1763,14 @@ HTML;
             'body_text' => $text,
             'send_source' => $sendSource,
             'sender_name' => 'R/E Pro Photos',
-        ]);
+        ];
+
+        if ($tags !== []) {
+            $payload['tags_json'] = array_values($tags);
+        }
+
+        $messagingService = app(MessagingService::class);
+        $messagingService->sendEmail($payload);
     }
 
     private function resolveShootCcEmailsForRecipient(Shoot $shoot, ?User $recipient = null): array

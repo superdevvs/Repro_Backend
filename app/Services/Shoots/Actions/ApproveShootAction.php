@@ -92,27 +92,19 @@ class ApproveShootAction
         $this->automationService->handleEvent('SHOOT_BOOKED', $context);
         $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
 
-        if (
-            $shoot->client
-            && $notifyClient !== false
-            && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')
-        ) {
-            $this->mailService->sendShootUpdatedEmail(
-                $shoot->client,
-                $shoot,
-                $shootChangeSummary['summary'],
-                $notifyClient,
-                false
-            );
-        }
+        if (!$this->automationService->hasActiveTrigger('SHOOT_SCHEDULED')) {
+            $paymentLink = $shoot->client ? $this->mailService->generatePaymentLink($shoot) : '';
 
-        if (
-            $shoot->photographer
-            && $notifyPhotographer !== false
-            && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')
-            && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
-        ) {
-            $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
+            if ($shoot->client && $notifyClient !== false) {
+                $this->mailService->sendShootScheduledEmail(
+                    $shoot->client,
+                    $shoot,
+                    $paymentLink,
+                    $notifyPhotographer
+                );
+            } elseif ($shoot->photographer && $notifyPhotographer !== false) {
+                $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
+            }
         }
 
         return $shoot;

@@ -324,23 +324,13 @@ class ShootMutationActionsTest extends TestCase
         $this->attachPrimaryService($shoot);
 
         $this->rebindMailService(function ($mailService) use ($shoot) {
-            $mailService->shouldReceive('sendShootUpdatedEmail')
-                ->once()
-                ->withArgs(function (User $recipient, Shoot $approvedShoot, ?string $summary, ?bool $notifyClient, ?bool $notifyPhotographer) use ($shoot) {
-                    return $recipient->is($this->client)
-                        && $approvedShoot->id === $shoot->id
-                        && $summary === 'Shoot details updated'
-                        && $notifyClient === true
-                        && $notifyPhotographer === false;
-                })
-                ->andReturnTrue();
-
             $mailService->shouldReceive('sendShootScheduledEmail')
                 ->once()
-                ->withArgs(function (User $recipient, Shoot $approvedShoot, string $paymentLink) use ($shoot) {
-                    return $recipient->is($this->photographer)
+                ->withArgs(function (User $recipient, Shoot $approvedShoot, string $paymentLink, ?bool $notifyPhotographer = null) use ($shoot) {
+                    return $recipient->is($this->client)
                         && $approvedShoot->id === $shoot->id
-                        && $paymentLink === '';
+                        && $paymentLink === 'https://example.test/payment'
+                        && $notifyPhotographer === true;
                 })
                 ->andReturnTrue();
         });
@@ -357,6 +347,73 @@ class ShootMutationActionsTest extends TestCase
 
         $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
         $this->assertSame($this->photographer->id, $shoot->photographer_id);
+    }
+
+    /** @test */
+    public function admin_reassigning_a_photographer_uses_the_dedicated_photographer_change_email(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $replacementPhotographer = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Replacement Photographer',
+            'email' => 'replacement-photographer@test.com',
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDays(2)->setTime(9, 0),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'time' => '09:00',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $mailService = Mockery::mock(MailService::class);
+        $mailService->shouldIgnoreMissing();
+        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->andReturn([]);
+        $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
+            'summary' => 'Photographer updated',
+            'html' => '<p>Photographer updated</p>',
+        ]);
+        $mailService->shouldReceive('sendShootScheduledEmail')->never();
+        $mailService->shouldReceive('sendShootUpdatedEmail')
+            ->once()
+            ->withArgs(function (User $recipient, Shoot $updatedShoot, ?string $summary, ?bool $notifyClient, ?bool $notifyPhotographer) use ($shoot) {
+                return $recipient->is($this->client)
+                    && $updatedShoot->id === $shoot->id
+                    && $summary === 'Photographer updated'
+                    && $notifyClient === true
+                    && $notifyPhotographer === false;
+            })
+            ->andReturnTrue();
+        $mailService->shouldReceive('sendPhotographerChangedEmail')
+            ->twice()
+            ->withArgs(function (User $recipient, Shoot $updatedShoot, ?User $previousPhotographer, ?string $summary) use ($shoot, $replacementPhotographer) {
+                return in_array($recipient->id, [$this->photographer->id, $replacementPhotographer->id], true)
+                    && $updatedShoot->id === $shoot->id
+                    && $previousPhotographer?->id === $this->photographer->id
+                    && $summary === 'Photographer updated';
+            })
+            ->andReturnTrue();
+        $mailService->shouldReceive('generatePaymentLink')->zeroOrMoreTimes()->andReturn('https://example.test/payment');
+        $this->app->instance(MailService::class, $mailService);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'photographer_id' => $replacementPhotographer->id,
+            'notify_client' => true,
+            'notify_photographer' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Shoot updated');
+
+        $shoot->refresh();
+
+        $this->assertSame($replacementPhotographer->id, $shoot->photographer_id);
     }
 
     /** @test */
@@ -505,6 +562,7 @@ class ShootMutationActionsTest extends TestCase
                 'shoot_id' => $shoot->id,
                 'client' => $shoot->client,
                 'photographer' => $shoot->photographer,
+                'photographers' => $shoot->photographer ? [$shoot->photographer] : [],
             ]
         );
         $automationService->shouldReceive('handleEvent')->zeroOrMoreTimes()->andReturnNull();

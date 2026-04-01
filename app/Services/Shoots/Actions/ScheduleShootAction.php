@@ -86,23 +86,50 @@ class ScheduleShootAction
         $context['shoot_changes'] = $shootChangeSummary['summary'];
         $context['shoot_changes_html'] = $shootChangeSummary['html'];
         $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
-        $this->automationService->handleEvent('SHOOT_UPDATED', $context);
 
-        if ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
+        if ($originalPhotographerId && $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
+            $previousPhotographer = User::find($originalPhotographerId);
+            $context['photographer_changed'] = true;
+            $context['previous_photographer_id'] = $originalPhotographerId;
+            $context['previous_photographer'] = $previousPhotographer;
+            $context['new_photographer_id'] = $shoot->photographer_id;
+            $context['new_photographer'] = $shoot->photographer;
+            $context['affected_photographers'] = collect([$previousPhotographer])
+                ->merge(collect($context['photographers'] ?? []))
+                ->filter()
+                ->unique('id')
+                ->values()
+                ->all();
+            $this->automationService->handleEvent('PHOTOGRAPHER_CHANGED', $context);
+        } elseif ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
             $context['previous_photographer_id'] = $originalPhotographerId;
             $this->automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $context);
         }
 
-        if ($shoot->client && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')) {
-            $this->mailService->sendShootUpdatedEmail($shoot->client, $shoot, $shootChangeSummary['summary']);
+        if ($shoot->client && !$this->automationService->hasActiveTrigger('SHOOT_SCHEDULED')) {
+            $paymentLink = $this->mailService->generatePaymentLink($shoot);
+            $this->mailService->sendShootScheduledEmail($shoot->client, $shoot, $paymentLink);
         }
 
         if (
-            $shoot->photographer
-            && !$this->automationService->hasActiveTrigger('SHOOT_UPDATED')
-            && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
+            $originalPhotographerId
+            && $originalPhotographerId !== $shoot->photographer_id
+            && !$this->automationService->hasActiveTrigger('PHOTOGRAPHER_CHANGED')
         ) {
-            $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
+            $previousPhotographer = User::find($originalPhotographerId);
+            $affectedPhotographers = collect([$previousPhotographer])
+                ->merge(collect($context['photographers'] ?? []))
+                ->filter()
+                ->unique('id');
+
+            foreach ($affectedPhotographers as $photographer) {
+                $this->mailService->sendPhotographerChangedEmail(
+                    $photographer,
+                    $shoot,
+                    $previousPhotographer,
+                    $shootChangeSummary['summary']
+                );
+            }
         }
 
         return $shoot;

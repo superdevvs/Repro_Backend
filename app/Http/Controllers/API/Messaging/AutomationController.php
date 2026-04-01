@@ -252,6 +252,7 @@ class AutomationController extends Controller
             'PHOTO_UPLOADED',
             'MEDIA_UPLOAD_COMPLETE',
             'PHOTOGRAPHER_ASSIGNED',
+            'PHOTOGRAPHER_CHANGED',
             'SHOOT_REQUESTED',
             'SHOOT_REQUEST_APPROVED',
             'EDITING_COMPLETE',

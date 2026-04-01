@@ -845,9 +845,9 @@ class StripePaymentController extends Controller
             $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
         }
 
-        // Send payment confirmation email
+        // Send payment confirmation email fallback only when no automation is active.
         $client = User::find($shoot->client_id);
-        if ($client) {
+        if ($client && !$this->automationService->hasActiveTrigger('PAYMENT_COMPLETED')) {
             try {
                 $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment);
 
