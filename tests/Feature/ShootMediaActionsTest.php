@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
 use App\Jobs\GenerateWatermarkedImageJob;
+use App\Jobs\SyncShootIguideJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -67,6 +68,7 @@ class ShootMediaActionsTest extends TestCase
     public function admin_can_upload_raw_files_and_promote_scheduled_shoot_to_uploaded(): void
     {
         Storage::fake('public');
+        Queue::fake();
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot([
@@ -113,6 +115,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
             'media_type' => 'raw',
         ]);
+        Queue::assertPushed(SyncShootIguideJob::class, function (SyncShootIguideJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id;
+        });
     }
 
     /** @test */

@@ -138,7 +138,10 @@ return [
         'api_username' => env('IGUIDE_API_USERNAME'),
         'api_password' => env('IGUIDE_API_PASSWORD'),
         'api_key' => env('IGUIDE_API_KEY'),
-        'base_url' => env('IGUIDE_API_URL', 'https://api.iguide.com'),
+        'app_id' => env('IGUIDE_APP_ID'),
+        'app_token' => env('IGUIDE_APP_TOKEN'),
+        'base_url' => env('IGUIDE_API_URL', 'https://manage.youriguide.com/api/v1'),
+        'legacy_base_url' => env('IGUIDE_LEGACY_API_URL', 'https://api.iguide.com'),
         'webhook_url' => env('IGUIDE_WEBHOOK_URL', env('APP_URL') . '/iguide_webhook.php'),
     ],
 

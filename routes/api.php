@@ -337,10 +337,11 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->gr
     Route::post('/admin/account-links', [AccountLinkController::class, 'store']);
     Route::post('/admin/account-links/batch', [AccountLinkController::class, 'batchStore']);
     Route::patch('/admin/account-links/{id}', [AccountLinkController::class, 'update']);
+    Route::delete('/admin/account-links/{id}/permanent', [AccountLinkController::class, 'forceDestroy']);
     Route::delete('/admin/account-links/{id}', [AccountLinkController::class, 'destroy']);
     Route::get('/admin/account-links/shared-data/{accountId}', [AccountLinkController::class, 'getSharedData']);
     Route::get('/admin/account-links/available-accounts', [AccountLinkController::class, 'getAvailableAccounts']);
-});
+  });
 
 // Account Linking Routes - User-facing endpoints (accessible to all authenticated users)
 Route::middleware(['auth:sanctum'])->group(function () {

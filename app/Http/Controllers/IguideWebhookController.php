@@ -3,11 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\Shoot;
+use App\Services\IguideService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class IguideWebhookController extends Controller
 {
+    public function __construct(private readonly IguideService $iguideService)
+    {
+    }
+
     /**
      * Handle iGUIDE webhook requests
      */
@@ -20,27 +25,29 @@ class IguideWebhookController extends Controller
                 'data' => $data,
             ]);
 
-            // Parse webhook data based on iGUIDE's format
-            $propertyId = $data['property_id'] ?? $data['propertyId'] ?? null;
-            $tourUrl = $data['tour_url'] ?? $data['tourUrl'] ?? null;
+            $propertyId = $data['property_id'] ?? $data['propertyId'] ?? $data['iguideId'] ?? null;
+            $tourUrl = $data['tour_url']
+                ?? $data['tourUrl']
+                ?? data_get($data, 'urls.publicUrl')
+                ?? data_get($data, 'urls.unbrandedUrl');
             $eventType = $data['event_type'] ?? $data['eventType'] ?? $data['type'] ?? null;
+            $webhookAddress = data_get($data, 'property.fullAddress')
+                ?? data_get($data, 'address.fullAddress')
+                ?? (is_string($data['address'] ?? null) ? $data['address'] : null);
 
-            if (!$propertyId) {
-                Log::warning('iGUIDE webhook missing property_id', [
-                    'data' => $data,
-                ]);
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Missing property_id',
-                ], 400);
+            $shoot = null;
+            if ($propertyId) {
+                $shoot = Shoot::where('iguide_property_id', $propertyId)->first();
             }
 
-            // Find shoot by iGUIDE property ID
-            $shoot = Shoot::where('iguide_property_id', $propertyId)->first();
+            if (!$shoot && $webhookAddress) {
+                $shoot = $this->iguideService->findShootByAddress($webhookAddress);
+            }
 
             if (!$shoot) {
-                Log::warning('iGUIDE webhook: Shoot not found for property_id', [
+                Log::warning('iGUIDE webhook: Shoot not found', [
                     'property_id' => $propertyId,
+                    'address' => $webhookAddress,
                 ]);
                 return response()->json([
                     'success' => false,
@@ -48,23 +55,21 @@ class IguideWebhookController extends Controller
                 ], 404);
             }
 
-            // Update shoot with latest iGUIDE data
-            if ($tourUrl) {
-                $shoot->iguide_tour_url = $tourUrl;
+            $iguideData = $this->iguideService->parsePropertyData($data);
+            if ($tourUrl && empty($iguideData['tour_url'])) {
+                $iguideData['tour_url'] = $tourUrl;
             }
 
-            if (isset($data['floorplans'])) {
-                $shoot->iguide_floorplans = is_array($data['floorplans']) 
-                    ? $data['floorplans'] 
-                    : json_decode($data['floorplans'], true);
+            if ($propertyId && empty($iguideData['property_id'])) {
+                $iguideData['property_id'] = $propertyId;
             }
 
-            $shoot->iguide_last_synced_at = now();
-            $shoot->save();
+            $this->iguideService->applyShootData($shoot, $iguideData);
 
             Log::info('iGUIDE webhook processed successfully', [
                 'shoot_id' => $shoot->id,
                 'property_id' => $propertyId,
+                'event_type' => $eventType,
             ]);
 
             return response()->json([

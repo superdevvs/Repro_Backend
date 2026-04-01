@@ -182,6 +182,35 @@ class AccountLinkControllerTest extends TestCase
         ]);
     }
 
+    public function test_admin_can_permanently_delete_account_link(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $client = User::factory()->create();
+
+        $this->grantAdminPermissions(['account-linking-view', 'account-linking-update']);
+
+        $link = AccountLink::create([
+            'main_account_id' => $admin->id,
+            'linked_account_id' => $client->id,
+            'shared_details' => ['shoots' => true, 'documents' => true],
+            'status' => 'inactive',
+            'linked_at' => now()->subDay(),
+            'unlinked_at' => now()->subHour(),
+            'created_by' => $admin->id,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $this->deleteJson("/api/admin/account-links/{$link->id}/permanent")
+            ->assertOk()
+            ->assertJsonPath('link.id', (string) $link->id)
+            ->assertJsonPath('message', 'Account link deleted permanently.');
+
+        $this->assertDatabaseMissing('account_links', [
+            'id' => $link->id,
+        ]);
+    }
+
     public function test_available_accounts_excludes_active_linked_clients_but_keeps_relinkable_inactive_ones(): void
     {
         $admin = User::factory()->admin()->create();

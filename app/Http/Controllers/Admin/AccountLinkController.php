@@ -227,6 +227,24 @@ class AccountLinkController extends Controller
         ]);
     }
 
+    public function forceDestroy(Request $request, string $id): JsonResponse
+    {
+        if ($response = $this->authorizeAdminAction($request, 'update')) {
+            return $response;
+        }
+
+        $link = AccountLink::with(['mainAccount', 'linkedAccount'])->findOrFail($id);
+        $serialized = $this->serializeLink($link);
+
+        $link->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Account link deleted permanently.',
+            'link' => $serialized,
+        ]);
+    }
+
     public function getSharedData(Request $request, string $accountId): JsonResponse
     {
         if ($response = $this->authorizeAdminAction($request, 'view')) {

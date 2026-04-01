@@ -331,14 +331,7 @@ class IntegrationController extends Controller
         try {
             $shoot = Shoot::findOrFail($shootId);
 
-            // Try to find iGUIDE property by address
-            $fullAddress = "{$shoot->address}, {$shoot->city}, {$shoot->state} {$shoot->zip}";
-            $iguideData = $this->iguideService->searchByAddress($fullAddress);
-
-            if (!$iguideData && $shoot->iguide_property_id) {
-                // If we have a stored property ID, try that
-                $iguideData = $this->iguideService->syncProperty($shoot->iguide_property_id);
-            }
+            $iguideData = $this->iguideService->syncShoot($shoot);
 
             if (!$iguideData) {
                 return response()->json([
@@ -346,13 +339,6 @@ class IntegrationController extends Controller
                     'message' => 'iGUIDE property not found',
                 ], 404);
             }
-
-            // Update shoot with iGUIDE data
-            $shoot->iguide_tour_url = $iguideData['tour_url'];
-            $shoot->iguide_floorplans = $iguideData['floorplans'] ?? [];
-            $shoot->iguide_property_id = $iguideData['property_id'];
-            $shoot->iguide_last_synced_at = now();
-            $shoot->save();
 
             return response()->json([
                 'success' => true,
