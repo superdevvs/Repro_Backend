@@ -14,6 +14,9 @@ use Illuminate\Support\Str;
 
 class ShootShareLinkService
 {
+    private const MEDIA_STAGE_RAW = 'raw';
+    private const MEDIA_STAGE_EDITED = 'edited';
+
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootActivityLogger $activityLogger,
@@ -68,9 +71,23 @@ class ShootShareLinkService
         return $zipPath;
     }
 
-    public function createShootShareLink(Shoot $shoot, User $user, array $fileIds = []): array
+    public function createShootShareLink(
+        Shoot $shoot,
+        User $user,
+        array $fileIds = [],
+        string $mediaStage = self::MEDIA_STAGE_RAW
+    ): array
     {
-        $filesQuery = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO);
+        $normalizedMediaStage = strtolower($mediaStage) === self::MEDIA_STAGE_EDITED
+            ? self::MEDIA_STAGE_EDITED
+            : self::MEDIA_STAGE_RAW;
+        $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
+        $workflowStages = $isEditedStage
+            ? [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]
+            : [ShootFile::STAGE_TODO];
+        $stageLabel = $isEditedStage ? 'edited' : 'raw';
+
+        $filesQuery = $shoot->files()->whereIn('workflow_stage', $workflowStages);
         if (!empty($fileIds)) {
             $filesQuery->whereIn('id', $fileIds);
         }
@@ -78,15 +95,15 @@ class ShootShareLinkService
         $fileCount = $files->count();
 
         if (!empty($fileIds) && $fileCount === 0) {
-            throw new \InvalidArgumentException('No raw files found for selected IDs');
+            throw new \InvalidArgumentException("No {$stageLabel} files found for selected IDs");
         }
 
         $dropboxEnabled = $this->dropboxService->isEnabled();
-        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
+        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType($normalizedMediaStage) : null;
         if ($dropboxEnabled && !$folderPath) {
             $this->dropboxService->createShootFolders($shoot);
             $shoot->refresh();
-            $folderPath = $shoot->getDropboxFolderForType('raw');
+            $folderPath = $shoot->getDropboxFolderForType($normalizedMediaStage);
         }
 
         $shareLink = null;
@@ -106,7 +123,7 @@ class ShootShareLinkService
 
         if (!$shareLink) {
             if ($files->isEmpty()) {
-                throw new \InvalidArgumentException('No raw files found to share');
+                throw new \InvalidArgumentException("No {$stageLabel} files found to share");
             }
 
             $zipPath = $this->generateFilesZipWithDropboxFallback($shoot, $files);
@@ -166,17 +183,29 @@ class ShootShareLinkService
                 'editor_id' => $user->id,
                 'editor_name' => $user->name,
                 'file_count' => $fileCount,
+                'media_stage' => $normalizedMediaStage,
                 'expires_in_hours' => null,
             ],
             $user
         );
 
+        $publicShareLink = $shareLinkId
+            ? $this->buildPublicShareUrl($shoot->id, $shareLinkId)
+            : $shareLink;
+
         return [
-            'share_link' => $shareLink,
+            'share_link' => $publicShareLink,
             'share_link_id' => $shareLinkId,
             'file_count' => $fileCount,
             'expires_in_hours' => null,
             'expires_at' => $expiresAt,
         ];
+    }
+
+    public function buildPublicShareUrl(int|string $shootId, int|string $shareLinkId): string
+    {
+        $frontendBaseUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
+
+        return "{$frontendBaseUrl}/{$shootId}/{$shareLinkId}";
     }
 }

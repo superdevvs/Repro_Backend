@@ -44,6 +44,7 @@ use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\FotelloController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\EditorRatesController;
+use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
 use App\Http\Controllers\API\Admin\SystemOverviewController;
@@ -68,6 +69,9 @@ Route::get('/ping', function () {
 
 Route::get('/weather', [WeatherController::class, 'show'])
     ->middleware('throttle:60,1');
+
+Route::get('/public/share-links/{shoot}/{linkId}', [PublicShootShareLinkController::class, 'show'])
+    ->name('api.public.share-links.show');
 
 // Debug route to check PHP upload limits
 Route::get('/php-limits', function () {

@@ -16,10 +16,11 @@ class GenerateShootShareLinkAction
     public function execute(Request $request, Shoot $shoot, User $user): array
     {
         $fileIds = $request->input('file_ids', []);
+        $mediaStage = (string) $request->input('media_stage', 'raw');
         if (is_string($fileIds)) {
             $fileIds = array_filter(explode(',', $fileIds));
         }
 
-        return $this->shareLinkService->createShootShareLink($shoot, $user, $fileIds);
+        return $this->shareLinkService->createShootShareLink($shoot, $user, $fileIds, $mediaStage);
     }
 }

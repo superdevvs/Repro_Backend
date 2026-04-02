@@ -143,13 +143,16 @@ class WeatherLookupService
         }
 
         $payload = $response->json();
-        $result = $payload['results'][0] ?? null;
+        $results = $payload['results'] ?? [];
+        $result = $results[0] ?? null;
 
         if (($payload['status'] ?? null) !== 'OK' || !$result) {
             return null;
         }
 
-        return $this->formatLocationLabel($result) ?: ($result['formatted_address'] ?? null);
+        return $this->formatCoordinateLocationLabel($results)
+            ?: $this->formatLocationLabel($result)
+            ?: ($result['formatted_address'] ?? null);
     }
 
     private function formatLocationLabel(array $result): ?string
@@ -168,6 +171,37 @@ class WeatherLookupService
         }
 
         return $city ?: ($result['formatted_address'] ?? null);
+    }
+
+    private function formatCoordinateLocationLabel(array $results): ?string
+    {
+        $componentPriorityGroups = [
+            ['locality', 'postal_town'],
+            ['administrative_area_level_3'],
+            ['administrative_area_level_2'],
+            ['sublocality_level_1', 'sublocality', 'neighborhood'],
+        ];
+
+        foreach ($componentPriorityGroups as $types) {
+            foreach ($results as $result) {
+                $components = $result['address_components'] ?? [];
+                $city = $this->findAddressComponent($components, $types);
+
+                if (!$city) {
+                    continue;
+                }
+
+                $state = $this->findAddressComponent($components, ['administrative_area_level_1'], true);
+
+                if ($state) {
+                    return sprintf('%s, %s', $city, $state);
+                }
+
+                return $city;
+            }
+        }
+
+        return null;
     }
 
     private function findAddressComponent(array $components, array $types, bool $shortName = false): ?string

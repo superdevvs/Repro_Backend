@@ -409,6 +409,15 @@ class ShootMediaController extends Controller
 
         try {
             $payload = $this->generateShootShareLinkAction->execute($request, $shoot, $user);
+            $shareLinkId = $payload['share_link_id'] ?? null;
+            if ($shareLinkId) {
+                $shareLink = $shoot->shareLinks()
+                    ->with('creator:id,name')
+                    ->find($shareLinkId);
+                if ($shareLink) {
+                    $payload['share_link_entry'] = $this->shootShareLinkReadService->formatLink($shareLink);
+                }
+            }
 
             return response()->json(array_merge($payload, ['message' => 'Share link generated successfully']));
         } catch (\InvalidArgumentException $e) {
