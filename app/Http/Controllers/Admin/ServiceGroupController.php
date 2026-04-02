@@ -49,8 +49,17 @@ class ServiceGroupController extends Controller
 
         $validated = $this->validatePayload($request);
         [$serviceIds, $clientIds] = $this->extractAssignments($validated);
+        $shouldBeDefault = ServiceGroup::supportsDefaultAssignment() && (bool) ($validated['is_default'] ?? false);
 
-        $group = DB::transaction(function () use ($validated, $serviceIds, $clientIds) {
+        if ($shouldBeDefault) {
+            $validated['is_active'] = true;
+        }
+
+        $group = DB::transaction(function () use ($validated, $serviceIds, $clientIds, $shouldBeDefault) {
+            if ($shouldBeDefault) {
+                ServiceGroup::query()->where('is_default', true)->update(['is_default' => false]);
+            }
+
             $group = ServiceGroup::create($validated);
             $group->services()->sync($serviceIds);
             $group->clients()->sync($clientIds);
@@ -76,8 +85,20 @@ class ServiceGroupController extends Controller
 
         $validated = $this->validatePayload($request, $serviceGroup);
         [$serviceIds, $clientIds] = $this->extractAssignments($validated);
+        $shouldBeDefault = ServiceGroup::supportsDefaultAssignment() && (bool) ($validated['is_default'] ?? false);
 
-        DB::transaction(function () use ($serviceGroup, $validated, $serviceIds, $clientIds) {
+        if ($shouldBeDefault) {
+            $validated['is_active'] = true;
+        }
+
+        DB::transaction(function () use ($serviceGroup, $validated, $serviceIds, $clientIds, $shouldBeDefault) {
+            if ($shouldBeDefault) {
+                ServiceGroup::query()
+                    ->where('id', '!=', $serviceGroup->id)
+                    ->where('is_default', true)
+                    ->update(['is_default' => false]);
+            }
+
             $serviceGroup->update($validated);
             $serviceGroup->services()->sync($serviceIds);
             $serviceGroup->clients()->sync($clientIds);
@@ -123,6 +144,12 @@ class ServiceGroupController extends Controller
             'client_ids' => 'nullable|array',
             'client_ids.*' => 'integer|exists:users,id',
         ]);
+
+        if (ServiceGroup::supportsDefaultAssignment()) {
+            $validated = array_merge($validated, $request->validate([
+                'is_default' => 'nullable|boolean',
+            ]));
+        }
 
         $clientIds = collect($validated['client_ids'] ?? [])
             ->map(fn ($id) => (int) $id)
@@ -181,6 +208,7 @@ class ServiceGroupController extends Controller
             'name' => $group->name,
             'description' => $group->description,
             'is_active' => $group->is_active,
+            'is_default' => ServiceGroup::supportsDefaultAssignment() ? (bool) $group->is_default : false,
             'services' => $services,
             'clients' => $clients,
             'service_ids' => $services->pluck('id')->values()->all(),

@@ -193,6 +193,7 @@ class UserController extends Controller
             }
         }
 
+        $serviceGroupIdsProvided = array_key_exists('service_group_ids', $validated);
         $serviceGroupIds = collect($validated['service_group_ids'] ?? [])
             ->map(fn ($id) => (int) $id)
             ->unique()
@@ -281,6 +282,10 @@ class UserController extends Controller
 
         $user = User::create($validated);
         if ($this->serviceGroupsFeatureAvailable() && $user->role === 'client') {
+            if (!$serviceGroupIdsProvided && empty($serviceGroupIds)) {
+                $serviceGroupIds = $this->getDefaultServiceGroupIds();
+            }
+
             $user->serviceGroups()->sync($serviceGroupIds);
         }
 
@@ -1103,6 +1108,17 @@ class UserController extends Controller
                 'description' => $group->description,
             ];
         })->values()->all();
+    }
+
+    protected function getDefaultServiceGroupIds(): array
+    {
+        if (!$this->serviceGroupsFeatureAvailable()) {
+            return [];
+        }
+
+        $defaultGroup = ServiceGroup::getDefaultGroup();
+
+        return $defaultGroup ? [(int) $defaultGroup->id] : [];
     }
 
     protected function serviceGroupsFeatureAvailable(): bool

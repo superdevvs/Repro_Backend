@@ -14,10 +14,12 @@ class ServiceGroup extends Model
         'name',
         'description',
         'is_active',
+        'is_default',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'is_default' => 'boolean',
     ];
 
     public static function isFeatureAvailable(): bool
@@ -25,6 +27,25 @@ class ServiceGroup extends Model
         return Schema::hasTable('service_groups')
             && Schema::hasTable('service_group_service')
             && Schema::hasTable('service_group_user');
+    }
+
+    public static function supportsDefaultAssignment(): bool
+    {
+        return static::isFeatureAvailable()
+            && Schema::hasColumn('service_groups', 'is_default');
+    }
+
+    public static function getDefaultGroup(): ?self
+    {
+        if (!static::supportsDefaultAssignment()) {
+            return null;
+        }
+
+        return static::query()
+            ->where('is_default', true)
+            ->where('is_active', true)
+            ->orderBy('id')
+            ->first();
     }
 
     public function services()

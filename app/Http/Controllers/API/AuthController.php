@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
+use App\Models\ServiceGroup;
 use App\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -52,6 +53,13 @@ class AuthController extends Controller
             'bio' => $validated['bio'] ?? null,
             'account_status' => 'active',
         ]);
+
+        if ($user->role === 'client') {
+            $defaultServiceGroup = ServiceGroup::getDefaultGroup();
+            if ($defaultServiceGroup) {
+                $user->serviceGroups()->sync([$defaultServiceGroup->id]);
+            }
+        }
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
