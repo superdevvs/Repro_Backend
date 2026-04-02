@@ -189,7 +189,7 @@ class AutomationService
         $recipients = [];
         $recipientTypes = $rule->recipients_json ?? [];
 
-        if (in_array($rule->trigger_type, ['SHOOT_REQUESTED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_DECLINED'], true)) {
+        if (in_array($rule->trigger_type, ['SHOOT_REQUESTED', 'SHOOT_REQUEST_APPROVED', 'SHOOT_REQUEST_MODIFIED', 'SHOOT_REQUEST_DECLINED'], true)) {
             $recipientTypes = array_values(array_filter($recipientTypes, fn ($type) => $type === 'client'));
         }
 
@@ -535,12 +535,33 @@ class AutomationService
             return false;
         }
 
+        if (
+            ($context['notify_client'] ?? null) === false
+            && in_array($rule->trigger_type, [
+                ShootEmailMatrix::SHOOT_SCHEDULED,
+                ShootEmailMatrix::SHOOT_UPDATED,
+            ], true)
+        ) {
+            return false;
+        }
+
         return true;
     }
 
     private function shouldIncludePhotographerRecipient(AutomationRule $rule, array $context): bool
     {
         if (ShootEmailMatrix::hasEvent($rule->trigger_type) && !ShootEmailMatrix::includesPhotographer($rule->trigger_type)) {
+            return false;
+        }
+
+        if (
+            ($context['notify_photographer'] ?? null) === false
+            && in_array($rule->trigger_type, [
+                ShootEmailMatrix::SHOOT_SCHEDULED,
+                ShootEmailMatrix::SHOOT_UPDATED,
+                ShootEmailMatrix::PHOTOGRAPHER_CHANGED,
+            ], true)
+        ) {
             return false;
         }
 

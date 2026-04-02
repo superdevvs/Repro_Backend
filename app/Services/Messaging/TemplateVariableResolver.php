@@ -494,6 +494,22 @@ class TemplateVariableResolver
     private function formatChangeSummaryHtml(?string $explicitHtml, string $fallbackText): string
     {
         $html = trim((string) $explicitHtml);
+        $normalizedFallback = trim($fallbackText);
+        $decodedHtml = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5);
+
+        if (
+            $normalizedFallback !== ''
+            && $normalizedFallback !== 'Please review updated details in the dashboard.'
+            && (
+                $html === ''
+                || str_contains($decodedHtml, '→')
+                || str_contains($decodedHtml, '->')
+                || str_contains(strtolower($decodedHtml), 'removed (was')
+            )
+        ) {
+            return $this->buildStructuredChangeSummaryHtml($normalizedFallback);
+        }
+
         if ($html !== '') {
             return $html;
         }
@@ -512,6 +528,162 @@ class TemplateVariableResolver
         $items = array_map(fn ($line) => '<li style="margin:0 0 8px 0;">' . e($line) . '</li>', $lines);
 
         return '<ul style="margin:0;padding-left:18px;">' . implode('', $items) . '</ul>';
+    }
+
+    private function buildStructuredChangeSummaryHtml(string $summary): string
+    {
+        $lines = preg_split('/\r\n|\r|\n/', $summary) ?: [];
+        $lines = array_values(array_filter(array_map('trim', $lines), fn ($line) => $line !== ''));
+
+        if ($lines === []) {
+            return '<p>Please review updated details in the dashboard.</p>';
+        }
+
+        return implode('', array_map(
+            fn (string $line) => $this->renderStructuredChangeSummaryLine($line),
+            $lines
+        ));
+    }
+
+    private function renderStructuredChangeSummaryLine(string $line): string
+    {
+        $change = $this->parseChangeSummaryLine($line);
+
+        if (($change['type'] ?? 'text') === 'comparison') {
+            $label = e((string) ($change['label'] ?? 'Updated Detail'));
+            $beforeHtml = $this->buildChangeSummaryBeforeHtml(
+                (string) ($change['label'] ?? ''),
+                (string) ($change['before'] ?? ''),
+                (string) ($change['after'] ?? '')
+            );
+            $afterValue = trim((string) ($change['after'] ?? ''));
+            $afterHtml = e($afterValue !== '' ? $afterValue : 'Not set');
+
+            return <<<HTML
+<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
+    <div style="margin:0 0 12px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
+    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
+    <div style="margin:12px 0; height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</div>
+    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
+</div>
+HTML;
+        }
+
+        if (($change['type'] ?? 'text') === 'single') {
+            $label = e((string) ($change['label'] ?? 'Updated Detail'));
+            $value = trim((string) ($change['value'] ?? ''));
+            $valueHtml = e($value !== '' ? $value : 'Not set');
+
+            return <<<HTML
+<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
+    <div style="margin:0 0 8px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
+    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Updated Value</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b;">{$valueHtml}</div>
+</div>
+HTML;
+        }
+
+        return '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">' . e((string) ($change['text'] ?? $line)) . '</p>';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function parseChangeSummaryLine(string $line): array
+    {
+        $line = trim($line);
+
+        if (!str_contains($line, ':')) {
+            return [
+                'type' => 'text',
+                'text' => $line,
+            ];
+        }
+
+        [$label, $value] = explode(':', $line, 2);
+        $label = trim($label);
+        $value = trim($value);
+
+        if (preg_match('/^removed\s+\(was\s+(.+)\)$/i', $value, $matches)) {
+            return [
+                'type' => 'comparison',
+                'label' => $label,
+                'before' => trim((string) ($matches[1] ?? '')),
+                'after' => 'Removed',
+            ];
+        }
+
+        if (preg_match('/\s(?:→|->)\s/u', $value) === 1) {
+            [$before, $after] = preg_split('/\s*(?:→|->)\s*/u', $value, 2);
+
+            return [
+                'type' => 'comparison',
+                'label' => $label,
+                'before' => trim((string) $before),
+                'after' => trim((string) $after),
+            ];
+        }
+
+        return [
+            'type' => 'single',
+            'label' => $label,
+            'value' => $value,
+        ];
+    }
+
+    private function buildChangeSummaryBeforeHtml(string $label, string $before, string $after): string
+    {
+        $before = trim($before);
+        $after = trim($after);
+
+        if ($before === '') {
+            return e('Not set');
+        }
+
+        if (strcasecmp($after, 'Removed') === 0) {
+            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($before) . '</span>';
+        }
+
+        if (strcasecmp($label, 'Services') !== 0) {
+            return e($before);
+        }
+
+        $beforeItems = array_values(array_filter(array_map(
+            'trim',
+            preg_split('/\s*,\s*/', $before) ?: []
+        ), fn ($item) => $item !== ''));
+
+        if ($beforeItems === []) {
+            return e($before);
+        }
+
+        $afterCounts = [];
+        foreach (preg_split('/\s*,\s*/', $after) ?: [] as $item) {
+            $normalizedItem = trim((string) $item);
+            if ($normalizedItem === '') {
+                continue;
+            }
+
+            $key = strtolower($normalizedItem);
+            $afterCounts[$key] = ($afterCounts[$key] ?? 0) + 1;
+        }
+
+        $parts = array_map(function (string $item) use (&$afterCounts) {
+            $key = strtolower($item);
+            $remaining = (int) ($afterCounts[$key] ?? 0);
+
+            if ($remaining > 0) {
+                $afterCounts[$key] = $remaining - 1;
+
+                return e($item);
+            }
+
+            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($item) . '</span>';
+        }, $beforeItems);
+
+        return implode(', ', $parts);
     }
 
     /**

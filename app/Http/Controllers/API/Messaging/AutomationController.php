@@ -255,6 +255,7 @@ class AutomationController extends Controller
             'PHOTOGRAPHER_CHANGED',
             'SHOOT_REQUESTED',
             'SHOOT_REQUEST_APPROVED',
+            'SHOOT_REQUEST_MODIFIED',
             'EDITING_COMPLETE',
             'PROPERTY_CONTACT_REMINDER',
         ];

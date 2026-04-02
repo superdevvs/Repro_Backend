@@ -96,10 +96,21 @@ class MessageTemplateController extends Controller
         $data = $request->validate([
             'to' => ['required', 'email'],
             'variables' => ['array'],
+            'template' => ['array'],
+            'template.name' => ['sometimes', 'required', 'string', 'max:255'],
+            'template.description' => ['nullable', 'string'],
+            'template.category' => ['nullable', Rule::in(['BOOKING', 'REMINDER', 'PAYMENT', 'INVOICE', 'ACCOUNT', 'GENERAL'])],
+            'template.subject' => ['nullable', 'string', 'max:255'],
+            'template.body_html' => ['nullable', 'string'],
+            'template.body_text' => ['nullable', 'string'],
+            'template.channel' => ['sometimes', Rule::in(['EMAIL', 'SMS'])],
         ]);
 
         $renderer = app(\App\Services\Messaging\TemplateRenderer::class);
-        $result = $renderer->render($template, $data['variables'] ?? []);
+        $resolver = app(\App\Services\Messaging\TemplateVariableResolver::class);
+        $variables = $resolver->resolve($data['variables'] ?? []);
+        $renderTemplate = $this->buildTestTemplate($template, $data['template'] ?? []);
+        $result = $renderer->render($renderTemplate, $variables);
 
         $service = app(\App\Services\Messaging\MessagingService::class);
         $service->sendEmail([
@@ -113,6 +124,29 @@ class MessageTemplateController extends Controller
         return response()->json(['status' => 'sent']);
     }
 
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    protected function buildTestTemplate(MessageTemplate $template, array $overrides): MessageTemplate
+    {
+        if ($overrides === []) {
+            return $template;
+        }
+
+        $draft = $template->replicate();
+        $draft->fill([
+            'channel' => $overrides['channel'] ?? $template->channel,
+            'name' => $overrides['name'] ?? $template->name,
+            'description' => $overrides['description'] ?? $template->description,
+            'category' => $overrides['category'] ?? $template->category,
+            'subject' => $overrides['subject'] ?? $template->subject,
+            'body_html' => $overrides['body_html'] ?? $template->body_html,
+            'body_text' => $overrides['body_text'] ?? $template->body_text,
+        ]);
+
+        return $draft;
+    }
+
     public function preview(Request $request, MessageTemplate $template): JsonResponse
     {
         $data = $request->validate([
@@ -120,7 +154,9 @@ class MessageTemplateController extends Controller
         ]);
 
         $renderer = app(\App\Services\Messaging\TemplateRenderer::class);
-        $result = $renderer->render($template, $data['variables'] ?? []);
+        $resolver = app(\App\Services\Messaging\TemplateVariableResolver::class);
+        $variables = $resolver->resolve($data['variables'] ?? []);
+        $result = $renderer->render($template, $variables);
 
         return response()->json($result);
     }

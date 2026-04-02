@@ -19,6 +19,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 use Illuminate\Support\Str;
 
@@ -53,6 +54,7 @@ class MessagingService
             'html' => $payload['body_html'] ?? $message->body_html,
             'text' => $payload['body_text'] ?? $message->body_text,
             'reply_to' => $payload['reply_to'] ?? null,
+            'attachments' => $payload['attachments'] ?? [],
         ]);
 
         $message->update([
@@ -430,6 +432,8 @@ class MessagingService
             'subject' => $message->subject ?? '',
             'html' => $message->body_html ?? '',
             'text' => $message->body_text ?? '',
+            'reply_to' => $message->reply_to_email,
+            'attachments' => $this->resolveScheduledAttachments($message),
         ]);
 
         $message->update([
@@ -453,6 +457,34 @@ class MessagingService
             ->map(fn ($email) => strtolower(trim($email)))
             ->filter(fn ($email) => filter_var($email, FILTER_VALIDATE_EMAIL))
             ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array<int, array{filename: string, content: string, content_type: string}>
+     */
+    protected function resolveScheduledAttachments(Message $message): array
+    {
+        return collect($message->attachments_json ?? [])
+            ->map(function ($attachment) {
+                if (!is_array($attachment)) {
+                    return null;
+                }
+
+                $disk = $attachment['disk'] ?? config('filesystems.default', 'local');
+                $storagePath = $attachment['storage_path'] ?? null;
+                if (!is_string($storagePath) || $storagePath === '' || !Storage::disk($disk)->exists($storagePath)) {
+                    return null;
+                }
+
+                return [
+                    'filename' => (string) ($attachment['name'] ?? 'attachment'),
+                    'content' => Storage::disk($disk)->get($storagePath),
+                    'content_type' => (string) ($attachment['type'] ?? 'application/octet-stream'),
+                ];
+            })
+            ->filter()
             ->values()
             ->all();
     }

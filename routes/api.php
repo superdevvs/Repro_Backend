@@ -793,6 +793,7 @@ Route::prefix('photographer/availability')->group(function () {
 
 Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     // Email (available to all authenticated users; controller enforces sender policy)
+    Route::get('/email/recipients', [EmailMessagingController::class, 'recipients']);
     Route::get('/email/messages', [EmailMessagingController::class, 'messages']);
     Route::get('/email/messages/{message}', [EmailMessagingController::class, 'show']);
     Route::get('/email/threads', [EmailMessagingController::class, 'threads']);

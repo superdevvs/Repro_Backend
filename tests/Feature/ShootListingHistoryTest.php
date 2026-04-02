@@ -84,6 +84,41 @@ class ShootListingHistoryTest extends TestCase
     }
 
     /** @test */
+    public function photographer_listing_includes_service_level_assignments(): void
+    {
+        Sanctum::actingAs($this->photographer);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => null,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'address' => '789 Service Assignment Ave',
+            'city' => 'Rockville',
+            'state' => 'MD',
+            'zip' => '20850',
+            'payment_status' => 'unpaid',
+            'created_by' => (string) $this->admin->id,
+        ]);
+        $shoot->services()->attach($this->service->id, [
+            'price' => 120,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $response = $this->getJson('/api/shoots?tab=scheduled&no_cache=1');
+
+        $response->assertOk()
+            ->assertJsonPath('meta.count', 1)
+            ->assertJsonPath('data.0.id', $shoot->id)
+            ->assertJsonPath('data.0.services.0.resolved_photographer_id', (string) $this->photographer->id)
+            ->assertJsonPath('data.0.services.0.photographer.name', 'Photo User');
+    }
+
+    /** @test */
     public function admin_can_load_history_and_export_csv_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);

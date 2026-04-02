@@ -62,7 +62,9 @@
             .btn-secondary-bg { background-color: #142237 !important; border-color: #314662 !important; color: #dfe8f5 !important; }
             .divider-bg { background-color: #24344d !important; }
             .footer-card-bg { background-color: #0a1525 !important; }
-            .footer-meta-bg { background-color: #0f1d30 !important; border-color: #1d3050 !important; }
+            .footer-meta-bg { background-color: #142237 !important; border-color: #2d4263 !important; }
+            .footer-link-dark { color: #ffffff !important; }
+            .legal-copy-dark { color: #8da2be !important; }
         }
 
         [data-ogsc] .body-bg,
@@ -86,7 +88,9 @@
         [data-ogsc] .btn-secondary-bg { background-color: #142237 !important; border-color: #314662 !important; color: #dfe8f5 !important; }
         [data-ogsc] .divider-bg { background-color: #24344d !important; }
         [data-ogsc] .footer-card-bg { background-color: #0a1525 !important; }
-        [data-ogsc] .footer-meta-bg { background-color: #0f1d30 !important; border-color: #1d3050 !important; }
+        [data-ogsc] .footer-meta-bg { background-color: #142237 !important; border-color: #2d4263 !important; }
+        [data-ogsc] .footer-link-dark { color: #ffffff !important; }
+        [data-ogsc] .legal-copy-dark { color: #8da2be !important; }
     </style>
     @yield('extra-styles')
 </head>
@@ -148,15 +152,15 @@
                                             <tr>
                                                 <td class="footer-card-bg footer-inner" style="background-color:#0b1b30; border-radius:20px; padding:24px 26px;">
                                                     <p style="margin:0 0 8px; font-size:18px; line-height:1.5; color:#ffffff; font-weight:800;">Need help with a shoot, invoice, or account question?</p>
-                                                    <p style="margin:0; font-size:14px; line-height:1.8; color:#c8d8f0;">
+                                                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.8; color:#c8d8f0;">
                                                         Our team is here to help keep your marketing workflow moving.
-                                                        Reach us at <a href="mailto:contact@reprophotos.com" style="color:#7eb3ff; text-decoration:underline;">contact@reprophotos.com</a> or call 202-868-1663.
+                                                        Reach us at <a href="mailto:contact@reprophotos.com" class="footer-link-dark" style="color:#ffffff; text-decoration:underline;">contact@reprophotos.com</a> or call 202-868-1663.
                                                     </p>
                                                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
                                                         <tr>
-                                                            <td style="padding-right:14px;"><a href="https://reprodashboard.com" style="color:#ffffff; font-weight:700; font-size:14px; text-decoration:none;">Dashboard</a></td>
-                                                            <td style="padding-right:14px;"><a href="https://reprophotos.com" style="color:#ffffff; font-weight:700; font-size:14px; text-decoration:none;">Website</a></td>
-                                                            <td><a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" style="color:#ffffff; font-weight:700; font-size:14px; text-decoration:none;">Leave a Review</a></td>
+                                                            <td style="padding-right:14px;"><a href="https://reprodashboard.com" class="footer-link-dark" style="color:#ffffff; font-weight:700; font-size:14px; text-decoration:none;">Dashboard</a></td>
+                                                            <td style="padding-right:14px;"><a href="https://reprophotos.com" class="footer-link-dark" style="color:#ffffff; font-weight:700; font-size:14px; text-decoration:none;">Website</a></td>
+                                                            <td><a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="footer-link-dark" style="color:#ffffff; font-weight:700; font-size:14px; text-decoration:none;">Leave a Review</a></td>
                                                         </tr>
                                                     </table>
 
@@ -166,8 +170,8 @@
                                                             <td class="footer-meta-td" width="50%" style="padding-right:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
-                                                                        <td class="footer-meta-bg" style="background-color:#142237; border:1px solid #1d3050; border-radius:14px; padding:14px 16px;">
-                                                                            <span style="display:block; margin-bottom:4px; color:#9fb4d4; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
+                                                                        <td class="footer-meta-bg" style="background-color:#142237; border:1px solid #2d4263; border-radius:14px; padding:14px 16px;">
+                                                                            <span style="display:block; margin-bottom:4px; color:#a9bfdc; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
                                                                             <span style="color:#ffffff; font-size:13px; line-height:1.6; font-weight:700;">contact@reprophotos.com<br>202-868-1663</span>
                                                                         </td>
                                                                     </tr>
@@ -176,8 +180,8 @@
                                                             <td class="footer-meta-td" width="50%" style="padding-left:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
-                                                                        <td class="footer-meta-bg" style="background-color:#142237; border:1px solid #1d3050; border-radius:14px; padding:14px 16px;">
-                                                                            <span style="display:block; margin-bottom:4px; color:#9fb4d4; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
+                                                                        <td class="footer-meta-bg" style="background-color:#142237; border:1px solid #2d4263; border-radius:14px; padding:14px 16px;">
+                                                                            <span style="display:block; margin-bottom:4px; color:#a9bfdc; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
                                                                             <span style="color:#ffffff; font-size:13px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
                                                                         </td>
                                                                     </tr>
@@ -200,7 +204,7 @@
 
                     {{-- Bottom note --}}
                     <tr>
-                        <td style="padding:14px 8px 0; text-align:center; color:#7d90ab; font-size:11px; line-height:1.7;">
+                        <td class="legal-copy-dark" style="padding:14px 8px 0; text-align:center; color:#7d90ab; font-size:11px; line-height:1.7;">
                             This email was sent by R/E Pro Photos. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
                         </td>
                     </tr>

@@ -526,7 +526,13 @@ class AutomationWorkflowExecutor
         $recipientMode = $config['recipientMode'] ?? 'automation_default';
 
         if ($recipientMode === 'context' && !empty($config['contextKey'])) {
-            return $this->contextRecipient((string) $config['contextKey'], $context);
+            $contextKey = (string) $config['contextKey'];
+
+            if (!$this->shouldIncludeRoleRecipient($contextKey, $automation, $context)) {
+                return [];
+            }
+
+            return $this->contextRecipient($contextKey, $context);
         }
 
         $roles = match ($recipientMode) {
@@ -534,14 +540,18 @@ class AutomationWorkflowExecutor
             default => $this->normalizeRoles($automation->recipients_json),
         };
 
-        return $this->resolveRecipientsByRoles($roles, $context, $mode);
+        return $this->resolveRecipientsByRoles($automation, $roles, $context, $mode);
     }
 
-    private function resolveRecipientsByRoles(array $roles, array $context, string $mode): array
+    private function resolveRecipientsByRoles(AutomationRule $automation, array $roles, array $context, string $mode): array
     {
         $recipients = [];
 
         foreach ($roles as $role) {
+            if (!$this->shouldIncludeRoleRecipient((string) $role, $automation, $context)) {
+                continue;
+            }
+
             switch ($role) {
                 case 'client':
                     $recipients = array_merge($recipients, $this->contextRecipient('client', $context));
@@ -581,6 +591,35 @@ class AutomationWorkflowExecutor
             ->unique(fn (array $recipient) => $recipient['email'] ?? $recipient['phone'] ?? spl_object_hash((object) $recipient))
             ->values()
             ->all();
+    }
+
+    private function shouldIncludeRoleRecipient(string $role, AutomationRule $automation, array $context): bool
+    {
+        if (
+            $role === 'client'
+            && ($context['notify_client'] ?? null) === false
+            && in_array($automation->trigger_type, ['SHOOT_SCHEDULED', 'SHOOT_UPDATED'], true)
+        ) {
+            return false;
+        }
+
+        if (
+            $role === 'photographer'
+            && ($context['notify_photographer'] ?? null) === false
+            && in_array($automation->trigger_type, ['SHOOT_SCHEDULED', 'SHOOT_UPDATED', 'PHOTOGRAPHER_CHANGED'], true)
+        ) {
+            return false;
+        }
+
+        if (
+            $role === 'photographer'
+            && $automation->trigger_type === 'SHOOT_UPDATED'
+            && !empty($context['photographer_changed'])
+        ) {
+            return false;
+        }
+
+        return true;
     }
 
     private function contextRecipient(string $key, array $context): array

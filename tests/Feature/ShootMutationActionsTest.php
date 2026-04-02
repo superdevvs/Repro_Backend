@@ -279,6 +279,62 @@ class ShootMutationActionsTest extends TestCase
     }
 
     /** @test */
+    public function admin_approving_a_requested_shoot_with_client_facing_edits_uses_the_modified_request_trigger(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'address' => '123 Original Request St',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(function (string $triggerType, array $context) use ($shoot) {
+                return $triggerType === 'SHOOT_REQUEST_MODIFIED'
+                    && ($context['shoot_id'] ?? null) === $shoot->id
+                    && ($context['request_modified'] ?? false) === true;
+            })
+            ->andReturnNull();
+        $automationService->shouldReceive('handleEvent')
+            ->zeroOrMoreTimes()
+            ->withArgs(function (string $triggerType) {
+                return in_array($triggerType, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED'], true);
+            })
+            ->andReturnNull();
+        $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'scheduled_at' => now()->addDays(3)->setTime(12, 0)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+            'address' => '900 Modified Request Ave',
+            'notify_client' => true,
+            'notify_photographer' => false,
+        ]);
+
+        $response->assertOk();
+    }
+
+    /** @test */
     public function admin_can_approve_a_requested_shoot_without_notifications_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);

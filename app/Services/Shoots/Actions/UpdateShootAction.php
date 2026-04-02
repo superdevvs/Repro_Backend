@@ -433,6 +433,8 @@ class UpdateShootAction
                 }
                 $context['shoot_changes'] = $changesSummary;
                 $context['shoot_changes_html'] = $changesHtml;
+                $context['notify_client'] = $notifyClient;
+                $context['notify_photographer'] = $notifyPhotographer;
                 $context['photographer_changed'] = $photographerChanged;
                 $context['system_email_already_sent'] = $systemEmailAlreadySent;
 
@@ -473,7 +475,11 @@ class UpdateShootAction
                 ]);
             }
 
-            if ($photographerChanged && !$automationService->hasActiveTrigger('PHOTOGRAPHER_CHANGED')) {
+            if (
+                $photographerChanged
+                && $notifyPhotographer !== false
+                && !$automationService->hasActiveTrigger('PHOTOGRAPHER_CHANGED')
+            ) {
                 foreach ($affectedPhotographers as $photographer) {
                     try {
                         $mailService->sendPhotographerChangedEmail(

@@ -32,4 +32,68 @@ class TemplateRendererTest extends TestCase
         $this->assertStringContainsString('#1463ff', $html);
         $this->assertStringNotContainsString('Hi Priyanshu!', $rendered['text']);
     }
+
+    public function test_shoot_updated_subject_renders_small_lead_and_location_focused_hero(): void
+    {
+        $template = new MessageTemplate([
+            'channel' => 'EMAIL',
+            'category' => 'BOOKING',
+            'slug' => 'shoot-updated',
+            'name' => 'Shoot Updated',
+            'subject' => 'Scheduled Photo Shoot for 2068 W Glenwood Ave, Philadelphia, PA, 19132 Updated',
+            'body_html' => '<p>Latest details are below.</p>',
+            'body_text' => 'Latest details are below.',
+            'variables_json' => [],
+        ]);
+
+        $rendered = (new TemplateRenderer())->render($template, []);
+        $html = $rendered['html'];
+
+        $this->assertStringContainsString('hero-title-lead', $html);
+        $this->assertStringContainsString('Scheduled Photo Shoot for', $html);
+        $this->assertStringContainsString('hero-title-location', $html);
+        $this->assertStringContainsString('2068 W Glenwood Ave, Philadelphia, PA, 19132', $html);
+        $this->assertStringContainsString('font-weight: 200', $html);
+        $this->assertStringContainsString('hero-title-status', $html);
+        $this->assertStringContainsString('Updated', $html);
+    }
+
+    public function test_renderer_inlines_dark_safe_surfaces_and_mobile_footer_stacking(): void
+    {
+        $template = new MessageTemplate([
+            'channel' => 'EMAIL',
+            'category' => 'ACCOUNT',
+            'slug' => 'account-created',
+            'name' => 'Account Created',
+            'subject' => 'New Account Information',
+            'body_html' => <<<HTML
+<p>Your account details are below.</p>
+<div class="info-box">
+    <div class="info-row"><span class="info-label">Email</span> test@example.com</div>
+</div>
+<div class="change-card">
+    <div class="change-card-title">Updated Details</div>
+    <p>One detail changed.</p>
+</div>
+HTML,
+            'body_text' => 'Your account details are below.',
+            'variables_json' => [],
+        ]);
+
+        $rendered = (new TemplateRenderer())->render($template, []);
+        $html = $rendered['html'];
+
+        $this->assertStringContainsString('class="body-card body-surface"', $html);
+        $this->assertStringContainsString('background-color:#ffffff; border:1px solid rgba(222, 230, 241, 0.7); color:#405875;', $html);
+        $this->assertStringContainsString('class="info-box"', $html);
+        $this->assertStringContainsString('background-color:#f4f7fb; background-image:linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%)', $html);
+        $this->assertStringContainsString('class="change-card"', $html);
+        $this->assertStringContainsString('background-color:#eff6ff; background-image:linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%)', $html);
+        $this->assertStringContainsString('.footer-meta-cell {', $html);
+        $this->assertStringContainsString('display: block !important;', $html);
+        $this->assertStringContainsString('class="footer-meta-cell footer-meta-cell-last"', $html);
+        $this->assertStringContainsString('background-color:#142237; border:1px solid #2d4263;', $html);
+        $this->assertStringContainsString('.dark-panel-surface {', $html);
+        $this->assertStringContainsString('[data-ogsc] .dark-meta-surface {', $html);
+    }
 }

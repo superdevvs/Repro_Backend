@@ -16,6 +16,16 @@ use Illuminate\Support\Facades\Log;
 
 class ApproveShootAction
 {
+    private const NON_MODIFYING_REQUEST_APPROVAL_FIELDS = [
+        'scheduled_at',
+        'photographer_id',
+        'notes',
+        'skip_availability_check',
+        'notify_client',
+        'notify_photographer',
+        'service_photographers',
+    ];
+
     public function __construct(
         protected ShootMutationSupportService $support,
         protected ShootEditablePayloadService $editablePayloadService,
@@ -86,8 +96,16 @@ class ApproveShootAction
         $context['shoot_changes_html'] = $shootChangeSummary['html'];
         $notifyClient = array_key_exists('notify_client', $validated) ? (bool) $validated['notify_client'] : null;
         $notifyPhotographer = array_key_exists('notify_photographer', $validated) ? (bool) $validated['notify_photographer'] : null;
+        $context['notify_client'] = $notifyClient;
+        $context['notify_photographer'] = $notifyPhotographer;
+        $requestApprovalTrigger = 'SHOOT_REQUEST_APPROVED';
         if ($wasRequested) {
-            $this->automationService->handleEvent('SHOOT_REQUEST_APPROVED', $context);
+            if ($this->hasClientFacingRequestModifications($validated)) {
+                $requestApprovalTrigger = 'SHOOT_REQUEST_MODIFIED';
+                $context['request_modified'] = true;
+            }
+
+            $this->automationService->handleEvent($requestApprovalTrigger, $context);
         }
         $this->automationService->handleEvent('SHOOT_BOOKED', $context);
         $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
@@ -108,5 +126,19 @@ class ApproveShootAction
         }
 
         return $shoot;
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    private function hasClientFacingRequestModifications(array $validated): bool
+    {
+        foreach (array_keys($validated) as $field) {
+            if (!in_array($field, self::NON_MODIFYING_REQUEST_APPROVAL_FIELDS, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -111,24 +111,19 @@ class ShootWorkflowTransitionSupportService
     {
         $shoot->loadMissing(['client', 'photographer', 'services']);
 
-        $systemEmailAlreadySent = false;
-        if ($shoot->client && $shoot->client->email) {
-            try {
-                $this->mailService->sendShootRemovedEmail($shoot->client, $shoot);
-                $systemEmailAlreadySent = true;
-            } catch (\Throwable $e) {
-                Log::warning('Failed to send decline email: ' . $e->getMessage());
-            }
-        }
-
         try {
-            $this->automationService->handleEvent('SHOOT_CANCELED', [
-                'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
-                'user' => $user,
-                'system_email_already_sent' => $systemEmailAlreadySent,
-            ]);
+            $freshShoot = $shoot->fresh(['client', 'photographer', 'services']) ?? $shoot;
+            $context = $this->automationService->buildShootContext($freshShoot);
+            $context['user'] = $user;
+            $context['decline_reason'] = $shoot->declined_reason;
+
+            if ($this->automationService->hasActiveTrigger('SHOOT_REQUEST_DECLINED')) {
+                $this->automationService->handleEvent('SHOOT_REQUEST_DECLINED', $context);
+            } elseif ($shoot->client && $shoot->client->email) {
+                $this->mailService->sendShootRequestDeclinedEmail($shoot->client, $shoot);
+            }
         } catch (\Exception $e) {
-            Log::warning('Failed to trigger SHOOT_CANCELED automation: ' . $e->getMessage());
+            Log::warning('Failed to trigger SHOOT_REQUEST_DECLINED automation: ' . $e->getMessage());
         }
     }
 

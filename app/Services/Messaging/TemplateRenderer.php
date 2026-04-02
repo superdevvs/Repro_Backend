@@ -91,6 +91,7 @@ class TemplateRenderer
     protected function wrapWithLayout(MessageTemplate $template, string $bodyHtml, string $subject): string
     {
         $bodyHtml = $this->stripLegacyWrapper($bodyHtml);
+        $bodyHtml = $this->stabilizeEmailBodyHtml($bodyHtml);
 
         $logoUrl = 'https://api.reprodashboard.com/images/Repro%20HQ%20dark.png';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
@@ -124,6 +125,42 @@ img { border: 0; display: block; max-width: 100%; }
 a { color: #1463ff; text-decoration: none; }
 .page { padding: 30px 12px; }
 .shell { max-width: 720px; margin: 0 auto; }
+.body-surface {
+  background-color: #ffffff;
+  color: #405875;
+}
+.body-heading {
+  color: #0f1930;
+}
+.body-link {
+  color: #1463ff;
+}
+.body-divider {
+  border-color: #edf2f7;
+}
+.dark-panel-surface {
+  background-color: #0b1b30;
+  color: #dce8ff;
+}
+.dark-panel-copy {
+  color: #dce8ff;
+}
+.dark-panel-link {
+  color: #ffffff;
+}
+.dark-meta-surface {
+  background-color: #142237;
+  border-color: #2d4263;
+}
+.dark-meta-label {
+  color: #a9bfdc;
+}
+.dark-meta-value {
+  color: #ffffff;
+}
+.dark-legal-copy {
+  color: #7d90ab;
+}
 .hero-card,
 .body-card {
   background-color: #ffffff;
@@ -187,6 +224,29 @@ a { color: #1463ff; text-decoration: none; }
   font-weight: 300;
   letter-spacing: -2.4px;
   color: #10192f;
+}
+.hero-title-lead {
+  display: block;
+  margin-bottom: 14px;
+  color: #6c82a3;
+  font-size: 16px;
+  line-height: 1.5;
+  letter-spacing: 0.2px;
+  font-weight: 500;
+}
+.hero-title-location {
+  display: block;
+  color: #10192f;
+  font-weight: 200;
+}
+.hero-title-status {
+  display: block;
+  margin-top: 12px;
+  color: #5c7191;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: -0.6px;
+  font-weight: 500;
 }
 .hero-title-primary {
   display: inline;
@@ -401,17 +461,18 @@ a { color: #1463ff; text-decoration: none; }
 .footer-meta-cell {
   width: 50%;
   padding-right: 12px;
+  vertical-align: top;
 }
 .footer-meta-card {
   border-radius: 18px;
   padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(221, 232, 255, 0.14);
+  background: #142237;
+  border: 1px solid #2d4263;
 }
 .footer-meta-label {
   display: block;
   margin-bottom: 4px;
-  color: #9fb4d4;
+  color: #a9bfdc;
   font-size: 11px;
   line-height: 1.4;
   letter-spacing: 1.2px;
@@ -440,6 +501,14 @@ a { color: #1463ff; text-decoration: none; }
     letter-spacing: -1.6px !important;
     max-width: none !important;
   }
+  .hero-title-lead {
+    margin-bottom: 10px !important;
+    font-size: 13px !important;
+  }
+  .hero-title-status {
+    margin-top: 10px !important;
+    font-size: 18px !important;
+  }
   .hero-overline {
     font-size: 14px !important;
     margin-bottom: 12px !important;
@@ -459,6 +528,23 @@ a { color: #1463ff; text-decoration: none; }
     min-width: 0 !important;
     margin-bottom: 4px;
   }
+  .footer-meta,
+  .footer-meta tbody,
+  .footer-meta tr {
+    display: block !important;
+    width: 100% !important;
+  }
+  .footer-meta-cell {
+    display: block !important;
+    width: 100% !important;
+    padding: 0 0 10px !important;
+  }
+  .footer-meta-cell-last {
+    padding-bottom: 0 !important;
+  }
+  .footer-meta-card {
+    display: block !important;
+  }
 }
 @media (prefers-color-scheme: dark) {
   body {
@@ -475,6 +561,7 @@ a { color: #1463ff; text-decoration: none; }
     box-shadow: none !important;
   }
   .hero-title,
+  .hero-title-location,
   .body-inner h1,
   .body-inner h2,
   .body-inner h3,
@@ -490,12 +577,27 @@ a { color: #1463ff; text-decoration: none; }
   .body-inner td,
   .body-inner span,
   .hero-overline,
+  .hero-title-lead,
+  .hero-title-status,
   .info-label,
   .footer-note {
     color: #a9b8cb !important;
   }
   .body-inner hr,
   .info-row {
+    border-color: #24344d !important;
+  }
+  .body-surface {
+    background-color: #111c2e !important;
+    color: #a9b8cb !important;
+  }
+  .body-heading {
+    color: #f5f7fb !important;
+  }
+  .body-link {
+    color: #7eb3ff !important;
+  }
+  .body-divider {
     border-color: #24344d !important;
   }
   .button,
@@ -506,9 +608,32 @@ a { color: #1463ff; text-decoration: none; }
   .footer-meta-card {
     box-shadow: none !important;
   }
+  .dark-panel-surface {
+    background-color: #0a1525 !important;
+    color: #dce8ff !important;
+  }
+  .dark-panel-copy {
+    color: #dce8ff !important;
+  }
+  .dark-panel-link {
+    color: #ffffff !important;
+  }
+  .dark-meta-surface {
+    background-color: #142237 !important;
+    border-color: #2d4263 !important;
+  }
+  .dark-meta-label {
+    color: #a9bfdc !important;
+  }
+  .dark-meta-value {
+    color: #ffffff !important;
+  }
+  .dark-legal-copy {
+    color: #8da2be !important;
+  }
   .footer-meta-card {
-    background: rgba(17, 28, 46, 0.72) !important;
-    border-color: rgba(83, 110, 150, 0.45) !important;
+    background: #142237 !important;
+    border-color: #2d4263 !important;
   }
 }
 [data-ogsc] body,
@@ -526,6 +651,7 @@ a { color: #1463ff; text-decoration: none; }
   box-shadow: none !important;
 }
 [data-ogsc] .hero-title,
+[data-ogsc] .hero-title-location,
 [data-ogsc] .body-inner h1,
 [data-ogsc] .body-inner h2,
 [data-ogsc] .body-inner h3,
@@ -541,9 +667,47 @@ a { color: #1463ff; text-decoration: none; }
 [data-ogsc] .body-inner td,
 [data-ogsc] .body-inner span,
 [data-ogsc] .hero-overline,
+[data-ogsc] .hero-title-lead,
+[data-ogsc] .hero-title-status,
 [data-ogsc] .info-label,
 [data-ogsc] .footer-note {
   color: #a9b8cb !important;
+}
+[data-ogsc] .body-surface {
+  background-color: #111c2e !important;
+  color: #a9b8cb !important;
+}
+[data-ogsc] .body-heading {
+  color: #f5f7fb !important;
+}
+[data-ogsc] .body-link {
+  color: #7eb3ff !important;
+}
+[data-ogsc] .body-divider {
+  border-color: #24344d !important;
+}
+[data-ogsc] .dark-panel-surface {
+  background-color: #0a1525 !important;
+  color: #dce8ff !important;
+}
+[data-ogsc] .dark-panel-copy {
+  color: #dce8ff !important;
+}
+[data-ogsc] .dark-panel-link {
+  color: #ffffff !important;
+}
+[data-ogsc] .dark-meta-surface {
+  background-color: #142237 !important;
+  border-color: #2d4263 !important;
+}
+[data-ogsc] .dark-meta-label {
+  color: #a9bfdc !important;
+}
+[data-ogsc] .dark-meta-value {
+  color: #ffffff !important;
+}
+[data-ogsc] .dark-legal-copy {
+  color: #8da2be !important;
 }
 </style>
 </head>
@@ -551,7 +715,7 @@ a { color: #1463ff; text-decoration: none; }
 <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all;">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 <div class="page">
   <div class="shell">
-    <div class="hero-card">
+    <div class="hero-card" style="background-color:#ffffff; border:1px solid rgba(222, 230, 241, 0.7);">
       <div class="brand-row">
         <div class="brand-logo">
           <img src="{$logoUrl}" alt="" role="presentation">
@@ -561,40 +725,48 @@ a { color: #1463ff; text-decoration: none; }
       <p class="hero-copy">{$heroCopy}</p>
 {$journeyHtml}
     </div>
-    <div class="body-card">
-      <div class="body-inner">
+    <div class="body-card body-surface" style="background-color:#ffffff; border:1px solid rgba(222, 230, 241, 0.7); color:#405875;">
+      <div class="body-inner body-surface" style="background-color:#ffffff; color:#405875;">
 {$bodyHtml}
       </div>
       <div class="footer-wrap">
-        <div class="footer-card">
-          <div class="footer-title">Need help with a shoot, invoice, or account question?</div>
-          <p class="footer-copy">
+        <div class="footer-card dark-panel-surface" style="background-color:#0b1b30; background-image:linear-gradient(135deg, #0b1b30 0%, #102847 100%); color:#dce8ff;">
+          <div class="footer-title dark-panel-copy" style="color:#ffffff;">Need help with a shoot, invoice, or account question?</div>
+          <p class="footer-copy dark-panel-copy" style="color:#dce8ff;">
             Our team is here to help keep your marketing workflow moving.
-            Reach us at <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> or call 202-868-1663.
+            Reach us at <a href="mailto:contact@reprophotos.com" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">contact@reprophotos.com</a> or call 202-868-1663.
           </p>
-          <p class="footer-copy footer-links" style="margin-top:14px;">
-            <a href="https://reprodashboard.com">Dashboard</a>
-            <a href="https://reprophotos.com">Website</a>
-            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews">Leave a Review</a>
+          <p class="footer-copy footer-links dark-panel-copy" style="margin-top:14px; color:#dce8ff;">
+            <a href="https://reprodashboard.com" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">Dashboard</a>
+            <a href="https://reprophotos.com" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">Website</a>
+            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">Leave a Review</a>
           </p>
-          <table class="footer-meta" role="presentation">
+          <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
-              <td class="footer-meta-cell">
-                <div class="footer-meta-card">
-                  <span class="footer-meta-label">Support</span>
-                  <span class="footer-meta-value">contact@reprophotos.com<br>202-868-1663</span>
-                </div>
+              <td class="footer-meta-cell" width="50%" style="width:50%; padding-right:12px; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                  <tr>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:#142237; border:1px solid #2d4263; border-radius:18px; padding:14px 16px;">
+                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:#a9bfdc; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
+                      <span class="footer-meta-value dark-meta-value" style="color:#ffffff; font-size:14px; line-height:1.6; font-weight:700;">contact@reprophotos.com<br>202-868-1663</span>
+                    </td>
+                  </tr>
+                </table>
               </td>
-              <td class="footer-meta-cell" style="padding-right:0;">
-                <div class="footer-meta-card">
-                  <span class="footer-meta-label">Portal</span>
-                  <span class="footer-meta-value">Track your shoots, invoices, and delivery updates in one place.</span>
-                </div>
+              <td class="footer-meta-cell footer-meta-cell-last" width="50%" style="width:50%; padding-right:0; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                  <tr>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:#142237; border:1px solid #2d4263; border-radius:18px; padding:14px 16px;">
+                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:#a9bfdc; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
+                      <span class="footer-meta-value dark-meta-value" style="color:#ffffff; font-size:14px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
           </table>
         </div>
-        <div class="footer-note">
+        <div class="footer-note dark-legal-copy" style="color:#7d90ab;">
           This email was sent by R/E Pro Photos. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
         </div>
       </div>
@@ -611,9 +783,104 @@ HTML;
         return preg_replace('/^\s*<p>\s*(hi|hello)\b.*?<\/p>\s*/is', '', $bodyHtml) ?? $bodyHtml;
     }
 
+    protected function stabilizeEmailBodyHtml(string $bodyHtml): string
+    {
+        $tagStyles = [
+            'p' => 'margin:0 0 14px; color:#405875; font-size:15px; line-height:1.8;',
+            'li' => 'color:#405875; font-size:15px; line-height:1.8;',
+            'div' => 'color:#405875; font-size:15px; line-height:1.8;',
+            'td' => 'color:#405875; font-size:15px; line-height:1.8;',
+            'span' => 'color:#405875; font-size:15px; line-height:1.8;',
+            'ul' => 'margin:0 0 16px; padding-left:20px;',
+            'ol' => 'margin:0 0 16px; padding-left:20px;',
+            'h1' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:42px; font-weight:300; letter-spacing:-1.6px;',
+            'h2' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:28px; font-weight:800;',
+            'h3' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:22px; font-weight:800;',
+            'h4' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:16px; font-weight:800;',
+            'strong' => 'color:#0f1930;',
+            'center' => 'display:block; text-align:left;',
+            'a' => 'color:#1463ff; text-decoration:none;',
+            'hr' => 'border:0; border-top:1px solid #edf2f7; margin:20px 0;',
+        ];
+
+        foreach ($tagStyles as $tag => $style) {
+            $bodyHtml = $this->injectInlineStyleForTag($bodyHtml, $tag, $style);
+        }
+
+        $classStyles = [
+            'info-box' => 'margin:20px 0; padding:18px 20px; border-radius:22px; border:1px solid #dfe7f2; background-color:#f4f7fb; background-image:linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);',
+            'info-row' => 'padding:10px 0; border-bottom:1px solid #e4edf8;',
+            'info-label' => 'display:inline-block; min-width:150px; color:#93a4bd; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;',
+            'note' => 'margin:20px 0; padding:16px 18px; border-radius:18px; border:1px solid #f0d7a8; background-color:#fff3df; background-image:linear-gradient(180deg, #fff9ee 0%, #fff3df 100%); color:#8b5b14 !important;',
+            'change-card' => 'margin:22px 0; padding:20px 22px; border-radius:24px; border:1px solid #d9e7ff; background-color:#eff6ff; background-image:linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%);',
+            'change-card-title' => 'margin:0 0 12px; color:#10233b; font-size:18px; line-height:1.4; font-weight:800;',
+            'button' => 'display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; background-image:linear-gradient(135deg, #1463ff 0%, #0b83ff 100%); color:#ffffff !important; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; margin:6px 10px 10px 0;',
+            'button-large' => 'padding:18px 30px; font-size:16px; letter-spacing:0.2px;',
+        ];
+
+        foreach ($classStyles as $class => $style) {
+            $bodyHtml = $this->injectInlineStyleForClass($bodyHtml, $class, $style);
+        }
+
+        return $bodyHtml;
+    }
+
     protected function stripLeadingGreetingFromText(string $text): string
     {
         return preg_replace('/^\s*(hi|hello)\b[^\r\n]*[\r\n]+/i', '', $text) ?? $text;
+    }
+
+    protected function injectInlineStyleForTag(string $html, string $tag, string $style): string
+    {
+        return preg_replace_callback(
+            sprintf('/<%s\b([^>]*)>/i', preg_quote($tag, '/')),
+            fn (array $matches): string => $this->appendStyleToOpenTag("<{$tag}{$matches[1]}>", $style),
+            $html
+        ) ?? $html;
+    }
+
+    protected function injectInlineStyleForClass(string $html, string $class, string $style): string
+    {
+        return preg_replace_callback(
+            '/<([a-z0-9]+)\b([^>]*)>/i',
+            function (array $matches) use ($class, $style): string {
+                $openTag = $matches[0];
+
+                if (!preg_match('/\bclass\s*=\s*(["\'])(.*?)\1/i', $openTag, $classMatch)) {
+                    return $openTag;
+                }
+
+                $classes = preg_split('/\s+/', trim($classMatch[2])) ?: [];
+                if (!in_array($class, $classes, true)) {
+                    return $openTag;
+                }
+
+                return $this->appendStyleToOpenTag($openTag, $style);
+            },
+            $html
+        ) ?? $html;
+    }
+
+    protected function appendStyleToOpenTag(string $openTag, string $style): string
+    {
+        if (preg_match('/\sstyle\s*=\s*(["\'])(.*?)\1/i', $openTag, $styleMatch, PREG_OFFSET_CAPTURE)) {
+            $existing = rtrim($styleMatch[2][0]);
+            $merged = $existing === '' ? $style : rtrim($existing, ';') . '; ' . $style;
+            $fullMatch = $styleMatch[0][0];
+            $quote = $styleMatch[1][0];
+
+            return substr_replace(
+                $openTag,
+                ' style=' . $quote . $merged . $quote,
+                $styleMatch[0][1],
+                strlen($fullMatch)
+            );
+        }
+
+        $isSelfClosing = (bool) preg_match('/\/>\s*$/', $openTag);
+        $trimmedTag = preg_replace('/\s*\/?>\s*$/', '', $openTag) ?? $openTag;
+
+        return $trimmedTag . ' style="' . $style . '"' . ($isSelfClosing ? ' />' : '>');
     }
 
     protected function normalizeLegacySuccessColors(string $bodyHtml): string
@@ -642,6 +909,10 @@ HTML;
         $subject = trim($subject);
         if ($subject === '') {
             return '<span class="hero-title-primary">R/E Pro Photos update.</span>';
+        }
+
+        if ($locationTitle = $this->buildLocationFocusedHeroTitleHtml($template, $subject)) {
+            return $locationTitle;
         }
 
         if ($titleParts = $this->extractTitleOverline($template, $subject)) {
@@ -687,6 +958,140 @@ HTML;
             '<span class="hero-title-primary">%s</span>',
             $this->escapeHtml($subject)
         );
+    }
+
+    protected function buildLocationFocusedHeroTitleHtml(MessageTemplate $template, string $subject): ?string
+    {
+        $parts = $this->matchLocationHeroTitleParts($template, $subject);
+        if ($parts === null) {
+            return null;
+        }
+
+        $html = sprintf(
+            '<span class="hero-title-lead">%s</span><span class="hero-title-location">%s</span>',
+            $this->escapeHtml($parts['lead']),
+            $this->escapeHtml($parts['location'])
+        );
+
+        if (($parts['status'] ?? '') !== '') {
+            $html .= sprintf(
+                '<span class="hero-title-status">%s</span>',
+                $this->escapeHtml($parts['status'])
+            );
+        }
+
+        return $html;
+    }
+
+    /**
+     * @return array{lead: string, location: string, status?: string}|null
+     */
+    protected function matchLocationHeroTitleParts(MessageTemplate $template, string $subject): ?array
+    {
+        $subject = trim(preg_replace('/\s+/', ' ', $subject) ?? $subject);
+
+        return match ($template->slug) {
+            'shoot-scheduled' => $this->captureLocationTitleParts(
+                $subject,
+                '/^New Shoot Scheduled for\s+(.+)$/i',
+                'New Shoot Scheduled for'
+            ),
+            'shoot-requested' => $this->captureLocationTitleParts(
+                $subject,
+                '/^New Photo Shoot Requested\s*\((.+?)\)\s*-\s*(.+)$/i',
+                'New Photo Shoot Requested',
+                locationIndex: 2,
+                statusIndex: 1
+            ),
+            'shoot-request-approved', 'shoot-request-modified' => $this->captureLocationTitleParts(
+                $subject,
+                '/^New Shoot Scheduled\s*\((.+?)\)\s*-\s*(.+)$/i',
+                'New Shoot Scheduled',
+                locationIndex: 2,
+                statusIndex: 1
+            ),
+            'shoot-request-declined' => $this->captureLocationTitleParts(
+                $subject,
+                '/^New Shoot Request\s*\((.+?)\)\s*-\s*(.+)$/i',
+                'New Shoot Request',
+                locationIndex: 2,
+                statusIndex: 1
+            ),
+            'shoot-reminder' => $this->captureLocationTitleParts(
+                $subject,
+                '/^Shoot Reminder\s*-\s*(.+)$/i',
+                'Shoot Reminder for'
+            ),
+            'shoot-updated' => $this->captureLocationTitleParts(
+                $subject,
+                '/^Scheduled Photo Shoot for\s+(.+?)\s+Updated$/i',
+                'Scheduled Photo Shoot for',
+                status: 'Updated'
+            ),
+            'shoot-ready' => $this->captureLocationTitleParts(
+                $subject,
+                '/^(.+?)\s*-\s*Photos Ready!?$/i',
+                'Photos Ready for',
+                locationIndex: 1
+            ),
+            'shoot-delivered' => $this->captureLocationTitleParts(
+                $subject,
+                '/^(.+?)\s*-\s*Shoot Delivered$/i',
+                'Shoot Delivered for',
+                locationIndex: 1
+            ),
+            'shoot-summary' => $this->captureLocationTitleParts(
+                $subject,
+                '/^(.+?)\s*-\s*Summary$/i',
+                'Shoot Summary for',
+                locationIndex: 1
+            ),
+            'payment-due-reminder' => $this->captureLocationTitleParts(
+                $subject,
+                '/^(.+?)\s*-\s*Payment Due Reminder$/i',
+                'Payment Due for',
+                locationIndex: 1,
+                status: 'Reminder'
+            ),
+            default => null,
+        };
+    }
+
+    /**
+     * @return array{lead: string, location: string, status?: string}|null
+     */
+    protected function captureLocationTitleParts(
+        string $subject,
+        string $pattern,
+        string $lead,
+        int $locationIndex = 1,
+        ?int $statusIndex = null,
+        ?string $status = null
+    ): ?array {
+        if (!preg_match($pattern, $subject, $matches)) {
+            return null;
+        }
+
+        $location = trim((string) ($matches[$locationIndex] ?? ''));
+        if ($location === '') {
+            return null;
+        }
+
+        $resolvedStatus = $status;
+        if ($resolvedStatus === null && $statusIndex !== null) {
+            $resolvedStatus = trim((string) ($matches[$statusIndex] ?? ''));
+        }
+
+        $parts = [
+            'lead' => $lead,
+            'location' => $location,
+        ];
+
+        if ($resolvedStatus !== null && $resolvedStatus !== '') {
+            $parts['status'] = $resolvedStatus;
+        }
+
+        return $parts;
     }
 
     protected function buildJourneyRail(MessageTemplate $template): string

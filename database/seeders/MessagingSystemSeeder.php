@@ -612,6 +612,14 @@ class MessagingSystemSeeder extends Seeder
                 'recipients_json' => ['client'],
             ],
             [
+                'name' => 'Shoot Request Modified',
+                'description' => 'Notify client when a shoot request is approved with modifications',
+                'trigger_type' => 'SHOOT_REQUEST_MODIFIED',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'recipients_json' => ['client'],
+            ],
+            [
                 'name' => 'Shoot Request Declined',
                 'description' => 'Notify client when shoot request is declined',
                 'trigger_type' => 'SHOOT_REQUEST_DECLINED',
@@ -686,6 +694,7 @@ class MessagingSystemSeeder extends Seeder
                 'PROPERTY_CONTACT_REMINDER' => 'property-contact-reminder',
                 'SHOOT_REQUESTED' => 'shoot-requested',
                 'SHOOT_REQUEST_APPROVED' => 'shoot-request-approved',
+                'SHOOT_REQUEST_MODIFIED' => 'shoot-request-modified',
                 'SHOOT_REQUEST_DECLINED' => 'shoot-request-declined',
                 'SHOOT_UPDATED' => 'shoot-updated',
                 'SHOOT_COMPLETED' => 'shoot-ready',

@@ -118,7 +118,12 @@ class ShootListingService
             $query = Shoot::with($eagerLoads);
 
             if ($user && $user->role === 'photographer') {
-                $query->where('photographer_id', $user->id);
+                $query->where(function (Builder $scope) use ($user) {
+                    $scope->where('photographer_id', $user->id)
+                        ->orWhereHas('services', function (Builder $serviceQuery) use ($user) {
+                            $serviceQuery->where('shoot_service.photographer_id', $user->id);
+                        });
+                });
             } elseif ($user && $user->role === 'client') {
                 $canViewAllPrivateListings = $isPrivateListingRequest && $privateListingScope === 'all';
                 if (!$canViewAllPrivateListings) {
@@ -279,7 +284,12 @@ class ShootListingService
 
         $photographerIds = $this->normalizeArrayQuery($request, 'photographer_id');
         if (!empty($photographerIds)) {
-            $query->whereIn('photographer_id', $photographerIds);
+            $query->where(function (Builder $scope) use ($photographerIds) {
+                $scope->whereIn('photographer_id', $photographerIds)
+                    ->orWhereHas('services', function (Builder $serviceQuery) use ($photographerIds) {
+                        $serviceQuery->whereIn('shoot_service.photographer_id', $photographerIds);
+                    });
+            });
         }
 
         $address = trim((string) $request->query('address', ''));

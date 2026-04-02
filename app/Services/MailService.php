@@ -21,6 +21,7 @@ class MailService
     private const SHOOT_DELIVERED_SUBJECT = 'Your Photos Are Ready';
     private const SHOOT_REMINDER_SUBJECT = 'Shoot Reminder: 24 Hours to Go';
     private const SHOOT_REMOVED_SUBJECT = 'Photo Shoot Removed from Schedule';
+    private const SHOOT_REQUEST_DECLINED_SUBJECT = 'Your Shoot Request Was Declined';
     private const SHOOT_CANCELLED_SUBJECT = 'Your Shoot Has Been Cancelled';
     private const SHOOT_CANCELLATION_REQUESTED_SUBJECT = 'Shoot Cancellation Request Received';
     private const SHOOT_PAID_SUBJECT = 'Payment Confirmed for Your Shoot';
@@ -317,6 +318,44 @@ class MailService
                 'error' => $e->getMessage()
             ]);
             
+            return false;
+        }
+    }
+
+    public function sendShootRequestDeclinedEmail(User $user, Shoot $shoot): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+
+            $html = view('emails.shoot_request_declined', [
+                'user' => $user,
+                'shoot' => $shootData,
+                'declineReason' => trim((string) ($shoot->declined_reason ?? '')),
+            ])->render();
+
+            $this->sendViaCakemail(
+                $user->email,
+                self::SHOOT_REQUEST_DECLINED_SUBJECT,
+                $html,
+                'SHOOT_REQUEST_DECLINED'
+            );
+
+            Log::info('Shoot request declined email sent', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to send shoot request declined email', [
+                'user_id' => $user->id,
+                'shoot_id' => $shoot->id,
+                'email' => $user->email,
+                'error' => $e->getMessage(),
+            ]);
+
             return false;
         }
     }
@@ -695,7 +734,7 @@ class MailService
 
         return [
             'summary' => implode("\n", $changes),
-            'html' => implode('<br>', array_map('e', $changes)),
+            'html' => $this->buildChangeSummaryHtml($changes),
             'lines' => $changes,
         ];
     }
@@ -1562,6 +1601,169 @@ class MailService
         } else {
             $changes[] = "{$label}: {$before} → {$after}";
         }
+    }
+
+    /**
+     * @param  array<int, string>  $changes
+     */
+    private function buildChangeSummaryHtml(array $changes): string
+    {
+        $filteredChanges = array_values(array_filter(array_map(
+            fn ($line) => trim((string) $line),
+            $changes
+        ), fn ($line) => $line !== ''));
+
+        if ($filteredChanges === []) {
+            return '<p>Please review updated details in the dashboard.</p>';
+        }
+
+        return implode('', array_map(
+            fn (string $line) => $this->renderChangeSummaryHtmlBlock($line),
+            $filteredChanges
+        ));
+    }
+
+    private function renderChangeSummaryHtmlBlock(string $line): string
+    {
+        $change = $this->parseChangeSummaryLine($line);
+
+        if (($change['type'] ?? 'text') === 'comparison') {
+            $label = e((string) ($change['label'] ?? 'Updated Detail'));
+            $beforeHtml = $this->buildChangeSummaryBeforeHtml(
+                (string) ($change['label'] ?? ''),
+                (string) ($change['before'] ?? ''),
+                (string) ($change['after'] ?? '')
+            );
+            $afterValue = trim((string) ($change['after'] ?? ''));
+            $afterHtml = e($afterValue !== '' ? $afterValue : 'Not set');
+
+            return <<<HTML
+<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
+    <div style="margin:0 0 12px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
+    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
+    <div style="margin:12px 0; height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</div>
+    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
+</div>
+HTML;
+        }
+
+        if (($change['type'] ?? 'text') === 'single') {
+            $label = e((string) ($change['label'] ?? 'Updated Detail'));
+            $value = trim((string) ($change['value'] ?? ''));
+            $valueHtml = e($value !== '' ? $value : 'Not set');
+
+            return <<<HTML
+<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
+    <div style="margin:0 0 8px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
+    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Updated Value</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b;">{$valueHtml}</div>
+</div>
+HTML;
+        }
+
+        $text = e((string) ($change['text'] ?? $line));
+
+        return '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">' . $text . '</p>';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function parseChangeSummaryLine(string $line): array
+    {
+        $line = trim($line);
+
+        if (!str_contains($line, ':')) {
+            return [
+                'type' => 'text',
+                'text' => $line,
+            ];
+        }
+
+        [$label, $value] = explode(':', $line, 2);
+        $label = trim($label);
+        $value = trim($value);
+
+        if (preg_match('/^removed\s+\(was\s+(.+)\)$/i', $value, $matches)) {
+            return [
+                'type' => 'comparison',
+                'label' => $label,
+                'before' => trim((string) ($matches[1] ?? '')),
+                'after' => 'Removed',
+            ];
+        }
+
+        if (preg_match('/\s(?:→|->)\s/u', $value) === 1) {
+            [$before, $after] = preg_split('/\s*(?:→|->)\s*/u', $value, 2);
+
+            return [
+                'type' => 'comparison',
+                'label' => $label,
+                'before' => trim((string) $before),
+                'after' => trim((string) $after),
+            ];
+        }
+
+        return [
+            'type' => 'single',
+            'label' => $label,
+            'value' => $value,
+        ];
+    }
+
+    private function buildChangeSummaryBeforeHtml(string $label, string $before, string $after): string
+    {
+        $before = trim($before);
+        $after = trim($after);
+
+        if ($before === '') {
+            return e('Not set');
+        }
+
+        if (strcasecmp($after, 'Removed') === 0) {
+            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($before) . '</span>';
+        }
+
+        if (strcasecmp($label, 'Services') !== 0) {
+            return e($before);
+        }
+
+        $beforeItems = array_values(array_filter(array_map(
+            fn ($item) => trim((string) $item),
+            preg_split('/\s*,\s*/', $before) ?: []
+        ), fn ($item) => $item !== ''));
+
+        if ($beforeItems === []) {
+            return e($before);
+        }
+
+        $afterCounts = [];
+        foreach (preg_split('/\s*,\s*/', $after) ?: [] as $item) {
+            $normalizedItem = trim((string) $item);
+            if ($normalizedItem === '') {
+                continue;
+            }
+
+            $key = Str::lower($normalizedItem);
+            $afterCounts[$key] = ($afterCounts[$key] ?? 0) + 1;
+        }
+
+        $parts = array_map(function (string $item) use (&$afterCounts) {
+            $key = Str::lower($item);
+            $remaining = (int) ($afterCounts[$key] ?? 0);
+
+            if ($remaining > 0) {
+                $afterCounts[$key] = $remaining - 1;
+
+                return e($item);
+            }
+
+            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($item) . '</span>';
+        }, $beforeItems);
+
+        return implode(', ', $parts);
     }
 
     private function formatStatusValue(?string $value): string
