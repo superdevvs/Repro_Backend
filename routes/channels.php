@@ -41,6 +41,7 @@ Broadcast::channel('shoot.{shootId}', function ($user, $shootId) use ($normalize
     }
     return $shoot->client_id === $user->id ||
            $shoot->photographer_id === $user->id ||
+           $shoot->servicePhotographers()->where('users.id', $user->id)->exists() ||
            $shoot->editor_id === $user->id ||
            $shoot->created_by === $user->id;
 });

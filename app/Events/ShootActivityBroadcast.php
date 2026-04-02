@@ -82,29 +82,36 @@ class ShootActivityBroadcast implements ShouldBroadcast
 
     public function broadcastOn(): array
     {
-        $channels = [
-            // Admin channel - always broadcast
-            new PrivateChannel('admin.notifications'),
-            // Specific shoot channel
-            new PrivateChannel('shoot.' . $this->shoot->id),
+        $channelNames = [
+            'admin.notifications',
+            'shoot.' . $this->shoot->id,
         ];
 
         // Client channel - if client exists and action is visible to clients
         if ($this->shoot->client_id && in_array($this->activityType, $this->clientVisibleActions)) {
-            $channels[] = new PrivateChannel('client.' . $this->shoot->client_id . '.notifications');
+            $channelNames[] = 'client.' . $this->shoot->client_id . '.notifications';
         }
 
-        // Photographer channel - if photographer assigned and action is visible to photographers
-        if ($this->shoot->photographer_id && in_array($this->activityType, $this->photographerVisibleActions)) {
-            $channels[] = new PrivateChannel('photographer.' . $this->shoot->photographer_id . '.notifications');
+        if (in_array($this->activityType, $this->photographerVisibleActions, true)) {
+            if ($this->shoot->photographer_id) {
+                $channelNames[] = 'photographer.' . $this->shoot->photographer_id . '.notifications';
+            }
+
+            foreach ($this->shoot->getUniqueServicePhotographers() as $photographer) {
+                $channelNames[] = 'photographer.' . $photographer->id . '.notifications';
+            }
         }
 
         // Editor channel - if editor assigned and action is visible to editors
         if ($this->shoot->editor_id && in_array($this->activityType, $this->editorVisibleActions)) {
-            $channels[] = new PrivateChannel('editor.' . $this->shoot->editor_id . '.notifications');
+            $channelNames[] = 'editor.' . $this->shoot->editor_id . '.notifications';
         }
 
-        return $channels;
+        return collect($channelNames)
+            ->unique()
+            ->values()
+            ->map(fn (string $channelName) => new PrivateChannel($channelName))
+            ->all();
     }
 
     public function broadcastAs(): string

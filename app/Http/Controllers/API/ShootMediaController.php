@@ -511,11 +511,19 @@ class ShootMediaController extends Controller
 
     public function reclassifyFiles(Request $request, Shoot $shoot)
     {
+        $user = $request->user();
         $request->validate([
             'file_ids' => 'required|array|min:1',
             'file_ids.*' => 'integer|exists:shoot_files,id',
             'media_type' => 'required|string|in:floorplan,raw,edited,extra,virtual_staging,green_grass,twilight,drone',
         ]);
+
+        if (
+            !$this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
+            || !$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)
+        ) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         return response()->json($this->shootMediaInteractionService->reclassify(
             $shoot,

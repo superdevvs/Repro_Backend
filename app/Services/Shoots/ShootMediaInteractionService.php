@@ -149,7 +149,8 @@ class ShootMediaInteractionService
             ->whereIn('id', $fileIds)
             ->update(['media_type' => $mediaType]);
 
-        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot);
+        $shoot = $this->shootMediaMutationSupportService->refreshMediaCounters($shoot->fresh());
+        $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, auth()->user());
 
         return [
             'message' => "Reclassified {$updated} file(s) as {$mediaType}",

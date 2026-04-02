@@ -250,13 +250,16 @@ class DropboxWorkflowService
         ?string $mediaTypeOverride = null
     ): ShootFile
     {
-        $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging'], true)
+        $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)
             ? $mediaTypeOverride
             : null;
         $prefix = match ($storageMediaType) {
             'extra' => 'EXTRA_',
             'floorplan' => 'FLOORPLAN_',
             'virtual_staging' => 'VIRTUAL_STAGING_',
+            'green_grass' => 'GREEN_GRASS_',
+            'twilight' => 'TWILIGHT_',
+            'drone' => 'DRONE_',
             default => $stage === ShootFile::STAGE_COMPLETED ? 'COMPLETED_' : 'TODO_',
         };
         $filename = $prefix . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
@@ -264,6 +267,9 @@ class DropboxWorkflowService
             'extra' => "shoots/{$shoot->id}/extra",
             'floorplan' => "shoots/{$shoot->id}/floorplan",
             'virtual_staging' => "shoots/{$shoot->id}/virtual_staging",
+            'green_grass' => "shoots/{$shoot->id}/green_grass",
+            'twilight' => "shoots/{$shoot->id}/twilight",
+            'drone' => "shoots/{$shoot->id}/drone",
             default => "shoots/{$shoot->id}/" . ($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
         };
         $serverPath = $dir . '/' . $filename;

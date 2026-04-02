@@ -809,7 +809,12 @@ class DashboardController extends Controller
             // Photographers only see logs for shoots they're assigned to
             $shootActivityLogs = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->whereHas('shoot', function ($query) use ($userId) {
-                    $query->where('photographer_id', $userId);
+                    $query->where(function ($shootQuery) use ($userId) {
+                        $shootQuery->where('photographer_id', $userId)
+                            ->orWhereHas('servicePhotographers', function ($photographerQuery) use ($userId) {
+                                $photographerQuery->where('users.id', $userId);
+                            });
+                    });
                 })
                 ->whereIn('action', $photographerVisibleActions)
                 ->latest()

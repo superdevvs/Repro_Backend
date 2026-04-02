@@ -161,7 +161,7 @@ class UploadShootFilesAction
             foreach ($files as $file) {
                 try {
                     $resolvedMediaType = null;
-                    if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging'], true)) {
+                    if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)) {
                         $resolvedMediaType = $mediaTypeOverride;
                     } elseif ($isExtra) {
                         $resolvedMediaType = 'extra';

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Shoot;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\ShootMediaMutationSupportService;
 use App\Models\ShootFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -13,10 +14,15 @@ use Illuminate\Support\Facades\Storage;
 class FileUploadController extends Controller
 {
     protected $dropboxService;
+    protected $mediaMutationSupport;
 
-    public function __construct(DropboxWorkflowService $dropboxService)
+    public function __construct(
+        DropboxWorkflowService $dropboxService,
+        ShootMediaMutationSupportService $mediaMutationSupport
+    )
     {
         $this->dropboxService = $dropboxService;
+        $this->mediaMutationSupport = $mediaMutationSupport;
     }
 
     /**
@@ -29,7 +35,9 @@ class FileUploadController extends Controller
             // Allow up to ~1 GiB per file (max in KB), plus common photo/video mimes
             'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,cr3,nef,arw,tiff,bmp,heic,heif,zip',
             'service_category' => 'nullable|string|in:P,iGuide,Video',
-            'upload_type' => 'nullable|string|in:raw,edited'
+            'upload_type' => 'nullable|string|in:raw,edited',
+            'media_type' => 'nullable|string|in:floorplan,extra,virtual_staging,green_grass,twilight,drone',
+            'is_extra' => 'nullable|boolean',
         ]);
 
         // Route model binding provides $shoot
@@ -73,6 +81,7 @@ class FileUploadController extends Controller
         // Check if user is admin (admins can upload at any stage)
         $user = auth()->user();
         $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
+        $isEditedUploadManager = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor']);
 
         // Check workflow permissions based on upload type
         if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
@@ -82,8 +91,17 @@ class FileUploadController extends Controller
                 'current_status' => $shoot->workflow_status
             ], 400);
         }
-        if ($uploadType === 'edited' && !$isAdmin && !in_array($shoot->workflow_status, [
+        if ($uploadType === 'edited' && !$isEditedUploadManager) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to upload edited files',
+                'current_status' => $shoot->workflow_status
+            ], 403);
+        }
+        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
+            Shoot::STATUS_UPLOADED,
             Shoot::STATUS_EDITING,
+            Shoot::STATUS_READY,
         ])) {
             return response()->json([
                 'success' => false,
@@ -96,9 +114,17 @@ class FileUploadController extends Controller
         $errors = [];
 
         try {
+            $mediaTypeOverride = $request->input('media_type');
+            $isExtra = $request->boolean('is_extra', false);
             foreach ($files as $file) {
                 try {
                     $serviceCategory = $request->input('service_category', 'P');
+                    $resolvedMediaType = null;
+                    if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)) {
+                        $resolvedMediaType = $mediaTypeOverride;
+                    } elseif ($isExtra) {
+                        $resolvedMediaType = 'extra';
+                    }
                     Log::info('uploadFromPC: processing file', [
                         'shoot_id' => $shoot->id,
                         'name' => $file->getClientOriginalName(),
@@ -109,10 +135,10 @@ class FileUploadController extends Controller
                     
                     if ($uploadType === 'raw') {
                         // Upload to ToDo folder
-                        $shootFile = $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory);
+                        $shootFile = $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
                     } else {
                         // Upload directly to Completed folder (for edited files)
-                        $shootFile = $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory);
+                        $shootFile = $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
                     }
                     
                     $uploadedFiles[] = [
@@ -135,16 +161,8 @@ class FileUploadController extends Controller
                 }
             }
 
-            $shoot->refresh();
-            $rawCount = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
-            $editedCount = $shoot->files()->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])->count();
-            $shoot->raw_photo_count = $rawCount;
-            $shoot->edited_photo_count = $editedCount;
-            $shoot->raw_missing_count = max(0, ($shoot->expected_raw_count ?? 0) - $rawCount);
-            $shoot->edited_missing_count = max(0, ($shoot->expected_final_count ?? 0) - $editedCount);
-            $shoot->missing_raw = $shoot->raw_missing_count > 0;
-            $shoot->missing_final = $shoot->edited_missing_count > 0;
-            $shoot->save();
+            $shoot = $this->mediaMutationSupport->refreshMediaCounters($shoot->fresh());
+            $this->mediaMutationSupport->clearShootFilesCache($shoot, $user);
 
             if (
                 $uploadType === 'edited' &&
