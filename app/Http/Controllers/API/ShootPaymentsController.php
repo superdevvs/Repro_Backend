@@ -126,6 +126,11 @@ class ShootPaymentsController extends Controller
         ]);
 
         try {
+            $invoice = $this->findClientInvoiceForShoot($shoot);
+            if (!$invoice) {
+                $invoice = $this->invoiceService->generateForShoot($shoot);
+            }
+
             $amount = $validated['amount'] ?? $shoot->total_quote ?? 0;
             $paymentType = $validated['payment_type'] ?? 'manual';
             $paymentDetails = $validated['payment_details'] ?? null;
@@ -164,6 +169,17 @@ class ShootPaymentsController extends Controller
             if ($amount <= 0) {
                 $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
                     ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
+                $latestPayment = $shoot->fresh(['payments'])?->getCanonicalCompletedPayments()->sortByDesc('processed_at')->first()
+                    ?? $shoot->getCanonicalCompletedPayments()->sortByDesc('processed_at')->first();
+                $this->syncClientInvoiceFromShootPayment(
+                    $invoice,
+                    $shoot,
+                    $latestPayment,
+                    $paymentSummary['total_paid'],
+                    $paymentMethod,
+                    $latestPayment?->payment_details,
+                    $latestPayment?->processed_at ?? now()
+                );
 
                 return response()->json([
                     'message' => 'Shoot is already fully paid',
@@ -176,6 +192,7 @@ class ShootPaymentsController extends Controller
 
             $payment = Payment::create([
                 'shoot_id' => $shoot->id,
+                'invoice_id' => $invoice?->id,
                 'amount' => $amount,
                 'currency' => 'USD',
                 'payment_method' => $paymentMethod,
@@ -189,6 +206,15 @@ class ShootPaymentsController extends Controller
                 ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
             $totalPaid = $paymentSummary['total_paid'];
             $newPaymentStatus = $paymentSummary['payment_status'];
+            $this->syncClientInvoiceFromShootPayment(
+                $invoice,
+                $shoot,
+                $payment,
+                $totalPaid,
+                $paymentMethod,
+                $paymentDetails,
+                $processedAt
+            );
 
             try {
                 $this->activityLogger->log(
@@ -245,6 +271,62 @@ class ShootPaymentsController extends Controller
                 'error' => 'Failed to mark shoot as paid',
                 'message' => $e->getMessage(),
             ], 500);
+        }
+    }
+
+    private function findClientInvoiceForShoot(Shoot $shoot): ?Invoice
+    {
+        return Invoice::query()
+            ->where('shoot_id', $shoot->id)
+            ->where(function ($query) use ($shoot) {
+                $query->where('role', Invoice::ROLE_CLIENT);
+
+                if ($shoot->client_id) {
+                    $query->orWhere('client_id', $shoot->client_id);
+                }
+            })
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function syncClientInvoiceFromShootPayment(
+        ?Invoice $invoice,
+        Shoot $shoot,
+        ?Payment $payment,
+        float $shootTotalPaid,
+        ?string $paymentMethod,
+        mixed $paymentDetails,
+        Carbon $processedAt
+    ): void {
+        if (!$invoice) {
+            return;
+        }
+
+        $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? $shoot->total_quote ?? 0);
+        $amountPaid = round(min($shootTotalPaid, $invoiceTotal > 0 ? $invoiceTotal : $shootTotalPaid), 2);
+        $isPaid = $invoiceTotal > 0
+            ? $amountPaid >= ($invoiceTotal - 0.01)
+            : $amountPaid > 0;
+
+        $invoice->amount_paid = $amountPaid;
+        $invoice->is_paid = $isPaid;
+        $invoice->status = $isPaid
+            ? Invoice::STATUS_PAID
+            : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
+                ? Invoice::STATUS_SENT
+                : ($invoice->status ?? Invoice::STATUS_SENT));
+        $invoice->paid_at = $isPaid ? $processedAt : null;
+
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $invoice->payment_method = $paymentMethod;
+            $invoice->payment_details = is_array($paymentDetails) ? $paymentDetails : null;
+        }
+
+        $invoice->save();
+
+        if ($payment && (int) $payment->invoice_id !== (int) $invoice->id) {
+            $payment->invoice_id = $invoice->id;
+            $payment->save();
         }
     }
 

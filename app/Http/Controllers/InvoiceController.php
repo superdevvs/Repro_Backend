@@ -231,10 +231,22 @@ class InvoiceController extends Controller
             ], 422);
         }
 
+        $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? 0);
+        $amountPaid = round((float) ($data['amount_paid'] ?? $invoiceTotal), 2);
+        $paidAt = isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now();
+        $isPaid = $invoiceTotal > 0
+            ? $amountPaid >= ($invoiceTotal - 0.01)
+            : $amountPaid > 0;
+
         $invoice->fill([
-            'is_paid' => true,
-            'amount_paid' => $data['amount_paid'] ?? $invoice->total_amount,
-            'paid_at' => isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now(),
+            'is_paid' => $isPaid,
+            'amount_paid' => $amountPaid,
+            'paid_at' => $isPaid ? $paidAt : null,
+            'status' => $isPaid
+                ? Invoice::STATUS_PAID
+                : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
+                    ? Invoice::STATUS_SENT
+                    : ($invoice->status ?? Invoice::STATUS_SENT)),
         ]);
 
         if ($paymentMethod !== null) {
@@ -247,24 +259,74 @@ class InvoiceController extends Controller
         }
 
         $invoice->save();
+        $this->syncShootPaymentFromInvoice($invoice, $amountPaid, $paymentMethod, $paymentDetails, $paidAt);
 
         $invoice->loadMissing(['client', 'photographer']);
-        $context = [
-            'invoice' => $invoice,
-            'invoice_id' => $invoice->id,
-        ];
-        if ($invoice->client) {
-            $context['client'] = $invoice->client;
-            $context['account_id'] = $invoice->client_id;
-        } elseif ($invoice->photographer) {
-            $context['photographer'] = $invoice->photographer;
-            $context['account_id'] = $invoice->photographer_id;
+        if ($isPaid) {
+            $context = [
+                'invoice' => $invoice,
+                'invoice_id' => $invoice->id,
+            ];
+            if ($invoice->client) {
+                $context['client'] = $invoice->client;
+                $context['account_id'] = $invoice->client_id;
+            } elseif ($invoice->photographer) {
+                $context['photographer'] = $invoice->photographer;
+                $context['account_id'] = $invoice->photographer_id;
+            }
+            app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
         }
-        app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
 
         return response()->json([
             'data' => $invoice->fresh(['photographer', 'salesRep'])->loadCount('shoots'),
         ]);
+    }
+
+    private function syncShootPaymentFromInvoice(
+        Invoice $invoice,
+        float $amountPaid,
+        ?string $paymentMethod,
+        mixed $paymentDetails,
+        Carbon $paidAt
+    ): void {
+        if ($amountPaid <= 0) {
+            return;
+        }
+
+        $shoot = $invoice->shoot ?: ($invoice->shoot_id ? Shoot::find($invoice->shoot_id) : null);
+        if (!$shoot) {
+            return;
+        }
+
+        $payment = Payment::query()
+            ->where('invoice_id', $invoice->id)
+            ->where('shoot_id', $shoot->id)
+            ->where('status', Payment::STATUS_COMPLETED)
+            ->first();
+
+        if ($payment) {
+            $payment->fill([
+                'amount' => $amountPaid,
+                'payment_method' => $paymentMethod,
+                'payment_details' => is_array($paymentDetails) ? $paymentDetails : null,
+                'processed_at' => $paidAt,
+            ]);
+            $payment->save();
+        } else {
+            Payment::create([
+                'shoot_id' => $shoot->id,
+                'invoice_id' => $invoice->id,
+                'amount' => $amountPaid,
+                'currency' => 'USD',
+                'payment_method' => $paymentMethod,
+                'payment_details' => is_array($paymentDetails) ? $paymentDetails : null,
+                'status' => Payment::STATUS_COMPLETED,
+                'processed_at' => $paidAt,
+            ]);
+        }
+
+        $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
+            ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
     }
 
     private function hasRole($user, array $allowedRoles): bool

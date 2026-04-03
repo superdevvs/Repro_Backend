@@ -259,14 +259,13 @@ Route::prefix('test/mail')->group(function () {
 // Group of routes that require user authentication (e.g., using Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
     
-    // Creates a checkout link for a specific photography shoot.
-    // The {shoot} parameter is a route model binding.
-    // e.g., POST /api/shoots/123/create-checkout-link
-    Route::post('shoots/{shoot}/create-checkout-link', [PaymentController::class, 'createCheckoutLink'])
+    // Legacy compatibility route: existing UI still calls create-checkout-link,
+    // but checkout is now handled by Stripe.
+    Route::post('shoots/{shoot}/create-checkout-link', [StripePaymentController::class, 'createCheckoutSession'])
         ->name('api.shoots.payment.create-link');
 
-    // Pay for multiple shoots
-    Route::post('payments/multiple-shoots', [PaymentController::class, 'payMultipleShoots'])
+    // Legacy compatibility route for older multi-pay callers.
+    Route::post('payments/multiple-shoots', [StripePaymentController::class, 'payMultipleShoots'])
         ->name('api.payments.multiple-shoots');
 
     // Stripe: Pay for multiple shoots
