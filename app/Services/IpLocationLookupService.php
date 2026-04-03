@@ -37,6 +37,43 @@ class IpLocationLookupService
         );
     }
 
+    public function refine(array $hint): ?array
+    {
+        $providerLocation = [
+            'latitude' => isset($hint['latitude']) && is_numeric($hint['latitude']) ? (float) $hint['latitude'] : null,
+            'longitude' => isset($hint['longitude']) && is_numeric($hint['longitude']) ? (float) $hint['longitude'] : null,
+            'label' => $this->buildProviderLabel(
+                $hint['city'] ?? null,
+                $hint['region'] ?? null,
+            ),
+            'postalCode' => isset($hint['postalCode']) ? trim((string) $hint['postalCode']) : null,
+            'countryCode' => isset($hint['countryCode']) ? trim((string) $hint['countryCode']) : null,
+            'provider' => 'client_ip_hint',
+        ];
+
+        if (!$providerLocation['latitude'] && !$providerLocation['postalCode']) {
+            return null;
+        }
+
+        $googleRefined = $this->refineWithGoogle($providerLocation);
+
+        if ($googleRefined) {
+            return $googleRefined;
+        }
+
+        if ($providerLocation['latitude'] === null || $providerLocation['longitude'] === null) {
+            return null;
+        }
+
+        return [
+            'latitude' => $providerLocation['latitude'],
+            'longitude' => $providerLocation['longitude'],
+            'location' => $providerLocation['label'],
+            'postalCode' => $providerLocation['postalCode'],
+            'provider' => $providerLocation['provider'],
+        ];
+    }
+
     private function lookupUncached(string $ip): ?array
     {
         $providerLocation = $this->resolveIpProviderLocation($ip);
@@ -157,6 +194,21 @@ class IpLocationLookupService
             return null;
         }
 
+        if (
+            isset($providerLocation['latitude'], $providerLocation['longitude'])
+            && is_numeric($providerLocation['latitude'])
+            && is_numeric($providerLocation['longitude'])
+        ) {
+            $coordinateRefined = $this->refineCoordinateLocation(
+                (float) $providerLocation['latitude'],
+                (float) $providerLocation['longitude'],
+            );
+
+            if ($coordinateRefined) {
+                return $coordinateRefined;
+            }
+        }
+
         $postalRefined = $this->refinePostalLocation(
             $providerLocation['postalCode'] ?? null,
             $providerLocation['countryCode'] ?? null,
@@ -166,10 +218,7 @@ class IpLocationLookupService
             return $postalRefined;
         }
 
-        return $this->refineCoordinateLocation(
-            $providerLocation['latitude'],
-            $providerLocation['longitude'],
-        );
+        return null;
     }
 
     private function refinePostalLocation(?string $postalCode, ?string $countryCode): ?array
@@ -273,10 +322,10 @@ class IpLocationLookupService
     private function formatCoordinateLocationLabel(array $results): ?string
     {
         $componentPriorityGroups = [
+            ['sublocality_level_1', 'sublocality', 'neighborhood'],
             ['locality', 'postal_town'],
             ['administrative_area_level_3'],
             ['administrative_area_level_2'],
-            ['sublocality_level_1', 'sublocality', 'neighborhood'],
         ];
 
         foreach ($componentPriorityGroups as $types) {
@@ -321,9 +370,9 @@ class IpLocationLookupService
 
     private function findAddressComponent(array $components, array $types, bool $shortName = false): ?string
     {
-        foreach ($components as $component) {
-            $componentTypes = $component['types'] ?? [];
-            foreach ($types as $type) {
+        foreach ($types as $type) {
+            foreach ($components as $component) {
+                $componentTypes = $component['types'] ?? [];
                 if (in_array($type, $componentTypes, true)) {
                     return $shortName
                         ? ($component['short_name'] ?? null)

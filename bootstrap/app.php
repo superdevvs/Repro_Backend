@@ -12,6 +12,7 @@ use App\Http\Middleware\ValidateExternalApiKey;
 use App\Jobs\BackupToDropboxJob;
 use App\Jobs\DispatchScheduledMessages;
 use App\Services\SystemOverviewTelemetryService;
+use Symfony\Component\HttpFoundation\Request;
 
 
 return Application::configure(basePath: dirname(__DIR__))
@@ -36,6 +37,10 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
+        $middleware->trustProxies(
+            at: '*',
+            headers: Request::HEADER_X_FORWARDED_TRAEFIK,
+        );
 
         // Append impersonation middleware to run after auth
         $middleware->api(append: [
