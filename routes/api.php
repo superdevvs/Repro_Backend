@@ -45,6 +45,7 @@ use App\Http\Controllers\API\FotelloController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
+use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
 use App\Http\Controllers\API\Admin\SystemOverviewController;
@@ -68,6 +69,9 @@ Route::get('/ping', function () {
 });
 
 Route::get('/weather', [WeatherController::class, 'show'])
+    ->middleware('throttle:60,1');
+
+Route::get('/ip-location', [IpLocationController::class, 'show'])
     ->middleware('throttle:60,1');
 
 Route::get('/public/share-links/{shoot}/{linkId}', [PublicShootShareLinkController::class, 'show'])
