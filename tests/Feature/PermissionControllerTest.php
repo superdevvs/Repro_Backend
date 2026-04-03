@@ -26,6 +26,7 @@ class PermissionControllerTest extends TestCase
         $response->assertJsonFragment(['id' => 'editing_manager', 'label' => 'Editing Manager']);
         $response->assertJsonFragment(['resource' => 'messaging-overview', 'action' => 'view']);
         $response->assertJsonFragment(['resource' => 'ai-editing', 'action' => 'view']);
+        $response->assertJsonFragment(['resource' => 'robbie', 'action' => 'view']);
         $this->assertDatabaseHas('settings', ['key' => 'permissions.role_map.v1']);
     }
 
@@ -123,5 +124,42 @@ class PermissionControllerTest extends TestCase
         $response->assertJsonFragment(['id' => 'accounts-view', 'resource' => 'accounts', 'action' => 'view']);
         $response->assertJsonFragment(['id' => 'dashboard-sales-view', 'resource' => 'dashboard-sales', 'action' => 'view']);
         $response->assertJsonFragment(['id' => 'messaging-overview-view', 'resource' => 'messaging-overview', 'action' => 'view']);
+    }
+
+    public function test_sales_rep_permissions_self_heal_robbie_access_for_legacy_maps(): void
+    {
+        Setting::query()->updateOrCreate(
+            ['key' => 'permissions.role_map.v1'],
+            [
+                'value' => json_encode([
+                    'version' => 1,
+                    'roles' => [
+                        'superadmin' => ['dashboard-view'],
+                        'admin' => ['dashboard-view', 'accounts-view'],
+                        'editing_manager' => ['dashboard-view', 'dashboard-admin-view'],
+                        'salesRep' => ['dashboard-view', 'dashboard-sales-view'],
+                        'photographer' => ['dashboard-view', 'availability-view'],
+                        'editor' => ['dashboard-view', 'dashboard-editor-view'],
+                        'client' => ['dashboard-view', 'dashboard-client-view'],
+                    ],
+                ]),
+                'type' => 'json',
+            ],
+        );
+
+        $salesRep = User::factory()->create([
+            'role' => 'salesRep',
+        ]);
+
+        Sanctum::actingAs($salesRep);
+
+        $response = $this->getJson('/api/me/permissions');
+
+        $response->assertOk();
+        $response->assertJsonFragment([
+            'id' => 'robbie-view',
+            'resource' => 'robbie',
+            'action' => 'view',
+        ]);
     }
 }

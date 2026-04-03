@@ -238,7 +238,7 @@ return [
                     'action' => 'view',
                     'label' => 'Chat With Robbie',
                     'description' => 'Open the Robbie chat assistant.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'client'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep', 'client'],
                 ],
             ],
         ],

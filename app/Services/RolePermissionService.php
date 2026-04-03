@@ -204,6 +204,8 @@ class RolePermissionService
             );
         }
 
+        $normalized = $this->applyPermissionMigrations($normalized, $catalogIds);
+
         if (($decoded['roles'] ?? null) !== $normalized) {
             $this->savePermissions($normalized);
         }
@@ -224,6 +226,21 @@ class RolePermissionService
                 'description' => 'Role permissions map for dashboard and route access.',
             ],
         );
+    }
+
+    private function applyPermissionMigrations(array $permissions, array $catalogIds): array
+    {
+        // Preserve the historic expectation that sales reps can access Robbie
+        // even if the stored permissions map was created before that default existed.
+        if (in_array('robbie-view', $catalogIds, true)) {
+            $existing = $permissions['salesRep'] ?? [];
+            if (!in_array('robbie-view', $existing, true)) {
+                $existing[] = 'robbie-view';
+                $permissions['salesRep'] = $this->normalizePermissionIds($existing, $catalogIds);
+            }
+        }
+
+        return $permissions;
     }
 
     private function catalogPermissionIds(): array
