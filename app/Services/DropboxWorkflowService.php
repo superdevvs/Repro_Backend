@@ -296,47 +296,11 @@ class DropboxWorkflowService
         // Extract image metadata (dimensions, EXIF)
         $metadata = $this->extractImageMetadata($file);
 
-        // Process image for thumbnails BEFORE storing (while temp file is still available)
+        // Heavy image processing during upload can exhaust PHP memory for large files.
+        // Store first, then process after the response/through the queue.
         $thumbnailPath = null;
         $webPath = null;
         $placeholderPath = null;
-        $originalFilename = $file->getClientOriginalName();
-        
-        if ($this->rawThumbnailService->isRawFile($originalFilename)) {
-            // Use the dedicated RAW thumbnail extractor first. It is more reliable for
-            // CR3 and other camera formats than the generic image processor.
-            $tempPath = $file->getRealPath();
-            if ($tempPath && file_exists($tempPath)) {
-                $thumbnailDir = "shoots/{$shoot->id}/thumbnails";
-                $thumbnailPath = $this->rawThumbnailService->generateThumbnail(
-                    $tempPath,
-                    $thumbnailDir,
-                    pathinfo($filename, PATHINFO_FILENAME) . '_thumb.jpg'
-                );
-                
-                Log::info('RAW thumbnail generation attempted', [
-                    'shoot_id' => $shoot->id,
-                    'filename' => $originalFilename,
-                    'thumbnail_path' => $thumbnailPath,
-                ]);
-            }
-        } elseif ($this->shouldProcessImage($file)) {
-            $tempPath = $file->getRealPath();
-            if ($tempPath && file_exists($tempPath)) {
-                $imageService = app(\App\Services\ImageProcessingService::class);
-                $processedPaths = $imageService->processImageFromPath($shoot->id, $originalFilename, $tempPath);
-                $thumbnailPath = $processedPaths['thumbnail'] ?? null;
-                $webPath = $processedPaths['web'] ?? null;
-                $placeholderPath = $processedPaths['placeholder'] ?? null;
-
-                Log::info('Local storage thumbnail generation', [
-                    'shoot_id' => $shoot->id,
-                    'filename' => $originalFilename,
-                    'thumbnail_path' => $thumbnailPath,
-                    'web_path' => $webPath,
-                ]);
-            }
-        }
 
         // Now store the file (this may move the temp file)
         Storage::disk('public')->putFileAs($dir, $file, $filename);
@@ -361,7 +325,7 @@ class DropboxWorkflowService
             'thumbnail_path' => $thumbnailPath,
             'web_path' => $webPath,
             'placeholder_path' => $placeholderPath,
-            'processed_at' => ($thumbnailPath || $webPath || $placeholderPath) ? now() : null,
+            'processed_at' => null,
             'processing_failed_at' => null,
             'processing_error' => null,
             'metadata' => !empty($metadata) ? $metadata : null,
@@ -376,7 +340,7 @@ class DropboxWorkflowService
                 || !$shootFile->placeholder_path
             )
         ) {
-            ProcessImageJob::dispatch($shootFile);
+            ProcessImageJob::dispatch($shootFile)->afterResponse();
         }
 
         if ($this->isEnabled()) {
@@ -967,7 +931,7 @@ class DropboxWorkflowService
                 ]);
 
                 if ($this->shouldProcessFilename($filename, $mimeType)) {
-                    ProcessImageJob::dispatchSync($shootFile);
+                    ProcessImageJob::dispatch($shootFile)->afterResponse();
                 }
 
                 // Update shoot workflow status if this is the first photo upload
