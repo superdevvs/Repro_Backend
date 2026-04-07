@@ -14,6 +14,7 @@ use App\Services\PhotographerAvailabilityService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
@@ -27,6 +28,7 @@ class ShootMutationActionsTest extends TestCase
     protected User $admin;
     protected User $client;
     protected User $photographer;
+    protected User $salesRep;
     protected Service $service;
     protected Service $secondService;
 
@@ -52,6 +54,12 @@ class ShootMutationActionsTest extends TestCase
             'role' => 'photographer',
             'name' => 'Mutation Photographer',
             'email' => 'mutation-photographer@test.com',
+        ]);
+
+        $this->salesRep = User::factory()->create([
+            'role' => 'salesRep',
+            'name' => 'Mutation Sales Rep',
+            'email' => 'mutation-sales-rep@test.com',
         ]);
 
         $this->service = Service::factory()->create([
@@ -539,6 +547,186 @@ class ShootMutationActionsTest extends TestCase
             return $event->shoot->id === $shoot->id
                 && $event->activityType === 'shoot_updated';
         });
+    }
+
+    /** @test */
+    public function shoots_table_supports_the_featured_flag_with_a_false_default(): void
+    {
+        $this->assertTrue(Schema::hasColumn('shoots', 'is_featured'));
+
+        $shoot = Shoot::factory()->create();
+
+        $this->assertFalse((bool) $shoot->fresh()->is_featured);
+    }
+
+    /** @test */
+    public function admin_can_toggle_featured_on_a_shoot_and_receive_both_payload_keys(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'is_featured' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_featured' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.is_featured', true)
+            ->assertJsonPath('data.isFeatured', true);
+
+        $this->assertTrue((bool) $shoot->fresh()->is_featured);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'featured_shoot_marked',
+            'user_id' => $this->admin->id,
+        ]);
+    }
+
+    /** @test */
+    public function assigned_sales_rep_can_toggle_featured_on_a_shoot(): void
+    {
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'is_featured' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_featured' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.is_featured', true)
+            ->assertJsonPath('data.isFeatured', true);
+
+        $this->assertTrue((bool) $shoot->fresh()->is_featured);
+    }
+
+    /** @test */
+    public function assigned_photographer_can_toggle_featured_on_a_shoot(): void
+    {
+        Sanctum::actingAs($this->photographer);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'is_featured' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_featured' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.is_featured', true)
+            ->assertJsonPath('data.isFeatured', true);
+
+        $this->assertTrue((bool) $shoot->fresh()->is_featured);
+    }
+
+    /** @test */
+    public function client_cannot_toggle_featured_on_a_shoot(): void
+    {
+        Sanctum::actingAs($this->client);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'is_featured' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_featured' => true,
+        ]);
+
+        $response->assertForbidden();
+        $this->assertFalse((bool) $shoot->fresh()->is_featured);
+    }
+
+    /** @test */
+    public function unassigned_photographer_cannot_toggle_featured_on_a_shoot(): void
+    {
+        $otherPhotographer = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Unassigned Photographer',
+            'email' => 'unassigned-photographer@test.com',
+        ]);
+
+        Sanctum::actingAs($otherPhotographer);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'is_featured' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_featured' => true,
+        ]);
+
+        $response->assertForbidden();
+        $this->assertFalse((bool) $shoot->fresh()->is_featured);
+    }
+
+    /** @test */
+    public function unassigned_sales_rep_cannot_toggle_featured_on_a_shoot(): void
+    {
+        $otherSalesRep = User::factory()->create([
+            'role' => 'salesRep',
+            'name' => 'Unassigned Sales Rep',
+            'email' => 'unassigned-sales-rep@test.com',
+        ]);
+
+        Sanctum::actingAs($otherSalesRep);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'is_featured' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_featured' => true,
+        ]);
+
+        $response->assertForbidden();
+        $this->assertFalse((bool) $shoot->fresh()->is_featured);
     }
 
     /** @test */

@@ -6,6 +6,7 @@ use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\Request;
 
@@ -13,12 +14,17 @@ class DownloadSelectedShootFilesAction
 {
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
-        protected ShootFileAccessService $fileAccess
+        protected ShootFileAccessService $fileAccess,
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
     ) {
     }
 
     public function execute(Request $request, Shoot $shoot, ?User $user)
     {
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
         $request->validate([
             'file_ids' => 'nullable|array',
             'file_ids.*' => 'integer',
@@ -38,12 +44,7 @@ class DownloadSelectedShootFilesAction
         }
 
         $size = $request->input('size', 'original');
-        $paymentStatus = $shoot->payment_status;
-        if (!$paymentStatus || $paymentStatus === 'pending') {
-            $paymentStatus = $this->calculatePaymentStatus((float) ($shoot->total_paid ?? 0), (float) ($shoot->total_quote ?? 0));
-        }
-
-        $needsWatermark = $user && $user->role === 'client' && !$shoot->bypass_paywall && $paymentStatus !== 'paid';
+        $needsWatermark = false;
         $dropboxEnabled = $this->dropboxService->isEnabled();
 
         $zipPath = storage_path('app/temp/shoot-' . $shoot->id . '-download-' . time() . '.zip');
@@ -136,18 +137,5 @@ class DownloadSelectedShootFilesAction
             ?? $file->dropbox_path
             ?? $file->web_path
             ?? $file->thumbnail_path;
-    }
-
-    protected function calculatePaymentStatus(float $totalPaid, float $totalQuote): string
-    {
-        if ($totalPaid <= 0) {
-            return 'unpaid';
-        }
-
-        if ($totalPaid >= $totalQuote) {
-            return 'paid';
-        }
-
-        return 'partial';
     }
 }

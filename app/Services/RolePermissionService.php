@@ -232,12 +232,30 @@ class RolePermissionService
     {
         // Preserve the historic expectation that sales reps can access Robbie
         // even if the stored permissions map was created before that default existed.
-        if (in_array('robbie-view', $catalogIds, true)) {
-            $existing = $permissions['salesRep'] ?? [];
-            if (!in_array('robbie-view', $existing, true)) {
-                $existing[] = 'robbie-view';
-                $permissions['salesRep'] = $this->normalizePermissionIds($existing, $catalogIds);
+        $salesRepPermissions = $permissions['salesRep'] ?? [];
+
+        if (in_array('robbie-view', $catalogIds, true) && !in_array('robbie-view', $salesRepPermissions, true)) {
+            $salesRepPermissions[] = 'robbie-view';
+        }
+
+        // Existing installs should also inherit Accounts page access for scoped
+        // sales-rep account management without requiring a manual permission reset.
+        if (in_array('accounts-view', $catalogIds, true) && !in_array('accounts-view', $salesRepPermissions, true)) {
+            $salesRepPermissions[] = 'accounts-view';
+        }
+
+        foreach (['account-linking-view', 'account-linking-update'] as $permissionId) {
+            if (in_array($permissionId, $catalogIds, true) && !in_array($permissionId, $salesRepPermissions, true)) {
+                $salesRepPermissions[] = $permissionId;
             }
+        }
+
+        if ($salesRepPermissions !== ($permissions['salesRep'] ?? [])) {
+            $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
+        } elseif (array_key_exists('salesRep', $permissions)) {
+            $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
+        } elseif (!empty($salesRepPermissions)) {
+            $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
         }
 
         return $permissions;

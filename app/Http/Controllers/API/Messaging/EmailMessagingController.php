@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -29,7 +30,6 @@ class EmailMessagingController extends Controller
     public function messages(Request $request): JsonResponse
     {
         $user = $request->user();
-        $isAdmin = in_array($user->role, ['admin', 'superadmin'], true);
 
         $filters = [
             'channel' => 'EMAIL',
@@ -50,13 +50,10 @@ class EmailMessagingController extends Controller
 
         $messagesQuery = $this->messaging
             ->getMessageLogs($filters)
-            ->with(['template', 'channelConfig', 'shoot', 'invoice']);
+            ->with(['template', 'channelConfig', 'shoot.client', 'shoot.rep', 'invoice']);
 
-        if (!$isAdmin) {
-            $messagesQuery->where(function ($query) use ($user) {
-                $query->where('sender_user_id', $user->id)
-                    ->orWhere('created_by', $user->id);
-            });
+        if (!$this->isAdminUser($user)) {
+            $this->applyMessageVisibilityScope($messagesQuery, $user);
         }
 
         $messages = $messagesQuery->paginate($request->query('per_page', 25));
@@ -67,14 +64,13 @@ class EmailMessagingController extends Controller
     public function threads(Request $request): JsonResponse
     {
         $user = $request->user();
-        $isAdmin = in_array($user->role, ['admin', 'superadmin'], true);
 
         $threadsQuery = $this->messaging
             ->listThreads(['channel' => 'EMAIL']);
 
-        if (!$isAdmin) {
-            $threadsQuery->whereHas('contact', function ($query) use ($user) {
-                $query->where('user_id', $user->id);
+        if (!$this->isAdminUser($user)) {
+            $threadsQuery->whereHas('messages', function (Builder $query) use ($user) {
+                $this->applyMessageVisibilityScope($query, $user);
             });
         }
 
@@ -249,15 +245,24 @@ class EmailMessagingController extends Controller
             'reply_to' => ['nullable', 'email'],
             'template_id' => ['nullable', 'exists:message_templates,id'],
             'channel_id' => ['nullable', 'exists:message_channels,id'],
-            'related_shoot_id' => ['nullable', 'integer'],
-            'related_account_id' => ['nullable', 'integer'],
-            'related_invoice_id' => ['nullable', 'integer'],
+            'related_shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
+            'related_shoot_context_type' => ['nullable', 'in:new_shoot,previous_shoot'],
+            'related_account_id' => ['nullable', 'integer', 'exists:users,id'],
+            'related_invoice_id' => ['nullable', 'integer', 'exists:invoices,id'],
             'variables' => ['nullable', 'array'],
             'attachments' => ['nullable', 'array'],
             'attachments.*' => ['file', 'max:10240'],
         ];
 
         $data = $request->validate($rules);
+        $relatedShoot = null;
+
+        if (!$canSendOutbound) {
+            $relatedShoot = $this->resolveRequiredShootForContactMessage($user, $data);
+            $data['related_shoot_id'] = (int) $relatedShoot->id;
+            $data['related_account_id'] = (int) $relatedShoot->client_id;
+        }
+
         $data['cc'] = $this->mergeShootCcEmails($data);
         $data['bcc'] = $this->normalizeEmailAddresses($data['bcc'] ?? []);
         $data = array_merge($data, $this->extractUploadedAttachments($request));
@@ -297,6 +302,7 @@ class EmailMessagingController extends Controller
             $payload['contact_type'] = $user->role;
             $payload['contact_user_id'] = $user->id;
             $payload['contact_account_id'] = $user->id;
+            $payload['related_account_id'] = (int) ($relatedShoot?->client_id ?? $data['related_account_id']);
 
             $message = $this->messaging->storeInternalEmail($payload, 'INBOUND');
         }
@@ -323,9 +329,10 @@ class EmailMessagingController extends Controller
             'scheduled_at' => ['required', 'date', 'after:now'],
             'channel_id' => ['nullable', 'exists:message_channels,id'],
             'reply_to' => ['nullable', 'email'],
-            'related_shoot_id' => ['nullable', 'integer'],
-            'related_account_id' => ['nullable', 'integer'],
-            'related_invoice_id' => ['nullable', 'integer'],
+            'related_shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
+            'related_shoot_context_type' => ['nullable', 'in:new_shoot,previous_shoot'],
+            'related_account_id' => ['nullable', 'integer', 'exists:users,id'],
+            'related_invoice_id' => ['nullable', 'integer', 'exists:invoices,id'],
             'template_id' => ['nullable', 'exists:message_templates,id'],
             'variables' => ['nullable', 'array'],
             'attachments' => ['nullable', 'array'],
@@ -381,10 +388,8 @@ class EmailMessagingController extends Controller
     public function show(Message $message): JsonResponse
     {
         $user = request()->user();
-        $isAdmin = in_array($user->role, ['admin', 'superadmin'], true);
 
-        if (!$isAdmin && (int) ($message->sender_user_id ?? 0) !== (int) $user->id
-            && (int) ($message->created_by ?? 0) !== (int) $user->id) {
+        if (!$this->canAccessMessage($user, $message)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -392,7 +397,8 @@ class EmailMessagingController extends Controller
             'thread.contact',
             'template',
             'channelConfig',
-            'shoot',
+            'shoot.client',
+            'shoot.rep',
             'invoice',
             'creator',
         ]));
@@ -576,12 +582,289 @@ class EmailMessagingController extends Controller
 
     private function canSendOutbound(?string $role): bool
     {
-        return in_array($this->normalizedRole($role), ['admin', 'superadmin', 'editingmanager', 'salesrep'], true);
+        return in_array($this->normalizedRole($role), ['admin', 'superadmin'], true);
     }
 
     private function normalizedRole(?string $role): string
     {
         return strtolower(str_replace(['-', '_', ' '], '', (string) $role));
+    }
+
+    private function isAdminUser(User $user): bool
+    {
+        return $this->userHasAnyNormalizedRole($user, ['admin', 'superadmin']);
+    }
+
+    private function isEditingManagerUser(User $user): bool
+    {
+        return $this->userHasAnyNormalizedRole($user, ['editingmanager']);
+    }
+
+    private function isSalesRepUser(User $user): bool
+    {
+        return $this->userHasAnyNormalizedRole($user, ['salesrep']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function resolveRequiredShootForContactMessage(User $user, array $data): Shoot
+    {
+        if (empty($data['related_shoot_id'])) {
+            throw ValidationException::withMessages([
+                'related_shoot_id' => 'Select a shoot before sending this contact message.',
+            ]);
+        }
+
+        if (empty($data['related_shoot_context_type'])) {
+            throw ValidationException::withMessages([
+                'related_shoot_context_type' => 'Choose whether this message is regarding a new or previous shoot.',
+            ]);
+        }
+
+        $shootId = (int) $data['related_shoot_id'];
+        $shootQuery = Shoot::query()
+            ->with('client')
+            ->whereKey($shootId);
+
+        $this->applyContactShootAccessScope($shootQuery, $user);
+
+        $shoot = $shootQuery->first();
+
+        if (!$shoot) {
+            throw ValidationException::withMessages([
+                'related_shoot_id' => 'The selected shoot is not available for this contact message.',
+            ]);
+        }
+
+        if (!$shoot->client_id) {
+            throw ValidationException::withMessages([
+                'related_shoot_id' => 'The selected shoot does not have an associated client account.',
+            ]);
+        }
+
+        return $shoot;
+    }
+
+    private function applyContactShootAccessScope(Builder $query, User $user): void
+    {
+        if ($this->isAdminUser($user) || $this->isEditingManagerUser($user)) {
+            return;
+        }
+
+        if ($this->normalizedRole($user->role) === 'client') {
+            $query->where(function (Builder $scope) use ($user) {
+                $scope->where('client_id', $user->id)
+                    ->orWhere(function (Builder $ghostScope) use ($user) {
+                        $ghostScope->whereHas('ghostUsers', function (Builder $ghostQuery) use ($user) {
+                            $ghostQuery->where('users.id', $user->id);
+                        })->where(function (Builder $deliveredScope) {
+                            $deliveredScope->whereIn('status', [Shoot::STATUS_DELIVERED])
+                                ->orWhereIn('workflow_status', [
+                                    Shoot::STATUS_DELIVERED,
+                                    'ready_for_client',
+                                    'admin_verified',
+                                    'ready',
+                                    'workflow_completed',
+                                    'client_delivered',
+                                ]);
+                        });
+                    });
+            });
+
+            return;
+        }
+
+        if ($this->normalizedRole($user->role) === 'photographer') {
+            $query->where(function (Builder $scope) use ($user) {
+                $scope->where('photographer_id', $user->id)
+                    ->orWhereHas('services', function (Builder $serviceQuery) use ($user) {
+                        $serviceQuery->where('shoot_service.photographer_id', $user->id);
+                    });
+            });
+
+            return;
+        }
+
+        if ($this->normalizedRole($user->role) === 'editor') {
+            $query->where(function (Builder $scope) use ($user) {
+                $scope->where('editor_id', $user->id)
+                    ->orWhereHas('activityLogs', function (Builder $logQuery) use ($user) {
+                        $logQuery->where('user_id', $user->id);
+                    })
+                    ->orWhere(function (Builder $editingPipeline) {
+                        $editingPipeline->whereIn('status', [
+                            Shoot::STATUS_UPLOADED,
+                            Shoot::STATUS_EDITING,
+                            Shoot::STATUS_READY,
+                            Shoot::STATUS_DELIVERED,
+                        ]);
+                    });
+            });
+
+            return;
+        }
+
+        if ($this->isSalesRepUser($user)) {
+            $query->where(function (Builder $scope) use ($user) {
+                $scope->where('rep_id', $user->id)
+                    ->orWhere(function (Builder $fallback) use ($user) {
+                        $fallback->whereNull('rep_id')
+                            ->whereHas('client', function (Builder $clientQuery) use ($user) {
+                                $this->applySalesRepClientFallbackScope($clientQuery, $user->id);
+                            });
+                    });
+            });
+
+            return;
+        }
+
+        $query->whereRaw('1 = 0');
+    }
+
+    private function canAccessMessage(User $user, Message $message): bool
+    {
+        if ($this->isAdminUser($user)) {
+            return true;
+        }
+
+        if ((int) ($message->sender_user_id ?? 0) === (int) $user->id
+            || (int) ($message->created_by ?? 0) === (int) $user->id) {
+            return true;
+        }
+
+        return $this->canAccessLinkedInternalContactMessage($user, $message);
+    }
+
+    private function canAccessLinkedInternalContactMessage(User $user, Message $message): bool
+    {
+        if (!$this->isLinkedInternalContactMessage($message)) {
+            return false;
+        }
+
+        if ($this->isEditingManagerUser($user)) {
+            return true;
+        }
+
+        if (!$this->isSalesRepUser($user)) {
+            return false;
+        }
+
+        $message->loadMissing('shoot.client');
+        $shoot = $message->shoot;
+
+        if ($shoot?->rep_id && (int) $shoot->rep_id === (int) $user->id) {
+            return true;
+        }
+
+        if (!$shoot?->client) {
+            return false;
+        }
+
+        return $this->resolveClientRepId($shoot->client) === (int) $user->id;
+    }
+
+    private function isLinkedInternalContactMessage(Message $message): bool
+    {
+        return $message->provider === 'INTERNAL' && !empty($message->related_shoot_id);
+    }
+
+    private function applyMessageVisibilityScope(Builder $query, User $user): void
+    {
+        $query->where(function (Builder $inner) use ($user) {
+            $inner->where('sender_user_id', $user->id)
+                ->orWhere('created_by', $user->id);
+
+            if ($this->isEditingManagerUser($user)) {
+                $inner->orWhere(function (Builder $linked) {
+                    $this->applyLinkedInternalContactScope($linked);
+                });
+
+                return;
+            }
+
+            if ($this->isSalesRepUser($user)) {
+                $inner->orWhere(function (Builder $linked) use ($user) {
+                    $this->applyLinkedInternalContactScope($linked);
+                    $linked->where(function (Builder $scope) use ($user) {
+                        $scope->whereHas('shoot', function (Builder $shootQuery) use ($user) {
+                            $shootQuery->where('rep_id', $user->id);
+                        })->orWhere(function (Builder $fallback) use ($user) {
+                            $fallback->whereHas('shoot', function (Builder $shootQuery) {
+                                $shootQuery->whereNull('rep_id');
+                            })->whereHas('shoot.client', function (Builder $clientQuery) use ($user) {
+                                $this->applySalesRepClientFallbackScope($clientQuery, $user->id);
+                            });
+                        });
+                    });
+                });
+            }
+        });
+    }
+
+    private function applyLinkedInternalContactScope(Builder $query): void
+    {
+        $query->where('provider', 'INTERNAL')
+            ->whereNotNull('related_shoot_id');
+    }
+
+    private function applySalesRepClientFallbackScope(Builder $query, int $repId): void
+    {
+        $query->where(function (Builder $clientScope) use ($repId) {
+            $clientScope->where('created_by_id', $repId)
+                ->orWhere('metadata->accountRepId', (string) $repId)
+                ->orWhere('metadata->account_rep_id', (string) $repId)
+                ->orWhere('metadata->repId', (string) $repId)
+                ->orWhere('metadata->rep_id', (string) $repId);
+        });
+    }
+
+    private function resolveClientRepId(User $client): ?int
+    {
+        $metadata = is_array($client->metadata) ? $client->metadata : [];
+        $repCandidate = $client->created_by_id
+            ?? $metadata['accountRepId']
+            ?? $metadata['account_rep_id']
+            ?? $metadata['repId']
+            ?? $metadata['rep_id']
+            ?? null;
+
+        return is_numeric($repCandidate) ? (int) $repCandidate : null;
+    }
+
+    /**
+     * @param  array<int, string>  $roles
+     */
+    private function userHasAnyNormalizedRole(User $user, array $roles): bool
+    {
+        $normalizedRoles = $this->normalizedRolesForUser($user);
+
+        foreach ($roles as $role) {
+            if (in_array($this->normalizedRole($role), $normalizedRoles, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function normalizedRolesForUser(User $user): array
+    {
+        $roles = [$user->role];
+
+        if (is_array($user->secondary_roles)) {
+            $roles = array_merge($roles, $user->secondary_roles);
+        }
+
+        return collect($roles)
+            ->filter(fn ($role) => is_string($role) && trim($role) !== '')
+            ->map(fn ($role) => $this->normalizedRole($role))
+            ->unique()
+            ->values()
+            ->all();
     }
 
     /**

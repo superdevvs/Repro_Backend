@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 
 class Invoice extends Model
 {
@@ -232,6 +233,55 @@ class Invoice extends Model
         return $this->hasMany(Payment::class);
     }
 
+    public function latestCompletedPayment(): ?Payment
+    {
+        return $this->relatedCompletedPayments()
+            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
+            ->first();
+    }
+
+    public function resolvePaymentMetadata(): array
+    {
+        $method = $this->payment_method;
+        $details = is_array($this->payment_details) ? $this->payment_details : null;
+        $paidAt = $this->paid_at;
+
+        if ($method && $details !== null && $paidAt) {
+            return [
+                'payment_method' => $method,
+                'payment_details' => $details,
+                'paid_at' => $paidAt,
+            ];
+        }
+
+        $latestPayment = $this->latestCompletedPayment();
+
+        return [
+            'payment_method' => $method ?: $latestPayment?->payment_method,
+            'payment_details' => $details ?? $latestPayment?->payment_details,
+            'paid_at' => $paidAt ?: $latestPayment?->processed_at,
+        ];
+    }
+
+    public function applyResolvedPaymentMetadata(): static
+    {
+        $resolved = $this->resolvePaymentMetadata();
+
+        if (!empty($resolved['payment_method'])) {
+            $this->setAttribute('payment_method', $resolved['payment_method']);
+        }
+
+        if (array_key_exists('payment_details', $resolved) && $resolved['payment_details'] !== null) {
+            $this->setAttribute('payment_details', $resolved['payment_details']);
+        }
+
+        if (!empty($resolved['paid_at'])) {
+            $this->setAttribute('paid_at', $resolved['paid_at']);
+        }
+
+        return $this;
+    }
+
     public function totalPaid(): float
     {
         if ($this->getAttribute('total_paid_amount') !== null) {
@@ -272,5 +322,55 @@ class Invoice extends Model
         return $dueDate !== null
             && $dueDate->isPast()
             && $this->balanceDue() > 0;
+    }
+
+    private function relatedCompletedPayments(): Collection
+    {
+        $payments = collect();
+
+        if ($this->relationLoaded('payments')) {
+            $payments = $payments->merge($this->payments);
+        } else {
+            $payments = $payments->merge(
+                $this->payments()
+                    ->where('status', Payment::STATUS_COMPLETED)
+                    ->get()
+            );
+        }
+
+        $shoots = collect();
+
+        if ($this->relationLoaded('shoot') && $this->shoot) {
+            $shoots->push($this->shoot);
+        } elseif ($this->shoot_id) {
+            $shoot = $this->shoot()->first();
+            if ($shoot) {
+                $shoots->push($shoot);
+            }
+        }
+
+        if ($this->relationLoaded('shoots')) {
+            $shoots = $shoots->merge($this->shoots);
+        } elseif ($this->exists) {
+            $shoots = $shoots->merge($this->shoots()->get());
+        }
+
+        $shootPayments = $shoots
+            ->filter()
+            ->flatMap(function ($shoot) {
+                if ($shoot->relationLoaded('payments')) {
+                    return $shoot->payments;
+                }
+
+                return $shoot->payments()
+                    ->where('status', Payment::STATUS_COMPLETED)
+                    ->get();
+            });
+
+        return $payments
+            ->merge($shootPayments)
+            ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
+            ->unique(fn (Payment $payment) => (string) ($payment->id ?? spl_object_id($payment)))
+            ->values();
     }
 }

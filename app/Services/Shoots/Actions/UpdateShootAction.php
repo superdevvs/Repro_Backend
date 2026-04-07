@@ -14,6 +14,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class UpdateShootAction
 {
@@ -29,18 +30,21 @@ class UpdateShootAction
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
-        $shoot->loadMissing('services');
+        $shoot->loadMissing(['services', 'ghostUsers']);
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
         $originalServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
         $originalServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
+        $originalGhostUserIds = $shoot->ghostUsers->pluck('id')->map(fn ($id) => (string) $id)->sort()->values()->all();
         $originalAddress = $this->support->formatFullAddress($shoot);
         $originalBaseQuote = (float) $shoot->base_quote;
         $originalTotalQuote = (float) $shoot->total_quote;
         $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
         $isClient = $user->role === 'client';
         $isRep = $user->role === 'salesRep';
+        $isPhotographer = $user->role === 'photographer';
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
+        $onlyFeaturedFlag = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_featured'])) === 0;
         $clientEditableKeys = [
             'is_private_listing',
             'listing_type',
@@ -50,16 +54,29 @@ class UpdateShootAction
             'sqft',
             'tour_links',
         ];
+        $repEditableKeys = [
+            'is_private_listing',
+            'is_featured',
+            'ghost_user_ids',
+            'tour_links',
+        ];
+        $photographerEditableKeys = [
+            'is_featured',
+        ];
         $clientEditableTourLinkKeys = [
             'property_description',
             'property_mls',
             'property_price',
             'property_lot_size',
         ];
+        $repEditableTourLinkKeys = [
+            'realtor_client_id',
+        ];
 
         if (!$isAdmin) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
+            $assignedPhotographer = $isPhotographer && (string) $shoot->photographer_id === (string) $user->id;
 
             if ($ownsShoot) {
                 $onlyClientEditableFields = count($requestKeys) > 0 && count(array_diff($requestKeys, $clientEditableKeys)) === 0;
@@ -77,13 +94,40 @@ class UpdateShootAction
                 if (!empty($invalidTourLinkKeys)) {
                     $this->abortJson('Forbidden', 403);
                 }
+            } elseif ($assignedRep) {
+                $onlyRepEditableFields = $assignedRep
+                    && count($requestKeys) > 0
+                    && count(array_diff($requestKeys, $repEditableKeys)) === 0;
+
+                if (!$onlyPrivateListing && !$onlyRepEditableFields) {
+                    $this->abortJson('Forbidden', 403);
+                }
+
+                $requestedTourLinks = $request->input('tour_links', []);
+                if ($request->has('tour_links')) {
+                    if (!is_array($requestedTourLinks)) {
+                        $this->abortJson('Invalid tour_links payload', 422);
+                    }
+
+                    $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $repEditableTourLinkKeys);
+                    if (!empty($invalidTourLinkKeys)) {
+                        $this->abortJson('Forbidden', 403);
+                    }
+                }
+            } elseif ($assignedPhotographer) {
+                $onlyPhotographerEditableFields = count($requestKeys) > 0
+                    && count(array_diff($requestKeys, $photographerEditableKeys)) === 0;
+
+                if (!$onlyPhotographerEditableFields) {
+                    $this->abortJson('Forbidden', 403);
+                }
             } else {
-                if (!$onlyPrivateListing) {
+                if (!$onlyPrivateListing && !$onlyFeaturedFlag) {
                     $this->abortJson('Forbidden', 403);
                 }
             }
 
-            if (!$ownsShoot && !$assignedRep) {
+            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer) {
                 $this->abortJson('Forbidden', 403);
             }
         }
@@ -96,10 +140,26 @@ class UpdateShootAction
             'is_private_listing' => 'nullable|boolean',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,sold,rented',
+            'ghost_user_ids' => 'nullable|array',
+            'ghost_user_ids.*' => [
+                'integer',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
+            ],
+            'tour_links.realtor_client_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
+            ],
             ]
         ));
+        $ghostUserIds = collect($validated['ghost_user_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
 
         $previousPrivateListing = (bool) ($shoot->is_private_listing ?? false);
+        $previousFeaturedState = (bool) ($shoot->is_featured ?? false);
         $originalStatus = $shoot->status;
         $originalWorkflow = $shoot->workflow_status;
         $originalScheduledAt = $shoot->scheduled_at?->toISOString();
@@ -184,6 +244,11 @@ class UpdateShootAction
 
         $this->editablePayloadService->apply($shoot, $validated);
 
+        if (array_key_exists('ghost_user_ids', $validated)) {
+            $shoot->ghostUsers()->sync($ghostUserIds);
+            $shoot->load('ghostUsers');
+        }
+
         try {
             $changes = [];
             if ($originalStatus !== $shoot->status) {
@@ -203,6 +268,15 @@ class UpdateShootAction
             }
             if ($originalClientId !== $shoot->client_id) {
                 $changes['client_id'] = ['from' => $originalClientId, 'to' => $shoot->client_id];
+            }
+            if ($previousFeaturedState !== (bool) ($shoot->is_featured ?? false)) {
+                $changes['is_featured'] = ['from' => $previousFeaturedState, 'to' => (bool) ($shoot->is_featured ?? false)];
+            }
+            if (array_key_exists('ghost_user_ids', $validated)) {
+                $updatedGhostUserIds = $shoot->ghostUsers->pluck('id')->map(fn ($id) => (string) $id)->sort()->values()->all();
+                if ($originalGhostUserIds !== $updatedGhostUserIds) {
+                    $changes['ghost_user_ids'] = ['from' => $originalGhostUserIds, 'to' => $updatedGhostUserIds];
+                }
             }
 
             $newAddress = $this->support->formatFullAddress($shoot);
@@ -266,6 +340,23 @@ class UpdateShootAction
             }
         }
 
+        if ($previousFeaturedState !== (bool) ($shoot->is_featured ?? false)) {
+            try {
+                $this->activityLogger->log(
+                    $shoot,
+                    $shoot->is_featured ? 'featured_shoot_marked' : 'featured_shoot_unmarked',
+                    [
+                        'is_featured' => (bool) $shoot->is_featured,
+                        'user_id' => $user->id,
+                        'user_name' => $user->name,
+                        'by' => $user->name,
+                    ],
+                    $user
+                );
+            } catch (\Exception $e) {
+            }
+        }
+
         if ($markDelivered) {
             if (empty($shoot->admin_verified_at)) {
                 $shoot->admin_verified_at = now();
@@ -288,23 +379,25 @@ class UpdateShootAction
             && $shoot->photographer_id !== null;
         $photographerNewlyAssigned = $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id && !$originalPhotographerId;
 
-        $this->registerDeferredSideEffects(
-            $shoot->id,
-            $changesSummary,
-            $changesHtml,
-            $notifyClient,
-            $notifyPhotographer,
-            $originalPhotographerId,
-            $originalScheduledAt,
-            $originalScheduledDate,
-            $originalTime,
-            $originalStatus,
-            $originalWorkflow,
-            $photographerChanged,
-            $photographerNewlyAssigned
-        );
+        if (!$onlyFeaturedFlag) {
+            $this->registerDeferredSideEffects(
+                $shoot->id,
+                $changesSummary,
+                $changesHtml,
+                $notifyClient,
+                $notifyPhotographer,
+                $originalPhotographerId,
+                $originalScheduledAt,
+                $originalScheduledDate,
+                $originalTime,
+                $originalStatus,
+                $originalWorkflow,
+                $photographerChanged,
+                $photographerNewlyAssigned
+            );
+        }
 
-        return $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files']);
+        return $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files', 'ghostUsers']);
     }
 
     protected function registerDeferredSideEffects(

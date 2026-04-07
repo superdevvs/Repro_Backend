@@ -23,7 +23,7 @@ class UserController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
+        if (!$this->userHasAnyRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -33,39 +33,8 @@ class UserController extends Controller
         }
 
         // Optimize: Eager load relationships and batch queries
-        if ($user->role === 'salesRep') {
-            $repId = $user->id;
-            $clientIdsFromShoots = \App\Models\Shoot::where('rep_id', $repId)
-                ->pluck('client_id')
-                ->unique()
-                ->toArray();
-
-            $salesRepClientsQuery = User::query()->where('role', 'client');
-            if ($this->serviceGroupsFeatureAvailable()) {
-                $salesRepClientsQuery->with('serviceGroups');
-            }
-
-            $users = $salesRepClientsQuery->get()->filter(function (User $client) use ($repId, $clientIdsFromShoots) {
-                $metadata = $client->metadata ?? [];
-                $repCandidate = null;
-                if (is_array($metadata) && !empty($metadata)) {
-                    $repCandidate = $metadata['accountRepId']
-                        ?? $metadata['account_rep_id']
-                        ?? $metadata['repId']
-                        ?? $metadata['rep_id']
-                        ?? null;
-                }
-
-                if ($repCandidate !== null && (string) $repCandidate === (string) $repId) {
-                    return true;
-                }
-
-                if (isset($client->created_by_id) && $client->created_by_id !== null && (string) $client->created_by_id === (string) $repId) {
-                    return true;
-                }
-
-                return in_array($client->id, $clientIdsFromShoots, true);
-            })->values();
+        if ($this->isSalesRepUser($user)) {
+            $users = $this->getSalesRepVisibleAccounts($user);
         } else {
             $usersQuery = User::query();
             if ($this->serviceGroupsFeatureAvailable()) {
@@ -136,7 +105,7 @@ class UserController extends Controller
     {
         $admin = $request->user();
 
-        if (!in_array($admin->role, ['admin', 'superadmin'])) {
+        if (!$this->userHasAnyRole($admin, ['admin', 'superadmin', 'salesRep'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -179,6 +148,11 @@ class UserController extends Controller
         $validated = $request->validate($rules);
 
         $requestedRole = $validated['role'] ?? null;
+        if ($this->isSalesRepUser($admin) && !in_array($requestedRole, $this->salesRepCreatableRoles(), true)) {
+            return response()->json([
+                'message' => 'Sales reps can only create client accounts.',
+            ], 403);
+        }
         if ($requestedRole !== null) {
             $requestedEmail = strtolower((string) ($validated['email'] ?? ''));
             if ($requestedEmail === self::PRIMARY_SUPERADMIN_EMAIL && $requestedRole !== 'superadmin') {
@@ -244,6 +218,20 @@ class UserController extends Controller
             }
         } else {
             $validated['metadata'] = [];
+        }
+
+        if ($this->isSalesRepUser($admin)) {
+            $validated['created_by_id'] = (int) $admin->id;
+            $validated['created_by_name'] = $admin->name;
+
+            if (($validated['role'] ?? null) === 'client') {
+                $validated['metadata'] = array_merge($validated['metadata'] ?? [], [
+                    'accountRepId' => (string) $admin->id,
+                    'accountRep' => $admin->name,
+                    'account_rep_id' => (int) $admin->id,
+                    'account_rep' => $admin->name,
+                ]);
+            }
         }
 
         // Add photographer-specific fields to metadata
@@ -321,11 +309,43 @@ class UserController extends Controller
         ], 201);
     }
 
-    public function getClients()
+    public function getClients(Request $request)
     {
         $clientsQuery = User::query()->where('role', 'client');
         if ($this->serviceGroupsFeatureAvailable()) {
             $clientsQuery->with('serviceGroups');
+        }
+
+        $viewer = $request->user();
+        if ($this->isSalesRepUser($viewer)) {
+            $repId = (string) $viewer->id;
+            $numericRepId = is_numeric($viewer->id) ? (int) $viewer->id : null;
+            $clientIdsFromShoots = \App\Models\Shoot::where('rep_id', $viewer->id)
+                ->pluck('client_id')
+                ->filter()
+                ->map(fn ($id) => (string) $id)
+                ->unique()
+                ->values()
+                ->all();
+
+            $clientsQuery->where(function ($query) use ($repId, $numericRepId, $clientIdsFromShoots) {
+                $query->whereJsonContains('metadata->accountRepId', $repId)
+                    ->orWhereJsonContains('metadata->account_rep_id', $repId)
+                    ->orWhereJsonContains('metadata->repId', $repId)
+                    ->orWhereJsonContains('metadata->rep_id', $repId)
+                    ->orWhere('created_by_id', $repId);
+
+                if ($numericRepId !== null) {
+                    $query->orWhereJsonContains('metadata->accountRepId', $numericRepId)
+                        ->orWhereJsonContains('metadata->account_rep_id', $numericRepId)
+                        ->orWhereJsonContains('metadata->repId', $numericRepId)
+                        ->orWhereJsonContains('metadata->rep_id', $numericRepId);
+                }
+
+                if (!empty($clientIdsFromShoots)) {
+                    $query->orWhereIn('id', $clientIdsFromShoots);
+                }
+            });
         }
 
         $clients = $clientsQuery->get()->map(function ($client) {
@@ -398,12 +418,23 @@ class UserController extends Controller
         ]);
     }
 
-    public function getPhotographers()
+    public function getPhotographers(Request $request)
     {
-        $photographers = User::where(function ($q) {
-                $q->where('role', 'photographer')
-                  ->orWhereJsonContains('secondary_roles', 'photographer');
-            })->get();
+        $photographersQuery = User::where(function ($q) {
+            $q->where('role', 'photographer')
+                ->orWhereJsonContains('secondary_roles', 'photographer');
+        });
+
+        $viewer = $request->user();
+        if ($this->isSalesRepUser($viewer)) {
+            $scope = $this->getSalesRepShootScope($viewer);
+            $photographers = $photographersQuery
+                ->get()
+                ->filter(fn (User $photographer) => $this->salesRepCanAccessAccount($viewer, $photographer, $scope))
+                ->values();
+        } else {
+            $photographers = $photographersQuery->get();
+        }
 
         return response()->json([
             'status' => 'success',
@@ -435,11 +466,14 @@ class UserController extends Controller
     public function update(Request $request, $id)
     {
         $admin = $request->user();
-        if (!in_array($admin->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (!$this->userHasAnyRole($admin, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $user = User::findOrFail($id);
+        if ($this->isSalesRepUser($admin) && !$this->salesRepCanAccessAccount($admin, $user)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
 
         $rules = [
             'name' => 'sometimes|string|max:255',
@@ -478,6 +512,18 @@ class UserController extends Controller
         }
 
         $validated = $request->validate($rules);
+
+        if ($this->isSalesRepUser($admin)) {
+            if (!in_array($user->role, $this->salesRepCreatableRoles(), true)) {
+                return response()->json(['message' => 'Unauthorized'], 403);
+            }
+
+            if (array_key_exists('role', $validated) && ($validated['role'] ?? null) !== $user->role) {
+                return response()->json([
+                    'message' => 'Sales reps cannot change account roles.',
+                ], 403);
+            }
+        }
 
         $requestedRole = $validated['role'] ?? $user->role;
         $requestedEmail = strtolower((string) ($validated['email'] ?? $user->email));
@@ -539,6 +585,10 @@ class UserController extends Controller
             if (is_array($metadata)) {
                 $validated['metadata'] = $this->filterMetadataForWriter($metadata, $admin);
             }
+        }
+
+        if ($this->isSalesRepUser($admin)) {
+            unset($validated['created_by_id'], $validated['created_by_name']);
         }
 
         // Add photographer-specific fields to metadata
@@ -711,6 +761,117 @@ class UserController extends Controller
         ]);
     }
 
+    protected function salesRepCreatableRoles(): array
+    {
+        return ['client'];
+    }
+
+    protected function getSalesRepShootScope(User $salesRep): array
+    {
+        $salesRepShoots = \App\Models\Shoot::query()
+            ->where('rep_id', $salesRep->id)
+            ->get(['client_id', 'photographer_id']);
+
+        return [
+            'client_ids' => $salesRepShoots
+                ->pluck('client_id')
+                ->filter()
+                ->map(fn ($id) => (string) $id)
+                ->unique()
+                ->values()
+                ->all(),
+            'photographer_ids' => $salesRepShoots
+                ->pluck('photographer_id')
+                ->filter()
+                ->map(fn ($id) => (string) $id)
+                ->unique()
+                ->values()
+                ->all(),
+        ];
+    }
+
+    protected function salesRepOwnsClient(User $salesRep, User $client, ?array $scope = null): bool
+    {
+        if ($client->role !== 'client') {
+            return false;
+        }
+
+        $scope = $scope ?? $this->getSalesRepShootScope($salesRep);
+        $repId = (string) $salesRep->id;
+        $metadata = is_array($client->metadata) ? $client->metadata : [];
+        $repCandidate = $metadata['accountRepId']
+            ?? $metadata['account_rep_id']
+            ?? $metadata['repId']
+            ?? $metadata['rep_id']
+            ?? null;
+
+        if ($repCandidate !== null && (string) $repCandidate === $repId) {
+            return true;
+        }
+
+        if ($client->created_by_id !== null && (string) $client->created_by_id === $repId) {
+            return true;
+        }
+
+        return in_array((string) $client->id, $scope['client_ids'] ?? [], true);
+    }
+
+    protected function salesRepOwnsPhotographer(User $salesRep, User $photographer, ?array $scope = null): bool
+    {
+        $secondaryRoles = is_array($photographer->secondary_roles) ? $photographer->secondary_roles : [];
+        $isPhotographer = $photographer->role === 'photographer' || in_array('photographer', $secondaryRoles, true);
+
+        if (!$isPhotographer) {
+            return false;
+        }
+
+        $scope = $scope ?? $this->getSalesRepShootScope($salesRep);
+        if ($photographer->created_by_id !== null && (string) $photographer->created_by_id === (string) $salesRep->id) {
+            return true;
+        }
+
+        return in_array((string) $photographer->id, $scope['photographer_ids'] ?? [], true);
+    }
+
+    protected function salesRepCanAccessAccount(User $salesRep, User $account, ?array $scope = null): bool
+    {
+        return $this->salesRepOwnsClient($salesRep, $account, $scope)
+            || $this->salesRepOwnsPhotographer($salesRep, $account, $scope);
+    }
+
+    protected function getSalesRepVisibleAccounts(User $salesRep)
+    {
+        $scope = $this->getSalesRepShootScope($salesRep);
+
+        $clientQuery = User::query()->where('role', 'client');
+        if ($this->serviceGroupsFeatureAvailable()) {
+            $clientQuery->with('serviceGroups');
+        }
+
+        $photographerQuery = User::query()->where(function ($query) {
+            $query->where('role', 'photographer')
+                ->orWhereJsonContains('secondary_roles', 'photographer');
+        });
+        if ($this->serviceGroupsFeatureAvailable()) {
+            $photographerQuery->with('serviceGroups');
+        }
+
+        $clientUsers = $clientQuery
+            ->get()
+            ->filter(fn (User $client) => $this->salesRepOwnsClient($salesRep, $client, $scope))
+            ->values();
+
+        $photographerUsers = $photographerQuery
+            ->get()
+            ->filter(fn (User $photographer) => $this->salesRepOwnsPhotographer($salesRep, $photographer, $scope))
+            ->values();
+
+        return $clientUsers
+            ->concat($photographerUsers)
+            ->unique(fn (User $record) => (string) $record->id)
+            ->values();
+    }
+
     protected function sanitizeShootCcEmails(array $emails): array
     {
         return collect($emails)
@@ -847,6 +1008,38 @@ class UserController extends Controller
         }
 
         return in_array($viewer->role, ['superadmin'], true);
+    }
+
+    protected function normalizeRole(?string $role): string
+    {
+        if ($role === null) {
+            return '';
+        }
+
+        return strtolower(str_replace(['_', '-'], '', $role));
+    }
+
+    protected function userHasAnyRole(?User $user, array $roles): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $normalizedUserRole = $this->normalizeRole($user->role);
+        $normalizedSecondaryRoles = collect(is_array($user->secondary_roles) ? $user->secondary_roles : [])
+            ->map(fn ($role) => $this->normalizeRole($role))
+            ->filter()
+            ->values()
+            ->all();
+        $normalizedAllowedRoles = array_map(fn ($role) => $this->normalizeRole($role), $roles);
+
+        return in_array($normalizedUserRole, $normalizedAllowedRoles, true)
+            || !empty(array_intersect($normalizedSecondaryRoles, $normalizedAllowedRoles));
+    }
+
+    protected function isSalesRepUser(?User $user): bool
+    {
+        return $this->userHasAnyRole($user, ['salesRep']);
     }
 
     protected function guardPrimarySuperAdmin(User $user, ?string $requestedRole)

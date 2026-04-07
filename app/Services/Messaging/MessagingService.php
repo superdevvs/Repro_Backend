@@ -13,6 +13,7 @@ use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
 use App\Models\MessageThread;
 use App\Models\SmsNumber;
+use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\Contracts\EmailProviderInterface;
 use Carbon\CarbonInterface;
@@ -188,7 +189,11 @@ class MessagingService
         ?string $providerOverride = null
     ): Message {
         $contact = $this->resolveContact($payload);
-        $thread = $this->findOrCreateThread($contact, $channelType);
+        $thread = $this->findOrCreateThread(
+            $contact,
+            $channelType,
+            $this->resolveThreadShootId($payload, $channelType, $providerOverride)
+        );
 
         $message = Message::create([
             'channel' => $channelType,
@@ -214,6 +219,7 @@ class MessagingService
             'sender_display_name' => $payload['sender_display_name'] ?? null,
             'template_id' => $payload['template_id'] ?? null,
             'related_shoot_id' => $payload['related_shoot_id'] ?? null,
+            'related_shoot_context_type' => $payload['related_shoot_context_type'] ?? null,
             'related_account_id' => $payload['related_account_id'] ?? null,
             'related_invoice_id' => $payload['related_invoice_id'] ?? null,
             'thread_id' => $thread->id,
@@ -248,22 +254,30 @@ class MessagingService
         return $message;
     }
 
-    protected function findOrCreateThread(Contact $contact, string $channel): MessageThread
+    protected function findOrCreateThread(Contact $contact, string $channel, ?int $relatedShootId = null): MessageThread
     {
-        return DB::transaction(function () use ($contact, $channel) {
+        return DB::transaction(function () use ($contact, $channel, $relatedShootId) {
             return MessageThread::firstOrCreate(
-                ['contact_id' => $contact->id, 'channel' => $channel],
-                ['last_message_at' => now()]
+                [
+                    'contact_id' => $contact->id,
+                    'channel' => $channel,
+                    'related_shoot_id' => $relatedShootId,
+                ],
+                [
+                    'last_message_at' => now(),
+                    'related_shoot_id' => $relatedShootId,
+                ]
             );
         });
     }
 
     protected function updateThreadForMessage(MessageThread $thread, Message $message): MessageThread
     {
-        $snippet = Str::limit(trim($message->body_text ?? $message->body_html ?? ''), 200);
+        $snippet = $this->extractThreadSnippet($message);
 
         $thread->fill([
-            'last_message_at' => now(),
+            'related_shoot_id' => $this->resolvePersistentThreadShootId($thread, $message),
+            'last_message_at' => $message->created_at ?? now(),
             'last_direction' => $message->direction,
             'last_snippet' => $snippet,
             'unread_for_user_ids_json' => $this->resolveUnreadRecipients($thread, $message),
@@ -272,15 +286,140 @@ class MessagingService
         return $thread->refresh()->load(['contact', 'assignedTo']);
     }
 
+    public function rebuildThreadState(MessageThread $thread): MessageThread
+    {
+        $messages = $thread->messages()
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get();
+
+        if ($messages->isEmpty()) {
+            $thread->fill([
+                'last_message_at' => null,
+                'last_direction' => null,
+                'last_snippet' => null,
+                'unread_for_user_ids_json' => [],
+            ])->save();
+
+            return $thread->refresh()->load(['contact', 'assignedTo']);
+        }
+
+        $latestMessage = $messages->last();
+        $unreadRecipients = [];
+
+        foreach ($messages as $message) {
+            $unreadRecipients = $this->resolveUnreadRecipientsFromState($unreadRecipients, $message);
+        }
+
+        $thread->fill([
+            'related_shoot_id' => $thread->related_shoot_id,
+            'last_message_at' => $latestMessage?->created_at,
+            'last_direction' => $latestMessage?->direction,
+            'last_snippet' => $latestMessage ? $this->extractThreadSnippet($latestMessage) : null,
+            'unread_for_user_ids_json' => $unreadRecipients,
+        ])->save();
+
+        return $thread->refresh()->load(['contact', 'assignedTo']);
+    }
+
+    public function backfillLinkedInternalContactThreadsByShoot(): void
+    {
+        $messages = Message::query()
+            ->with(['thread', 'thread.contact'])
+            ->where('channel', 'EMAIL')
+            ->where('provider', 'INTERNAL')
+            ->whereNotNull('related_shoot_id')
+            ->orderBy('id')
+            ->get();
+
+        if ($messages->isEmpty()) {
+            return;
+        }
+
+        $touchedThreadIds = [];
+
+        DB::transaction(function () use ($messages, &$touchedThreadIds) {
+            foreach ($messages as $message) {
+                $currentThread = $message->thread;
+                $contact = $currentThread?->contact;
+
+                if (!$contact instanceof Contact) {
+                    $contact = Contact::query()->find($message->thread?->contact_id);
+                }
+
+                if (!$contact instanceof Contact) {
+                    continue;
+                }
+
+                $targetThread = MessageThread::firstOrCreate(
+                    [
+                        'contact_id' => $contact->id,
+                        'channel' => 'EMAIL',
+                        'related_shoot_id' => (int) $message->related_shoot_id,
+                    ],
+                    [
+                        'assigned_to_user_id' => $currentThread?->assigned_to_user_id,
+                        'status' => $currentThread?->status,
+                        'tags_json' => $currentThread?->tags_json,
+                        'last_message_at' => $currentThread?->last_message_at ?? $message->created_at ?? now(),
+                        'created_at' => $currentThread?->created_at ?? $message->created_at ?? now(),
+                        'updated_at' => $currentThread?->updated_at ?? $message->updated_at ?? now(),
+                    ]
+                );
+
+                if ((int) $message->thread_id !== (int) $targetThread->id) {
+                    $touchedThreadIds[] = (int) $message->thread_id;
+                    $touchedThreadIds[] = (int) $targetThread->id;
+
+                    $message->thread_id = $targetThread->id;
+                    $message->save();
+                }
+            }
+        });
+
+        $threadIds = collect($touchedThreadIds)
+            ->filter(fn ($id) => (int) $id > 0)
+            ->unique()
+            ->values();
+
+        foreach ($threadIds as $threadId) {
+            $thread = MessageThread::query()->find($threadId);
+
+            if (!$thread) {
+                continue;
+            }
+
+            if (!$thread->messages()->exists()) {
+                $thread->delete();
+                continue;
+            }
+
+            $this->rebuildThreadState($thread);
+        }
+    }
+
     protected function resolveUnreadRecipients(MessageThread $thread, Message $message): array
     {
-        $current = collect($thread->unread_for_user_ids_json ?? []);
+        return $this->resolveUnreadRecipientsFromState($thread->unread_for_user_ids_json ?? [], $message);
+    }
+
+    /**
+     * @param  array<int, int|string>  $currentUnread
+     * @return array<int, int>
+     */
+    protected function resolveUnreadRecipientsFromState(array $currentUnread, Message $message): array
+    {
+        $current = collect($currentUnread)->map(fn ($id) => (int) $id);
 
         if ($message->direction === 'OUTBOUND') {
             return $current
                 ->reject(fn ($id) => (int) $id === (int) ($message->created_by ?? 0))
                 ->values()
                 ->all();
+        }
+
+        if ($this->isLinkedInternalContactMessage($message)) {
+            return $this->resolveLinkedInternalUnreadRecipients($message);
         }
 
         $roles = ['admin', 'superadmin', 'salesRep'];
@@ -291,6 +430,158 @@ class MessagingService
             ->all();
 
         return array_values(array_unique($userIds));
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    protected function resolveThreadShootId(array $payload, string $channelType, ?string $providerOverride): ?int
+    {
+        if (!$this->isLinkedInternalContactPayload($payload, $channelType, $providerOverride)) {
+            return null;
+        }
+
+        $relatedShootId = $payload['related_shoot_id'] ?? null;
+
+        return is_numeric($relatedShootId) ? (int) $relatedShootId : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    protected function isLinkedInternalContactPayload(array $payload, string $channelType, ?string $providerOverride): bool
+    {
+        return $channelType === 'EMAIL'
+            && $providerOverride === 'INTERNAL'
+            && !empty($payload['related_shoot_id']);
+    }
+
+    protected function resolveLinkedInternalUnreadRecipients(Message $message): array
+    {
+        $recipients = User::query()
+            ->select(['id', 'role', 'secondary_roles'])
+            ->get()
+            ->filter(fn (User $user) => $this->userHasAnyNormalizedRole($user, ['admin', 'superadmin', 'editingmanager']))
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        $salesRepId = $this->resolveAssociatedSalesRepId(
+            $message->related_shoot_id ? (int) $message->related_shoot_id : null,
+            $message->related_account_id ? (int) $message->related_account_id : null,
+        );
+
+        if ($salesRepId !== null) {
+            $recipients[] = $salesRepId;
+        }
+
+        return array_values(array_unique(array_map('intval', $recipients)));
+    }
+
+    protected function isLinkedInternalContactMessage(Message $message): bool
+    {
+        return $message->provider === 'INTERNAL' && !empty($message->related_shoot_id);
+    }
+
+    protected function extractThreadSnippet(Message $message): string
+    {
+        return Str::limit(trim($message->body_text ?? $message->body_html ?? ''), 200);
+    }
+
+    protected function resolvePersistentThreadShootId(MessageThread $thread, Message $message): ?int
+    {
+        if ($thread->related_shoot_id !== null) {
+            return (int) $thread->related_shoot_id;
+        }
+
+        if (!$this->isLinkedInternalContactMessage($message)) {
+            return null;
+        }
+
+        return $message->related_shoot_id ? (int) $message->related_shoot_id : null;
+    }
+
+    protected function resolveAssociatedSalesRepId(?int $shootId, ?int $accountId = null): ?int
+    {
+        $shoot = null;
+
+        if ($shootId !== null) {
+            $shoot = Shoot::query()
+                ->with('client')
+                ->find($shootId);
+        }
+
+        if ($shoot?->rep_id) {
+            return (int) $shoot->rep_id;
+        }
+
+        $client = $shoot?->client;
+
+        if (!$client && $accountId !== null) {
+            $candidate = User::query()->find($accountId);
+            if ($candidate && $this->normalizedRole($candidate->role) === 'client') {
+                $client = $candidate;
+            }
+        }
+
+        if (!$client instanceof User) {
+            return null;
+        }
+
+        return $this->resolveClientRepId($client);
+    }
+
+    protected function resolveClientRepId(User $client): ?int
+    {
+        $metadata = is_array($client->metadata) ? $client->metadata : [];
+        $repCandidate = $client->created_by_id
+            ?? $metadata['accountRepId']
+            ?? $metadata['account_rep_id']
+            ?? $metadata['repId']
+            ?? $metadata['rep_id']
+            ?? null;
+
+        return is_numeric($repCandidate) ? (int) $repCandidate : null;
+    }
+
+    /**
+     * @param  array<int, string>  $roles
+     */
+    protected function userHasAnyNormalizedRole(User $user, array $roles): bool
+    {
+        $normalizedRoles = $this->normalizedRolesForUser($user);
+
+        foreach ($roles as $role) {
+            if (in_array($this->normalizedRole($role), $normalizedRoles, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function normalizedRolesForUser(User $user): array
+    {
+        $roles = [$user->role];
+
+        if (is_array($user->secondary_roles)) {
+            $roles = array_merge($roles, $user->secondary_roles);
+        }
+
+        return collect($roles)
+            ->filter(fn ($role) => is_string($role) && trim($role) !== '')
+            ->map(fn ($role) => $this->normalizedRole($role))
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function normalizedRole(?string $role): string
+    {
+        return strtolower(str_replace(['-', '_', ' '], '', (string) $role));
     }
 
     /**

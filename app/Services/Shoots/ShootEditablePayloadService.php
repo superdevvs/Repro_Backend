@@ -44,6 +44,7 @@ class ShootEditablePayloadService
             'tour_links' => 'nullable|array',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,sold,rented',
+            'is_featured' => 'nullable|boolean',
             'shoot_notes' => 'nullable|string',
             'company_notes' => 'nullable|string',
             'photographer_notes' => 'nullable|string',
@@ -194,6 +195,9 @@ class ShootEditablePayloadService
         }
         if (array_key_exists('property_status', $validated)) {
             $shoot->property_status = $validated['property_status'];
+        }
+        if (array_key_exists('is_featured', $validated)) {
+            $shoot->is_featured = (bool) $validated['is_featured'];
         }
 
         $autoPropertyTourLinks = [];

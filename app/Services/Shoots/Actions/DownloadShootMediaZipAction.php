@@ -4,17 +4,25 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\ShootClientReleaseAccessService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class DownloadShootMediaZipAction
 {
-    public function __construct(protected DropboxWorkflowService $dropboxService)
+    public function __construct(
+        protected DropboxWorkflowService $dropboxService,
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
+    )
     {
     }
 
     public function execute(Request $request, Shoot $shoot)
     {
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
         $type = $request->query('type', 'raw');
         $folderPath = $shoot->getDropboxFolderForType($type);
 

@@ -25,21 +25,31 @@ class ContactSubmissionController extends Controller
      */
     public function store(Request $request, string $username)
     {
+        $client = $this->resolveClientIdentifier($username);
+        if (!$client) {
+            return response()->json(['message' => 'Client not found'], 404);
+        }
+
+        return $this->storeForClient($request, $client);
+    }
+
+    /**
+     * Store a contact form submission from client portfolio
+     * POST /api/public/clients/{client}/contact
+     */
+    public function storeByClient(Request $request, User $client)
+    {
+        return $this->storeForClient($request, $client);
+    }
+
+    protected function storeForClient(Request $request, User $client)
+    {
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|max:255',
             'phone' => 'nullable|string|max:50',
             'message' => 'required|string|max:5000',
         ]);
-
-        // Find the client by username
-        $client = User::where('username', $username)
-            ->orWhere('id', $username)
-            ->first();
-
-        if (!$client) {
-            return response()->json(['message' => 'Client not found'], 404);
-        }
 
         try {
             // Create the submission
@@ -74,6 +84,13 @@ class ContactSubmissionController extends Controller
                 'message' => 'Failed to send your message. Please try again.',
             ], 500);
         }
+    }
+
+    protected function resolveClientIdentifier(string $identifier): ?User
+    {
+        return User::where('username', $identifier)
+            ->orWhere('id', $identifier)
+            ->first();
     }
 
     /**

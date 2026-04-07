@@ -52,7 +52,23 @@ class InvoiceController extends Controller
     public function show(Invoice $invoice)
     {
         return response()->json(
-            $invoice->load(['items', 'user'])
+            $invoice
+                ->load([
+                    'items',
+                    'user',
+                    'client',
+                    'photographer',
+                    'payments',
+                    'shoot',
+                    'shoot.client',
+                    'shoot.photographer',
+                    'shoot.payments',
+                    'shoots',
+                    'shoots.client',
+                    'shoots.photographer',
+                    'shoots.payments',
+                ])
+                ->applyResolvedPaymentMetadata()
         );
     }
 

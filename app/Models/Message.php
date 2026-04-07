@@ -41,6 +41,7 @@ class Message extends Model
         'sender_display_name',
         'template_id',
         'related_shoot_id',
+        'related_shoot_context_type',
         'related_account_id',
         'related_invoice_id',
         'thread_id',

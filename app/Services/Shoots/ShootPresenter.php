@@ -103,7 +103,7 @@ class ShootPresenter
 
     public function transformShoot(Shoot $shoot): Shoot
     {
-        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser']);
+        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers']);
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select('id', 'shoot_id', 'workflow_stage', 'is_favorite', 'is_cover', 'flag_reason', 'url', 'path', 'dropbox_path');
@@ -158,6 +158,7 @@ class ShootPresenter
         $isPhotographerRole = $requestingRole === 'photographer';
         $isEditorRole = $requestingRole === 'editor';
         $isClientRole = $requestingRole === 'client';
+        $requestingUserId = $requestingUser?->id ? (string) $requestingUser->id : null;
 
         if ($isClientRole && $shoot->photographer) {
             $shoot->setAttribute('photographer', [
@@ -214,6 +215,53 @@ class ShootPresenter
             $shoot->setAttribute('client', null);
         }
 
+        $ghostUsers = collect($shoot->ghostUsers ?? [])
+            ->map(function ($ghostUser) {
+                if (is_array($ghostUser)) {
+                    return [
+                        'id' => isset($ghostUser['id']) ? (string) $ghostUser['id'] : null,
+                        'name' => $ghostUser['name'] ?? 'Client',
+                        'email' => $ghostUser['email'] ?? null,
+                        'company' => $ghostUser['company'] ?? ($ghostUser['company_name'] ?? null),
+                    ];
+                }
+
+                return [
+                    'id' => isset($ghostUser->id) ? (string) $ghostUser->id : null,
+                    'name' => $ghostUser->name ?? 'Client',
+                    'email' => $ghostUser->email ?? null,
+                    'company' => $ghostUser->company_name ?? $ghostUser->company ?? null,
+                ];
+            })
+            ->filter(fn ($ghostUser) => !empty($ghostUser['id']))
+            ->values();
+        $ghostUserIds = $ghostUsers->pluck('id')->values()->all();
+        $isDeliveredForGhostAccess = in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: '')), [
+            Shoot::STATUS_DELIVERED,
+            'ready_for_client',
+            'admin_verified',
+            'ready',
+            'workflow_completed',
+            'client_delivered',
+        ], true);
+        $isGhostVisibleForUser = $isClientRole
+            && $isDeliveredForGhostAccess
+            && $requestingUserId !== null
+            && (string) $shoot->client_id !== $requestingUserId
+            && in_array($requestingUserId, $ghostUserIds, true);
+
+        $shoot->setAttribute('ghost_user_ids', $ghostUserIds);
+        $shoot->setAttribute('ghost_users', $ghostUsers->all());
+        $shoot->setAttribute('is_ghost_visible_for_user', $isGhostVisibleForUser);
+        $shoot->unsetRelation('ghostUsers');
+
+        $tourLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
+        $realtorClient = $this->resolveRealtorClient($tourLinks);
+        if ($realtorClient) {
+            $tourLinks['realtor_client'] = $realtorClient;
+        }
+        $shoot->setAttribute('realtor_client', $realtorClient);
+
         $shoot->package = [
             'name' => $shoot->package_name ?? optional($shoot->service)->name,
             'expectedDeliveredCount' => $shoot->expected_final_count,
@@ -260,6 +308,8 @@ class ShootPresenter
         $shoot->iguide_floorplans = $shoot->iguide_floorplans;
         $shoot->iguide_last_synced_at = $shoot->iguide_last_synced_at;
         $shoot->is_private_listing = $shoot->is_private_listing ?? false;
+        $shoot->is_featured = $shoot->is_featured ?? false;
+        $shoot->isFeatured = (bool) ($shoot->is_featured ?? false);
         $shoot->mmm_status = $shoot->mmm_status;
         $shoot->mmm_order_number = $shoot->mmm_order_number;
         $shoot->mmm_buyer_cookie = $shoot->mmm_buyer_cookie;
@@ -267,7 +317,7 @@ class ShootPresenter
         $shoot->mmm_last_punchout_at = $shoot->mmm_last_punchout_at;
         $shoot->mmm_last_order_at = $shoot->mmm_last_order_at;
         $shoot->mmm_last_error = $shoot->mmm_last_error;
-        $shoot->tour_links = $shoot->tour_links ?? [];
+        $shoot->tour_links = $tourLinks;
 
         try {
             if ($shoot->relationLoaded('services') && $shoot->services->isNotEmpty()) {
@@ -393,6 +443,29 @@ class ShootPresenter
             ->filter()
             ->values()
             ->all();
+    }
+
+    protected function resolveRealtorClient(array $tourLinks): ?array
+    {
+        $realtorClientId = $tourLinks['realtor_client_id'] ?? $tourLinks['realtorClientId'] ?? null;
+        if (!$realtorClientId) {
+            return null;
+        }
+
+        $client = User::query()
+            ->where('role', 'client')
+            ->find($realtorClientId);
+
+        if (!$client) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $client->id,
+            'name' => $client->name ?? 'Client',
+            'email' => $client->email ?? null,
+            'company' => $client->company_name ?? $client->company ?? null,
+        ];
     }
 
     protected function buildMediaSummary(Shoot $shoot): array

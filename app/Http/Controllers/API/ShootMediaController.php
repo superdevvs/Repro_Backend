@@ -23,6 +23,7 @@ use App\Services\Shoots\Actions\VerifyShootFileAction;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootAlbumService;
 use App\Services\Shoots\ShootEditorDownloadService;
+use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootMediaInteractionService;
 use App\Services\Shoots\ShootMediaReadService;
 use App\Services\Shoots\ShootShareLinkReadService;
@@ -35,6 +36,7 @@ class ShootMediaController extends Controller
         protected DropboxWorkflowService $dropboxService,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected ShootAlbumService $shootAlbumService,
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected ShootMediaReadService $shootMediaReadService,
         protected ShootMediaInteractionService $shootMediaInteractionService,
         protected ShootEditorDownloadService $shootEditorDownloadService,
@@ -243,6 +245,9 @@ class ShootMediaController extends Controller
         if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
         $url = $this->downloadShootMediaAction->execute($file);
 
         if (!$url) {
@@ -261,6 +266,10 @@ class ShootMediaController extends Controller
 
     public function bulkDownloadMedia(Request $request, Shoot $shoot)
     {
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
         $request->validate([
             'ids' => 'required|array|min:1',
             'ids.*' => 'integer',
@@ -276,6 +285,10 @@ class ShootMediaController extends Controller
 
     public function downloadSelectedFiles(Request $request, Shoot $shoot)
     {
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
         return $this->downloadSelectedShootFilesAction->execute($request, $shoot, $request->user());
     }
 
@@ -315,6 +328,10 @@ class ShootMediaController extends Controller
     public function downloadMediaZip($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
+
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
 
         return $this->downloadShootMediaZipAction->execute($request, $shoot);
     }

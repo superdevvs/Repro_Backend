@@ -112,6 +112,12 @@ class User extends Authenticatable
         return $this->hasMany(Shoot::class, 'photographer_id');
     }
 
+    public function ghostAccessibleShoots()
+    {
+        return $this->belongsToMany(Shoot::class, 'shoot_ghost_users')
+            ->withTimestamps();
+    }
+
     /**
      * Get the service capabilities (service IDs) for this photographer
      * Stored in metadata.specialties as array of service IDs

@@ -161,6 +161,8 @@ class ShootActivityLogger
             // Private listing
             'private_listing_marked' => 'Marked as Private Exclusive' . $by,
             'private_listing_unmarked' => 'Removed Private Exclusive status' . $by,
+            'featured_shoot_marked' => 'Marked as Featured Shoot' . $by,
+            'featured_shoot_unmarked' => 'Removed Featured Shoot status' . $by,
         ];
 
         return $descriptions[$action] ?? ucfirst(str_replace('_', ' ', $action));

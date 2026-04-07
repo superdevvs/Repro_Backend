@@ -14,6 +14,7 @@ class MessageThread extends Model
     protected $fillable = [
         'channel',
         'contact_id',
+        'related_shoot_id',
         'assigned_to_user_id',
         'last_message_at',
         'last_direction',
@@ -34,6 +35,11 @@ class MessageThread extends Model
         return $this->belongsTo(Contact::class);
     }
 
+    public function shoot(): BelongsTo
+    {
+        return $this->belongsTo(Shoot::class, 'related_shoot_id');
+    }
+
     public function assignedTo(): BelongsTo
     {
         return $this->belongsTo(User::class, 'assigned_to_user_id');
@@ -49,7 +55,7 @@ class MessageThread extends Model
      */
     public function markUnreadForStaff(): void
     {
-        $staffRoles = ['admin', 'superadmin', 'salesRep'];
+        $staffRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep'];
         
         $userIds = User::query()
             ->whereIn('role', $staffRoles)
@@ -82,4 +88,3 @@ class MessageThread extends Model
         return in_array($userId, $this->unread_for_user_ids_json ?? []);
     }
 }
-

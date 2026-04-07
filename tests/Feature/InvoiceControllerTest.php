@@ -115,7 +115,7 @@ class InvoiceControllerTest extends TestCase
         $show->assertJsonPath('items.0.type', InvoiceItem::TYPE_CHARGE);
     }
 
-    public function test_admin_can_send_and_mark_invoice_paid(): void
+    public function test_admin_can_mark_invoice_paid_with_payment_metadata(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);
         $client = User::factory()->create(['role' => 'client']);
@@ -143,20 +143,140 @@ class InvoiceControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $sendResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/send');
-        $sendResponse->assertOk();
-        $sendResponse->assertJsonPath('data.status', Invoice::STATUS_SENT);
-        $this->assertNotNull($sendResponse->json('data.sent_at'));
-
-        $paidResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/mark-paid');
+        $paidResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/mark-paid', [
+            'paid_at' => '2025-08-15T10:30:00Z',
+            'payment_method' => 'check',
+            'payment_details' => [
+                'check_number' => '1009',
+            ],
+        ]);
         $paidResponse->assertOk();
         $paidResponse->assertJsonPath('data.status', Invoice::STATUS_PAID);
-        $paidResponse->assertJsonPath('data.balance_due', '0.00');
+        $paidResponse->assertJsonPath('data.payment_method', 'check');
+        $paidResponse->assertJsonPath('data.payment_details.check_number', '1009');
+        $this->assertNotNull($paidResponse->json('data.paid_at'));
 
         $this->assertDatabaseHas('invoices', [
             'id' => $invoice->id,
             'status' => Invoice::STATUS_PAID,
+            'payment_method' => 'check',
         ]);
+    }
+
+    public function test_paid_invoice_list_resolves_payment_method_from_linked_shoot_payment(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $service = $this->createService();
+
+        $shoot = $this->createShoot($client, $photographer, $service, Carbon::parse('2025-11-10'), 275.00);
+
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 275.00,
+            'currency' => 'USD',
+            'payment_method' => 'square',
+            'payment_details' => [
+                'brand' => 'amex',
+                'last4' => '9009',
+            ],
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => Carbon::parse('2025-11-11 09:00:00'),
+        ]);
+
+        $invoice = app(InvoiceService::class)->generateForShoot($shoot);
+        $invoice->forceFill([
+            'payment_method' => null,
+            'payment_details' => null,
+        ])->save();
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->getJson('/api/invoices?paid=true');
+
+        $response->assertOk();
+        $response->assertJsonFragment(['id' => $invoice->id]);
+        $response->assertJsonPath('data.0.payment_method', 'square');
+        $response->assertJsonPath('data.0.payment_details.brand', 'amex');
+        $response->assertJsonPath('data.0.payment_details.last4', '9009');
+    }
+
+    public function test_admin_invoice_show_resolves_payment_method_from_linked_payment(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $service = $this->createService();
+
+        $shoot = $this->createShoot($client, $photographer, $service, Carbon::parse('2025-12-10'), 325.00);
+
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 325.00,
+            'currency' => 'USD',
+            'payment_method' => 'square',
+            'payment_details' => [
+                'brand' => 'visa',
+                'last4' => '4242',
+            ],
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => Carbon::parse('2025-12-11 10:15:00'),
+        ]);
+
+        $invoice = app(InvoiceService::class)->generateForShoot($shoot);
+        $invoice->forceFill([
+            'payment_method' => null,
+            'payment_details' => null,
+        ])->save();
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->getJson('/api/admin/invoices/' . $invoice->id);
+
+        $response->assertOk();
+        $response->assertJsonPath('payment_method', 'square');
+        $response->assertJsonPath('payment_details.brand', 'visa');
+        $response->assertJsonPath('payment_details.last4', '4242');
+    }
+
+    public function test_shoot_invoice_route_resolves_payment_method_from_paid_shoot_payment(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $service = $this->createService();
+
+        $shoot = $this->createShoot($client, $photographer, $service, Carbon::parse('2026-01-10'), 410.00);
+
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 410.00,
+            'currency' => 'USD',
+            'payment_method' => 'square',
+            'payment_details' => [
+                'brand' => 'mastercard',
+                'last4' => '5454',
+            ],
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => Carbon::parse('2026-01-11 14:20:00'),
+        ]);
+
+        $invoice = app(InvoiceService::class)->generateForShoot($shoot);
+        $invoice->forceFill([
+            'payment_method' => null,
+            'payment_details' => null,
+        ])->save();
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/invoice');
+
+        $response->assertOk();
+        $response->assertJsonPath('data.id', $invoice->id);
+        $response->assertJsonPath('data.payment_method', 'square');
+        $response->assertJsonPath('data.payment_details.brand', 'mastercard');
+        $response->assertJsonPath('data.payment_details.last4', '5454');
     }
 
     private function createService(): Service

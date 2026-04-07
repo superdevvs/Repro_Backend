@@ -47,18 +47,14 @@ class ShootPublicAssetsController extends Controller
 
     public function publicClientProfile(Request $request, $clientId)
     {
-        $user = $request->user();
-        if (!$user) {
-            return response()->json(['message' => 'Authentication required'], 401);
+        $client = User::find($clientId);
+        if (!$client) {
+            return response()->json(['message' => 'Client not found'], 404);
         }
 
-        $client = User::findOrFail($clientId);
-        $payload = $this->shootPublicAssetsService->buildClientProfilePayload($user, $client);
-        if (!$payload) {
-            return response()->json(['message' => 'You do not have permission to view this client profile'], 403);
-        }
-
-        return response()->json($payload);
+        return response()->json(
+            $this->shootPublicAssetsService->buildPublicClientProfilePayload($client)
+        );
     }
 
     public function generatePropertyDescription(Request $request, Shoot $shoot)

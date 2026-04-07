@@ -90,6 +90,7 @@ class Shoot extends Model
         'iguide_last_synced_at',
         'iguide_property_id',
         'is_private_listing',
+        'is_featured',
         'listing_type',
         'property_status',
         // MMM Integration
@@ -155,6 +156,7 @@ class Shoot extends Model
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
+        'is_featured' => 'boolean',
         'listing_type' => 'string',
         'property_status' => 'string',
         'mmm_last_punchout_at' => 'datetime',
@@ -217,6 +219,12 @@ class Shoot extends Model
     {
         return $this->belongsToMany(Service::class, 'shoot_service')
             ->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id'])
+            ->withTimestamps();
+    }
+
+    public function ghostUsers()
+    {
+        return $this->belongsToMany(User::class, 'shoot_ghost_users')
             ->withTimestamps();
     }
 

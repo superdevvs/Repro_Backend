@@ -85,6 +85,7 @@ class ShootListingService
                 'rep:id,name,email,avatar',
                 'service:id,name',
                 'services.category',
+                'ghostUsers:id,name,email,company_name',
             ];
 
             if ($needsFiles) {
@@ -127,7 +128,24 @@ class ShootListingService
             } elseif ($user && $user->role === 'client') {
                 $canViewAllPrivateListings = $isPrivateListingRequest && $privateListingScope === 'all';
                 if (!$canViewAllPrivateListings) {
-                    $query->where('client_id', $user->id);
+                    $query->where(function (Builder $scope) use ($user) {
+                        $scope->where('client_id', $user->id)
+                            ->orWhere(function (Builder $ghostScope) use ($user) {
+                                $ghostScope->whereHas('ghostUsers', function (Builder $ghostQuery) use ($user) {
+                                    $ghostQuery->where('users.id', $user->id);
+                                })->where(function (Builder $deliveredScope) {
+                                    $deliveredScope->whereIn('status', [Shoot::STATUS_DELIVERED])
+                                        ->orWhereIn('workflow_status', [
+                                            Shoot::STATUS_DELIVERED,
+                                            'ready_for_client',
+                                            'admin_verified',
+                                            'ready',
+                                            'workflow_completed',
+                                            'client_delivered',
+                                        ]);
+                                });
+                            });
+                    });
                 }
             } elseif ($user && $user->role === 'editor') {
                 $query->where(function (Builder $scope) use ($user) {

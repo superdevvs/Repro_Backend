@@ -27,12 +27,15 @@ class InvoiceController extends Controller
             'photographer',
             'salesRep',
             'client',
+            'payments',
             'shoot',
             'shoot.client',
             'shoot.photographer',
+            'shoot.payments',
             'shoots',
             'shoots.client',
             'shoots.photographer',
+            'shoots.payments',
             'items',
         ])->withCount('shoots');
 
@@ -116,6 +119,10 @@ class InvoiceController extends Controller
         $invoices = $query
             ->orderByDesc('billing_period_start')
             ->paginate($request->integer('per_page', 15));
+
+        $invoices->getCollection()->transform(
+            fn (Invoice $invoice) => $invoice->applyResolvedPaymentMetadata()
+        );
 
         return response()->json($invoices);
     }

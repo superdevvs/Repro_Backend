@@ -27,10 +27,19 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $links = AccountLink::with(['mainAccount', 'linkedAccount'])
             ->orderByRaw("CASE WHEN status = 'active' THEN 0 ELSE 1 END")
             ->orderByDesc('updated_at')
             ->get();
+
+        if ($viewer && $this->isSalesRepUser($viewer)) {
+            $links = $links
+                ->filter(fn (AccountLink $link) => $this->salesRepCanManageLink($viewer, $link, $salesRepScope))
+                ->values();
+        }
 
         return response()->json([
             'success' => true,
@@ -53,6 +62,9 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $validated = $request->validate([
             'mainAccountId' => 'required|exists:users,id',
             'clientAccountId' => 'required|exists:users,id|different:mainAccountId',
@@ -64,6 +76,12 @@ class AccountLinkController extends Controller
         $clientAccount = User::findOrFail($validated['clientAccountId']);
         $sharedDetails = AccountLink::normalizeSharedDetails($validated['sharedDetails']);
         $notes = $validated['notes'] ?? null;
+
+        if ($viewer && $this->isSalesRepUser($viewer)) {
+            if ($response = $this->ensureSalesRepCanManageRelationship($viewer, $mainAccount, $clientAccount, $salesRepScope)) {
+                return $response;
+            }
+        }
 
         if ($response = $this->validateRelationship($mainAccount, $clientAccount)) {
             return $response;
@@ -94,6 +112,9 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $validated = $request->validate([
             'mainAccountId' => 'required|exists:users,id',
             'clientAccountIds' => 'required|array|min:1',
@@ -105,6 +126,13 @@ class AccountLinkController extends Controller
         $mainAccount = User::findOrFail($validated['mainAccountId']);
         $sharedDetails = AccountLink::normalizeSharedDetails($validated['sharedDetails']);
         $notes = $validated['notes'] ?? null;
+
+        if ($viewer && $this->isSalesRepUser($viewer) && !$this->salesRepOwnsClient($viewer, $mainAccount, $salesRepScope)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only link client accounts within your assigned sales-rep scope.',
+            ], 403);
+        }
 
         if ($response = $this->validateRelationshipOwner($mainAccount)) {
             return $response;
@@ -118,6 +146,14 @@ class AccountLinkController extends Controller
         foreach (collect($validated['clientAccountIds'])->unique()->values() as $clientId) {
             try {
                 $clientAccount = User::findOrFail($clientId);
+
+                if ($viewer && $this->isSalesRepUser($viewer) && !$this->salesRepOwnsClient($viewer, $clientAccount, $salesRepScope)) {
+                    $errors[] = [
+                        'accountId' => (string) $clientId,
+                        'message' => 'This client is outside your assigned sales-rep scope.',
+                    ];
+                    continue;
+                }
 
                 if ($response = $this->validateRelationship($mainAccount, $clientAccount)) {
                     $payload = $response->getData(true);
@@ -178,7 +214,17 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $link = AccountLink::with(['mainAccount', 'linkedAccount'])->findOrFail($id);
+
+        if ($viewer && $this->isSalesRepUser($viewer) && !$this->salesRepCanManageLink($viewer, $link, $salesRepScope)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only manage linked accounts within your assigned sales-rep scope.',
+            ], 403);
+        }
 
         $validated = $request->validate([
             'sharedDetails' => 'required|array',
@@ -211,7 +257,17 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $link = AccountLink::with(['mainAccount', 'linkedAccount'])->findOrFail($id);
+
+        if ($viewer && $this->isSalesRepUser($viewer) && !$this->salesRepCanManageLink($viewer, $link, $salesRepScope)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only manage linked accounts within your assigned sales-rep scope.',
+            ], 403);
+        }
 
         $link->update([
             'status' => 'inactive',
@@ -233,7 +289,18 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $link = AccountLink::with(['mainAccount', 'linkedAccount'])->findOrFail($id);
+
+        if ($viewer && $this->isSalesRepUser($viewer) && !$this->salesRepCanManageLink($viewer, $link, $salesRepScope)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only manage linked accounts within your assigned sales-rep scope.',
+            ], 403);
+        }
+
         $serialized = $this->serializeLink($link);
 
         $link->delete();
@@ -251,12 +318,28 @@ class AccountLinkController extends Controller
             return $response;
         }
 
-        User::findOrFail($accountId);
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
+        $account = User::findOrFail($accountId);
+
+        if ($viewer && $this->isSalesRepUser($viewer) && !$this->salesRepOwnsClient($viewer, $account, $salesRepScope)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You can only view linked accounts within your assigned sales-rep scope.',
+            ], 403);
+        }
 
         $links = AccountLink::forAccount($accountId)
             ->active()
             ->with(['mainAccount', 'linkedAccount'])
             ->get();
+
+        if ($viewer && $this->isSalesRepUser($viewer)) {
+            $links = $links
+                ->filter(fn (AccountLink $link) => $this->salesRepCanManageLink($viewer, $link, $salesRepScope))
+                ->values();
+        }
 
         $shootAccountIds = array_merge(
             [(int) $accountId],
@@ -348,6 +431,9 @@ class AccountLinkController extends Controller
             return $response;
         }
 
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
+
         $legacyRole = $request->string('role')->toString();
         if ($legacyRole !== '') {
             return $this->getLegacyAvailableAccountsResponse($request, $legacyRole);
@@ -357,8 +443,18 @@ class AccountLinkController extends Controller
         $ownerSearch = trim($request->string('ownerSearch')->toString());
         $clientSearch = trim($request->string('clientSearch')->toString());
 
+        if ($viewer && $this->isSalesRepUser($viewer) && $ownerId !== '') {
+            $selectedOwner = User::find($ownerId);
+            if (!$selectedOwner || !$this->salesRepOwnsClient($viewer, $selectedOwner, $salesRepScope)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You can only link client accounts within your assigned sales-rep scope.',
+                ], 403);
+            }
+        }
+
         $owners = User::query()
-            ->whereIn('role', self::OWNER_ROLES)
+            ->whereIn('role', $viewer && $this->isSalesRepUser($viewer) ? ['client'] : self::OWNER_ROLES)
             ->when($ownerSearch !== '', function ($query) use ($ownerSearch) {
                 $query->where(function ($nested) use ($ownerSearch) {
                     $nested->where('name', 'like', '%' . $ownerSearch . '%')
@@ -367,6 +463,12 @@ class AccountLinkController extends Controller
             })
             ->orderBy('name')
             ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status'])
+            ->when(
+                $viewer && $this->isSalesRepUser($viewer),
+                fn (Collection $collection) => $collection->filter(
+                    fn (User $user) => $this->salesRepOwnsClient($viewer, $user, $salesRepScope)
+                )->values(),
+            )
             ->map(fn (User $user) => $this->serializeAccountOption($user))
             ->values();
 
@@ -389,7 +491,13 @@ class AccountLinkController extends Controller
             ->orderBy('name');
 
         $clientAccounts = $clientAccountsQuery
-            ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status', 'company_name']);
+            ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status', 'company_name'])
+            ->when(
+                $viewer && $this->isSalesRepUser($viewer),
+                fn (Collection $collection) => $collection->filter(
+                    fn (User $user) => $this->salesRepOwnsClient($viewer, $user, $salesRepScope)
+                )->values(),
+            );
 
         $activeOwnerLinks = AccountLink::query()
             ->active()
@@ -547,6 +655,85 @@ class AccountLinkController extends Controller
         }
 
         return null;
+    }
+
+    private function isSalesRepUser(?User $user): bool
+    {
+        return $user !== null && $this->permissions->normalizedUserRoles($user)->contains('salesRep');
+    }
+
+    private function normalizeRole(?string $role): string
+    {
+        if ($role === null) {
+            return '';
+        }
+
+        return strtolower(str_replace(['_', '-'], '', $role));
+    }
+
+    private function getSalesRepShootScope(User $salesRep): array
+    {
+        $salesRepShoots = Shoot::query()
+            ->where('rep_id', $salesRep->id)
+            ->get(['client_id']);
+
+        return [
+            'client_ids' => $salesRepShoots
+                ->pluck('client_id')
+                ->filter()
+                ->map(fn ($id) => (string) $id)
+                ->unique()
+                ->values()
+                ->all(),
+        ];
+    }
+
+    private function salesRepOwnsClient(User $salesRep, User $client, ?array $scope = null): bool
+    {
+        if ($this->normalizeRole($client->role) !== 'client') {
+            return false;
+        }
+
+        $scope = $scope ?? $this->getSalesRepShootScope($salesRep);
+        $repId = (string) $salesRep->id;
+        $metadata = is_array($client->metadata) ? $client->metadata : [];
+        $repCandidate = $metadata['accountRepId']
+            ?? $metadata['account_rep_id']
+            ?? $metadata['repId']
+            ?? $metadata['rep_id']
+            ?? null;
+
+        if ($repCandidate !== null && (string) $repCandidate === $repId) {
+            return true;
+        }
+
+        if ($client->created_by_id !== null && (string) $client->created_by_id === $repId) {
+            return true;
+        }
+
+        return in_array((string) $client->id, $scope['client_ids'] ?? [], true);
+    }
+
+    private function ensureSalesRepCanManageRelationship(User $salesRep, User $mainAccount, User $clientAccount, ?array $scope = null): ?JsonResponse
+    {
+        if ($this->salesRepOwnsClient($salesRep, $mainAccount, $scope) && $this->salesRepOwnsClient($salesRep, $clientAccount, $scope)) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'You can only link client accounts within your assigned sales-rep scope.',
+        ], 403);
+    }
+
+    private function salesRepCanManageLink(User $salesRep, AccountLink $link, ?array $scope = null): bool
+    {
+        if (!$link->mainAccount || !$link->linkedAccount) {
+            return false;
+        }
+
+        return $this->salesRepOwnsClient($salesRep, $link->mainAccount, $scope)
+            && $this->salesRepOwnsClient($salesRep, $link->linkedAccount, $scope);
     }
 
     private function validateRelationshipOwner(User $mainAccount): ?JsonResponse
@@ -864,13 +1051,15 @@ class AccountLinkController extends Controller
 
     private function getLegacyAvailableAccountsResponse(Request $request, string $role): JsonResponse
     {
+        $viewer = $request->user();
+        $salesRepScope = $this->isSalesRepUser($viewer) ? $this->getSalesRepShootScope($viewer) : null;
         $excludeId = $request->string('excludeId')->toString();
         $ownerId = $request->string('ownerId')->toString();
 
         $query = User::query();
 
         if ($role === 'main') {
-            $query->whereIn('role', self::OWNER_ROLES);
+            $query->whereIn('role', $viewer && $this->isSalesRepUser($viewer) ? ['client'] : self::OWNER_ROLES);
         } elseif ($role === 'client') {
             $query->where('role', 'client')
                 ->when($ownerId !== '', function ($builder) use ($ownerId) {
@@ -890,6 +1079,12 @@ class AccountLinkController extends Controller
             'accounts' => $query
                 ->orderBy('name')
                 ->get(['id', 'name', 'email', 'role', 'avatar', 'account_status'])
+                ->when(
+                    $viewer && $this->isSalesRepUser($viewer),
+                    fn (Collection $collection) => $collection->filter(
+                        fn (User $user) => $this->salesRepOwnsClient($viewer, $user, $salesRepScope)
+                    )->values(),
+                )
                 ->map(fn (User $user) => $this->serializeAccountOption($user))
                 ->values(),
         ]);

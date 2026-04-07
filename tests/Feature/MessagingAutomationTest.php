@@ -24,12 +24,19 @@ class MessagingAutomationTest extends TestCase
     public function test_non_admin_compose_creates_internal_message(): void
     {
         $user = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $user->id,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'status' => Shoot::STATUS_SCHEDULED,
+        ]);
 
         Sanctum::actingAs($user);
 
         $response = $this->postJson('/api/messaging/email/compose', [
             'subject' => 'Need help',
             'body_text' => 'Hello admin',
+            'related_shoot_id' => $shoot->id,
+            'related_shoot_context_type' => 'new_shoot',
         ]);
 
         $response->assertOk();
@@ -43,6 +50,9 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame($user->email, $message->from_address);
         $this->assertSame(config('mail.contact_address', 'contact@reprophotos.com'), $message->to_address);
         $this->assertSame($user->id, $message->sender_user_id);
+        $this->assertSame($shoot->id, $message->related_shoot_id);
+        $this->assertSame('new_shoot', $message->related_shoot_context_type);
+        $this->assertSame($user->id, $message->related_account_id);
         $this->assertStringContainsString((string) $user->id, (string) $message->sender_display_name);
     }
 

@@ -48,9 +48,47 @@ class ShootAuthorizationSupport
             return;
         }
 
-        if ((string) $shoot->client_id !== (string) $user?->id) {
+        if (!$this->canClientAccessShoot($shoot, $user)) {
             abort(403, 'Forbidden');
         }
+    }
+
+    public function canClientAccessShoot(Shoot $shoot, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        if (!$this->isClientUser($user)) {
+            return false;
+        }
+
+        if ((string) $shoot->client_id === (string) $user->id) {
+            return true;
+        }
+
+        if (!$this->isShootDeliveredForClientAccess($shoot)) {
+            return false;
+        }
+
+        if ($shoot->relationLoaded('ghostUsers')) {
+            return $shoot->ghostUsers->contains(fn ($ghostUser) => (string) data_get($ghostUser, 'id') === (string) $user->id);
+        }
+
+        return $shoot->ghostUsers()
+            ->where('users.id', $user->id)
+            ->exists();
+    }
+
+    public function isShootDeliveredForClientAccess(Shoot $shoot): bool
+    {
+        $normalizedStatus = strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: ''));
+
+        return in_array($normalizedStatus, [
+            Shoot::STATUS_DELIVERED,
+            'ready_for_client',
+            'admin_verified',
+            'ready',
+            'workflow_completed',
+            'client_delivered',
+        ], true);
     }
 
     public function canAccessShootMedia(Shoot $shoot, ?User $user = null): bool
@@ -77,7 +115,7 @@ class ShootAuthorizationSupport
         }
 
         if ($this->isClientUser($user)) {
-            return (string) $shoot->client_id === (string) $user->id;
+            return $this->canClientAccessShoot($shoot, $user);
         }
 
         return false;

@@ -16,7 +16,8 @@ class ShootPublicAssetsService
 {
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
-        protected ShootPaymentStatusSupport $paymentStatusSupport
+        protected ShootPaymentStatusSupport $paymentStatusSupport,
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
     ) {
     }
 
@@ -51,6 +52,10 @@ class ShootPublicAssetsService
 
     public function buildTypedPublicAssets(Shoot $shoot, string $type): array
     {
+        if ($this->shootClientReleaseAccessService->isPublicReleaseLocked($shoot)) {
+            return $this->shootClientReleaseAccessService->buildLockedPublicPayload($shoot, $type);
+        }
+
         $assets = $this->buildPublicAssets($shoot);
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
 
@@ -81,24 +86,33 @@ class ShootPublicAssetsService
         $assets['tour_style'] = $tourLinks['tour_style'] ?? 'default';
         $assets['show_garage'] = !empty($tourLinks['show_garage']);
 
-        if ($type === 'branded' && $shoot->client) {
-            $assets['shoot']['client_email'] = $shoot->client->email;
-            $assets['shoot']['client_phone'] = $shoot->client->phone ?? $shoot->client->phonenumber;
-            $assets['shoot']['client_avatar'] = $shoot->client->avatar;
+        if ($type === 'branded') {
+            $effectiveClient = $this->resolveEffectiveBrandedClient($shoot, $tourLinks);
+            if ($effectiveClient) {
+                $assets['shoot']['client_name'] = $effectiveClient->name;
+                $assets['shoot']['client_company'] = $effectiveClient->company_name;
+                $assets['shoot']['client_email'] = $effectiveClient->email;
+                $assets['shoot']['client_phone'] = $effectiveClient->phone ?? $effectiveClient->phonenumber;
+                $assets['shoot']['client_avatar'] = $effectiveClient->avatar;
 
-            $branding = DB::table('user_branding')->where('user_id', $shoot->client->id)->first();
-            if ($branding) {
-                $assets['branding'] = [
-                    'logo' => $branding->logo,
-                    'banner' => $branding->banner ?? null,
-                    'primary_color' => $branding->primary_color,
-                    'secondary_color' => $branding->secondary_color,
-                    'font_family' => $branding->font_family,
-                    'about' => $branding->about ?? null,
-                    'facebook_url' => $branding->facebook_url,
-                    'linkedin_url' => $branding->linkedin_url,
-                    'instagram_url' => $branding->instagram_url,
-                ];
+                $branding = DB::table('user_branding')->where('user_id', $effectiveClient->id)->first();
+                if ($branding) {
+                    $assets['branding'] = [
+                        'logo' => $branding->logo,
+                        'banner' => $branding->banner ?? null,
+                        'primary_color' => $branding->primary_color,
+                        'secondary_color' => $branding->secondary_color,
+                        'font_family' => $branding->font_family,
+                        'about' => $branding->about ?? null,
+                        'hero_headline' => $branding->hero_headline ?? null,
+                        'hero_subtitle' => $branding->hero_subtitle ?? null,
+                        'hero_image' => $branding->hero_image ?? null,
+                        'facebook_url' => $branding->facebook_url,
+                        'linkedin_url' => $branding->linkedin_url,
+                        'instagram_url' => $branding->instagram_url,
+                        'show_map' => (bool) ($branding->show_map ?? false),
+                    ];
+                }
             }
         }
 
@@ -111,12 +125,13 @@ class ShootPublicAssetsService
             return null;
         }
 
-        $shootsQuery = Shoot::with(['files'])->where('client_id', $client->id);
-        if (($viewer->role ?? null) === 'salesRep') {
-            $shootsQuery->where(function ($query) use ($viewer) {
-                $query->where('rep_id', $viewer->id)->orWhereNull('rep_id');
-            });
-        }
+        return $this->buildPublicClientProfilePayload($client);
+    }
+
+    public function buildPublicClientProfilePayload(User $client): array
+    {
+        $portfolioClientIds = $this->resolvePortfolioClientIds($client);
+        $shootsQuery = Shoot::with(['files'])->whereIn('client_id', $portfolioClientIds);
 
         $shoots = $shootsQuery
             ->whereIn('status', [
@@ -185,6 +200,9 @@ class ShootPublicAssetsService
 
         $branding = DB::table('user_branding')->where('user_id', $client->id)->first();
         $clientMeta = $client->metadata ?? [];
+        if (!is_array($clientMeta)) {
+            $clientMeta = [];
+        }
 
         return [
             'client' => [
@@ -195,17 +213,19 @@ class ShootPublicAssetsService
                 'phonenumber' => $client->phonenumber,
                 'phone' => $client->phone ?? $client->phonenumber,
                 'avatar' => $client->avatar,
-                'about' => $client->about,
+                'about' => $branding->about ?? null,
                 'address' => $client->address,
-                'facebook_url' => $client->facebook_url,
+                'facebook_url' => $branding->facebook_url ?? null,
                 'twitter_url' => $client->twitter_url,
-                'linkedin_url' => $client->linkedin_url,
+                'linkedin_url' => $branding->linkedin_url ?? null,
                 'pinterest_url' => $client->pinterest_url,
-                'banner_image' => $clientMeta['banner_image'] ?? $clientMeta['cover_image'] ?? null,
+                'banner_image' => $branding->banner ?? null,
                 'logo' => $branding->logo ?? null,
                 'hero_headline' => $branding->hero_headline ?? null,
                 'hero_subtitle' => $branding->hero_subtitle ?? null,
                 'hero_image' => $branding->hero_image ?? null,
+                'instagram_url' => $branding->instagram_url ?? null,
+                'show_map' => (bool) ($branding->show_map ?? false),
                 'rep' => $this->resolveRepInfo($clientMeta),
             ],
             'shoots' => $shootItems,
@@ -326,6 +346,22 @@ class ShootPublicAssetsService
         ];
     }
 
+    protected function resolveEffectiveBrandedClient(Shoot $shoot, array $tourLinks): ?User
+    {
+        $assignedRealtorId = $tourLinks['realtor_client_id'] ?? $tourLinks['realtorClientId'] ?? null;
+        if ($assignedRealtorId !== null && $assignedRealtorId !== '') {
+            $assignedClient = User::query()
+                ->where('role', 'client')
+                ->find($assignedRealtorId);
+
+            if ($assignedClient) {
+                return $assignedClient;
+            }
+        }
+
+        return $shoot->client;
+    }
+
     protected function canViewClientProfile(User $viewer, User $client): bool
     {
         if (in_array($viewer->role, ['admin', 'superadmin'], true)) {
@@ -381,6 +417,23 @@ class ShootPublicAssetsService
             'phone' => $rep->phone ?? $rep->phonenumber,
             'avatar' => $rep->avatar,
         ];
+    }
+
+    protected function resolvePortfolioClientIds(User $owner): array
+    {
+        $linkedClientIds = DB::table('user_branding_clients')
+            ->where('user_id', $owner->id)
+            ->pluck('client_id')
+            ->map(fn ($id) => (int) $id)
+            ->filter()
+            ->values()
+            ->all();
+
+        return array_values(
+            array_unique(
+                array_merge([(int) $owner->id], $linkedClientIds)
+            )
+        );
     }
 
     protected function resolveClientProfileFileUrl(ShootFile $file, Collection $shoots, string $size = 'web'): ?string

@@ -327,9 +327,9 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permis
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->put('/admin/users/{id}', [UserController::class, 'update']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->put('/admin/users/{id}', [UserController::class, 'update']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
-Route::middleware(['auth:sanctum'])->post('/admin/users', [UserController::class, 'store']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,salesRep'])->post('/admin/users', [UserController::class, 'store']);
 
 Route::middleware(['auth:sanctum', 'role:superadmin'])->prefix('admin/system-overview')->group(function () {
     Route::get('/snapshot', [SystemOverviewController::class, 'snapshot']);
@@ -340,7 +340,7 @@ Route::middleware(['auth:sanctum', 'role:superadmin'])->prefix('admin/system-ove
 });
 
 // Account Linking Routes - Admin endpoints
-Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->group(function () {
     Route::get('/admin/account-links', [AccountLinkController::class, 'index']);
     Route::post('/admin/account-links', [AccountLinkController::class, 'store']);
     Route::post('/admin/account-links/batch', [AccountLinkController::class, 'batchStore']);
@@ -358,11 +358,13 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/account-links/my-shared-data', [AccountLinkController::class, 'getMySharedData']);
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->get('/admin/clients', [UserController::class, 'getClients']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/clients', [UserController::class, 'getClients']);
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,client'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,client,salesRep'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
 // Public lightweight list for dropdowns
 Route::get('/photographers', [UserController::class, 'simplePhotographers']);
+
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/service-groups', [ServiceGroupController::class, 'index']);
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->group(function () {
     Route::get('/admin/services', [ServiceController::class, 'index']);
@@ -373,7 +375,6 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->gr
 
     Route::delete('/admin/services/{id}', [ServiceController::class, 'destroy']);
 
-    Route::get('/admin/service-groups', [ServiceGroupController::class, 'index']);
     Route::post('/admin/service-groups', [ServiceGroupController::class, 'store']);
     Route::put('/admin/service-groups/{serviceGroup}', [ServiceGroupController::class, 'update']);
     Route::delete('/admin/service-groups/{serviceGroup}', [ServiceGroupController::class, 'destroy']);
@@ -443,7 +444,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
 Route::middleware('auth:sanctum')->group(function () {
     // User branding routes
     Route::get('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'show']);
-    Route::put('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'update'])->middleware('role:admin,superadmin,editing_manager');
+    Route::put('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'update']);
     
     // Shoot management
     Route::get('/shoots', [ShootController::class, 'index']);
@@ -810,7 +811,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     Route::post('/email/messages/{message}/retry', [EmailMessagingController::class, 'retry']);
     Route::post('/email/messages/{message}/cancel', [EmailMessagingController::class, 'cancel']);
 
-    Route::middleware('role:superadmin,admin,editing_manager,sales_rep')->group(function () {
+    Route::middleware('role:superadmin,admin')->group(function () {
         Route::get('/overview', MessagingOverviewController::class);
 
         // Templates
@@ -886,13 +887,10 @@ Route::get('{shoot}/g-mls', [ShootPublicAssetsController::class, 'publicGenericM
 // Public tour analytics tracking (unauthenticated, rate-limited)
 Route::post('public/tour-events', [TourAnalyticsController::class, 'trackEvent'])->middleware('throttle:60,1');
 
-// Client profile (requires authentication and authorization)
-Route::middleware('auth:sanctum')->prefix('public')->group(function () {
-Route::get('/clients/{client}/profile', [ShootPublicAssetsController::class, 'publicClientProfile']);
-});
-
-// Public contact form submission (no auth required)
+// Public client portfolio endpoints
 Route::prefix('public')->group(function () {
+    Route::get('/clients/{client}/profile', [ShootPublicAssetsController::class, 'publicClientProfile']);
+    Route::post('/clients/{client}/contact', [App\Http\Controllers\API\ContactSubmissionController::class, 'storeByClient']);
     Route::post('/client/{username}/contact', [App\Http\Controllers\API\ContactSubmissionController::class, 'store']);
 });
 

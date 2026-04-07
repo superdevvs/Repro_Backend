@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -44,6 +45,12 @@ class ShootResource extends JsonResource
             $this->load('services.category');
         } elseif ($this->services->isNotEmpty() && !$this->services->first()->relationLoaded('category')) {
             $this->services->load('category');
+        }
+
+        $tourLinks = is_array($this->tour_links) ? $this->tour_links : [];
+        $realtorClient = $this->resolveRealtorClient($tourLinks);
+        if ($realtorClient) {
+            $tourLinks['realtor_client'] = $realtorClient;
         }
 
         return [
@@ -177,13 +184,16 @@ class ShootResource extends JsonResource
             'holdRequestedBy' => $this->hold_requested_by,
             'holdReason' => $this->hold_reason,
             'property_details' => $this->property_details,
-            'tour_links' => $this->tour_links ?? [],
+            'tour_links' => $tourLinks,
+            'realtor_client' => $realtorClient,
             'iguide_tour_url' => $this->iguide_tour_url,
             'iguide_floorplans' => $this->iguide_floorplans ?? [],
             'iguide_last_synced_at' => $this->iguide_last_synced_at?->toIso8601String(),
             'iguide_property_id' => $this->iguide_property_id,
             'is_private_listing' => (bool) ($this->is_private_listing ?? false),
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
+            'is_featured' => (bool) ($this->is_featured ?? false),
+            'isFeatured' => (bool) ($this->is_featured ?? false),
             'listing_type' => $this->listing_type,
             'listingType' => $this->listing_type,
             'property_status' => $this->property_status ?? 'available',
@@ -192,6 +202,29 @@ class ShootResource extends JsonResource
             'photographerPaidInvoiceId' => $this->photographer_paid_invoice_id,
             'salesRepPaidAt' => $this->sales_rep_paid_at?->toIso8601String(),
             'salesRepPaidInvoiceId' => $this->sales_rep_paid_invoice_id,
+        ];
+    }
+
+    protected function resolveRealtorClient(array $tourLinks): ?array
+    {
+        $realtorClientId = $tourLinks['realtor_client_id'] ?? $tourLinks['realtorClientId'] ?? null;
+        if (!$realtorClientId) {
+            return null;
+        }
+
+        $client = User::query()
+            ->where('role', 'client')
+            ->find($realtorClientId);
+
+        if (!$client) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $client->id,
+            'name' => $client->name ?? 'Client',
+            'email' => $client->email ?? null,
+            'company' => $client->company_name ?? $client->company ?? null,
         ];
     }
 }

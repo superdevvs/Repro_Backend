@@ -92,7 +92,16 @@ class ShootPaymentsController extends Controller
     {
         try {
             $invoice = Invoice::where('shoot_id', $shoot->id)
-                ->with(['shoot.client', 'shoot.photographer', 'shoot.services', 'items', 'client', 'photographer'])
+                ->with([
+                    'payments',
+                    'shoot.client',
+                    'shoot.photographer',
+                    'shoot.services',
+                    'shoot.payments',
+                    'items',
+                    'client',
+                    'photographer',
+                ])
                 ->first();
 
             if (!$invoice) {
@@ -104,7 +113,18 @@ class ShootPaymentsController extends Controller
             }
 
             return response()->json([
-                'data' => $invoice->load(['shoot.client', 'shoot.photographer', 'shoot.services', 'items', 'client', 'photographer']),
+                'data' => $invoice
+                    ->load([
+                        'payments',
+                        'shoot.client',
+                        'shoot.photographer',
+                        'shoot.services',
+                        'shoot.payments',
+                        'items',
+                        'client',
+                        'photographer',
+                    ])
+                    ->applyResolvedPaymentMetadata(),
             ]);
         } catch (\Exception $e) {
             Log::error('Error getting/creating invoice for shoot', [
