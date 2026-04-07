@@ -52,10 +52,6 @@ class ShootPublicAssetsService
 
     public function buildTypedPublicAssets(Shoot $shoot, string $type): array
     {
-        if ($this->shootClientReleaseAccessService->isPublicReleaseLocked($shoot)) {
-            return $this->shootClientReleaseAccessService->buildLockedPublicPayload($shoot, $type);
-        }
-
         $assets = $this->buildPublicAssets($shoot);
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
 

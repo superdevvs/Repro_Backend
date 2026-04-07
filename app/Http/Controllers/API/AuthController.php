@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 
@@ -128,8 +129,15 @@ class AuthController extends Controller
     {
         $user = $request->user();
 
+        if ($request->has('email')) {
+            $request->merge([
+                'email' => strtolower(trim((string) $request->input('email'))),
+            ]);
+        }
+
         $validated = $request->validate([
             'name' => 'sometimes|string|max:255',
+            'email' => ['sometimes', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
             'phonenumber' => 'nullable|string|max:20',
             'phone_number' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
@@ -140,6 +148,7 @@ class AuthController extends Controller
             'bio' => 'nullable|string',
             'avatar' => 'nullable|string',
             'about' => 'nullable|string',
+            'timezone' => 'nullable|string|timezone',
             'facebook_url' => 'nullable|url|max:500',
             'twitter_url' => 'nullable|url|max:500',
             'linkedin_url' => 'nullable|url|max:500',
@@ -148,7 +157,35 @@ class AuthController extends Controller
             'termsAccepted' => 'sometimes|boolean',
             'travel_range' => 'nullable|integer|min:0|max:500',
             'travel_range_unit' => 'nullable|string|in:miles,km',
+            'current_password' => 'nullable|string',
+            'new_password' => 'nullable|string|min:8|confirmed',
+            'new_password_confirmation' => 'nullable|string',
+            'preferences' => 'sometimes|array',
+            'preferences.preferredPhotographer' => 'nullable|string|max:255',
+            'preferences.notificationEmail' => 'nullable|boolean',
+            'preferences.notificationSMS' => 'nullable|boolean',
+            'preferences.portfolioWebsite' => 'nullable|url|max:500',
+            'preferences.weeklyInvoice' => 'nullable|boolean',
+            'preferences.showEditingNotes' => 'nullable|boolean',
+            'preferences.emailNotifications' => 'nullable|boolean',
+            'preferences.department' => 'nullable|string|max:255',
+            'preferences.uiDensity' => 'nullable|string|in:default,compact',
+            'preferences.notifications' => 'nullable|array',
+            'preferences.notifications.shootReminders' => 'nullable|boolean',
+            'preferences.notifications.paymentReminders' => 'nullable|boolean',
+            'preferences.notifications.weeklySummaries' => 'nullable|boolean',
         ]);
+
+        $incomingEmail = $validated['email'] ?? null;
+        $currentEmail = strtolower((string) $user->email);
+        $emailChanged = is_string($incomingEmail) && $incomingEmail !== $currentEmail;
+        $passwordChanged = !empty($validated['new_password']);
+
+        if (($emailChanged || $passwordChanged) && !Hash::check((string) ($validated['current_password'] ?? ''), (string) $user->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['The current password is incorrect.'],
+            ]);
+        }
 
         // Map phone_number to phonenumber if provided
         if (array_key_exists('phone_number', $validated)) {
@@ -159,24 +196,35 @@ class AuthController extends Controller
         $termsAccepted = $validated['terms_accepted'] ?? $validated['termsAccepted'] ?? false;
         unset($validated['terms_accepted'], $validated['termsAccepted']);
 
-        // Store travel_range and travel_range_unit in metadata for photographers
-        if (array_key_exists('travel_range', $validated) || array_key_exists('travel_range_unit', $validated)) {
-            $metadata = $user->metadata ?? [];
-            if (is_string($metadata)) {
-                $metadata = json_decode($metadata, true) ?? [];
-            }
-            if (array_key_exists('travel_range', $validated)) {
-                $metadata['travel_range'] = $validated['travel_range'];
-                unset($validated['travel_range']);
-            }
-            if (array_key_exists('travel_range_unit', $validated)) {
-                $metadata['travel_range_unit'] = $validated['travel_range_unit'];
-                unset($validated['travel_range_unit']);
-            }
-            $user->metadata = $metadata;
+        $metadata = $user->metadata ?? [];
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true) ?? [];
         }
 
-        $user->update($validated);
+        // Merge allowed preference updates without touching unrelated metadata.
+        if (array_key_exists('preferences', $validated) && is_array($validated['preferences'])) {
+            $existingPreferences = is_array($metadata['preferences'] ?? null) ? $metadata['preferences'] : [];
+            $metadata['preferences'] = array_replace_recursive($existingPreferences, $validated['preferences']);
+            unset($validated['preferences']);
+        }
+
+        // Maintain existing metadata keys for currently-shipped photographer settings.
+        if (array_key_exists('travel_range', $validated)) {
+            $metadata['travel_range'] = $validated['travel_range'];
+            unset($validated['travel_range']);
+        }
+        if (array_key_exists('travel_range_unit', $validated)) {
+            $metadata['travel_range_unit'] = $validated['travel_range_unit'];
+            unset($validated['travel_range_unit']);
+        }
+
+        if ($passwordChanged) {
+            $validated['password'] = $validated['new_password'];
+        }
+        unset($validated['current_password'], $validated['new_password'], $validated['new_password_confirmation']);
+
+        $user->fill($validated);
+        $user->metadata = $metadata;
         $user->save();
 
         if ($termsAccepted) {
@@ -195,10 +243,18 @@ class AuthController extends Controller
             }
         }
 
+        $reauthRequired = $emailChanged || $passwordChanged;
+        if ($reauthRequired) {
+            $request->user()?->currentAccessToken()?->delete();
+        }
+
         Log::info('[Auth] Profile updated', ['user_id' => $user->id, 'fields' => array_keys($validated)]);
 
         return response()->json([
-            'message' => 'Profile updated successfully',
+            'message' => $reauthRequired
+                ? 'Profile updated successfully. Please sign in again to continue.'
+                : 'Profile updated successfully',
+            'reauth_required' => $reauthRequired,
             'user' => $user->fresh(),
         ]);
     }
