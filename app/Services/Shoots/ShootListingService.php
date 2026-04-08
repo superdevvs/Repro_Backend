@@ -148,20 +148,7 @@ class ShootListingService
                     });
                 }
             } elseif ($user && $user->role === 'editor') {
-                $query->where(function (Builder $scope) use ($user) {
-                    $scope->where('editor_id', $user->id)
-                        ->orWhereHas('activityLogs', function (Builder $logQuery) use ($user) {
-                            $logQuery->where('user_id', $user->id);
-                        })
-                        ->orWhere(function (Builder $editingPipeline) {
-                            $editingPipeline->whereIn('status', [
-                                Shoot::STATUS_UPLOADED,
-                                Shoot::STATUS_EDITING,
-                                Shoot::STATUS_READY,
-                                Shoot::STATUS_DELIVERED,
-                            ]);
-                        });
-                });
+                app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
 
                 if (!$request->has('tab')) {
                     $tab = 'completed';

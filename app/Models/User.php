@@ -168,6 +168,54 @@ class User extends Authenticatable
         $this->metadata = $metadata;
     }
 
+    public function getEditingCapabilities(): array
+    {
+        $metadata = is_array($this->metadata) ? $this->metadata : [];
+        $capabilities = $metadata['editing_capabilities'] ?? [];
+
+        if (!is_array($capabilities)) {
+            $capabilities = [];
+        }
+
+        $normalized = collect($capabilities)
+            ->map(function ($capability) {
+                $value = strtolower(trim((string) $capability));
+
+                return match ($value) {
+                    'photos', 'photo', 'p' => 'photo',
+                    'videos', 'video' => 'video',
+                    default => null,
+                };
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if (empty($normalized) && $this->role === 'editor') {
+            return ['photo', 'video'];
+        }
+
+        return $normalized;
+    }
+
+    public function canEditLane(string $lane): bool
+    {
+        return in_array(strtolower($lane), $this->getEditingCapabilities(), true);
+    }
+
+    public function setEditingCapabilities(array $capabilities): void
+    {
+        $metadata = is_array($this->metadata) ? $this->metadata : [];
+        $metadata['editing_capabilities'] = collect($capabilities)
+            ->map(fn ($capability) => strtolower(trim((string) $capability)))
+            ->filter(fn ($capability) => in_array($capability, ['photo', 'video'], true))
+            ->unique()
+            ->values()
+            ->all();
+        $this->metadata = $metadata;
+    }
+
     public function serviceGroups()
     {
         return $this->belongsToMany(ServiceGroup::class, 'service_group_user', 'user_id', 'service_group_id')

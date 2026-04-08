@@ -14,6 +14,7 @@ class ShootShareLink extends Model
         'shoot_id',
         'created_by',
         'share_url',
+        'media_stage',
         'dropbox_path',
         'download_count',
         'expires_at',
@@ -66,5 +67,10 @@ class ShootShareLink extends Model
             'revoked_at' => now(),
             'revoked_by' => $userId,
         ]);
+    }
+
+    public function scopeForMediaStage($query, string $mediaStage)
+    {
+        return $query->where('media_stage', strtolower($mediaStage));
     }
 }

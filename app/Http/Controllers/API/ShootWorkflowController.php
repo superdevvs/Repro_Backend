@@ -202,10 +202,12 @@ class ShootWorkflowController extends Controller
         }
 
         try {
-            $this->submitForReviewAction->execute($request, $shoot, $user);
+            $result = $this->submitForReviewAction->execute($request, $shoot, $user);
 
             return response()->json([
-                'message' => 'Shoot marked as ready for review.',
+                'message' => !empty($result['all_lanes_ready'])
+                    ? 'Shoot marked as ready for review.'
+                    : 'Your assigned editing lane was marked ready. The shoot will move to review once all lanes are complete.',
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\Exception $e) {

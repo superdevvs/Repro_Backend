@@ -179,20 +179,7 @@ class ShootHistoryService
                         });
                 });
             } elseif ($user->role === 'editor') {
-                $query->where(function ($q) use ($user) {
-                    $q->where('editor_id', $user->id)
-                        ->orWhereHas('activityLogs', function ($logQuery) use ($user) {
-                            $logQuery->where('user_id', $user->id);
-                        })
-                        ->orWhere(function ($editingPipeline) {
-                            $editingPipeline->whereIn('status', [
-                                Shoot::STATUS_UPLOADED,
-                                Shoot::STATUS_EDITING,
-                                Shoot::STATUS_READY,
-                                Shoot::STATUS_DELIVERED,
-                            ]);
-                        });
-                });
+                app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
             }
         }
 
@@ -349,9 +336,14 @@ class ShootHistoryService
     {
         $shoot->loadMissing(['client', 'photographer', 'services', 'payments']);
         $client = $shoot->client;
-        $services = $shoot->services->pluck('name')->filter()->values()->all();
+        $requestingRole = strtolower((string) (auth()->user()?->role ?? ''));
+        $isEditor = $requestingRole === 'editor';
+        $visibleServices = $isEditor
+            ? app(ShootEditingAssignmentService::class)->filterServicesForEditor($shoot, auth()->user())
+            : collect($shoot->services);
+        $services = $visibleServices->pluck('name')->filter()->values()->all();
 
-        $miscItems = $this->getInvoiceMiscItemNames($shoot);
+        $miscItems = $isEditor ? [] : $this->getInvoiceMiscItemNames($shoot);
         if (!empty($miscItems)) {
             $services = array_merge($services, $miscItems);
         }
@@ -385,24 +377,25 @@ class ShootHistoryService
                 'full' => $this->formatFullAddress($shoot),
             ],
             'photographer' => [
-                'id' => $shoot->photographer->id ?? null,
-                'name' => $shoot->photographer->name ?? null,
+                'id' => $isEditor ? null : ($shoot->photographer->id ?? null),
+                'name' => $isEditor ? null : ($shoot->photographer->name ?? null),
             ],
             'services' => $services,
             'financials' => [
-                'baseQuote' => (float) $shoot->base_quote,
-                'taxPercent' => $taxPercent,
-                'taxAmount' => (float) $shoot->tax_amount,
-                'totalQuote' => (float) $shoot->total_quote,
-                'totalPaid' => $payments['totalPaid'],
-                'lastPaymentDate' => $payments['lastPaymentDate'],
-                'lastPaymentType' => $shoot->payment_type,
+                'baseQuote' => $isEditor ? 0.0 : (float) $shoot->base_quote,
+                'taxPercent' => $isEditor ? 0.0 : $taxPercent,
+                'taxAmount' => $isEditor ? 0.0 : (float) $shoot->tax_amount,
+                'totalQuote' => $isEditor ? 0.0 : (float) $shoot->total_quote,
+                'totalPaid' => $isEditor ? 0.0 : $payments['totalPaid'],
+                'lastPaymentDate' => $isEditor ? null : $payments['lastPaymentDate'],
+                'lastPaymentType' => $isEditor ? null : $shoot->payment_type,
             ],
             'tourPurchased' => $this->determineTourPurchased($shoot),
             'notes' => [
-                'shoot' => $shoot->shoot_notes ?? $shoot->notes,
-                'photographer' => $shoot->photographer_notes,
-                'company' => $shoot->company_notes,
+                'shoot' => $isEditor ? null : ($shoot->shoot_notes ?? $shoot->notes),
+                'photographer' => $isEditor ? null : $shoot->photographer_notes,
+                'company' => $isEditor ? null : $shoot->company_notes,
+                'editing' => $shoot->editor_notes,
             ],
             'userCreatedBy' => $shoot->created_by,
             'mls_id' => $shoot->mls_id,

@@ -90,6 +90,11 @@ class ShootPaymentsController extends Controller
 
     public function getOrCreateInvoice(Shoot $shoot)
     {
+        $user = auth()->user();
+        if (!$user || $user->role === 'editor') {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
         try {
             $invoice = Invoice::where('shoot_id', $shoot->id)
                 ->with([

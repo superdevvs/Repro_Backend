@@ -247,6 +247,7 @@ class ShootRouteSplitControllersTest extends TestCase
             'id' => 123,
             'client_id' => $this->client->id,
             'service_id' => $this->service->id,
+            'editor_id' => $editor->id,
         ]);
 
         ShootFile::create([
@@ -341,14 +342,17 @@ class ShootRouteSplitControllersTest extends TestCase
 
         $response = $this->getJson("/api/shoots/{$shoot->id}/share-links");
 
+        $listedShareUrl = data_get($response->json(), 'data.0.share_url');
+
         $response->assertOk()
             ->assertJsonPath('data.0.id', $shareLink->id)
-            ->assertJsonPath('data.0.share_url', 'https://example.test/share/abc123')
+            ->assertJsonPath('data.0.media_stage', 'raw')
             ->assertJsonPath('data.0.created_by.id', $this->admin->id)
             ->assertJsonStructure([
                 'data' => [[
                     'id',
                     'share_url',
+                    'media_stage',
                     'download_count',
                     'created_at',
                     'expires_at',
@@ -358,5 +362,8 @@ class ShootRouteSplitControllersTest extends TestCase
                     'created_by',
                 ]],
             ]);
+
+        $this->assertIsString($listedShareUrl);
+        $this->assertStringEndsWith("/{$shoot->id}/{$shareLink->id}", $listedShareUrl);
     }
 }

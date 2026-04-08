@@ -16,6 +16,7 @@ class ShootShareLinkReadService
         return [
             'id' => $link->id,
             'share_url' => $publicShareUrl,
+            'media_stage' => $link->media_stage ?: 'raw',
             'download_count' => $link->download_count,
             'created_at' => $link->created_at->toIso8601String(),
             'expires_at' => $link->expires_at?->toIso8601String(),

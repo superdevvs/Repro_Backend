@@ -15,7 +15,8 @@ class ShootEditorDownloadService
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootActivityLogger $activityLogger,
-        protected ShootShareLinkService $shootShareLinkService
+        protected ShootShareLinkService $shootShareLinkService,
+        protected ShootEditingAssignmentService $shootEditingAssignmentService
     ) {
     }
 
@@ -31,10 +32,10 @@ class ShootEditorDownloadService
             $filesQuery->whereIn('id', $fileIdsParam);
         }
 
-        $files = $filesQuery->get();
+        $files = $this->shootEditingAssignmentService->filterFilesForEditor($filesQuery->get(), $shoot, $user);
         $fileCount = $files->count();
         $dropboxEnabled = $this->dropboxService->isEnabled();
-        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
+        $folderPath = null;
 
         if (!empty($fileIdsParam) && $fileCount === 0) {
             return response()->json(['error' => 'No raw files found for selected IDs'], 404);

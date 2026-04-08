@@ -111,7 +111,7 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['editor'])) {
-            return (string) $shoot->editor_id === (string) $user->id;
+            return app(ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user);
         }
 
         if ($this->isClientUser($user)) {
@@ -209,6 +209,10 @@ class ShootAuthorizationSupport
         $user = $user ?? auth()->user();
         if (!$this->canAccessShootMedia($shoot, $user)) {
             return false;
+        }
+
+        if ($this->hasRole($user, ['editor'])) {
+            return app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $user);
         }
 
         if ($this->isClientUser($user)) {

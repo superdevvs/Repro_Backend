@@ -218,7 +218,7 @@ class Shoot extends Model
     public function services()
     {
         return $this->belongsToMany(Service::class, 'shoot_service')
-            ->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id'])
+            ->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id', 'editor_id', 'editing_completed_at'])
             ->withTimestamps();
     }
 
@@ -353,6 +353,17 @@ class Shoot extends Model
             ->where('shoot_id', $this->id)
             ->where('service_id', $serviceId)
             ->update(['photographer_id' => $photographerId]) > 0;
+    }
+
+    public function assignEditorToService(int $serviceId, ?int $editorId, ?string $editingCompletedAt = null): bool
+    {
+        return DB::table('shoot_service')
+            ->where('shoot_id', $this->id)
+            ->where('service_id', $serviceId)
+            ->update([
+                'editor_id' => $editorId,
+                'editing_completed_at' => $editingCompletedAt,
+            ]) > 0;
     }
 
     public function verifiedBy()

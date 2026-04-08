@@ -77,19 +77,7 @@ class InvoiceController extends Controller
                   });
             });
         } elseif ($user->role === 'editor') {
-            // Editors can see invoices for shoots assigned to them or unassigned editing/uploaded/delivered shoots
-            $query->whereHas('shoots', function ($shootQuery) use ($user) {
-                $shootQuery->where('editor_id', $user->id)
-                    ->orWhere(function ($q) {
-                        $q->whereNull('editor_id')
-                          ->whereIn('status', [
-                              Shoot::STATUS_UPLOADED,
-                              Shoot::STATUS_EDITING,
-                              Shoot::STATUS_READY,
-                              Shoot::STATUS_DELIVERED,
-                          ]);
-                    });
-            });
+            return response()->json(['data' => [], 'message' => 'Editors cannot view client invoices'], 403);
         } elseif ($this->hasRole($user, ['editing_manager'])) {
             // Editing managers can see all invoices (read-only)
         } else {
@@ -129,6 +117,10 @@ class InvoiceController extends Controller
 
     public function download(Invoice $invoice): StreamedResponse
     {
+        if (!$this->canViewInvoice($invoice, request()->user())) {
+            abort(403, 'Forbidden');
+        }
+
         $invoice->loadMissing(['photographer', 'salesRep', 'shoots.client', 'shoots.payments']);
 
         $filename = sprintf(
@@ -356,5 +348,37 @@ class InvoiceController extends Controller
             ->map($normalize)
             ->intersect($normalizedAllowedRoles)
             ->isNotEmpty();
+    }
+
+    private function canViewInvoice(Invoice $invoice, $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        if ($user->role === 'editor') {
+            return false;
+        }
+
+        if ($this->hasRole($user, self::ADMIN_ROLES) || $this->hasRole($user, ['editing_manager'])) {
+            return true;
+        }
+
+        if ($user->role === 'client') {
+            return (string) $invoice->client_id === (string) $user->id
+                || $invoice->shoots()->where('client_id', $user->id)->exists();
+        }
+
+        if ($user->role === 'photographer') {
+            return (string) $invoice->photographer_id === (string) $user->id
+                || $invoice->shoots()->where('photographer_id', $user->id)->exists();
+        }
+
+        if ($this->hasRole($user, self::SALES_REP_ROLES)) {
+            return (string) $invoice->sales_rep_id === (string) $user->id
+                || $invoice->shoots()->where('rep_id', $user->id)->exists();
+        }
+
+        return false;
     }
 }

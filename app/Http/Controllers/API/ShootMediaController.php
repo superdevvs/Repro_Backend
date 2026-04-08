@@ -259,7 +259,11 @@ class ShootMediaController extends Controller
 
     public function previewFile(Shoot $shoot, ShootFile $file)
     {
+        $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         return $this->shootMediaReadService->previewFileResponse($file);
     }
@@ -314,6 +318,9 @@ class ShootMediaController extends Controller
     public function getFiles($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         return response()->json($this->shootMediaReadService->getFilesPayload($shoot, $request));
     }
@@ -321,8 +328,17 @@ class ShootMediaController extends Controller
     public function listMedia($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
-        return response()->json($this->shootMediaReadService->listMediaPayload($shoot, (string) $request->query('type', 'raw')));
+        return response()->json(
+            $this->shootMediaReadService->listMediaPayload(
+                $shoot,
+                (string) $request->query('type', 'raw'),
+                $request->user()
+            )
+        );
     }
 
     public function downloadMediaZip($id, Request $request)
@@ -413,6 +429,9 @@ class ShootMediaController extends Controller
         if ($user->role !== 'editor') {
             return response()->json(['error' => 'Only editors can download raw files via this endpoint'], 403);
         }
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['error' => 'You can only access raw files for shoots assigned to you'], 403);
+        }
 
         return $this->shootEditorDownloadService->downloadRaw($request, $shoot, $user);
     }
@@ -422,6 +441,9 @@ class ShootMediaController extends Controller
         $user = $request->user();
         if ($user->role !== 'editor') {
             return response()->json(['error' => 'Only editors can generate share links'], 403);
+        }
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['error' => 'You can only generate share links for shoots assigned to you'], 403);
         }
 
         try {
@@ -451,6 +473,10 @@ class ShootMediaController extends Controller
 
     public function listShareLinks(Request $request, Shoot $shoot)
     {
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
         return response()->json([
             'data' => $this->shootShareLinkReadService->listLinks($shoot),
         ]);
@@ -459,6 +485,9 @@ class ShootMediaController extends Controller
     public function revokeShareLink(Request $request, Shoot $shoot, $linkId)
     {
         $user = $request->user();
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
         $link = $shoot->shareLinks()->findOrFail($linkId);
 
         if ($user->role === 'editor' && $link->created_by !== $user->id) {

@@ -14,6 +14,7 @@ use App\Services\Shoots\Actions\CreateShootAction;
 use App\Services\Shoots\Actions\DeleteShootAction;
 use App\Services\Shoots\Actions\ScheduleShootAction;
 use App\Services\Shoots\Actions\UpdateShootAction;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootHistoryService;
 use App\Services\Shoots\ShootListingService;
 use App\Services\Shoots\ShootPresenter;
@@ -28,6 +29,7 @@ class ShootController extends Controller
         protected ShootListingService $shootListingService,
         protected ShootHistoryService $shootHistoryService,
         protected ShootPresenter $shootPresenter,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected AssignServicePhotographerAction $assignServicePhotographerAction,
         protected CreateShootAction $createShootAction,
         protected ScheduleShootAction $scheduleShootAction,
@@ -62,6 +64,10 @@ class ShootController extends Controller
             'client', 'photographer', 'service', 'services.category', 'files', 'payments',
             'dropboxFolders', 'workflowLogs.user', 'verifiedBy',
         ])->findOrFail($id);
+
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, auth()->user())) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         return response()->json(['data' => $this->shootPresenter->transformShoot($shoot)]);
     }

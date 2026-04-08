@@ -553,14 +553,14 @@ return [
                     'action' => 'update',
                     'label' => 'Update Editing Notes',
                     'description' => 'Create and edit editing notes.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'editor'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager'],
                 ],
                 [
                     'resource' => 'photographer-notes',
                     'action' => 'view',
                     'label' => 'View Photographer Notes',
                     'description' => 'Read photographer notes.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'photographer', 'editor'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'photographer'],
                 ],
                 [
                     'resource' => 'photographer-notes',

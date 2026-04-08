@@ -9,6 +9,7 @@ use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMutationSupportService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -22,6 +23,7 @@ class UpdateShootAction
         protected ShootMutationSupportService $support,
         protected InvoiceService $invoiceService,
         protected ShootEditablePayloadService $editablePayloadService,
+        protected ShootEditingAssignmentService $editingAssignmentService,
         protected ShootActivityLogger $activityLogger,
         protected MailService $mailService,
         protected AutomationService $automationService
@@ -235,7 +237,12 @@ class UpdateShootAction
         }
 
         $newStatus = $validated['status'] ?? $validated['workflow_status'] ?? null;
-        if ($newStatus && in_array($newStatus, [Shoot::STATUS_EDITING, Shoot::STATUS_UPLOADED]) && empty($shoot->editor_id)) {
+        if (
+            $newStatus
+            && in_array($newStatus, [Shoot::STATUS_EDITING, Shoot::STATUS_UPLOADED], true)
+            && empty($shoot->editor_id)
+            && $this->editingAssignmentService->getTrackedServiceAssignments($shoot)->isEmpty()
+        ) {
             $primaryEditor = User::where('role', 'editor')->first();
             if ($primaryEditor) {
                 $shoot->editor_id = $primaryEditor->id;

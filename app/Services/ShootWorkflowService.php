@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Shoots\ShootEditingAssignmentService;
+use App\Services\Shoots\ShootShareLinkService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -46,10 +48,18 @@ class ShootWorkflowService
     ];
 
     protected ShootActivityLogger $activityLogger;
+    protected ShootShareLinkService $shootShareLinkService;
+    protected ShootEditingAssignmentService $shootEditingAssignmentService;
 
-    public function __construct(ShootActivityLogger $activityLogger)
+    public function __construct(
+        ShootActivityLogger $activityLogger,
+        ShootShareLinkService $shootShareLinkService,
+        ShootEditingAssignmentService $shootEditingAssignmentService
+    )
     {
         $this->activityLogger = $activityLogger;
+        $this->shootShareLinkService = $shootShareLinkService;
+        $this->shootEditingAssignmentService = $shootEditingAssignmentService;
     }
 
     /**
@@ -145,18 +155,22 @@ class ShootWorkflowService
     {
         $this->validateTransition($shoot, self::STATUS_EDITING);
 
-        DB::transaction(function () use ($shoot, $user) {
+        $laneAssignments = [];
+
+        DB::transaction(function () use ($shoot, $user, &$laneAssignments) {
             $shoot->status = self::STATUS_EDITING;
             $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
             $shoot->photos_uploaded_at = now();
             $shoot->updated_by = $user?->id ?? auth()->id();
 
-            // Auto-assign editor if not already set
-            if (empty($shoot->editor_id)) {
+            $laneAssignments = $this->shootEditingAssignmentService->autoAssignEditorsForShoot($shoot);
+
+            if (empty($laneAssignments) && empty($shoot->editor_id)) {
                 $shoot->editor_id = $this->resolvePrimaryEditorId();
             }
 
             $shoot->save();
+            $this->shootEditingAssignmentService->syncLegacyShootEditor($shoot);
 
             $this->activityLogger->log(
                 $shoot,
@@ -165,6 +179,46 @@ class ShootWorkflowService
                 $user
             );
         });
+
+        $freshShoot = $shoot->fresh(['services.category']);
+        foreach ($laneAssignments as $lane => $assignment) {
+            $assignedEditor = $assignment['editor'] ?? null;
+            if (!$assignedEditor instanceof User) {
+                continue;
+            }
+
+            try {
+                $mediaStage = match ($lane) {
+                    ShootEditingAssignmentService::LANE_VIDEO => 'raw_video',
+                    ShootEditingAssignmentService::LANE_PHOTO => 'raw_photo',
+                    default => 'raw',
+                };
+
+                $this->shootShareLinkService->ensureActiveShootShareLink($freshShoot, $assignedEditor, $mediaStage);
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to auto-create lane share link when starting editing', [
+                    'shoot_id' => $shoot->id,
+                    'editor_id' => $assignedEditor->id,
+                    'lane' => $lane,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if (empty($laneAssignments) && $freshShoot?->editor_id) {
+            $assignedEditor = User::find($freshShoot->editor_id);
+            if ($assignedEditor) {
+                try {
+                    $this->shootShareLinkService->ensureActiveShootShareLink($freshShoot, $assignedEditor, 'raw');
+                } catch (\Throwable $exception) {
+                    Log::warning('Failed to auto-create raw share link when starting editing', [
+                        'shoot_id' => $shoot->id,
+                        'editor_id' => $freshShoot->editor_id,
+                        'error' => $exception->getMessage(),
+                    ]);
+                }
+            }
+        }
     }
 
 

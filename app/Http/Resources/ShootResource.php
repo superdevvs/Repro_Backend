@@ -47,6 +47,24 @@ class ShootResource extends JsonResource
             $this->services->load('category');
         }
 
+        $requestingUser = $request->user();
+        $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor';
+        $assignmentService = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
+        $serviceCollection = $this->services;
+        if ($isEditor && $requestingUser) {
+            $serviceCollection = $assignmentService->filterServicesForEditor($this->resource, $requestingUser);
+        }
+        $editorAssignments = $assignmentService->buildEditorAssignmentsPayload(
+            $this->resource,
+            $isEditor ? $requestingUser : null
+        );
+        $resolvedTopLevelEditor = null;
+        if ($isEditor && !empty($editorAssignments)) {
+            $resolvedTopLevelEditor = $editorAssignments[0]['editor'] ?? null;
+        } elseif (count($editorAssignments) === 1) {
+            $resolvedTopLevelEditor = $editorAssignments[0]['editor'] ?? null;
+        }
+
         $tourLinks = is_array($this->tour_links) ? $this->tour_links : [];
         $realtorClient = $this->resolveRealtorClient($tourLinks);
         if ($realtorClient) {
@@ -66,12 +84,13 @@ class ShootResource extends JsonResource
                     'name' => $this->rep?->name ?? 'Unknown',
                 ];
             }),
-            'photographer' => $this->when($this->photographer_id, function () {
+            'photographer' => $this->when($this->photographer_id && !$isEditor, function () {
                 return [
                     'id' => (string) $this->photographer_id,
                     'name' => $this->photographer?->name ?? 'Unassigned',
                 ];
             }),
+            'editor' => $resolvedTopLevelEditor,
             'location' => [
                 'address' => $this->address,
                 'city' => $this->city,
@@ -80,8 +99,8 @@ class ShootResource extends JsonResource
                 'fullAddress' => "{$this->address}, {$this->city}, {$this->state} {$this->zip}",
             ],
             // Batch-load unique per-service photographer IDs to avoid N+1 queries
-            'services' => (function () {
-                $servicePhotographerIds = $this->services
+            'services' => (function () use ($serviceCollection, $isEditor, $assignmentService) {
+                $servicePhotographerIds = $serviceCollection
                     ->pluck('pivot.photographer_id')
                     ->filter()
                     ->unique()
@@ -89,8 +108,16 @@ class ShootResource extends JsonResource
                 $servicePhotographers = $servicePhotographerIds->isNotEmpty()
                     ? \App\Models\User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
                     : collect();
+                $serviceEditorIds = $serviceCollection
+                    ->pluck('pivot.editor_id')
+                    ->filter()
+                    ->unique()
+                    ->values();
+                $serviceEditors = $serviceEditorIds->isNotEmpty()
+                    ? \App\Models\User::whereIn('id', $serviceEditorIds)->get()->keyBy('id')
+                    : collect();
 
-                return $this->services->map(function ($service) use ($servicePhotographers) {
+                return $serviceCollection->map(function ($service) use ($servicePhotographers, $serviceEditors, $isEditor, $assignmentService) {
                 // FALLBACK RULE: service.photographer_id ?? shoot.photographer_id
                 $resolvedPhotographerId = $service->pivot->photographer_id ?? $this->photographer_id;
                 $sqftRanges = $service->relationLoaded('sqftRanges')
@@ -99,7 +126,7 @@ class ShootResource extends JsonResource
 
                 // Resolve photographer details
                 $resolvedPhotographer = null;
-                if ($resolvedPhotographerId) {
+                if (!$isEditor && $resolvedPhotographerId) {
                     // Try service-level photographer first (from batch-loaded collection)
                     if ($service->pivot->photographer_id) {
                         $photographer = $servicePhotographers->get($service->pivot->photographer_id);
@@ -116,6 +143,21 @@ class ShootResource extends JsonResource
                         ];
                     }
                 }
+                $pivotEditorId = $service->pivot->editor_id ?? null;
+                $resolvedEditor = null;
+                if ($pivotEditorId) {
+                    $editor = $serviceEditors->get($pivotEditorId);
+                    if ($editor) {
+                        $resolvedEditor = [
+                            'id' => (string) $editor->id,
+                            'name' => $editor->name,
+                            'avatar' => $editor->avatar ?? null,
+                            'email' => $editor->email,
+                        ];
+                    }
+                }
+                $categoryName = $service->category?->name ?? $service->category_name ?? $service->name;
+                $editingCompletedAt = $service->pivot->editing_completed_at;
                 
                 return [
                     'id' => (string) $service->id,
@@ -135,11 +177,18 @@ class ShootResource extends JsonResource
                     ])->values()->all(),
                     'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
                     // Raw pivot value (may be null)
-                    'photographer_id' => $service->pivot->photographer_id ? (string) $service->pivot->photographer_id : null,
+                    'photographer_id' => $isEditor ? null : ($service->pivot->photographer_id ? (string) $service->pivot->photographer_id : null),
                     // RESOLVED value with fallback (frontend uses this)
-                    'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
+                    'resolved_photographer_id' => $isEditor ? null : ($resolvedPhotographerId ? (string) $resolvedPhotographerId : null),
                     // Resolved photographer details (never null if shoot has photographer)
-                    'photographer' => $resolvedPhotographer,
+                    'photographer' => $isEditor ? null : $resolvedPhotographer,
+                    'editor_id' => $pivotEditorId ? (string) $pivotEditorId : null,
+                    'editor' => $resolvedEditor,
+                    'editing_completed_at' => $editingCompletedAt instanceof \DateTimeInterface
+                        ? $editingCompletedAt->format(\DateTimeInterface::ATOM)
+                        : ($editingCompletedAt ? (string) $editingCompletedAt : null),
+                    'lane' => $assignmentService->normalizeLane($categoryName),
+                    'category_key' => $assignmentService->normalizeLane($categoryName),
                     // Category info for per-category grouping
                     'category' => $service->category ? [
                         'id' => (string) $service->category->id,
@@ -150,7 +199,9 @@ class ShootResource extends JsonResource
                 });
             })(),
             // Explicitly include services_list for frontend compatibility
-            'services_list' => $this->services->pluck('name')->filter()->values()->all(),
+            'services_list' => $serviceCollection->pluck('name')->filter()->values()->all(),
+            'editor_assignments' => $editorAssignments,
+            'editorAssignments' => $editorAssignments,
             'scheduledAt' => $this->scheduled_at?->toIso8601String(),
             'scheduledDate' => $this->scheduled_date?->toDateString(),
             'time' => $this->time,
@@ -158,19 +209,19 @@ class ShootResource extends JsonResource
             'status' => $this->status,
             'workflowStatus' => $this->workflow_status,
             'payment' => [
-                'serviceSubtotal' => (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
-                'baseQuote' => (float) $this->base_quote,
+                'serviceSubtotal' => $isEditor ? 0.0 : (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
+                'baseQuote' => $isEditor ? 0.0 : (float) $this->base_quote,
                 'discountType' => $this->discount_type,
                 'discountValue' => $this->discount_value !== null ? (float) $this->discount_value : null,
-                'discountAmount' => (float) ($this->discount_amount ?? 0),
-                'discountedSubtotal' => (float) $this->base_quote,
+                'discountAmount' => $isEditor ? 0.0 : (float) ($this->discount_amount ?? 0),
+                'discountedSubtotal' => $isEditor ? 0.0 : (float) $this->base_quote,
                 'taxRegion' => $this->tax_region ?? 'none',
-                'taxPercent' => (float) ($this->tax_percent ?? 0),
-                'taxAmount' => (float) $this->tax_amount,
-                'totalQuote' => (float) $this->total_quote,
-                'totalPaid' => (float) $this->total_paid,
-                'remainingBalance' => (float) $this->remaining_balance,
-                'paymentStatus' => $this->payment_status,
+                'taxPercent' => $isEditor ? 0.0 : (float) ($this->tax_percent ?? 0),
+                'taxAmount' => $isEditor ? 0.0 : (float) $this->tax_amount,
+                'totalQuote' => $isEditor ? 0.0 : (float) $this->total_quote,
+                'totalPaid' => $isEditor ? 0.0 : (float) $this->total_paid,
+                'remainingBalance' => $isEditor ? 0.0 : (float) $this->remaining_balance,
+                'paymentStatus' => $isEditor ? null : $this->payment_status,
             ],
             'photographerPay' => $this->calculatePhotographerPay(),
             'totalPhotographerPay' => $this->calculatePhotographerPay(),

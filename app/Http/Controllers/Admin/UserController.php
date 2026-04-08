@@ -138,6 +138,7 @@ class UserController extends Controller
             'insuranceFile' => 'nullable|string|url',
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
+            'editing_capabilities' => 'nullable|string',
         ];
 
         if ($this->serviceGroupsFeatureAvailable()) {
@@ -266,6 +267,23 @@ class UserController extends Controller
             if (!empty($photographerData)) {
                 $validated['metadata'] = array_merge($validated['metadata'] ?? [], $photographerData);
             }
+        }
+
+        if ($validated['role'] === 'editor' && $request->has('editing_capabilities')) {
+            $editingCapabilities = $request->input('editing_capabilities');
+            if (is_string($editingCapabilities)) {
+                $decoded = json_decode($editingCapabilities, true);
+                $editingCapabilities = json_last_error() === JSON_ERROR_NONE ? $decoded : [];
+            }
+
+            $validated['metadata'] = array_merge($validated['metadata'] ?? [], [
+                'editing_capabilities' => collect(is_array($editingCapabilities) ? $editingCapabilities : [])
+                    ->map(fn ($capability) => strtolower(trim((string) $capability)))
+                    ->filter(fn ($capability) => in_array($capability, ['photo', 'video'], true))
+                    ->unique()
+                    ->values()
+                    ->all(),
+            ]);
         }
 
         $user = User::create($validated);
@@ -504,6 +522,7 @@ class UserController extends Controller
             'insuranceFile' => 'nullable|string|url',
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
+            'editing_capabilities' => 'nullable|string',
         ];
 
         if ($this->serviceGroupsFeatureAvailable()) {
@@ -621,6 +640,29 @@ class UserController extends Controller
             }
             
             $validated['metadata'] = array_merge($validated['metadata'] ?? $user->metadata ?? [], $photographerData);
+        }
+
+        if ($user->role === 'editor' || ($request->has('role') && $request->input('role') === 'editor')) {
+            $editorData = is_array($validated['metadata'] ?? null)
+                ? $validated['metadata']
+                : ($user->metadata ?? []);
+
+            if ($request->has('editing_capabilities')) {
+                $editingCapabilities = $request->input('editing_capabilities');
+                if (is_string($editingCapabilities)) {
+                    $decoded = json_decode($editingCapabilities, true);
+                    $editingCapabilities = json_last_error() === JSON_ERROR_NONE ? $decoded : [];
+                }
+
+                $editorData['editing_capabilities'] = collect(is_array($editingCapabilities) ? $editingCapabilities : [])
+                    ->map(fn ($capability) => strtolower(trim((string) $capability)))
+                    ->filter(fn ($capability) => in_array($capability, ['photo', 'video'], true))
+                    ->unique()
+                    ->values()
+                    ->all();
+            }
+
+            $validated['metadata'] = array_merge($validated['metadata'] ?? $user->metadata ?? [], $editorData);
         }
 
         // Update user
@@ -937,6 +979,8 @@ class UserController extends Controller
         }
         $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
+        $payload['editingCapabilities'] = $user->getEditingCapabilities();
+        $payload['editing_capabilities'] = $payload['editingCapabilities'];
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
         $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
             ? (float) $payload['client_discount_value']

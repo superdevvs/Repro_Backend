@@ -7,6 +7,7 @@ use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -88,6 +89,9 @@ class ShootMediaReadService
         }
 
         $files = $filesQuery->get();
+        if ($user && $user->role === 'editor') {
+            $files = app(ShootEditingAssignmentService::class)->filterFilesForEditor($files, $shoot, $user);
+        }
         if ($type === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
@@ -109,8 +113,26 @@ class ShootMediaReadService
         ];
     }
 
-    public function listMediaPayload(Shoot $shoot, string $type): array
+    public function listMediaPayload(Shoot $shoot, string $type, ?User $user = null): array
     {
+        if ($user && $user->role === 'editor') {
+            $filesPayload = $this->getEditorScopedMediaPayload($shoot, $type, $user);
+
+            return [
+                'data' => $filesPayload,
+                'counts' => [
+                    'raw_photo_count' => $shoot->raw_photo_count,
+                    'edited_photo_count' => $shoot->edited_photo_count,
+                    'extra_photo_count' => $shoot->extra_photo_count,
+                    'expected_raw_count' => $shoot->expected_raw_count,
+                    'expected_final_count' => $shoot->expected_final_count,
+                    'raw_missing_count' => $shoot->raw_missing_count,
+                    'edited_missing_count' => $shoot->edited_missing_count,
+                    'bracket_mode' => $shoot->bracket_mode,
+                ],
+            ];
+        }
+
         return [
             'data' => $this->dropboxService->listShootFiles($shoot, $type),
             'counts' => [
@@ -134,6 +156,38 @@ class ShootMediaReadService
             ->filter()
             ->values()
             ->all();
+    }
+
+    protected function getEditorScopedMediaPayload(Shoot $shoot, string $type, User $user): array
+    {
+        $normalizedType = strtolower($type);
+        $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
+
+        if ($normalizedType === 'raw') {
+            $filesQuery->where(function ($query) {
+                $query->where('workflow_stage', ShootFile::STAGE_TODO)->orWhereNull('workflow_stage');
+            });
+        } elseif ($normalizedType === 'edited') {
+            $filesQuery->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]);
+        }
+
+        $files = app(ShootEditingAssignmentService::class)->filterFilesForEditor(
+            $filesQuery->get(),
+            $shoot,
+            $user
+        );
+
+        if ($normalizedType === 'edited') {
+            $files = $files
+                ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
+                ->values();
+        }
+
+        $dropboxUrls = $this->resolveDropboxUrls($files);
+
+        return $files->map(function (ShootFile $file) use ($dropboxUrls) {
+            return $this->formatFile($file, $dropboxUrls, false);
+        })->values()->all();
     }
 
     protected function resolveDropboxUrls($files): array

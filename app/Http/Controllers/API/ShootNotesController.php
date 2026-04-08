@@ -20,6 +20,13 @@ class ShootNotesController extends Controller
         $notes = $shoot->notes()
             ->with('author:id,name,email')
             ->get()
+            ->filter(function ($note) use ($role) {
+                if ($role === 'editor') {
+                    return $note->type === 'editing';
+                }
+
+                return true;
+            })
             ->filter(fn ($note) => $note->isVisibleToRole($role))
             ->values();
 
@@ -56,7 +63,7 @@ class ShootNotesController extends Controller
             'admin', 'superadmin', 'editing_manager' => ['shoot', 'company', 'photographer', 'editing'],
             'client' => ['shoot'],
             'photographer' => ['photographer', 'shoot'],
-            'editor' => ['editing', 'shoot'],
+            'editor' => [],
             default => [],
         };
 
@@ -109,6 +116,7 @@ class ShootNotesController extends Controller
     public function updateNotesSimple(Request $request, $shootId)
     {
         $shoot = Shoot::findOrFail($shootId);
+        $role = strtolower(str_replace('-', '_', $request->user()->role ?? ''));
 
         $request->validate([
             'shoot_notes' => 'nullable|string',
@@ -117,7 +125,20 @@ class ShootNotesController extends Controller
             'editor_notes' => 'nullable|string',
         ]);
 
-        $data = $request->only(['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes']);
+        $allowed = [];
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            $allowed = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
+        } elseif ($role === 'client') {
+            $allowed = ['shoot_notes'];
+        } elseif ($role === 'photographer') {
+            $allowed = ['photographer_notes'];
+        }
+
+        if (empty($allowed)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $data = $request->only($allowed);
         $camel = [
             'shootNotes' => 'shoot_notes',
             'companyNotes' => 'company_notes',
@@ -126,7 +147,7 @@ class ShootNotesController extends Controller
             'editorNotes' => 'editor_notes',
         ];
         foreach ($camel as $from => $to) {
-            if ($request->has($from) && !array_key_exists($to, $data)) {
+            if (in_array($to, $allowed, true) && $request->has($from) && !array_key_exists($to, $data)) {
                 $data[$to] = $request->input($from);
             }
         }
@@ -161,8 +182,6 @@ class ShootNotesController extends Controller
             $allowed = ['shoot_notes'];
         } elseif ($role === 'photographer') {
             $allowed = ['photographer_notes'];
-        } elseif ($role === 'editor') {
-            $allowed = ['editor_notes'];
         }
 
         if (empty($allowed)) {

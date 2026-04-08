@@ -16,6 +16,8 @@ class ShootShareLinkService
 {
     private const MEDIA_STAGE_RAW = 'raw';
     private const MEDIA_STAGE_EDITED = 'edited';
+    private const MEDIA_STAGE_RAW_PHOTO = 'raw_photo';
+    private const MEDIA_STAGE_RAW_VIDEO = 'raw_video';
 
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
@@ -78,16 +80,26 @@ class ShootShareLinkService
         string $mediaStage = self::MEDIA_STAGE_RAW
     ): array
     {
-        $normalizedMediaStage = strtolower($mediaStage) === self::MEDIA_STAGE_EDITED
-            ? self::MEDIA_STAGE_EDITED
-            : self::MEDIA_STAGE_RAW;
+        $normalizedMediaStage = $this->normalizeMediaStage($mediaStage);
         $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
+        $isLaneSpecificStage = in_array($normalizedMediaStage, [
+            self::MEDIA_STAGE_RAW_PHOTO,
+            self::MEDIA_STAGE_RAW_VIDEO,
+        ], true);
         $workflowStages = $isEditedStage
             ? [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]
             : [ShootFile::STAGE_TODO];
         $stageLabel = $isEditedStage ? 'edited' : 'raw';
 
         $filesQuery = $shoot->files()->whereIn('workflow_stage', $workflowStages);
+        if ($normalizedMediaStage === self::MEDIA_STAGE_RAW_VIDEO) {
+            $filesQuery->where('media_type', 'video');
+        } elseif ($normalizedMediaStage === self::MEDIA_STAGE_RAW_PHOTO) {
+            $filesQuery->where(function ($query) {
+                $query->whereNull('media_type')
+                    ->orWhere('media_type', '!=', 'video');
+            });
+        }
         if (!empty($fileIds)) {
             $filesQuery->whereIn('id', $fileIds);
         }
@@ -110,7 +122,7 @@ class ShootShareLinkService
         $shareLinkSourcePath = null;
 
         try {
-            if ($dropboxEnabled && empty($fileIds) && $folderPath) {
+            if ($dropboxEnabled && empty($fileIds) && $folderPath && !$isLaneSpecificStage) {
                 $shareLink = $this->dropboxService->createSharedLink($folderPath);
                 $shareLinkSourcePath = $folderPath;
             }
@@ -164,6 +176,7 @@ class ShootShareLinkService
                 'shoot_id' => $shoot->id,
                 'created_by' => $user->id,
                 'share_url' => $shareLink,
+                'media_stage' => $normalizedMediaStage,
                 'dropbox_path' => $shareLinkSourcePath,
                 'download_count' => 0,
                 'expires_at' => null,
@@ -196,10 +209,51 @@ class ShootShareLinkService
         return [
             'share_link' => $publicShareLink,
             'share_link_id' => $shareLinkId,
+            'media_stage' => $normalizedMediaStage,
             'file_count' => $fileCount,
             'expires_in_hours' => null,
             'expires_at' => $expiresAt,
         ];
+    }
+
+    public function ensureActiveShootShareLink(
+        Shoot $shoot,
+        User $user,
+        string $mediaStage = self::MEDIA_STAGE_RAW
+    ): array {
+        $normalizedMediaStage = $this->normalizeMediaStage($mediaStage);
+
+        $existingLink = $shoot->activeShareLinks()
+            ->forMediaStage($normalizedMediaStage)
+            ->latest('id')
+            ->first();
+
+        if ($existingLink) {
+            return [
+                'share_link' => $this->buildPublicShareUrl($shoot->id, $existingLink->id),
+                'share_link_id' => $existingLink->id,
+                'media_stage' => $normalizedMediaStage,
+                'file_count' => 0,
+                'expires_in_hours' => null,
+                'expires_at' => $existingLink->expires_at?->toIso8601String(),
+                'reused' => true,
+            ];
+        }
+
+        $payload = $this->createShootShareLink($shoot, $user, [], $normalizedMediaStage);
+        $payload['reused'] = false;
+
+        return $payload;
+    }
+
+    protected function normalizeMediaStage(string $mediaStage): string
+    {
+        return match (strtolower(trim($mediaStage))) {
+            self::MEDIA_STAGE_EDITED => self::MEDIA_STAGE_EDITED,
+            self::MEDIA_STAGE_RAW_PHOTO => self::MEDIA_STAGE_RAW_PHOTO,
+            self::MEDIA_STAGE_RAW_VIDEO => self::MEDIA_STAGE_RAW_VIDEO,
+            default => self::MEDIA_STAGE_RAW,
+        };
     }
 
     public function buildPublicShareUrl(int|string $shootId, int|string $shareLinkId): string

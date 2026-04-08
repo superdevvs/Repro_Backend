@@ -10,6 +10,7 @@ use App\Models\ShootActivityLog;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Models\WorkflowLog;
+use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -824,7 +825,7 @@ class DashboardController extends Controller
             // Editors only see logs for shoots they're assigned to
             $shootActivityLogs = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
                 ->whereHas('shoot', function ($query) use ($userId) {
-                    $query->where('editor_id', $userId);
+                    app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $userId);
                 })
                 ->whereIn('action', $editorVisibleActions)
                 ->latest()
@@ -1179,11 +1180,16 @@ class DashboardController extends Controller
         }
 
         // Editor workload imbalance
-        $editorLoads = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-            ->whereNotNull('editor_id')
-            ->select('editor_id', DB::raw('count(*) as total'))
+        $editingQueueMetrics = $this->buildEditingQueueMetrics();
+        $editorLoads = $editingQueueMetrics['lane_assignments']
             ->groupBy('editor_id')
-            ->get();
+            ->map(function (Collection $assignments, int|string $editorId) {
+                return (object) [
+                    'editor_id' => (int) $editorId,
+                    'total' => $assignments->count(),
+                ];
+            })
+            ->values();
 
         if ($editorLoads->count() >= 2) {
             $maxEditor = $editorLoads->sortByDesc('total')->first();
@@ -1192,9 +1198,7 @@ class DashboardController extends Controller
 
             if ($diff >= 5) {
                 $maxUser = User::find($maxEditor->editor_id);
-                $unassigned = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-                    ->whereNull('editor_id')
-                    ->count();
+                $unassigned = $editingQueueMetrics['unassigned_shoots'];
 
                 $msg = ($maxUser?->name ?? 'An editor') . " has {$maxEditor->total} in queue";
                 if ($unassigned > 0) {
@@ -1467,13 +1471,8 @@ class DashboardController extends Controller
     {
         $insights = [];
 
-        // Editing queue - shoots assigned to this editor or unassigned
-        $editingQueue = Shoot::where(function($q) use ($user) {
-                $q->where('editor_id', $user->id)
-                  ->orWhereNull('editor_id');
-            })
-            ->whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-            ->count();
+        // Editing queue - only shoots assigned to this editor
+        $editingQueue = $this->buildEditorQueueQuery($user->id)->count();
         if ($editingQueue > 0) {
             $insights[] = [
                 'id' => 'editor-queue',
@@ -1491,9 +1490,7 @@ class DashboardController extends Controller
         }
 
         // Shoots assigned to this editor
-        $assignedShoots = Shoot::where('editor_id', $user->id)
-            ->whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-            ->count();
+        $assignedShoots = $editingQueue;
         if ($assignedShoots > 0) {
             $insights[] = [
                 'id' => 'editor-assigned',
@@ -1627,11 +1624,10 @@ class DashboardController extends Controller
     protected function getEditingManagerInsights(User $user): array
     {
         $insights = [];
+        $editingQueueMetrics = $this->buildEditingQueueMetrics();
 
         // Unassigned editing queue (highest priority - needs immediate action)
-        $unassignedQueue = Shoot::whereNull('editor_id')
-            ->whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-            ->count();
+        $unassignedQueue = $editingQueueMetrics['unassigned_shoots'];
         if ($unassignedQueue > 0) {
             $insights[] = [
                 'id' => 'em-unassigned-queue',
@@ -1675,11 +1671,15 @@ class DashboardController extends Controller
         }
 
         // Editor workload imbalance
-        $editorLoads = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-            ->whereNotNull('editor_id')
-            ->select('editor_id', DB::raw('count(*) as total'))
+        $editorLoads = $editingQueueMetrics['lane_assignments']
             ->groupBy('editor_id')
-            ->get();
+            ->map(function (Collection $assignments, int|string $editorId) {
+                return (object) [
+                    'editor_id' => (int) $editorId,
+                    'total' => $assignments->count(),
+                ];
+            })
+            ->values();
 
         if ($editorLoads->count() >= 2) {
             $maxEditor = $editorLoads->sortByDesc('total')->first();
@@ -1706,12 +1706,9 @@ class DashboardController extends Controller
         }
 
         // Total editing queue overview
-        $totalQueue = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-            ->count();
+        $totalQueue = $editingQueueMetrics['total_queue'];
         if ($totalQueue > 0) {
-            $assignedCount = Shoot::whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
-                ->whereNotNull('editor_id')
-                ->count();
+            $assignedCount = $editingQueueMetrics['assigned_shoots'];
             $insights[] = [
                 'id' => 'em-total-queue',
                 'priority' => 'insight',
@@ -1766,5 +1763,67 @@ class DashboardController extends Controller
         }
 
         return array_slice($insights, 0, 5);
+    }
+
+    protected function buildEditorQueueQuery(int $editorId)
+    {
+        $query = Shoot::query()
+            ->whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING]);
+
+        app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $editorId);
+
+        return $query;
+    }
+
+    protected function buildEditingQueueMetrics(): array
+    {
+        $assignmentService = app(ShootEditingAssignmentService::class);
+        $shoots = Shoot::with(['services.category'])
+            ->whereIn('workflow_status', [Shoot::STATUS_UPLOADED, Shoot::STATUS_EDITING])
+            ->get();
+
+        $assignedShootIds = [];
+        $unassignedShootIds = [];
+        $laneAssignments = collect();
+
+        foreach ($shoots as $shoot) {
+            $trackedAssignments = $assignmentService->getTrackedServiceAssignments($shoot);
+
+            if ($trackedAssignments->isEmpty()) {
+                if ($shoot->editor_id) {
+                    $assignedShootIds[(int) $shoot->id] = true;
+                    $laneAssignments->push([
+                        'shoot_id' => (int) $shoot->id,
+                        'editor_id' => (int) $shoot->editor_id,
+                        'lane' => 'legacy',
+                    ]);
+                } else {
+                    $unassignedShootIds[(int) $shoot->id] = true;
+                }
+
+                continue;
+            }
+
+            foreach ($trackedAssignments->groupBy('lane') as $lane => $services) {
+                $editorId = $services->pluck('editor_id')->filter()->first();
+                if ($editorId) {
+                    $assignedShootIds[(int) $shoot->id] = true;
+                    $laneAssignments->push([
+                        'shoot_id' => (int) $shoot->id,
+                        'editor_id' => (int) $editorId,
+                        'lane' => (string) $lane,
+                    ]);
+                } else {
+                    $unassignedShootIds[(int) $shoot->id] = true;
+                }
+            }
+        }
+
+        return [
+            'total_queue' => $shoots->count(),
+            'assigned_shoots' => count($assignedShootIds),
+            'unassigned_shoots' => count($unassignedShootIds),
+            'lane_assignments' => $laneAssignments,
+        ];
     }
 }

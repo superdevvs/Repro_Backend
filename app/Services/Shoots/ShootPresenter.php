@@ -10,7 +10,10 @@ use App\Models\User;
 
 class ShootPresenter
 {
-    public function __construct(protected ShootFileAccessService $fileAccessService)
+    public function __construct(
+        protected ShootFileAccessService $fileAccessService,
+        protected ShootEditingAssignmentService $editingAssignmentService
+    )
     {
     }
 
@@ -159,6 +162,10 @@ class ShootPresenter
         $isEditorRole = $requestingRole === 'editor';
         $isClientRole = $requestingRole === 'client';
         $requestingUserId = $requestingUser?->id ? (string) $requestingUser->id : null;
+        $editorAssignments = $this->editingAssignmentService->buildEditorAssignmentsPayload(
+            $shoot,
+            $isEditorRole ? $requestingUser : null
+        );
 
         if ($isClientRole && $shoot->photographer) {
             $shoot->setAttribute('photographer', [
@@ -213,6 +220,20 @@ class ShootPresenter
             $shoot->setAttribute('client', $clientData);
         } elseif ($isEditorRole) {
             $shoot->setAttribute('client', null);
+        }
+
+        if ($isEditorRole) {
+            $shoot->setAttribute('photographer', null);
+            $shoot->photographer_id = null;
+            $shoot->resolved_photographer_id = null;
+            $shoot->resolved_photographer_name = null;
+            $shoot->photographer_name = null;
+            $shoot->payment_status = null;
+            $shoot->total_paid = null;
+            $shoot->remaining_balance = null;
+            $shoot->shoot_notes = null;
+            $shoot->company_notes = null;
+            $shoot->photographer_notes = null;
         }
 
         $ghostUsers = collect($shoot->ghostUsers ?? [])
@@ -292,9 +313,9 @@ class ShootPresenter
             auth()->user()->role ?? 'client'
         );
 
-        $shoot->shoot_notes = $shoot->shoot_notes;
-        $shoot->company_notes = $shoot->company_notes;
-        $shoot->photographer_notes = $shoot->photographer_notes;
+        $shoot->shoot_notes = $isEditorRole ? null : $shoot->shoot_notes;
+        $shoot->company_notes = $isEditorRole ? null : $shoot->company_notes;
+        $shoot->photographer_notes = $isEditorRole ? null : $shoot->photographer_notes;
         $shoot->editor_notes = $shoot->editor_notes;
 
         $shoot->mls_id = $shoot->mls_id;
@@ -318,13 +339,20 @@ class ShootPresenter
         $shoot->mmm_last_order_at = $shoot->mmm_last_order_at;
         $shoot->mmm_last_error = $shoot->mmm_last_error;
         $shoot->tour_links = $tourLinks;
+        $shoot->setAttribute('editor_assignments', $editorAssignments);
+        $shoot->setAttribute('editorAssignments', $editorAssignments);
 
         try {
             if ($shoot->relationLoaded('services') && $shoot->services->isNotEmpty()) {
+                $servicesSource = collect($shoot->services);
+                if ($isEditorRole && $requestingUser) {
+                    $servicesSource = $this->editingAssignmentService->filterServicesForEditor($shoot, $requestingUser);
+                }
+
                 $shootPhotographerId = $shoot->photographer_id;
                 $shootPhotographer = $shoot->photographer;
 
-                $servicePhotographerIds = $shoot->services
+                $servicePhotographerIds = $servicesSource
                     ->filter(fn ($s) => is_object($s))
                     ->map(fn ($s) => $s->pivot?->photographer_id)
                     ->filter()
@@ -333,8 +361,23 @@ class ShootPresenter
                 $servicePhotographers = $servicePhotographerIds->isNotEmpty()
                     ? User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
                     : collect();
+                $serviceEditorIds = $servicesSource
+                    ->filter(fn ($s) => is_object($s))
+                    ->map(fn ($s) => $s->pivot?->editor_id)
+                    ->filter()
+                    ->unique()
+                    ->values();
+                $serviceEditors = $serviceEditorIds->isNotEmpty()
+                    ? User::whereIn('id', $serviceEditorIds)->get()->keyBy('id')
+                    : collect();
 
-                $transformedServices = $shoot->services->map(function ($service) use ($shootPhotographerId, $shootPhotographer, $servicePhotographers) {
+                $transformedServices = $servicesSource->map(function ($service) use (
+                    $shootPhotographerId,
+                    $shootPhotographer,
+                    $servicePhotographers,
+                    $serviceEditors,
+                    $isEditorRole
+                ) {
                     if (is_array($service)) {
                         return $service;
                     }
@@ -343,7 +386,7 @@ class ShootPresenter
                     $resolvedPhotographerId = $pivotPhotographerId ?? $shootPhotographerId;
 
                     $resolvedPhotographer = null;
-                    if ($resolvedPhotographerId) {
+                    if (!$isEditorRole && $resolvedPhotographerId) {
                         $photographer = $pivotPhotographerId
                             ? $servicePhotographers->get($pivotPhotographerId)
                             : $shootPhotographer;
@@ -357,9 +400,25 @@ class ShootPresenter
                     }
 
                     $categoryObj = $service->relationLoaded('category') ? $service->getRelation('category') : null;
+                    $categoryName = $categoryObj?->name ?? $service->category_name ?? $service->name;
+                    $lane = $this->editingAssignmentService->normalizeLane($categoryName);
                     $sqftRanges = $service->relationLoaded('sqftRanges')
                         ? $service->getRelation('sqftRanges')
                         : $service->sqftRanges()->get();
+                    $pivotEditorId = $service->pivot?->editor_id ?? null;
+                    $resolvedEditor = null;
+                    if ($pivotEditorId) {
+                        $editor = $serviceEditors->get($pivotEditorId);
+                        if ($editor) {
+                            $resolvedEditor = [
+                                'id' => (string) $editor->id,
+                                'name' => $editor->name,
+                                'avatar' => $editor->avatar ?? null,
+                                'email' => $editor->email,
+                            ];
+                        }
+                    }
+                    $editingCompletedAt = $service->pivot?->editing_completed_at;
 
                     return [
                         'id' => (string) $service->id,
@@ -378,9 +437,16 @@ class ShootPresenter
                             'photo_count' => $range->photo_count !== null ? (int) $range->photo_count : null,
                         ])->values()->all(),
                         'photographer_pay' => $service->pivot?->photographer_pay ? (float) $service->pivot->photographer_pay : null,
-                        'photographer_id' => $pivotPhotographerId ? (string) $pivotPhotographerId : null,
-                        'resolved_photographer_id' => $resolvedPhotographerId ? (string) $resolvedPhotographerId : null,
-                        'photographer' => $resolvedPhotographer,
+                        'photographer_id' => $isEditorRole ? null : ($pivotPhotographerId ? (string) $pivotPhotographerId : null),
+                        'resolved_photographer_id' => $isEditorRole ? null : ($resolvedPhotographerId ? (string) $resolvedPhotographerId : null),
+                        'photographer' => $isEditorRole ? null : $resolvedPhotographer,
+                        'editor_id' => $pivotEditorId ? (string) $pivotEditorId : null,
+                        'editor' => $resolvedEditor,
+                        'editing_completed_at' => $editingCompletedAt instanceof \DateTimeInterface
+                            ? $editingCompletedAt->format(\DateTimeInterface::ATOM)
+                            : ($editingCompletedAt ? (string) $editingCompletedAt : null),
+                        'lane' => $lane,
+                        'category_key' => $lane,
                         'category' => $categoryObj ? [
                             'id' => (string) $categoryObj->id,
                             'name' => $categoryObj->name,
@@ -397,7 +463,7 @@ class ShootPresenter
         }
 
         $servicesArray = collect($shoot->getAttribute('services') ?? $shoot->services)->pluck('name')->filter()->values()->all();
-        $miscItems = $this->getInvoiceMiscItemNames($shoot);
+        $miscItems = $isEditorRole ? [] : $this->getInvoiceMiscItemNames($shoot);
         if (!empty($miscItems)) {
             $servicesArray = array_merge($servicesArray, $miscItems);
         }
@@ -410,6 +476,22 @@ class ShootPresenter
         $shoot->setAttribute('expected_raw_count', $shoot->expected_raw_count ?? 0);
         $shoot->setAttribute('missing_raw', (bool) $shoot->missing_raw);
         $shoot->setAttribute('missing_final', (bool) $shoot->missing_final);
+
+        if (!empty($editorAssignments)) {
+            if ($isEditorRole) {
+                $currentEditorAssignment = collect($editorAssignments)->first();
+                $shoot->editor_id = $currentEditorAssignment['editor_id'] ?? $requestingUserId;
+                $shoot->setAttribute('editor', $currentEditorAssignment['editor'] ?? [
+                    'id' => $requestingUserId,
+                    'name' => $requestingUser?->name,
+                    'avatar' => $requestingUser?->avatar ?? null,
+                    'email' => $requestingUser?->email ?? null,
+                ]);
+            } elseif (count($editorAssignments) === 1) {
+                $shoot->editor_id = $editorAssignments[0]['editor_id'] ?? $shoot->editor_id;
+                $shoot->setAttribute('editor', $editorAssignments[0]['editor'] ?? $shoot->editor);
+            }
+        }
 
         return $shoot;
     }

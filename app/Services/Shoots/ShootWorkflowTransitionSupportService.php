@@ -127,7 +127,7 @@ class ShootWorkflowTransitionSupportService
         }
     }
 
-    public function resolveEditor(?int $editorId = null): User
+    public function resolveEditor(?int $editorId = null, ?string $lane = null): User
     {
         if ($editorId) {
             $selectedEditor = User::find($editorId);
@@ -135,12 +135,25 @@ class ShootWorkflowTransitionSupportService
                 throw new \InvalidArgumentException('Selected user is not an editor');
             }
 
+            if ($lane && !$selectedEditor->canEditLane($lane)) {
+                throw new \InvalidArgumentException("Selected editor cannot handle {$lane} editing.");
+            }
+
             return $selectedEditor;
         }
 
-        $editors = User::where('role', 'editor')->get(['id', 'name']);
+        $editors = User::query()
+            ->where('role', 'editor')
+            ->when($lane, function ($query) use ($lane) {
+                $query->where(function ($editorQuery) use ($lane) {
+                    $editorQuery->whereJsonContains('metadata->editing_capabilities', $lane)
+                        ->orWhereNull('metadata')
+                        ->orWhereRaw("JSON_LENGTH(COALESCE(JSON_EXTRACT(metadata, '$.editing_capabilities'), JSON_ARRAY())) = 0");
+                });
+            })
+            ->get(['id', 'name', 'metadata']);
         if ($editors->isEmpty()) {
-            throw new \InvalidArgumentException('No editors available');
+            throw new \InvalidArgumentException($lane ? "No {$lane} editors available" : 'No editors available');
         }
 
         $editorIds = $editors->pluck('id');
