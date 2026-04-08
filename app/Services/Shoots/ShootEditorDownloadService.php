@@ -9,6 +9,7 @@ use App\Services\ShootActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Symfony\Component\HttpFoundation\Response;
 
 class ShootEditorDownloadService
 {
@@ -35,13 +36,19 @@ class ShootEditorDownloadService
         $files = $this->shootEditingAssignmentService->filterFilesForEditor($filesQuery->get(), $shoot, $user);
         $fileCount = $files->count();
         $dropboxEnabled = $this->dropboxService->isEnabled();
-        $folderPath = null;
+        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
 
         if (!empty($fileIdsParam) && $fileCount === 0) {
-            return response()->json(['error' => 'No raw files found for selected IDs'], 404);
+            return $this->withCors(
+                response()->json(['error' => 'No raw files found for selected IDs'], 404),
+                $request,
+            );
         }
         if ($fileCount === 0 && !$folderPath) {
-            return response()->json(['error' => 'No raw files found to download'], 404);
+            return $this->withCors(
+                response()->json(['error' => 'No raw files found to download'], 404),
+                $request,
+            );
         }
 
         $this->activityLogger->log(
@@ -61,12 +68,12 @@ class ShootEditorDownloadService
             try {
                 $zipLink = $this->dropboxService->getDropboxZipLink($folderPath);
                 if ($zipLink) {
-                    return response()->json([
+                    return $this->withCors(response()->json([
                         'type' => 'redirect',
                         'url' => $zipLink,
                         'file_count' => $fileCount,
                         'message' => 'Download started. Switch to Edited tab to upload your edits.',
-                    ]);
+                    ]), $request);
                 }
             } catch (\Exception $e) {
                 Log::warning('Failed to get Dropbox ZIP link, trying fallback', ['error' => $e->getMessage()]);
@@ -77,9 +84,9 @@ class ShootEditorDownloadService
             if ($files->count() > 0) {
                 $zipPath = $this->shootShareLinkService->generateFilesZipWithDropboxFallback($shoot, $files);
                 if ($zipPath && file_exists($zipPath)) {
-                    return response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
+                    return $this->withCors(response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
                         'X-File-Count' => $fileCount,
-                    ])->deleteFileAfterSend(true);
+                    ])->deleteFileAfterSend(true), $request);
                 }
             }
 
@@ -87,28 +94,43 @@ class ShootEditorDownloadService
                 try {
                     $zipPath = $this->dropboxService->generateZipOnFly($shoot, 'raw');
                     if ($zipPath && file_exists($zipPath)) {
-                        return response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
+                        return $this->withCors(response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
                             'X-File-Count' => $fileCount,
-                        ])->deleteFileAfterSend(true);
+                        ])->deleteFileAfterSend(true), $request);
                     }
                 } catch (\Exception $dropboxError) {
                     Log::warning('Dropbox generateZipOnFly failed', ['error' => $dropboxError->getMessage()]);
                 }
             }
 
-            return response()->json([
+            return $this->withCors(response()->json([
                 'error' => 'No downloadable files available. Files may not be stored locally or Dropbox access may be unavailable.',
                 'file_count' => $fileCount,
                 'has_dropbox_folder' => $dropboxEnabled && !empty($folderPath),
-            ], 404);
+            ], 404), $request);
         } catch (\Exception $e) {
             Log::error('Failed to generate ZIP for editor download', [
                 'error' => $e->getMessage(),
                 'shoot_id' => $shoot->id,
             ]);
 
-            return response()->json(['error' => 'Failed to generate ZIP file: ' . $e->getMessage()], 500);
+            return $this->withCors(
+                response()->json(['error' => 'Failed to generate ZIP file: ' . $e->getMessage()], 500),
+                $request,
+            );
         }
+    }
+
+    protected function withCors(Response $response, Request $request): Response
+    {
+        $origin = $request->headers->get('Origin', '*');
+
+        $response->headers->set('Access-Control-Allow-Origin', $origin);
+        $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+        $response->headers->set('Access-Control-Allow-Credentials', 'true');
+
+        return $response;
     }
 
     protected function notifyAdminsOfEditorDownload(Shoot $shoot, User $editor, int $fileCount): void
