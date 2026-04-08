@@ -29,6 +29,7 @@ use App\Services\Shoots\ShootMediaReadService;
 use App\Services\Shoots\ShootShareLinkReadService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpFoundation\Response;
 
 class ShootMediaController extends Controller
 {
@@ -427,10 +428,16 @@ class ShootMediaController extends Controller
     {
         $user = $request->user();
         if ($user->role !== 'editor') {
-            return response()->json(['error' => 'Only editors can download raw files via this endpoint'], 403);
+            return $this->withCors(
+                response()->json(['error' => 'Only editors can download raw files via this endpoint'], 403),
+                $request,
+            );
         }
         if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
-            return response()->json(['error' => 'You can only access raw files for shoots assigned to you'], 403);
+            return $this->withCors(
+                response()->json(['error' => 'You can only access raw files for shoots assigned to you'], 403),
+                $request,
+            );
         }
 
         return $this->shootEditorDownloadService->downloadRaw($request, $shoot, $user);
@@ -440,10 +447,16 @@ class ShootMediaController extends Controller
     {
         $user = $request->user();
         if ($user->role !== 'editor') {
-            return response()->json(['error' => 'Only editors can generate share links'], 403);
+            return $this->withCors(
+                response()->json(['error' => 'Only editors can generate share links'], 403),
+                $request,
+            );
         }
         if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
-            return response()->json(['error' => 'You can only generate share links for shoots assigned to you'], 403);
+            return $this->withCors(
+                response()->json(['error' => 'You can only generate share links for shoots assigned to you'], 403),
+                $request,
+            );
         }
 
         try {
@@ -458,17 +471,38 @@ class ShootMediaController extends Controller
                 }
             }
 
-            return response()->json(array_merge($payload, ['message' => 'Share link generated successfully']));
+            return $this->withCors(
+                response()->json(array_merge($payload, ['message' => 'Share link generated successfully'])),
+                $request,
+            );
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['error' => $e->getMessage()], 404);
+            return $this->withCors(
+                response()->json(['error' => $e->getMessage()], 404),
+                $request,
+            );
         } catch (\Exception $e) {
             Log::error('Failed to generate share link', [
                 'error' => $e->getMessage(),
                 'shoot_id' => $shoot->id,
             ]);
 
-            return response()->json(['error' => 'Failed to generate share link: ' . $e->getMessage()], 500);
+            return $this->withCors(
+                response()->json(['error' => 'Failed to generate share link: ' . $e->getMessage()], 500),
+                $request,
+            );
         }
+    }
+
+    protected function withCors(Response $response, Request $request): Response
+    {
+        $origin = $request->headers->get('Origin', '*');
+
+        $response->headers->set('Access-Control-Allow-Origin', $origin);
+        $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+        $response->headers->set('Access-Control-Allow-Credentials', 'true');
+
+        return $response;
     }
 
     public function listShareLinks(Request $request, Shoot $shoot)

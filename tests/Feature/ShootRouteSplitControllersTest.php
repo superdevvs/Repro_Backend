@@ -310,10 +310,66 @@ class ShootRouteSplitControllersTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $response = $this->get("/api/shoots/{$shoot->id}/editor-download-raw");
+        $response = $this
+            ->withHeaders(['Origin' => 'https://reprodashboard.com'])
+            ->get("/api/shoots/{$shoot->id}/editor-download-raw");
 
         $response->assertOk();
         $this->assertStringContainsString('shoot-123-raw-files.zip', $response->headers->get('content-disposition', ''));
+        $response->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
+    }
+
+    /** @test */
+    public function editor_generate_share_link_route_returns_cors_headers_when_no_raw_files_exist(): void
+    {
+        config()->set('services.dropbox.enabled', false);
+        config()->set('services.dropbox.access_token', null);
+
+        $editor = User::factory()->create([
+            'role' => 'editor',
+            'email' => 'route-split-share-link-editor@test.com',
+        ]);
+        Sanctum::actingAs($editor);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'editor_id' => $editor->id,
+        ]);
+
+        $response = $this
+            ->withHeaders(['Origin' => 'https://reprodashboard.com'])
+            ->postJson("/api/shoots/{$shoot->id}/generate-share-link", [
+                'media_stage' => 'raw',
+            ]);
+
+        $response->assertStatus(404)
+            ->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
+    }
+
+    /** @test */
+    public function shoot_media_preflight_routes_return_cors_headers(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+        ]);
+
+        $downloadResponse = $this->call('OPTIONS', "/api/shoots/{$shoot->id}/editor-download-raw", [], [], [], [
+            'HTTP_ORIGIN' => 'https://reprodashboard.com',
+            'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'GET',
+        ]);
+
+        $downloadResponse->assertNoContent()
+            ->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
+
+        $shareLinkResponse = $this->call('OPTIONS', "/api/shoots/{$shoot->id}/generate-share-link", [], [], [], [
+            'HTTP_ORIGIN' => 'https://reprodashboard.com',
+            'HTTP_ACCESS_CONTROL_REQUEST_METHOD' => 'POST',
+        ]);
+
+        $shareLinkResponse->assertNoContent()
+            ->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
     }
 
     /** @test */

@@ -77,6 +77,19 @@ Route::get('/ip-location', [IpLocationController::class, 'show'])
 Route::get('/public/share-links/{shoot}/{linkId}', [PublicShootShareLinkController::class, 'show'])
     ->name('api.public.share-links.show');
 
+$shootMediaCorsPreflight = function (Request $request) {
+    $origin = $request->headers->get('Origin', '*');
+
+    return response()->noContent()
+        ->header('Access-Control-Allow-Origin', $origin)
+        ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        ->header('Access-Control-Allow-Credentials', 'true');
+};
+
+Route::options('/shoots/{shoot}/editor-download-raw', $shootMediaCorsPreflight);
+Route::options('/shoots/{shoot}/generate-share-link', $shootMediaCorsPreflight);
+
 // Debug route to check PHP upload limits
 Route::get('/php-limits', function () {
     return response()->json([
