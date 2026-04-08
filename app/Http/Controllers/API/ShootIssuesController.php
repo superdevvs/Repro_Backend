@@ -4,12 +4,16 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
+use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootIssueParsingService;
 use Illuminate\Http\Request;
 
 class ShootIssuesController extends Controller
 {
-    public function __construct(protected ShootIssueParsingService $shootIssueParsingService)
+    public function __construct(
+        protected ShootIssueParsingService $shootIssueParsingService,
+        protected ShootEditingAssignmentService $shootEditingAssignmentService,
+    )
     {
     }
 
@@ -168,14 +172,19 @@ class ShootIssuesController extends Controller
     public function getClientRequests(Request $request)
     {
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        $shoots = Shoot::whereNotNull('admin_issue_notes')
+        $shootsQuery = Shoot::whereNotNull('admin_issue_notes')
             ->where('admin_issue_notes', 'like', '%[Request from%')
-            ->with(['client:id,name'])
-            ->get();
+            ->with(['client:id,name']);
+
+        if ($user->role === 'editor') {
+            $this->shootEditingAssignmentService->scopeAssignedToEditor($shootsQuery, $user->id);
+        }
+
+        $shoots = $shootsQuery->get();
 
         return response()->json([
             'data' => $this->shootIssueParsingService->parseClientRequests($shoots),

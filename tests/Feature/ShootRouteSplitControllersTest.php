@@ -150,6 +150,55 @@ class ShootRouteSplitControllersTest extends TestCase
     }
 
     /** @test */
+    public function editor_client_requests_route_only_returns_requests_for_assigned_shoots(): void
+    {
+        $editor = User::factory()->create([
+            'role' => 'editor',
+            'email' => 'assigned-editor@test.com',
+        ]);
+        $otherEditor = User::factory()->create([
+            'role' => 'editor',
+            'email' => 'other-editor@test.com',
+        ]);
+        Sanctum::actingAs($editor);
+
+        $assignedShoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'address' => '301 Assigned Issue St',
+            'editor_id' => null,
+            'admin_issue_notes' => '[Request from Route Split Client]: Please brighten the kitchen',
+            'is_flagged' => true,
+        ]);
+        $assignedShoot->services()->attach($this->service->id, [
+            'price' => 125,
+            'quantity' => 1,
+            'editor_id' => $editor->id,
+        ]);
+
+        $otherShoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->secondService->id,
+            'address' => '302 Other Issue St',
+            'editor_id' => null,
+            'admin_issue_notes' => '[Request from Route Split Client]: Please replace the sky',
+            'is_flagged' => true,
+        ]);
+        $otherShoot->services()->attach($this->secondService->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'editor_id' => $otherEditor->id,
+        ]);
+
+        $response = $this->getJson('/api/client-requests');
+
+        $response->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.shootId', (string) $assignedShoot->id)
+            ->assertJsonPath('data.0.note', 'Please brighten the kitchen');
+    }
+
+    /** @test */
     public function legacy_single_service_photographer_assignment_route_is_compatible(): void
     {
         Sanctum::actingAs($this->admin);
