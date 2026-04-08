@@ -132,21 +132,10 @@ class EditorRatesController extends Controller
         if (array_key_exists('service_rates', $validated)) {
             $metadata['service_rates'] = $this->normalizeServiceRates($validated['service_rates']);
 
-            $photoRate = $this->findServiceRate($metadata['service_rates'], '/photo|hdr|twilight/i');
-            if ($photoRate !== null) {
-                $metadata['photo_edit_rate'] = $photoRate;
-            }
-
-            $videoRate = $this->findServiceRate($metadata['service_rates'], '/video/i');
-            if ($videoRate !== null) {
-                $metadata['video_edit_rate'] = $videoRate;
-            }
-
-            $virtualStagingRate = $this->findServiceRate($metadata['service_rates'], '/virtual\s*staging/i');
-            if ($virtualStagingRate !== null) {
-                $metadata['virtual_staging_rate'] = $virtualStagingRate;
-                $metadata['floorplan_rate'] = 0.0;
-            }
+            $metadata['photo_edit_rate'] = $this->findServiceRate($metadata['service_rates'], '/photo|hdr|twilight/i') ?? 0.0;
+            $metadata['video_edit_rate'] = $this->findServiceRate($metadata['service_rates'], '/video/i') ?? 0.0;
+            $metadata['virtual_staging_rate'] = $this->findServiceRate($metadata['service_rates'], '/virtual\s*staging/i') ?? 0.0;
+            $metadata['floorplan_rate'] = 0.0;
         }
 
         $editor->metadata = $metadata;
