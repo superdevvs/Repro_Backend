@@ -6,6 +6,7 @@ use App\Http\Requests\StoreShootRequest;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -25,7 +26,8 @@ class CreateShootAction
         protected InvoiceService $invoiceService,
         protected AutomationService $automationService,
         protected DropboxWorkflowService $dropboxService,
-        protected MailService $mailService
+        protected MailService $mailService,
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {
     }
 
@@ -198,6 +200,7 @@ class CreateShootAction
         });
 
         $this->registerDeferredSideEffects($result);
+        $this->googleCalendarSyncDispatcher->dispatchShootSync($result->shoot->id);
 
         return $result;
     }

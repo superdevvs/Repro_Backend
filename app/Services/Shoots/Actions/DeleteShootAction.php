@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
@@ -15,7 +16,8 @@ class DeleteShootAction
     public function __construct(
         protected AutomationService $automationService,
         protected MailService $mailService,
-        protected ShootActivityLogger $activityLogger
+        protected ShootActivityLogger $activityLogger,
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {
     }
 
@@ -77,6 +79,8 @@ class DeleteShootAction
             Log::warning('Failed to log shoot deletion activity: ' . $e->getMessage());
         }
 
+        $shootId = $shoot->id;
         $shoot->delete();
+        $this->googleCalendarSyncDispatcher->dispatchShootRemoval($shootId);
     }
 }

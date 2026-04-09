@@ -5,6 +5,7 @@ namespace App\Services\Shoots\Actions;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -33,7 +34,8 @@ class ApproveShootAction
         protected DropboxWorkflowService $dropboxService,
         protected InvoiceService $invoiceService,
         protected AutomationService $automationService,
-        protected MailService $mailService
+        protected MailService $mailService,
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {
     }
 
@@ -124,6 +126,8 @@ class ApproveShootAction
                 $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
             }
         }
+
+        $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
 
         return $shoot;
     }

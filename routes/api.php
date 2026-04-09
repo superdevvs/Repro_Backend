@@ -32,6 +32,7 @@ use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
 use App\Http\Controllers\API\Messaging\TwilioWebhookController;
 use App\Http\Controllers\API\CouponController;
+use App\Http\Controllers\API\GoogleCalendarController;
 use App\Http\Controllers\API\ShootMessageController;
 use App\Http\Controllers\API\TourAnalyticsController;
 use App\Http\Controllers\API\ShootRescheduleRequestController;
@@ -175,6 +176,9 @@ Route::prefix('dropbox')->name('dropbox.')->group(function () {
     Route::match(['get', 'post'], 'webhook', [DropboxAuthController::class, 'webhook'])->name('webhook');
 });
 
+Route::get('google-calendar/callback', [GoogleCalendarController::class, 'callback'])
+    ->name('google-calendar.callback');
+
 // Route::post('/shoots/{shoot}/create-payment-link', [PaymentController::class, 'createCheckoutLink']);
 
 Route::post('webhooks/square', [PaymentController::class, 'handleWebhook'])
@@ -271,6 +275,12 @@ Route::prefix('test/mail')->group(function () {
 
 // Group of routes that require user authentication (e.g., using Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware('role:photographer')->prefix('google-calendar')->group(function () {
+        Route::post('/connect', [GoogleCalendarController::class, 'connect']);
+        Route::get('/status', [GoogleCalendarController::class, 'status']);
+        Route::delete('/disconnect', [GoogleCalendarController::class, 'disconnect']);
+        Route::post('/resync', [GoogleCalendarController::class, 'resync']);
+    });
     
     // Legacy compatibility route: existing UI still calls create-checkout-link,
     // but checkout is now handled by Stripe.

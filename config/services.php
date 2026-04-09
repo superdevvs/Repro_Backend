@@ -50,8 +50,22 @@ return [
     ],
 
     'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID', env('GOOGLE_CALENDAR_CLIENT_ID')),
+        'client_secret' => env('GOOGLE_CLIENT_SECRET', env('GOOGLE_CALENDAR_CLIENT_SECRET')),
+        'redirect' => env('GOOGLE_REDIRECT_URI', env('GOOGLE_CALENDAR_REDIRECT_URI', env('APP_URL') . '/api/google-calendar/callback')),
         'places_api_key' => env('GOOGLE_PLACES_API_KEY'),
         'maps_api_key' => env('GOOGLE_MAPS_API_KEY'),
+        'calendar' => [
+            'client_id' => env('GOOGLE_CALENDAR_CLIENT_ID', env('GOOGLE_CLIENT_ID')),
+            'client_secret' => env('GOOGLE_CALENDAR_CLIENT_SECRET', env('GOOGLE_CLIENT_SECRET')),
+            'redirect' => env('GOOGLE_CALENDAR_REDIRECT_URI', env('GOOGLE_REDIRECT_URI', env('APP_URL') . '/api/google-calendar/callback')),
+            'scope' => env('GOOGLE_CALENDAR_SCOPE', 'openid email https://www.googleapis.com/auth/calendar.events'),
+            'auth_url' => env('GOOGLE_CALENDAR_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth'),
+            'token_url' => env('GOOGLE_CALENDAR_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
+            'userinfo_url' => env('GOOGLE_CALENDAR_USERINFO_URL', 'https://openidconnect.googleapis.com/v1/userinfo'),
+            'base_url' => env('GOOGLE_CALENDAR_BASE_URL', 'https://www.googleapis.com/calendar/v3'),
+            'default_calendar_id' => env('GOOGLE_CALENDAR_DEFAULT_CALENDAR_ID', 'primary'),
+        ],
     ],
 
     // LocationIQ (OSM-backed) for address autocomplete/geocoding

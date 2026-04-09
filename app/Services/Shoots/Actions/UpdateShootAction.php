@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -26,7 +27,8 @@ class UpdateShootAction
         protected ShootEditingAssignmentService $editingAssignmentService,
         protected ShootActivityLogger $activityLogger,
         protected MailService $mailService,
-        protected AutomationService $automationService
+        protected AutomationService $automationService,
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {
     }
 
@@ -403,6 +405,8 @@ class UpdateShootAction
                 $photographerNewlyAssigned
             );
         }
+
+        $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
 
         return $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files', 'ghostUsers']);
     }

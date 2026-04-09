@@ -112,6 +112,16 @@ class User extends Authenticatable
         return $this->hasMany(Shoot::class, 'photographer_id');
     }
 
+    public function googleCalendarConnection()
+    {
+        return $this->hasOne(GoogleCalendarConnection::class);
+    }
+
+    public function googleCalendarEventMappings()
+    {
+        return $this->hasMany(GoogleCalendarEventMapping::class);
+    }
+
     public function ghostAccessibleShoots()
     {
         return $this->belongsToMany(Shoot::class, 'shoot_ghost_users')

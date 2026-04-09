@@ -6,6 +6,7 @@ use App\Http\Requests\UpdateShootStatusRequest;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootWorkflowService;
@@ -19,7 +20,8 @@ class ScheduleShootAction
         protected ShootWorkflowService $workflowService,
         protected DropboxWorkflowService $dropboxService,
         protected AutomationService $automationService,
-        protected MailService $mailService
+        protected MailService $mailService,
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {
     }
 
@@ -131,6 +133,8 @@ class ScheduleShootAction
                 );
             }
         }
+
+        $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
 
         return $shoot;
     }
