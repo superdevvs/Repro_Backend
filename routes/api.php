@@ -18,7 +18,6 @@ use App\Http\Controllers\API\ShootWorkflowController;
 use App\Http\Controllers\API\DashboardController;
 use App\Http\Controllers\PhotographerAvailabilityController;
 use App\Http\Controllers\PhotographerShootController;
-use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ClientBillingController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\DropboxAuthController;
@@ -163,27 +162,12 @@ Route::prefix('dropbox')->name('dropbox.')->group(function () {
     Route::get('callback', [DropboxAuthController::class, 'callback'])->name('callback');
     Route::post('disconnect', [DropboxAuthController::class, 'disconnect'])->name('disconnect');
 
-    // User Info
-    Route::get('user', [DropboxAuthController::class, 'getUserAccount'])->name('user');
-
-    // File Operations
-    Route::get('files/list', [DropboxAuthController::class, 'listFiles'])->name('files.list');
-    Route::post('files/upload', [DropboxAuthController::class, 'uploadFile'])->name('files.upload');
-    Route::get('files/download', [DropboxAuthController::class, 'downloadFile'])->name('files.download');
-    Route::post('files/delete', [DropboxAuthController::class, 'deleteFile'])->name('files.delete');
-
     // Webhook (can be in api.php if it's stateless)
     Route::match(['get', 'post'], 'webhook', [DropboxAuthController::class, 'webhook'])->name('webhook');
 });
 
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'callback'])
     ->name('google-calendar.callback');
-
-// Route::post('/shoots/{shoot}/create-payment-link', [PaymentController::class, 'createCheckoutLink']);
-
-Route::post('webhooks/square', [PaymentController::class, 'handleWebhook'])
-    ->middleware('square.webhook') // Verifies the request is genuinely from Square
-    ->name('webhooks.square');
 
 // Stripe Webhook (no auth - signature verified in controller)
 Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook'])
