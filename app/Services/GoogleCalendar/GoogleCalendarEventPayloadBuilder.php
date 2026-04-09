@@ -51,12 +51,12 @@ class GoogleCalendarEventPayloadBuilder
     {
         $serviceNames = $shoot->services
             ->pluck('name')
-            ->map(fn ($name) => preg_replace('/\s+/', '', trim((string) $name)))
+            ->map(fn ($name) => $this->formatServiceLabel((string) $name))
             ->filter()
             ->values();
 
         return $serviceNames->isNotEmpty()
-            ? $serviceNames->implode('+')
+            ? $serviceNames->implode(' + ')
             : 'Shoot';
     }
 
@@ -64,15 +64,24 @@ class GoogleCalendarEventPayloadBuilder
     {
         $customerFacingNotes = trim((string) ($shoot->shoot_notes ?: $shoot->notes ?: ''));
         $photographerNotes = trim((string) ($shoot->photographer_notes ?: ''));
+        $services = $shoot->services
+            ->pluck('name')
+            ->map(fn ($name) => $this->formatServiceLabel((string) $name))
+            ->filter()
+            ->values();
 
         $sections = [];
 
+        if ($services->isNotEmpty()) {
+            $sections[] = "Services\n" . $services->implode(' + ');
+        }
+
         if ($customerFacingNotes !== '') {
-            $sections[] = "Shoot Notes / Access Information:\n{$customerFacingNotes}";
+            $sections[] = "Shoot Notes / Access Information\n" . $this->formatBodyText($customerFacingNotes);
         }
 
         if ($photographerNotes !== '') {
-            $sections[] = "Photographer Notes:\n{$photographerNotes}";
+            $sections[] = "Photographer Notes\n" . $this->formatBodyText($photographerNotes);
         }
 
         if ($sections === []) {
@@ -80,5 +89,30 @@ class GoogleCalendarEventPayloadBuilder
         }
 
         return implode("\n\n", $sections);
+    }
+
+    protected function formatServiceLabel(string $value): string
+    {
+        $value = trim($value);
+
+        if ($value === '') {
+            return '';
+        }
+
+        $value = preg_replace('/(?<=[a-z])(?=[A-Z])/', ' ', $value) ?? $value;
+        $value = preg_replace('/\s+/', ' ', $value) ?? $value;
+
+        return trim($value);
+    }
+
+    protected function formatBodyText(string $value): string
+    {
+        $lines = preg_split('/\r\n|\r|\n/', $value) ?: [];
+        $normalized = collect($lines)
+            ->map(fn ($line) => trim($line))
+            ->filter()
+            ->values();
+
+        return $normalized->implode("\n");
     }
 }

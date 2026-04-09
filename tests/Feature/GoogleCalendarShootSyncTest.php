@@ -7,6 +7,7 @@ use App\Models\GoogleCalendarEventMapping;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\GoogleCalendar\GoogleCalendarEventPayloadBuilder;
 use App\Services\DropboxWorkflowService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
@@ -108,8 +109,9 @@ class GoogleCalendarShootSyncTest extends TestCase
 
             return $request->method() === 'POST'
                 && str_contains($request->url(), '/calendars/primary/events')
-                && ($request['summary'] ?? null) === 'HDRPhotos+FloorPlan'
+                && ($request['summary'] ?? null) === 'HDR Photos + Floor Plan'
                 && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
+                && str_contains($description, "Services\nHDR Photos + Floor Plan")
                 && str_contains($description, 'Use side door. Gate code 1234.')
                 && str_contains($description, 'Bring the wide-angle lens.')
                 && !str_contains($description, 'Internal dispatch detail');
@@ -315,6 +317,48 @@ class GoogleCalendarShootSyncTest extends TestCase
 
         Http::assertNothingSent();
         $this->assertDatabaseCount('google_calendar_event_mappings', 0);
+    }
+
+    public function test_google_calendar_payload_builder_formats_service_titles_and_notes_cleanly(): void
+    {
+        $camelCaseService = Service::factory()->create([
+            'name' => 'LuxuryHighlightVideo',
+            'delivery_time' => 2,
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDay()->setTime(10, 30),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'time' => '10:30',
+            'shoot_notes' => "need it fast\n\nfront gate open",
+            'photographer_notes' => "green paint\nbring flash",
+        ]);
+
+        $shoot->services()->attach($this->service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $shoot->services()->attach($camelCaseService->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $payload = app(GoogleCalendarEventPayloadBuilder::class)->build($shoot->fresh('services'), $this->photographer);
+
+        $this->assertSame('HDR Photos + Luxury Highlight Video', $payload['summary']);
+        $this->assertStringContainsString("Services\nHDR Photos + Luxury Highlight Video", (string) $payload['description']);
+        $this->assertStringContainsString("Shoot Notes / Access Information\nneed it fast\nfront gate open", (string) $payload['description']);
+        $this->assertStringContainsString("Photographer Notes\ngreen paint\nbring flash", (string) $payload['description']);
     }
 
     protected function createGoogleCalendarConnection(User $user, string $email, string $accessToken): GoogleCalendarConnection

@@ -136,22 +136,32 @@ class GoogleCalendarController extends Controller
 
     public function status(Request $request): JsonResponse
     {
-        $connection = GoogleCalendarConnection::query()
-            ->where('user_id', $request->user()->id)
-            ->first();
+        try {
+            $targetUser = $this->resolveStatusUser($request);
+            $connection = GoogleCalendarConnection::query()
+                ->where('user_id', $targetUser->id)
+                ->first();
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'available' => (bool) (config('services.google.calendar.client_id') && config('services.google.calendar.client_secret')),
-                'connected' => $connection !== null,
-                'provider_email' => $connection?->provider_email,
-                'calendar_id' => $connection?->calendar_id,
-                'sync_enabled' => (bool) ($connection?->sync_enabled ?? false),
-                'last_synced_at' => $connection?->last_synced_at?->toIso8601String(),
-                'last_error' => $connection?->last_error,
-            ],
-        ]);
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'user_id' => $targetUser->id,
+                    'user_name' => $targetUser->name,
+                    'available' => (bool) (config('services.google.calendar.client_id') && config('services.google.calendar.client_secret')),
+                    'connected' => $connection !== null,
+                    'provider_email' => $connection?->provider_email,
+                    'calendar_id' => $connection?->calendar_id,
+                    'sync_enabled' => (bool) ($connection?->sync_enabled ?? false),
+                    'last_synced_at' => $connection?->last_synced_at?->toIso8601String(),
+                    'last_error' => $connection?->last_error,
+                ],
+            ]);
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'message' => collect($exception->errors())->flatten()->first() ?: 'Unable to load Google Calendar status.',
+                'errors' => $exception->errors(),
+            ], 422);
+        }
     }
 
     public function adminOverview(): JsonResponse
@@ -248,6 +258,38 @@ class GoogleCalendarController extends Controller
 
         throw ValidationException::withMessages([
             'user_id' => 'Your account cannot manage Google Calendar connections.',
+        ]);
+    }
+
+    protected function resolveStatusUser(Request $request): User
+    {
+        $actor = $request->user();
+        $targetUserId = (int) $request->query('user_id', 0);
+
+        if ($actor->role === 'photographer') {
+            return $actor;
+        }
+
+        if (in_array($actor->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            if ($targetUserId <= 0) {
+                throw ValidationException::withMessages([
+                    'user_id' => 'Please choose a photographer to view Google Calendar status.',
+                ]);
+            }
+
+            $targetUser = User::query()->findOrFail($targetUserId);
+
+            if ($targetUser->role !== 'photographer') {
+                throw ValidationException::withMessages([
+                    'user_id' => 'Google Calendar status is only available for photographer accounts.',
+                ]);
+            }
+
+            return $targetUser;
+        }
+
+        throw ValidationException::withMessages([
+            'user_id' => 'Your account cannot view Google Calendar status.',
         ]);
     }
 

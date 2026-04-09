@@ -63,7 +63,7 @@ class GoogleCalendarControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $this->getJson('/api/google-calendar/status')->assertForbidden();
+        $this->getJson('/api/google-calendar/status')->assertUnprocessable();
         $this->deleteJson('/api/google-calendar/disconnect')->assertForbidden();
         $this->postJson('/api/google-calendar/connect')->assertUnprocessable();
     }
@@ -88,6 +88,31 @@ class GoogleCalendarControllerTest extends TestCase
 
         $this->assertIsString($authorizationUrl);
         $this->assertStringContainsString('accounts.google.com', $authorizationUrl);
+    }
+
+    public function test_admin_can_view_google_calendar_status_for_a_selected_photographer(): void
+    {
+        $admin = User::factory()->create([
+            'role' => 'admin',
+        ]);
+
+        GoogleCalendarConnection::create([
+            'user_id' => $this->photographer->id,
+            'provider_email' => 'calendar-owner@example.com',
+            'calendar_id' => 'primary',
+            'access_token' => 'google-access-token',
+            'refresh_token' => 'google-refresh-token',
+            'token_expires_at' => now()->addHour(),
+            'sync_enabled' => true,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $this->getJson('/api/google-calendar/status?user_id=' . $this->photographer->id)
+            ->assertOk()
+            ->assertJsonPath('data.connected', true)
+            ->assertJsonPath('data.user_id', $this->photographer->id)
+            ->assertJsonPath('data.provider_email', 'calendar-owner@example.com');
     }
 
     public function test_callback_persists_connection_and_redirects_back_to_the_photographer_account_page(): void
