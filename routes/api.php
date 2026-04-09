@@ -292,16 +292,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('payments/stripe-multiple-shoots-embedded', [StripePaymentController::class, 'payMultipleShootsEmbedded'])
         ->name('api.payments.stripe-multiple-shoots-embedded');
 
-    // Process direct payment using Square Web Payments SDK token
-    Route::post('payments/create', [PaymentController::class, 'createPayment'])
-        ->name('api.payments.create');
-
-    // Initiates a refund for a given payment.
-    // The Square Payment ID should be sent in the request body.
-    // e.g., POST /api/payments/refund
-    Route::post('payments/refund', [PaymentController::class, 'refundPayment'])
-        ->name('api.payments.refund');
-
     // Stripe refund
     Route::post('payments/stripe-refund', [StripePaymentController::class, 'refundPayment'])
         ->name('api.payments.stripe-refund');
