@@ -40,15 +40,6 @@ return [
         'currency'        => env('STRIPE_CURRENCY', 'USD'),
     ],
 
-    'square' => [
-        'enabled' => env('SQUARE_ENABLED', false),
-        'access_token' => env('SQUARE_ACCESS_TOKEN'),
-        'application_id' => env('SQUARE_APPLICATION_ID'),
-        'location_id' => env('SQUARE_LOCATION_ID'),
-        'environment' => env('SQUARE_ENVIRONMENT', 'sandbox'),
-        'currency' => env('SQUARE_CURRENCY', 'USD'),
-    ],
-
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID', env('GOOGLE_CALENDAR_CLIENT_ID')),
         'client_secret' => env('GOOGLE_CLIENT_SECRET', env('GOOGLE_CALENDAR_CLIENT_SECRET')),

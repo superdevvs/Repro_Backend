@@ -225,7 +225,6 @@ Route::middleware('external_api_key')->prefix('external')->group(function () {
         ->name('external.services');
 });
 
-// Test endpoints (remove in production)
 Route::get('test/dropbox-config', [App\Http\Controllers\TestDropboxController::class, 'debugConfig']);
 Route::get('test/dropbox-curl', [App\Http\Controllers\TestDropboxController::class, 'testWithCurl']);
 Route::get('test/dropbox-connection', [App\Http\Controllers\TestDropboxController::class, 'testConnection']);
@@ -235,19 +234,12 @@ Route::get('test/create-shoot', [App\Http\Controllers\TestDropboxController::cla
 Route::post('test/create-shoot-api', [App\Http\Controllers\TestDropboxController::class, 'createTestShootViaAPI']);
 Route::get('dropbox/setup-long-lived-token', [App\Http\Controllers\TestDropboxController::class, 'setupLongLivedToken']);
 
-// Square API test endpoints
-Route::get('test/square-connection', [App\Http\Controllers\TestSquareController::class, 'testConnection']);
-Route::get('test/square-locations', [App\Http\Controllers\TestSquareController::class, 'listLocations']);
+Route::get('public/share-links/{shoot}/{linkId}', [PublicShootShareLinkController::class, 'show'])
+    ->name('api.public.share-links.show');
 
-// Square configuration endpoint (for frontend) - public, non-sensitive data
-Route::get('square/config', [App\Http\Controllers\TestSquareController::class, 'getConfig'])
-    ->name('api.square.config');
-
-// Public payment page endpoint (no auth required - for email payment links)
 Route::get('shoots/{shoot}/payment-details', [ShootPaymentsController::class, 'getPaymentDetails'])
     ->name('api.shoots.payment-details');
 
-// Address lookup endpoints
 Route::prefix('address')->group(function () {
     Route::get('search', [App\Http\Controllers\AddressLookupController::class, 'searchAddresses']);
     Route::get('details', [App\Http\Controllers\AddressLookupController::class, 'getAddressDetails']);
