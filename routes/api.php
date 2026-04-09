@@ -275,12 +275,13 @@ Route::prefix('test/mail')->group(function () {
 
 // Group of routes that require user authentication (e.g., using Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware('role:photographer,admin,superadmin,editing_manager')->post('/google-calendar/connect', [GoogleCalendarController::class, 'connect']);
     Route::middleware('role:photographer')->prefix('google-calendar')->group(function () {
-        Route::post('/connect', [GoogleCalendarController::class, 'connect']);
         Route::get('/status', [GoogleCalendarController::class, 'status']);
         Route::delete('/disconnect', [GoogleCalendarController::class, 'disconnect']);
         Route::post('/resync', [GoogleCalendarController::class, 'resync']);
     });
+    Route::middleware('role:admin,superadmin,editing_manager')->get('/admin/google-calendar/overview', [GoogleCalendarController::class, 'adminOverview']);
     
     // Legacy compatibility route: existing UI still calls create-checkout-link,
     // but checkout is now handled by Stripe.

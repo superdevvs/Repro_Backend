@@ -12,6 +12,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Str;
 use Throwable;
@@ -29,9 +30,12 @@ class GoogleCalendarController extends Controller
     {
         try {
             $state = (string) Str::uuid();
+            $targetUser = $this->resolveConnectUser($request);
+            $redirectPath = $this->resolveFrontendRedirectPath((string) $request->input('source', 'photographer-account'));
 
             Cache::put($this->oauthStateKey($state), [
-                'user_id' => $request->user()->id,
+                'user_id' => $targetUser->id,
+                'redirect_path' => $redirectPath,
             ], now()->addMinutes(10));
 
             return response()->json([
@@ -40,6 +44,11 @@ class GoogleCalendarController extends Controller
                     'authorization_url' => $this->calendarService->buildAuthorizationUrl($state),
                 ],
             ]);
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'message' => collect($exception->errors())->flatten()->first() ?: 'Unable to start Google Calendar connection.',
+                'errors' => $exception->errors(),
+            ], 422);
         } catch (Throwable $exception) {
             return response()->json([
                 'message' => $exception->getMessage(),
@@ -52,13 +61,32 @@ class GoogleCalendarController extends Controller
         $state = (string) $request->query('state', '');
         $payload = $state !== '' ? Cache::pull($this->oauthStateKey($state)) : null;
         $redirectBase = rtrim(config('app.frontend_url'), '/');
+        $redirectPath = $this->buildFrontendRedirectPath($payload['redirect_path'] ?? null);
 
         if ($request->filled('error')) {
-            return redirect()->away($redirectBase . '/photographer-account?tab=notifications&google_calendar=error&message=' . urlencode((string) $request->query('error')));
+            return redirect()->away(
+                $this->appendRedirectQuery(
+                    $redirectBase,
+                    $redirectPath,
+                    [
+                        'google_calendar' => 'error',
+                        'message' => (string) $request->query('error'),
+                    ]
+                )
+            );
         }
 
         if (!is_array($payload) || empty($payload['user_id'])) {
-            return redirect()->away($redirectBase . '/photographer-account?tab=notifications&google_calendar=error&message=' . urlencode('Invalid or expired Google Calendar connection.'));
+            return redirect()->away(
+                $this->appendRedirectQuery(
+                    $redirectBase,
+                    $redirectPath,
+                    [
+                        'google_calendar' => 'error',
+                        'message' => 'Invalid or expired Google Calendar connection.',
+                    ]
+                )
+            );
         }
 
         try {
@@ -82,9 +110,27 @@ class GoogleCalendarController extends Controller
 
             $this->syncDispatcher->dispatchUserResync($user->id);
 
-            return redirect()->away($redirectBase . '/photographer-account?tab=notifications&google_calendar=connected');
+            return redirect()->away(
+                $this->appendRedirectQuery(
+                    $redirectBase,
+                    $redirectPath,
+                    [
+                        'google_calendar' => 'connected',
+                        'message' => sprintf('Google Calendar connected for %s.', $user->name),
+                    ]
+                )
+            );
         } catch (Throwable $exception) {
-            return redirect()->away($redirectBase . '/photographer-account?tab=notifications&google_calendar=error&message=' . urlencode($exception->getMessage()));
+            return redirect()->away(
+                $this->appendRedirectQuery(
+                    $redirectBase,
+                    $redirectPath,
+                    [
+                        'google_calendar' => 'error',
+                        'message' => $exception->getMessage(),
+                    ]
+                )
+            );
         }
     }
 
@@ -104,6 +150,19 @@ class GoogleCalendarController extends Controller
                 'sync_enabled' => (bool) ($connection?->sync_enabled ?? false),
                 'last_synced_at' => $connection?->last_synced_at?->toIso8601String(),
                 'last_error' => $connection?->last_error,
+            ],
+        ]);
+    }
+
+    public function adminOverview(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'available' => (bool) (config('services.google.calendar.client_id') && config('services.google.calendar.client_secret')),
+                'redirect_uri' => config('services.google.calendar.redirect'),
+                'connected_photographers_count' => GoogleCalendarConnection::query()->count(),
+                'synced_events_count' => GoogleCalendarEventMapping::query()->count(),
             ],
         ]);
     }
@@ -158,5 +217,61 @@ class GoogleCalendarController extends Controller
     protected function oauthStateKey(string $state): string
     {
         return 'google_calendar_oauth_state:' . $state;
+    }
+
+    protected function resolveConnectUser(Request $request): User
+    {
+        $actor = $request->user();
+        $targetUserId = (int) $request->input('user_id');
+
+        if ($actor->role === 'photographer') {
+            return $actor;
+        }
+
+        if (in_array($actor->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            if ($targetUserId <= 0) {
+                throw ValidationException::withMessages([
+                    'user_id' => 'Please choose a photographer to connect Google Calendar.',
+                ]);
+            }
+
+            $targetUser = User::query()->findOrFail($targetUserId);
+
+            if ($targetUser->role !== 'photographer') {
+                throw ValidationException::withMessages([
+                    'user_id' => 'Google Calendar sync can only be connected for photographer accounts.',
+                ]);
+            }
+
+            return $targetUser;
+        }
+
+        throw ValidationException::withMessages([
+            'user_id' => 'Your account cannot manage Google Calendar connections.',
+        ]);
+    }
+
+    protected function resolveFrontendRedirectPath(string $source): string
+    {
+        return match ($source) {
+            'availability' => '/availability',
+            default => '/photographer-account?tab=notifications',
+        };
+    }
+
+    protected function buildFrontendRedirectPath(null|string $redirectPath): string
+    {
+        if (!is_string($redirectPath) || $redirectPath === '') {
+            return '/photographer-account?tab=notifications';
+        }
+
+        return str_starts_with($redirectPath, '/') ? $redirectPath : '/photographer-account?tab=notifications';
+    }
+
+    protected function appendRedirectQuery(string $redirectBase, string $redirectPath, array $params): string
+    {
+        $separator = str_contains($redirectPath, '?') ? '&' : '?';
+
+        return $redirectBase . $redirectPath . $separator . http_build_query($params);
     }
 }

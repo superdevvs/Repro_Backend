@@ -64,14 +64,37 @@ class GoogleCalendarControllerTest extends TestCase
         Sanctum::actingAs($admin);
 
         $this->getJson('/api/google-calendar/status')->assertForbidden();
-        $this->postJson('/api/google-calendar/connect')->assertForbidden();
         $this->deleteJson('/api/google-calendar/disconnect')->assertForbidden();
+        $this->postJson('/api/google-calendar/connect')->assertUnprocessable();
+    }
+
+    public function test_admin_can_start_google_calendar_connection_for_a_selected_photographer(): void
+    {
+        $admin = User::factory()->create([
+            'role' => 'admin',
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/google-calendar/connect', [
+            'user_id' => $this->photographer->id,
+            'source' => 'availability',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('success', true);
+
+        $authorizationUrl = $response->json('data.authorization_url');
+
+        $this->assertIsString($authorizationUrl);
+        $this->assertStringContainsString('accounts.google.com', $authorizationUrl);
     }
 
     public function test_callback_persists_connection_and_redirects_back_to_the_photographer_account_page(): void
     {
         Cache::put('google_calendar_oauth_state:test-state', [
             'user_id' => $this->photographer->id,
+            'redirect_path' => '/photographer-account?tab=notifications',
         ], now()->addMinutes(10));
 
         Http::fake([
@@ -87,7 +110,13 @@ class GoogleCalendarControllerTest extends TestCase
 
         $response = $this->get('/api/google-calendar/callback?code=test-code&state=test-state');
 
-        $response->assertRedirect('http://frontend.test/photographer-account?tab=notifications&google_calendar=connected');
+        $response->assertRedirect(
+            'http://frontend.test/photographer-account?tab=notifications&' .
+            http_build_query([
+                'google_calendar' => 'connected',
+                'message' => 'Google Calendar connected for ' . $this->photographer->name . '.',
+            ])
+        );
 
         $this->assertDatabaseHas('google_calendar_connections', [
             'user_id' => $this->photographer->id,
@@ -95,6 +124,29 @@ class GoogleCalendarControllerTest extends TestCase
             'calendar_id' => 'primary',
             'sync_enabled' => true,
         ]);
+    }
+
+    public function test_callback_can_redirect_back_to_the_availability_page(): void
+    {
+        Cache::put('google_calendar_oauth_state:availability-state', [
+            'user_id' => $this->photographer->id,
+            'redirect_path' => '/availability',
+        ], now()->addMinutes(10));
+
+        Http::fake([
+            'https://oauth2.googleapis.com/token' => Http::response([
+                'access_token' => 'google-access-token',
+                'refresh_token' => 'google-refresh-token',
+                'expires_in' => 3600,
+            ], 200),
+            'https://openidconnect.googleapis.com/v1/userinfo' => Http::response([
+                'email' => 'calendar-owner@example.com',
+            ], 200),
+        ]);
+
+        $response = $this->get('/api/google-calendar/callback?code=test-code&state=availability-state');
+
+        $response->assertRedirect('http://frontend.test/availability?google_calendar=connected&message=' . urlencode('Google Calendar connected for ' . $this->photographer->name . '.'));
     }
 
     public function test_photographer_can_view_status_and_disconnect_google_calendar(): void
