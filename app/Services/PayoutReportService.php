@@ -10,11 +10,15 @@ use Illuminate\Support\Str;
 
 class PayoutReportService
 {
+    public function __construct(
+        private readonly EditorPayoutService $editorPayoutService,
+    ) {
+    }
+
     public function lastCompletedWeekRange(): array
     {
-        // Default to current month (1st of month → now)
-        $start = Carbon::now()->startOfMonth();
-        $end = Carbon::now()->endOfDay();
+        $start = Carbon::now()->startOfWeek(Carbon::MONDAY)->subWeek();
+        $end = $start->copy()->endOfWeek(Carbon::SUNDAY);
 
         return [$start, $end];
     }
@@ -149,6 +153,11 @@ class PayoutReportService
             })
             ->filter()
             ->values();
+    }
+
+    public function buildEditorSummaries(Carbon $start, Carbon $end): Collection
+    {
+        return $this->editorPayoutService->buildEmailSummaries($start, $end);
     }
 
     protected function resolveUserFromIdentifier($identifier): ?User

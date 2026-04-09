@@ -1,12 +1,12 @@
 @extends('emails.layouts.master')
 
 @section('title', 'Invoice Rejected')
-@section('preheader', 'Your invoice needs revisions before approval.')
+@section('preheader', 'Your payout invoice needs revisions before approval.')
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Invoice Rejected</p>
     <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your invoice needs a revision.</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The invoice for this period was rejected during review. Use the reason below to update it and resubmit through the dashboard.</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The {{ $roleLabel ?? 'payout' }} invoice for this period was returned during review. Use the reason below to update it and resubmit through the dashboard.</p>
 @endsection
 
 @section('content')

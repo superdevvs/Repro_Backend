@@ -1,12 +1,12 @@
 @extends('emails.layouts.master')
 
 @section('title', 'Invoice Approved')
-@section('preheader', 'Your invoice has been approved.')
+@section('preheader', 'Your payout invoice has been approved.')
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Invoice Approved</p>
     <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your invoice has been approved.</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The invoice for this period has passed review and is now cleared for the next payout step.</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The {{ $roleLabel ?? 'payout' }} invoice for this period has passed review and is now cleared for the next payout step.</p>
 @endsection
 
 @section('content')

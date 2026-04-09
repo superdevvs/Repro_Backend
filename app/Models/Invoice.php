@@ -18,6 +18,7 @@ class Invoice extends Model
 
     public const ROLE_CLIENT = 'client';
     public const ROLE_PHOTOGRAPHER = 'photographer';
+    public const ROLE_SALES_REP = 'salesRep';
 
     // Approval status constants
     public const APPROVAL_STATUS_PENDING = 'pending';

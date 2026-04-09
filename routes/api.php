@@ -436,8 +436,10 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     // Static routes MUST come before the {invoice} wildcard to avoid being swallowed
     Route::post('invoices/generate', [InvoiceController::class, 'generate']);
     Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
+    Route::get('invoices/review-queue', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewQueue']);
     // Wildcard routes
     Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
+    Route::get('invoices/{invoice}/review-detail', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewDetail']);
     Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
     Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
     Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
@@ -451,6 +453,14 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     // Payout report endpoints
     Route::get('payout-report', [App\Http\Controllers\PayoutReportController::class, 'index']);
     Route::get('payout-report/download', [App\Http\Controllers\PayoutReportController::class, 'download']);
+    Route::post('payout-report/send', [App\Http\Controllers\PayoutReportController::class, 'send']);
+
+    // Editor payout endpoints
+    Route::get('editors/earnings', [App\Http\Controllers\Admin\EditorPayoutController::class, 'index']);
+    Route::get('editors/{editor}/earnings-detail', [App\Http\Controllers\Admin\EditorPayoutController::class, 'detail']);
+    Route::post('editors/payouts/mark-paid', [App\Http\Controllers\Admin\EditorPayoutController::class, 'markPaid']);
+    Route::get('editors/reports', [App\Http\Controllers\Admin\EditorPayoutController::class, 'report']);
+    Route::post('editors/reports/send', [App\Http\Controllers\Admin\EditorPayoutController::class, 'sendReport']);
     
     // Sales report endpoints
     Route::get('sales-reports/{salesRepId}', [App\Http\Controllers\SalesReportController::class, 'salesRepReport']);
@@ -753,6 +763,12 @@ Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('salesrep/invoices'
     Route::delete('{invoice}/expenses/{item}', [App\Http\Controllers\SalesRepInvoiceController::class, 'removeExpense']);
     Route::post('{invoice}/reject', [App\Http\Controllers\SalesRepInvoiceController::class, 'reject']);
     Route::post('{invoice}/submit-for-approval', [App\Http\Controllers\SalesRepInvoiceController::class, 'submitForApproval']);
+});
+
+Route::middleware(['auth:sanctum', 'role:editor'])->prefix('editor')->group(function () {
+    Route::get('earnings', [App\Http\Controllers\EditorPayoutController::class, 'earnings']);
+    Route::get('reports', [App\Http\Controllers\EditorPayoutController::class, 'report']);
+    Route::post('reports/send', [App\Http\Controllers\EditorPayoutController::class, 'sendReport']);
 });
 
 Route::get('/services', [ServiceController::class, 'index']);

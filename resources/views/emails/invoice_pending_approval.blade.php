@@ -1,12 +1,12 @@
 @extends('emails.layouts.master')
 
 @section('title', 'Invoice Requires Approval')
-@section('preheader', 'A photographer-modified invoice is waiting for admin review.')
+@section('preheader', 'A payout invoice is waiting for admin review.')
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Approval Needed</p>
     <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">An invoice requires admin review.</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">A photographer updated an invoice for this payout period. Review the modified details below and approve or reject it in the dashboard.</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">A {{ $roleLabel ?? 'team member' }} updated a payout invoice for this period. Review the details below and approve or return it in the dashboard.</p>
 @endsection
 
 @section('content')
@@ -19,8 +19,8 @@
                 <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">{{ $invoice->invoice_number ?? 'N/A' }}</p>
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:12px;">
                     <tr>
-                        <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Photographer</td>
-                        <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $photographer->name }}<span class="dark-muted" style="display:block; margin-top:3px; color:#7086a3; font-weight:400; font-size:12px;">{{ $photographer->email }}</span></td>
+                        <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">{{ $roleHeading ?? 'Payee' }}</td>
+                        <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $recipient->name }}<span class="dark-muted" style="display:block; margin-top:3px; color:#7086a3; font-weight:400; font-size:12px;">{{ $recipient->email }}</span></td>
                     </tr>
                     <tr>
                         <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Period</td>
@@ -60,5 +60,5 @@
 @endsection
 
 @section('footer_note')
-    Approving or rejecting the invoice in the dashboard will keep accounting and the photographer aligned.
+    Approving or returning the invoice in the dashboard will keep accounting and the {{ $roleLabel ?? 'team member' }} aligned.
 @endsection

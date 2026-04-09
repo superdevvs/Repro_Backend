@@ -194,6 +194,15 @@ class IpLocationLookupService
             return null;
         }
 
+        $postalRefined = $this->refinePostalLocation(
+            $providerLocation['postalCode'] ?? null,
+            $providerLocation['countryCode'] ?? null,
+        );
+
+        if ($postalRefined) {
+            return $postalRefined;
+        }
+
         if (
             isset($providerLocation['latitude'], $providerLocation['longitude'])
             && is_numeric($providerLocation['latitude'])
@@ -207,15 +216,6 @@ class IpLocationLookupService
             if ($coordinateRefined) {
                 return $coordinateRefined;
             }
-        }
-
-        $postalRefined = $this->refinePostalLocation(
-            $providerLocation['postalCode'] ?? null,
-            $providerLocation['countryCode'] ?? null,
-        );
-
-        if ($postalRefined) {
-            return $postalRefined;
         }
 
         return null;

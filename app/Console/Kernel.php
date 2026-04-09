@@ -55,7 +55,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');
         $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
-        $schedule->command('payouts:send')->weeklyOn(0, '05:00');
+        $schedule->command('payouts:send')->weeklyOn(1, '05:00');
+        $schedule->command('reports:sales:weekly')->weeklyOn(1, '05:30');
     }
 
     /**

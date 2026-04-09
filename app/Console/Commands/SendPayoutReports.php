@@ -18,6 +18,7 @@ class SendPayoutReports extends Command
         [$start, $end] = $service->lastCompletedWeekRange();
 
         $photographerSummaries = $service->buildPhotographerSummaries($start, $end);
+        $editorSummaries = $service->buildEditorSummaries($start, $end);
         $repSummaries = $service->buildSalesRepSummaries($start, $end);
 
         $sent = 0;
@@ -27,6 +28,14 @@ class SendPayoutReports extends Command
                 continue;
             }
             $this->sendPayoutReport($messagingService, $summary, $start, $end, 'photographer');
+            $sent++;
+        }
+
+        foreach ($editorSummaries as $summary) {
+            if (empty($summary['email'])) {
+                continue;
+            }
+            $this->sendPayoutReport($messagingService, $summary, $start, $end, 'editor');
             $sent++;
         }
 
@@ -45,8 +54,10 @@ class SendPayoutReports extends Command
             'rangeStart' => $start,
             'rangeEnd' => $end,
             'photographers' => $photographerSummaries,
+            'editors' => $editorSummaries,
             'reps' => $repSummaries,
             'totalPhotographerPayout' => $photographerSummaries->sum('gross_total'),
+            'totalEditorPayout' => $editorSummaries->sum('gross_total'),
             'totalRepPayout' => $repSummaries->sum('commission_total'),
         ])->render();
 
@@ -64,9 +75,10 @@ class SendPayoutReports extends Command
         }
 
         $this->info(sprintf(
-            'Sent %d payout emails plus accounting digest for %d photographers and %d reps.',
+            'Sent %d payout emails plus accounting digest for %d photographers, %d editors, and %d reps.',
             $sent,
             $photographerSummaries->count(),
+            $editorSummaries->count(),
             $repSummaries->count()
         ));
 

@@ -1237,6 +1237,14 @@ class MailService
                 return false;
             }
 
+            if (!$recipient) {
+                Log::warning('Cannot send invoice pending approval email: payee not found', [
+                    'invoice_id' => $invoice->id,
+                ]);
+
+                return false;
+            }
+
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
             $recipientRole = $invoice->photographer ? 'photographer' : 'sales rep';
             $rendered = $this->renderWeeklyInvoiceGeneratedTemplate($invoice, $recipient, $recipientRole, $period);
@@ -1297,16 +1305,20 @@ class MailService
                 return false;
             }
 
-            $photographer = $invoice->photographer;
+            $recipient = $this->resolveInvoicePayee($invoice);
+            $roleLabel = $this->resolveInvoicePayeeLabel($invoice);
+            $roleHeading = $this->resolveInvoicePayeeHeading($invoice);
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
-            $subject = "Invoice Requires Approval - " . ($photographer ? $photographer->name : 'Unknown') . " - {$period}";
+            $subject = "Invoice Requires Approval - " . ($recipient ? $recipient->name : 'Unknown') . " - {$period}";
 
             foreach ($admins as $admin) {
                 $html = view('emails.invoice_pending_approval', [
                     'invoice' => $invoice,
-                    'photographer' => $photographer,
+                    'recipient' => $recipient,
                     'admin' => $admin,
                     'period' => $period,
+                    'roleLabel' => $roleLabel,
+                    'roleHeading' => $roleHeading,
                 ])->render();
                 $this->sendViaCakemail($admin->email, $subject, $html, 'INVOICE_PENDING_APPROVAL');
             }
@@ -1333,9 +1345,10 @@ class MailService
     public function sendInvoiceApprovedEmail(\App\Models\Invoice $invoice): bool
     {
         try {
-            $photographer = $invoice->photographer;
-            if (!$photographer) {
-                Log::warning('Cannot send invoice approved email: photographer not found', [
+            $recipient = $this->resolveInvoicePayee($invoice);
+            $roleLabel = $this->resolveInvoicePayeeLabel($invoice);
+            if (!$recipient) {
+                Log::warning('Cannot send invoice approved email: payee not found', [
                     'invoice_id' => $invoice->id
                 ]);
                 return false;
@@ -1345,15 +1358,15 @@ class MailService
 
             $html = view('emails.invoice_approved', [
                 'invoice' => $invoice,
-                'photographer' => $photographer,
                 'period' => $period,
+                'roleLabel' => $roleLabel,
             ])->render();
-            $this->sendViaCakemail($photographer->email, "Invoice Approved - {$period}", $html, 'INVOICE_APPROVED');
+            $this->sendViaCakemail($recipient->email, "Invoice Approved - {$period}", $html, 'INVOICE_APPROVED');
             
             Log::info('Invoice approved email sent', [
                 'invoice_id' => $invoice->id,
-                'photographer_id' => $photographer->id,
-                'email' => $photographer->email
+                'recipient_id' => $recipient->id,
+                'email' => $recipient->email
             ]);
             
             return true;
@@ -1373,9 +1386,10 @@ class MailService
     public function sendInvoiceRejectedEmail(\App\Models\Invoice $invoice): bool
     {
         try {
-            $photographer = $invoice->photographer;
-            if (!$photographer) {
-                Log::warning('Cannot send invoice rejected email: photographer not found', [
+            $recipient = $this->resolveInvoicePayee($invoice);
+            $roleLabel = $this->resolveInvoicePayeeLabel($invoice);
+            if (!$recipient) {
+                Log::warning('Cannot send invoice rejected email: payee not found', [
                     'invoice_id' => $invoice->id
                 ]);
                 return false;
@@ -1385,15 +1399,15 @@ class MailService
 
             $html = view('emails.invoice_rejected', [
                 'invoice' => $invoice,
-                'photographer' => $photographer,
                 'period' => $period,
+                'roleLabel' => $roleLabel,
             ])->render();
-            $this->sendViaCakemail($photographer->email, "Invoice Rejected - {$period}", $html, 'INVOICE_REJECTED');
+            $this->sendViaCakemail($recipient->email, "Invoice Rejected - {$period}", $html, 'INVOICE_REJECTED');
             
             Log::info('Invoice rejected email sent', [
                 'invoice_id' => $invoice->id,
-                'photographer_id' => $photographer->id,
-                'email' => $photographer->email
+                'recipient_id' => $recipient->id,
+                'email' => $recipient->email
             ]);
             
             return true;
@@ -1405,6 +1419,21 @@ class MailService
             
             return false;
         }
+    }
+
+    private function resolveInvoicePayee(\App\Models\Invoice $invoice): ?User
+    {
+        return $invoice->photographer ?: $invoice->salesRep;
+    }
+
+    private function resolveInvoicePayeeLabel(\App\Models\Invoice $invoice): string
+    {
+        return $invoice->sales_rep_id ? 'sales rep' : 'photographer';
+    }
+
+    private function resolveInvoicePayeeHeading(\App\Models\Invoice $invoice): string
+    {
+        return $invoice->sales_rep_id ? 'Sales Rep' : 'Photographer';
     }
 
     /**

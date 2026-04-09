@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
-use App\Models\Shoot;
+use App\Models\InvoiceItem;
+use App\Models\User;
 use App\Services\MailService;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,6 +19,92 @@ class InvoiceApprovalController extends Controller
     public function __construct(MailService $mailService)
     {
         $this->mailService = $mailService;
+    }
+
+    /**
+     * Get the admin weekly-invoice review queue.
+     */
+    public function reviewQueue(Request $request)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $filters = $request->validate([
+            'role' => 'nullable|string|in:photographer,salesRep,salesrep',
+            'approval_status' => 'nullable|string|in:pending_approval,approved,rejected',
+            'search' => 'nullable|string|max:255',
+            'start' => 'nullable|date',
+            'end' => 'nullable|date',
+            'page' => 'nullable|integer|min:1',
+            'per_page' => 'nullable|integer|min:1|max:100',
+        ]);
+
+        $query = $this->buildReviewQueueQuery($filters);
+
+        $summaryQuery = clone $query;
+        $statusBreakdown = (clone $summaryQuery)
+            ->select('approval_status', DB::raw('COUNT(*) as aggregate'))
+            ->groupBy('approval_status')
+            ->pluck('aggregate', 'approval_status');
+
+        $summary = [
+            'invoice_count' => (clone $query)->count(),
+            'total_amount' => round((float) (clone $query)->sum('total_amount'), 2),
+            'needs_review_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING_APPROVAL] ?? 0),
+            'approved_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_APPROVED] ?? 0),
+            'returned_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_REJECTED] ?? 0),
+        ];
+
+        $paginator = $query->paginate($filters['per_page'] ?? 15);
+
+        return response()->json([
+            'data' => $paginator->getCollection()
+                ->map(fn (Invoice $invoice) => $this->serializeReviewQueueInvoice($invoice))
+                ->values(),
+            'current_page' => $paginator->currentPage(),
+            'last_page' => $paginator->lastPage(),
+            'per_page' => $paginator->perPage(),
+            'total' => $paginator->total(),
+            'summary' => $summary,
+        ]);
+    }
+
+    /**
+     * Get the full admin review detail for a payout invoice.
+     */
+    public function reviewDetail(Request $request, Invoice $invoice)
+    {
+        $user = $request->user();
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        if (!$invoice->photographer_id && !$invoice->sales_rep_id) {
+            return response()->json(['message' => 'Payout invoice not found'], 404);
+        }
+
+        $invoice->load([
+            'photographer',
+            'salesRep',
+            'items',
+            'shoots.client',
+            'shoots.photographer',
+            'modifiedBy',
+            'approvedBy',
+            'rejectedBy',
+        ])->loadCount([
+            'shoots',
+            'items as charge_count' => fn (Builder $builder) => $builder->where('type', InvoiceItem::TYPE_CHARGE),
+            'items as expense_count' => fn (Builder $builder) => $builder->where('type', InvoiceItem::TYPE_EXPENSE),
+        ]);
+
+        return response()->json([
+            'data' => $this->serializeReviewDetailInvoice($invoice),
+        ]);
     }
 
     /**
@@ -141,7 +229,7 @@ class InvoiceApprovalController extends Controller
 
             return response()->json([
                 'message' => 'Invoice rejected successfully',
-                'invoice' => $invoice->fresh(['items', 'photographer']),
+                'invoice' => $invoice->fresh(['items', 'photographer', 'salesRep', 'shoots']),
             ]);
         } catch (\Exception $e) {
             Log::error('Failed to reject invoice', [
@@ -154,6 +242,205 @@ class InvoiceApprovalController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    private function buildReviewQueueQuery(array $filters): Builder
+    {
+        $query = Invoice::query()
+            ->when($this->normalizeQueueRole($filters['role'] ?? null) === 'salesRep', function (Builder $builder) {
+                $builder->whereNotNull('sales_rep_id');
+            }, function (Builder $builder) {
+                $builder->whereNotNull('photographer_id');
+            })
+            ->with([
+                'photographer',
+                'salesRep',
+                'modifiedBy',
+                'approvedBy',
+                'rejectedBy',
+            ])
+            ->withCount([
+                'shoots',
+                'items as charge_count' => fn (Builder $builder) => $builder->where('type', InvoiceItem::TYPE_CHARGE),
+                'items as expense_count' => fn (Builder $builder) => $builder->where('type', InvoiceItem::TYPE_EXPENSE),
+            ]);
+
+        if (!empty($filters['approval_status'])) {
+            $query->where('approval_status', $filters['approval_status']);
+        }
+
+        if (!empty($filters['search'])) {
+            $search = trim($filters['search']);
+            $relation = $this->normalizeQueueRole($filters['role'] ?? null) === 'salesRep'
+                ? 'salesRep'
+                : 'photographer';
+
+            $query->whereHas($relation, function (Builder $builder) use ($search) {
+                $builder
+                    ->where('name', 'like', '%' . $search . '%')
+                    ->orWhere('email', 'like', '%' . $search . '%');
+            });
+        }
+
+        if (!empty($filters['start'])) {
+            $query->whereDate('billing_period_start', '>=', $filters['start']);
+        }
+
+        if (!empty($filters['end'])) {
+            $query->whereDate('billing_period_end', '<=', $filters['end']);
+        }
+
+        return $query
+            ->orderByRaw(
+                'CASE approval_status WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END',
+                [
+                    Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+                    Invoice::APPROVAL_STATUS_REJECTED,
+                    Invoice::APPROVAL_STATUS_APPROVED,
+                ]
+            )
+            ->orderByRaw('COALESCE(modified_at, approved_at, rejected_at, created_at) DESC');
+    }
+
+    private function serializeReviewQueueInvoice(Invoice $invoice): array
+    {
+        $role = $invoice->sales_rep_id ? 'salesRep' : 'photographer';
+        $payee = $invoice->sales_rep_id ? $invoice->salesRep : $invoice->photographer;
+        $lastActivityAt = $invoice->modified_at
+            ?? $invoice->approved_at
+            ?? $invoice->rejected_at
+            ?? $invoice->created_at;
+
+        return [
+            'id' => $invoice->id,
+            'role' => $role,
+            'status' => $invoice->status,
+            'approval_status' => $invoice->approval_status,
+            'billing_period_start' => optional($invoice->billing_period_start)->toDateString(),
+            'billing_period_end' => optional($invoice->billing_period_end)->toDateString(),
+            'total_amount' => round((float) $invoice->total_amount, 2),
+            'amount_paid' => round((float) $invoice->amount_paid, 2),
+            'modification_notes' => $invoice->modification_notes,
+            'rejection_reason' => $invoice->rejection_reason,
+            'modified_by' => $invoice->modified_by,
+            'modified_at' => optional($invoice->modified_at)->toISOString(),
+            'approved_by' => $invoice->approved_by,
+            'approved_at' => optional($invoice->approved_at)->toISOString(),
+            'rejected_by' => $invoice->rejected_by,
+            'rejected_at' => optional($invoice->rejected_at)->toISOString(),
+            'created_at' => optional($invoice->created_at)->toISOString(),
+            'last_activity_at' => optional($lastActivityAt)->toISOString(),
+            'shoot_count' => (int) ($invoice->shoots_count ?? 0),
+            'charge_count' => (int) ($invoice->charge_count ?? 0),
+            'expense_count' => (int) ($invoice->expense_count ?? 0),
+            'payee' => $this->serializeActor($payee),
+            'photographer' => $this->serializeActor($invoice->photographer),
+            'salesRep' => $this->serializeActor($invoice->salesRep),
+            'modifiedBy' => $this->serializeActor($invoice->modifiedBy),
+            'approvedBy' => $this->serializeActor($invoice->approvedBy),
+            'rejectedBy' => $this->serializeActor($invoice->rejectedBy),
+        ];
+    }
+
+    private function serializeReviewDetailInvoice(Invoice $invoice): array
+    {
+        return array_merge($this->serializeReviewQueueInvoice($invoice), [
+            'items' => $invoice->items
+                ->map(fn ($item) => [
+                    'id' => $item->id,
+                    'invoice_id' => $item->invoice_id,
+                    'shoot_id' => $item->shoot_id,
+                    'type' => $item->type,
+                    'description' => $item->description,
+                    'quantity' => (int) $item->quantity,
+                    'unit_amount' => round((float) $item->unit_amount, 2),
+                    'total_amount' => round((float) $item->total_amount, 2),
+                    'recorded_at' => optional($item->recorded_at)->toISOString(),
+                    'meta' => $item->meta,
+                ])
+                ->values(),
+            'shoots' => $invoice->shoots
+                ->map(fn ($shoot) => [
+                    'id' => $shoot->id,
+                    'address' => $shoot->address,
+                    'city' => $shoot->city,
+                    'state' => $shoot->state,
+                    'zip' => $shoot->zip,
+                    'scheduled_date' => optional($shoot->scheduled_date)->toISOString(),
+                    'completed_at' => optional($shoot->completed_at)->toISOString(),
+                    'total_quote' => round((float) ($shoot->total_quote ?? 0), 2),
+                    'photographer_paid_at' => optional($shoot->photographer_paid_at)->toISOString(),
+                    'sales_rep_paid_at' => optional($shoot->sales_rep_paid_at)->toISOString(),
+                    'client' => $shoot->client ? [
+                        'id' => $shoot->client->id,
+                        'name' => $shoot->client->name,
+                        'email' => $shoot->client->email,
+                    ] : null,
+                    'photographer' => $shoot->photographer ? [
+                        'id' => $shoot->photographer->id,
+                        'name' => $shoot->photographer->name,
+                        'email' => $shoot->photographer->email,
+                    ] : null,
+                ])
+                ->values(),
+            'timeline' => $this->buildTimeline($invoice),
+        ]);
+    }
+
+    private function buildTimeline(Invoice $invoice): array
+    {
+        $submittedLabel = $invoice->sales_rep_id
+            ? 'Submitted for sales review'
+            : 'Submitted for admin review';
+
+        $events = collect([
+            $invoice->modified_at ? [
+                'key' => 'submitted',
+                'label' => $submittedLabel,
+                'timestamp' => $invoice->modified_at->toISOString(),
+                'actor' => $this->serializeActor($invoice->modifiedBy),
+            ] : null,
+            $invoice->rejected_at ? [
+                'key' => 'returned',
+                'label' => 'Returned for changes',
+                'timestamp' => $invoice->rejected_at->toISOString(),
+                'actor' => $this->serializeActor($invoice->rejectedBy),
+                'reason' => $invoice->rejection_reason,
+            ] : null,
+            $invoice->approved_at ? [
+                'key' => 'approved',
+                'label' => 'Approved for payout',
+                'timestamp' => $invoice->approved_at->toISOString(),
+                'actor' => $this->serializeActor($invoice->approvedBy),
+            ] : null,
+        ])->filter();
+
+        return $events
+            ->sortByDesc('timestamp')
+            ->values()
+            ->all();
+    }
+
+    private function serializeActor(?User $user): ?array
+    {
+        if (!$user) {
+            return null;
+        }
+
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+        ];
+    }
+
+    private function normalizeQueueRole(?string $role): string
+    {
+        return match ($role) {
+            'salesRep', 'salesrep' => 'salesRep',
+            default => 'photographer',
+        };
     }
 }
 
