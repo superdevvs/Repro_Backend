@@ -6,7 +6,7 @@
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">{{ !empty($isPhotographer) ? 'Assignment Updated' : 'Shoot Updated' }}</p>
     <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">{{ !empty($isPhotographer) ? 'A shoot on your calendar has changed.' : 'One of your upcoming shoots has been updated.' }}</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The changed fields are highlighted first, followed by the latest full shoot details so you can confirm everything in one pass.</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The changes are grouped into a single before snapshot and a single after snapshot so you can confirm them quickly before reviewing the latest shoot details.</p>
 @endsection
 
 @section('content')

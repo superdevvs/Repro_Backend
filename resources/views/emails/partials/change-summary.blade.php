@@ -88,6 +88,10 @@
             ];
         })
         ->values();
+
+    $comparisonChanges = $changeLines->filter(fn ($change) => ($change['type'] ?? null) === 'comparison')->values();
+    $singleChanges = $changeLines->filter(fn ($change) => ($change['type'] ?? null) === 'single')->values();
+    $textChanges = $changeLines->filter(fn ($change) => ($change['type'] ?? null) === 'text')->values();
 @endphp
 
 @if($changeLines->isNotEmpty())
@@ -96,39 +100,47 @@
         <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
             <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Updated Details</p>
             <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">What changed</p>
-            <p class="dark-body" style="margin:12px 0 0; font-size:15px; line-height:1.75; color:#4f6886;">Each updated field is listed below so the previous and latest versions are easy to compare at a glance.</p>
+            <p class="dark-body" style="margin:12px 0 0; font-size:15px; line-height:1.75; color:#4f6886;">The previous values are grouped together first, followed by the latest values, so the update stays compact and easy to scan.</p>
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0;">
                 <tr><td class="divider-bg" style="height:1px; background-color:#edf2f7; font-size:0; line-height:0;">&nbsp;</td></tr>
             </table>
-            @foreach($changeLines as $change)
-                @if(($change['type'] ?? null) === 'comparison')
-                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 12px;">
-                        <tr>
-                            <td style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
-                                <p class="dark-heading" style="margin:0 0 12px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
-                                <p class="dark-muted" style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</p>
-                                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{!! $change['before_html'] ?? e($change['before'] !== '' ? $change['before'] : 'Not set') !!}</p>
+            @if($comparisonChanges->isNotEmpty() || $singleChanges->isNotEmpty())
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 12px;">
+                    <tr>
+                        <td style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
+                            @if($comparisonChanges->isNotEmpty())
+                                <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</p>
+                                @foreach($comparisonChanges as $change)
+                                    <div style="margin:0 0 12px;">
+                                        <p class="dark-heading" style="margin:0 0 4px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
+                                        <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{!! $change['before_html'] ?? e($change['before'] !== '' ? $change['before'] : 'Not set') !!}</p>
+                                    </div>
+                                @endforeach
                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:12px 0;">
                                     <tr><td style="height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</td></tr>
                                 </table>
-                                <p class="dark-muted" style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</p>
-                                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{{ $change['after'] !== '' ? $change['after'] : 'Not set' }}</p>
-                            </td>
-                        </tr>
-                    </table>
-                @elseif(($change['type'] ?? null) === 'single')
-                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 12px;">
-                        <tr>
-                            <td style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
-                                <p class="dark-heading" style="margin:0 0 8px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
-                                <p class="dark-muted" style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Updated Value</p>
-                                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#10233b;">{{ $change['value'] !== '' ? $change['value'] : 'Not set' }}</p>
-                            </td>
-                        </tr>
-                    </table>
-                @else
-                    <p class="dark-body" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">{{ $change['text'] ?? '' }}</p>
-                @endif
+                            @endif
+
+                            <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</p>
+                            @foreach($comparisonChanges as $change)
+                                <div style="margin:0 0 12px;">
+                                    <p class="dark-heading" style="margin:0 0 4px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
+                                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{{ $change['after'] !== '' ? $change['after'] : 'Not set' }}</p>
+                                </div>
+                            @endforeach
+                            @foreach($singleChanges as $change)
+                                <div style="margin:0 0 12px;">
+                                    <p class="dark-heading" style="margin:0 0 4px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
+                                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{{ $change['value'] !== '' ? $change['value'] : 'Not set' }}</p>
+                                </div>
+                            @endforeach
+                        </td>
+                    </tr>
+                </table>
+            @endif
+
+            @foreach($textChanges as $change)
+                <p class="dark-body" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">{{ $change['text'] ?? '' }}</p>
             @endforeach
         </td>
     </tr>

@@ -408,6 +408,8 @@ class ShootPaymentsController extends Controller
 
     protected function buildPaymentDetailsPayload(Shoot $shoot, bool $includeClient): array
     {
+        $latestCompletedPayment = $this->resolveLatestCompletedPayment($shoot);
+
         return [
             'id' => $shoot->id,
             'address' => $shoot->address,
@@ -437,10 +439,39 @@ class ShootPaymentsController extends Controller
             ]),
             'payment_status' => $shoot->payment_status,
             'amount_due' => max((float) ($shoot->total_quote ?? 0) - $shoot->calculateCanonicalTotalPaid(), 0),
+            'receipt' => $this->buildReceiptPayload($latestCompletedPayment),
             'client' => $includeClient && $shoot->client ? [
                 'name' => $shoot->client->name,
                 'email' => $shoot->client->email,
             ] : null,
+        ];
+    }
+
+    protected function resolveLatestCompletedPayment(Shoot $shoot): ?Payment
+    {
+        $payments = $shoot->payments ?? collect();
+
+        return $payments
+            ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
+            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? optional($payment->created_at)->timestamp ?? 0)
+            ->first();
+    }
+
+    protected function buildReceiptPayload(?Payment $payment): ?array
+    {
+        if (!$payment) {
+            return null;
+        }
+
+        $paidAt = $payment->processed_at ?? $payment->created_at;
+
+        return [
+            'number' => 'PAY-' . str_pad((string) $payment->id, 6, '0', STR_PAD_LEFT),
+            'amount' => (float) $payment->amount,
+            'currency' => strtoupper((string) ($payment->currency ?: 'USD')),
+            'paid_at' => $paidAt?->toIso8601String(),
+            'provider' => 'stripe',
+            'status' => $payment->status,
         ];
     }
 }

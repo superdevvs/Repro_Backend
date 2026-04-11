@@ -84,7 +84,7 @@ class StripePaymentController extends Controller
                     'price_data' => [
                         'currency' => strtolower($currency),
                         'product_data' => [
-                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'name' => $this->buildCheckoutLineItemNameForShoot($shoot),
                             'metadata' => [
                                 'shoot_id' => (string) $shoot->id,
                             ],
@@ -93,6 +93,7 @@ class StripePaymentController extends Controller
                     ],
                     'quantity' => 1,
                 ]],
+                'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot),
                 'metadata' => [
                     'shoot_id' => (string) $shoot->id,
                     'type' => 'single',
@@ -167,7 +168,7 @@ class StripePaymentController extends Controller
                     'price_data' => [
                         'currency' => strtolower($currency),
                         'product_data' => [
-                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'name' => $this->buildCheckoutLineItemNameForShoot($shoot),
                             'metadata' => [
                                 'shoot_id' => (string) $shoot->id,
                             ],
@@ -176,6 +177,7 @@ class StripePaymentController extends Controller
                     ],
                     'quantity' => 1,
                 ]],
+                'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot),
                 'metadata' => $metadata,
                 'client_reference_id' => 'shoot:' . $shoot->id,
                 'return_url' => $this->buildEmbeddedReturnUrl($shoot, $returnTo, $paymentUrl),
@@ -236,7 +238,7 @@ class StripePaymentController extends Controller
                     'price_data' => [
                         'currency' => strtolower(config('services.stripe.currency', 'USD')),
                         'product_data' => [
-                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'name' => $this->buildCheckoutLineItemNameForShoot($shoot),
                             'metadata' => [
                                 'shoot_id' => (string) $shoot->id,
                             ],
@@ -256,6 +258,7 @@ class StripePaymentController extends Controller
                 'payment_method_types' => ['card'],
                 'mode' => 'payment',
                 'line_items' => $lineItems,
+                'payment_intent_data' => $this->buildPaymentIntentDataForMultipleShoots($shoots),
                 'metadata' => [
                     'shoot_ids' => implode(',', $shootIds),
                     'type' => 'multiple',
@@ -322,7 +325,7 @@ class StripePaymentController extends Controller
                     'price_data' => [
                         'currency' => strtolower(config('services.stripe.currency', 'USD')),
                         'product_data' => [
-                            'name' => 'Payment for Shoot at ' . $shoot->address,
+                            'name' => $this->buildCheckoutLineItemNameForShoot($shoot),
                             'metadata' => [
                                 'shoot_id' => (string) $shoot->id,
                             ],
@@ -343,6 +346,7 @@ class StripePaymentController extends Controller
                 'mode' => 'payment',
                 'ui_mode' => 'embedded',
                 'line_items' => $lineItems,
+                'payment_intent_data' => $this->buildPaymentIntentDataForMultipleShoots($shoots),
                 'metadata' => [
                     'shoot_ids' => implode(',', $shootIds),
                     'type' => 'multiple',
@@ -485,6 +489,7 @@ class StripePaymentController extends Controller
                 'remaining_balance' => $summary['remaining_balance'],
                 'last_payment_amount' => null,
                 'return_to' => null,
+                'receipt' => $this->buildReceiptPayloadForShoot($shoot),
             ];
         }
 
@@ -497,6 +502,7 @@ class StripePaymentController extends Controller
                 'total_paid' => $summary['total_paid'],
                 'payment_status' => $summary['payment_status'],
                 'remaining_balance' => $summary['remaining_balance'],
+                'receipt' => $this->buildReceiptPayloadForShoot($shoot),
             ];
         }
 
@@ -512,6 +518,7 @@ class StripePaymentController extends Controller
                     'remaining_balance' => $summary['remaining_balance'],
                     'last_payment_amount' => null,
                     'return_to' => null,
+                    'receipt' => $this->buildReceiptPayloadForShoot($shoot),
                 ];
             }
 
@@ -528,6 +535,7 @@ class StripePaymentController extends Controller
                     'remaining_balance' => $summary['remaining_balance'],
                     'last_payment_amount' => $lastPaymentAmount,
                     'return_to' => $resolvedReturnTo,
+                    'receipt' => $this->buildReceiptPayloadForShoot($shoot),
                 ];
             }
 
@@ -540,6 +548,7 @@ class StripePaymentController extends Controller
                     'remaining_balance' => $summary['remaining_balance'],
                     'last_payment_amount' => $lastPaymentAmount,
                     'return_to' => $resolvedReturnTo,
+                    'receipt' => $this->buildReceiptPayloadForShoot($shoot),
                 ];
             }
 
@@ -555,6 +564,7 @@ class StripePaymentController extends Controller
                 'remaining_balance' => $freshSummary['remaining_balance'],
                 'last_payment_amount' => $lastPaymentAmount,
                 'return_to' => $resolvedReturnTo,
+                'receipt' => $this->buildReceiptPayloadForShoot($freshShoot),
             ];
         } finally {
             optional($lock)->release();
@@ -728,6 +738,105 @@ class StripePaymentController extends Controller
         $sessionParams['customer_email'] = $client->email;
 
         return $sessionParams;
+    }
+
+    protected function buildPaymentIntentDataForSingleShoot(Shoot $shoot): array
+    {
+        return [
+            'description' => $this->buildStripePaymentDescriptionForSingleShoot($shoot),
+            'metadata' => [
+                'shoot_id' => (string) $shoot->id,
+                'shoot_address' => $this->formatShootAddress($shoot) ?? '',
+            ],
+        ];
+    }
+
+    protected function buildPaymentIntentDataForMultipleShoots($shoots): array
+    {
+        $shootIds = $shoots->pluck('id')->map(fn ($id) => (string) $id)->values();
+        $description = $this->buildStripePaymentDescriptionForMultipleShoots($shoots);
+
+        return [
+            'description' => $description,
+            'metadata' => [
+                'shoot_ids' => $shootIds->implode(','),
+                'shoot_count' => (string) $shootIds->count(),
+            ],
+        ];
+    }
+
+    protected function buildStripePaymentDescriptionForSingleShoot(Shoot $shoot): string
+    {
+        return $this->formatShootAddress($shoot)
+            ?: ('Shoot #' . $shoot->id);
+    }
+
+    protected function buildCheckoutLineItemNameForShoot(Shoot $shoot): string
+    {
+        return $this->formatShootAddress($shoot)
+            ?: ('Shoot #' . $shoot->id);
+    }
+
+    protected function buildReceiptPayloadForShoot(Shoot $shoot): ?array
+    {
+        $latestCompletedPayment = $shoot->payments
+            ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
+            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? optional($payment->created_at)->timestamp ?? 0)
+            ->first();
+
+        if (!$latestCompletedPayment) {
+            return null;
+        }
+
+        $paidAt = $latestCompletedPayment->processed_at ?? $latestCompletedPayment->created_at;
+
+        return [
+            'number' => 'PAY-' . str_pad((string) $latestCompletedPayment->id, 6, '0', STR_PAD_LEFT),
+            'amount' => (float) $latestCompletedPayment->amount,
+            'currency' => strtoupper((string) ($latestCompletedPayment->currency ?: 'USD')),
+            'paid_at' => $paidAt?->toIso8601String(),
+            'provider' => 'stripe',
+            'status' => $latestCompletedPayment->status,
+        ];
+    }
+
+    protected function buildStripePaymentDescriptionForMultipleShoots($shoots): string
+    {
+        $addresses = $shoots
+            ->map(fn (Shoot $shoot) => $this->formatShootAddress($shoot))
+            ->filter()
+            ->values();
+
+        if ($addresses->isEmpty()) {
+            return 'Multiple shoots';
+        }
+
+        $firstAddress = $addresses->first();
+        $additionalCount = $addresses->count() - 1;
+
+        if ($additionalCount <= 0) {
+            return (string) $firstAddress;
+        }
+
+        return sprintf('%s (+%d more)', $firstAddress, $additionalCount);
+    }
+
+    protected function formatShootAddress(?Shoot $shoot): ?string
+    {
+        if (!$shoot) {
+            return null;
+        }
+
+        $parts = array_filter([
+            trim((string) ($shoot->address ?? '')),
+            trim((string) ($shoot->city ?? '')),
+            trim(implode(' ', array_filter([
+                trim((string) ($shoot->state ?? '')),
+                trim((string) ($shoot->zip ?? '')),
+            ]))),
+        ]);
+
+        return $parts ? implode(', ', $parts) : null;
     }
 
     protected function findOrCreateStripeCustomer(User $client): ?string

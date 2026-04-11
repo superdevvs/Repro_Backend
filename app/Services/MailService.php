@@ -411,14 +411,18 @@ class MailService
     public function sendShootReadyEmail(User $user, Shoot $shoot): bool
     {
         try {
-            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
+            $paymentLink = $this->shouldShowShootReadyPaymentLink($shoot)
+                ? $this->generatePaymentLink($shoot)
+                : null;
             
             // Send to client
             $html = view('emails.shoot_delivered', [
                 'user' => $user,
                 'shoot' => $shootData,
+                'paymentLink' => $paymentLink,
             ])->render();
             $this->sendViaCakemail($user->email, self::SHOOT_DELIVERED_SUBJECT, $html, 'SHOOT_DELIVERED', $clientCcEmails);
             
@@ -769,6 +773,11 @@ class MailService
         $notesText = $this->formatNotes($shoot);
         $serviceRows = $this->formatDetailedServices($shoot);
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot, $serviceRows);
+        $paymentStatus = $this->resolveShootPaymentStatus($shoot);
+        $totalPaid = $shoot->relationLoaded('payments')
+            ? $shoot->calculateCanonicalTotalPaid()
+            : (float) ($shoot->total_paid ?? 0);
+        $remainingBalance = max((float) ($shoot->total_quote ?? 0) - $totalPaid, 0);
 
         return (object) [
             'id' => $shoot->id,
@@ -796,6 +805,9 @@ class MailService
             'formatted_subtotal' => $this->formatCurrency($shoot->base_quote ?? 0),
             'formatted_tax' => $this->formatCurrency($shoot->tax_amount ?? 0),
             'formatted_grand_total' => $this->formatCurrency($shoot->total_quote ?? 0),
+            'payment_status' => $paymentStatus,
+            'remaining_balance' => $remainingBalance,
+            'formatted_remaining_balance' => $this->formatCurrency($remainingBalance),
             'packages' => $this->formatPackages($shoot),
             'services' => $serviceRows,
             'service_category' => $shoot->service_category ?? 'Standard',
@@ -809,6 +821,7 @@ class MailService
             'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
             'support_email' => 'contact@reprophotos.com',
             'support_phone' => '202-868-1663',
+            'bypass_paywall' => (bool) ($shoot->bypass_paywall ?? false),
             'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
         ];
     }
@@ -1125,6 +1138,37 @@ class MailService
         return $trimmed !== ''
             ? $trimmed
             : 'Please review updated details in the dashboard.';
+    }
+
+    private function resolveShootPaymentStatus(Shoot $shoot): string
+    {
+        $paymentStatus = Str::lower(trim((string) ($shoot->payment_status ?? '')));
+
+        if (in_array($paymentStatus, ['paid', 'unpaid', 'partial'], true)) {
+            return $paymentStatus;
+        }
+
+        if (!$shoot->relationLoaded('payments')) {
+            $shoot->loadMissing('payments');
+        }
+
+        $totalPaid = $shoot->calculateCanonicalTotalPaid();
+        $totalQuote = (float) ($shoot->total_quote ?? 0);
+
+        if ($totalPaid <= 0) {
+            return 'unpaid';
+        }
+
+        return $totalPaid >= $totalQuote ? 'paid' : 'partial';
+    }
+
+    private function shouldShowShootReadyPaymentLink(Shoot $shoot): bool
+    {
+        if ((bool) ($shoot->bypass_paywall ?? false)) {
+            return false;
+        }
+
+        return in_array($this->resolveShootPaymentStatus($shoot), ['unpaid', 'partial'], true);
     }
 
     public function generatePaymentLink(Shoot $shoot): string
@@ -1646,55 +1690,90 @@ class MailService
             return '<p>Please review updated details in the dashboard.</p>';
         }
 
-        return implode('', array_map(
-            fn (string $line) => $this->renderChangeSummaryHtmlBlock($line),
+        $parsedChanges = array_map(
+            fn (string $line) => $this->parseChangeSummaryLine($line),
             $filteredChanges
+        );
+
+        $comparisonChanges = array_values(array_filter(
+            $parsedChanges,
+            fn (array $change) => ($change['type'] ?? '') === 'comparison'
         ));
-    }
+        $singleChanges = array_values(array_filter(
+            $parsedChanges,
+            fn (array $change) => ($change['type'] ?? '') === 'single'
+        ));
+        $textChanges = array_values(array_filter(
+            $parsedChanges,
+            fn (array $change) => ($change['type'] ?? '') === 'text'
+        ));
 
-    private function renderChangeSummaryHtmlBlock(string $line): string
-    {
-        $change = $this->parseChangeSummaryLine($line);
+        $html = '';
 
-        if (($change['type'] ?? 'text') === 'comparison') {
-            $label = e((string) ($change['label'] ?? 'Updated Detail'));
-            $beforeHtml = $this->buildChangeSummaryBeforeHtml(
-                (string) ($change['label'] ?? ''),
-                (string) ($change['before'] ?? ''),
-                (string) ($change['after'] ?? '')
-            );
-            $afterValue = trim((string) ($change['after'] ?? ''));
-            $afterHtml = e($afterValue !== '' ? $afterValue : 'Not set');
+        if ($comparisonChanges !== [] || $singleChanges !== []) {
+            $html .= '<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">';
 
-            return <<<HTML
-<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
-    <div style="margin:0 0 12px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
-    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>
+            if ($comparisonChanges !== []) {
+                $html .= '<div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>';
+
+                foreach ($comparisonChanges as $change) {
+                    $label = e((string) ($change['label'] ?? 'Updated Detail'));
+                    $beforeHtml = $this->buildChangeSummaryBeforeHtml(
+                        (string) ($change['label'] ?? ''),
+                        (string) ($change['before'] ?? ''),
+                        (string) ($change['after'] ?? '')
+                    );
+
+                    $html .= <<<HTML
+<div style="margin:0 0 10px;">
+    <div style="margin:0 0 3px; font-size:13px; line-height:1.5; color:#6c84a2; font-weight:700;">{$label}</div>
     <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
-    <div style="margin:12px 0; height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</div>
-    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>
+</div>
+HTML;
+                }
+
+                $html .= '<div style="margin:12px 0; height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</div>';
+            }
+
+            $html .= '<div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>';
+
+            foreach ($comparisonChanges as $change) {
+                $label = e((string) ($change['label'] ?? 'Updated Detail'));
+                $afterValue = trim((string) ($change['after'] ?? ''));
+                $afterHtml = e($afterValue !== '' ? $afterValue : 'Not set');
+
+                $html .= <<<HTML
+<div style="margin:0 0 10px;">
+    <div style="margin:0 0 3px; font-size:13px; line-height:1.5; color:#6c84a2; font-weight:700;">{$label}</div>
     <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
 </div>
 HTML;
-        }
+            }
 
-        if (($change['type'] ?? 'text') === 'single') {
-            $label = e((string) ($change['label'] ?? 'Updated Detail'));
-            $value = trim((string) ($change['value'] ?? ''));
-            $valueHtml = e($value !== '' ? $value : 'Not set');
+            foreach ($singleChanges as $change) {
+                $label = e((string) ($change['label'] ?? 'Updated Detail'));
+                $value = trim((string) ($change['value'] ?? ''));
+                $valueHtml = e($value !== '' ? $value : 'Not set');
 
-            return <<<HTML
-<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
-    <div style="margin:0 0 8px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
-    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Updated Value</div>
-    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b;">{$valueHtml}</div>
+                $html .= <<<HTML
+<div style="margin:0 0 10px;">
+    <div style="margin:0 0 3px; font-size:13px; line-height:1.5; color:#6c84a2; font-weight:700;">{$label}</div>
+    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$valueHtml}</div>
 </div>
 HTML;
+            }
+
+            $html .= '</div>';
         }
 
-        $text = e((string) ($change['text'] ?? $line));
+        foreach ($textChanges as $change) {
+            $text = e((string) ($change['text'] ?? ''));
+            $html .= '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">' . $text . '</p>';
+        }
 
-        return '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">' . $text . '</p>';
+        return $html !== ''
+            ? $html
+            : '<p>Please review updated details in the dashboard.</p>';
     }
 
     /**

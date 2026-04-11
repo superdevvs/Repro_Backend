@@ -14,8 +14,25 @@
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>
-            <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
-                <a href="{{ $shoot->dashboard_url }}" style="display:inline-block; padding:18px 30px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:16px; line-height:1.2; text-decoration:none; letter-spacing:0.2px;">Open Deliverables</a>
+            @if(!empty($paymentLink))
+                <td style="padding:0 12px 12px 0;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                        <tr>
+                            <td style="border-radius:999px; background-color:#071223;" bgcolor="#071223">
+                                <a href="{{ $paymentLink }}" style="display:inline-block; padding:18px 30px; border-radius:999px; background-color:#071223; color:#ffffff; font-weight:800; font-size:16px; line-height:1.2; text-decoration:none; letter-spacing:0.2px;">Pay Now</a>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            @endif
+            <td style="padding:0 0 12px 0;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                        <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
+                            <a href="{{ $shoot->dashboard_url }}" style="display:inline-block; padding:18px 30px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:16px; line-height:1.2; text-decoration:none; letter-spacing:0.2px;">Open Deliverables</a>
+                        </td>
+                    </tr>
+                </table>
             </td>
         </tr>
     </table>
@@ -24,7 +41,13 @@
         <tr>
             <td class="callout-success-bg" style="padding:18px 20px; border-radius:14px; border:1px solid #d9e7ff; background-color:#eff6ff;">
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#071223; font-weight:800;">What you can do now</p>
-                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">Preview the completed files, download the final media, and manage everything for this property from the dashboard.</p>
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">
+                    @if(!empty($paymentLink))
+                        Complete the remaining balance to unlock the full delivery, then return to the dashboard to review and download everything for this property.
+                    @else
+                        Preview the completed files, download the final media, and manage everything for this property from the dashboard.
+                    @endif
+                </p>
             </td>
         </tr>
     </table>
