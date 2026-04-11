@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Models\AccountLink;
+use App\Models\UserActivityLog;
 use App\Services\Messaging\AutomationService;
 use App\Services\MailService;
 use Illuminate\Http\Request;
@@ -99,6 +100,38 @@ class UserController extends Controller
         });
 
         return response()->json(['users' => $users]);
+    }
+
+    public function show(Request $request, $id)
+    {
+        $viewer = $request->user();
+
+        if (!$this->userHasAnyRole($viewer, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $query = User::query();
+        if ($this->serviceGroupsFeatureAvailable()) {
+            $query->with('serviceGroups');
+        }
+
+        $user = $query->findOrFail($id);
+
+        if ($this->isSalesRepUser($viewer) && !$this->salesRepCanAccessAccount($viewer, $user)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $payload = $this->presentUserForViewer($user, $viewer);
+        $lastLoginAt = $this->getUserLastLoginAt($user);
+
+        $payload['createdAt'] = optional($user->created_at)?->toIso8601String();
+        $payload['updatedAt'] = optional($user->updated_at)?->toIso8601String();
+        $payload['lastLogin'] = $lastLoginAt?->toIso8601String();
+        $payload['activityLog'] = $this->getUserActivityTimeline($user, (int) $request->integer('activity_limit', 100));
+
+        return response()->json([
+            'user' => $payload,
+        ]);
     }
 
      public function store(Request $request)
@@ -287,6 +320,21 @@ class UserController extends Controller
         }
 
         $user = User::create($validated);
+        $this->logUserActivity(
+            $user,
+            'account_created',
+            'Account created',
+            sprintf(
+                'Created as %s by %s.',
+                $this->formatRoleLabel($user->role),
+                $admin->name
+            ),
+            $admin,
+            [
+                'role' => $user->role,
+                'email' => $user->email,
+            ]
+        );
         if ($this->serviceGroupsFeatureAvailable() && $user->role === 'client') {
             if (!$serviceGroupIdsProvided && empty($serviceGroupIds)) {
                 $serviceGroupIds = $this->getDefaultServiceGroupIds();
@@ -665,8 +713,17 @@ class UserController extends Controller
             $validated['metadata'] = array_merge($validated['metadata'] ?? $user->metadata ?? [], $editorData);
         }
 
-        // Update user
-        $user->update($validated);
+        $existingServiceGroupIds = $this->serviceGroupsFeatureAvailable()
+            ? $user->getAssignedServiceGroupIds()
+            : [];
+
+        $user->fill($validated);
+        $changedFields = collect(array_keys($user->getDirty()))
+            ->reject(fn ($field) => in_array($field, ['updated_at', 'password', 'remember_token'], true))
+            ->values()
+            ->all();
+
+        $user->save();
         if ($this->serviceGroupsFeatureAvailable() && $user->role === 'client') {
             if ($serviceGroupIdsProvided) {
                 $user->serviceGroups()->sync($serviceGroupIds);
@@ -675,8 +732,32 @@ class UserController extends Controller
             $user->serviceGroups()->detach();
         }
 
+        $updatedServiceGroupIds = $this->serviceGroupsFeatureAvailable()
+            ? $user->getAssignedServiceGroupIds()
+            : [];
+        $serviceGroupsChanged = $existingServiceGroupIds !== $updatedServiceGroupIds;
+
+        if ($serviceGroupsChanged) {
+            $changedFields[] = 'service_group_ids';
+        }
+
+        $changedFields = array_values(array_unique($changedFields));
+
         if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
             $this->demoteOtherSuperAdmins($user);
+        }
+
+        if (!empty($changedFields)) {
+            $this->logUserActivity(
+                $user,
+                'account_updated',
+                'Account profile updated',
+                $this->summarizeChangedAttributes($changedFields),
+                $admin,
+                [
+                    'changed_fields' => $changedFields,
+                ]
+            );
         }
 
         return response()->json([
@@ -711,6 +792,33 @@ class UserController extends Controller
 
         if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
             $this->demoteOtherSuperAdmins($user);
+        }
+
+        if ($changed) {
+            $secondaryRoleSummary = collect($user->secondary_roles ?? [])
+                ->map(fn ($role) => $this->formatRoleLabel((string) $role))
+                ->implode(', ');
+
+            $description = sprintf(
+                'Primary role changed from %s to %s%s.',
+                $this->formatRoleLabel((string) $oldRole),
+                $this->formatRoleLabel((string) $user->role),
+                $secondaryRoleSummary !== '' ? " with secondary roles: {$secondaryRoleSummary}" : ''
+            );
+
+            $this->logUserActivity(
+                $user,
+                'role_changed',
+                'Role permissions updated',
+                $description,
+                $admin,
+                [
+                    'old_role' => $oldRole,
+                    'new_role' => $user->role,
+                    'old_secondary_roles' => $oldSecondaryRoles,
+                    'new_secondary_roles' => $user->secondary_roles ?? [],
+                ]
+            );
         }
 
         return response()->json([
@@ -755,6 +863,14 @@ class UserController extends Controller
         }
         app(AutomationService::class)->handleEvent('PASSWORD_RESET', $context);
 
+        $this->logUserActivity(
+            $user,
+            'password_reset',
+            'Password reset by admin',
+            sprintf('Password was reset by %s.', $admin->name),
+            $admin
+        );
+
         return response()->json([
             'message' => 'Password updated successfully.',
             'user_id' => $user->id,
@@ -795,6 +911,17 @@ class UserController extends Controller
                 'message' => 'Failed to send password reset email. Please try again.',
             ], 500);
         }
+
+        $this->logUserActivity(
+            $user,
+            'password_reset_link_sent',
+            'Password reset link sent',
+            sprintf('Password reset link emailed by %s.', $admin->name),
+            $admin,
+            [
+                'email' => $user->email,
+            ]
+        );
 
         return response()->json([
             'message' => 'Password reset link sent successfully.',
@@ -1396,6 +1523,480 @@ class UserController extends Controller
         return $username;
     }
 
+    protected function logUserActivity(
+        User $user,
+        string $eventType,
+        string $title,
+        ?string $description = null,
+        ?User $actor = null,
+        array $metadata = []
+    ): void {
+        try {
+            UserActivityLog::record($user, $eventType, $title, $description, $actor, $metadata);
+        } catch (\Throwable $exception) {
+            \Log::warning('Unable to persist user activity log.', [
+                'user_id' => $user->id,
+                'event_type' => $eventType,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    protected function summarizeChangedAttributes(array $fields): string
+    {
+        $labels = collect($fields)
+            ->map(fn ($field) => $this->formatFieldLabel($field))
+            ->filter()
+            ->unique()
+            ->values();
+
+        if ($labels->isEmpty()) {
+            return 'Account details were updated.';
+        }
+
+        return 'Updated: ' . $labels->implode(', ') . '.';
+    }
+
+    protected function formatFieldLabel(string $field): string
+    {
+        return match ($field) {
+            'name' => 'name',
+            'email' => 'email',
+            'phonenumber' => 'phone',
+            'company_name' => 'company',
+            'address' => 'address',
+            'city' => 'city',
+            'state' => 'state',
+            'zip' => 'zip code',
+            'license_number' => 'license number',
+            'company_notes' => 'company notes',
+            'shoot_cc_emails' => 'shoot CC emails',
+            'client_discount_type', 'client_discount_value' => 'client discount',
+            'role' => 'role',
+            'secondary_roles' => 'secondary roles',
+            'bio' => 'bio',
+            'avatar' => 'avatar',
+            'metadata' => 'profile preferences',
+            'timezone' => 'timezone',
+            'facebook_url', 'twitter_url', 'linkedin_url', 'pinterest_url' => 'social links',
+            'service_group_ids' => 'service groups',
+            default => Str::of($field)->replace('_', ' ')->lower()->toString(),
+        };
+    }
+
+    protected function formatRoleLabel(?string $role): string
+    {
+        $value = (string) $role;
+        if ($value === '') {
+            return 'User';
+        }
+
+        return Str::of($value)
+            ->replace('_', ' ')
+            ->replaceMatches('/([a-z])([A-Z])/', '$1 $2')
+            ->title()
+            ->toString();
+    }
+
+    protected function getUserLastLoginAt(User $user): ?\Illuminate\Support\Carbon
+    {
+        $explicitLogin = UserActivityLog::query()
+            ->where('user_id', $user->id)
+            ->where('event_type', 'login')
+            ->latest('occurred_at')
+            ->value('occurred_at');
+
+        if ($explicitLogin) {
+            return \Illuminate\Support\Carbon::parse($explicitLogin);
+        }
+
+        $sessionLogin = DB::table('system_overview_sessions')
+            ->where('user_id', $user->id)
+            ->whereNotNull('started_at')
+            ->orderByDesc('started_at')
+            ->value('started_at');
+
+        return $sessionLogin ? \Illuminate\Support\Carbon::parse($sessionLogin) : null;
+    }
+
+    protected function getUserActivityTimeline(User $user, int $limit = 100): array
+    {
+        $normalizedLimit = max(1, min($limit, 250));
+
+        return collect()
+            ->merge($this->getExplicitUserActivityEntries($user))
+            ->merge($this->getLifecycleActivityEntries($user))
+            ->merge($this->getSessionActivityEntries($user))
+            ->merge($this->getRouteActivityEntries($user))
+            ->merge($this->getAccountLinkActivityEntries($user))
+            ->merge($this->getShootRelatedActivityEntries($user))
+            ->merge($this->getMessageActivityEntries($user))
+            ->filter(fn ($entry) => !empty($entry['timestamp']) && !empty($entry['title']))
+            ->sortByDesc('timestamp')
+            ->unique(fn ($entry) => implode('|', [
+                $entry['type'] ?? '',
+                $entry['title'] ?? '',
+                $entry['description'] ?? '',
+                $entry['timestamp'] ?? '',
+            ]))
+            ->take($normalizedLimit)
+            ->values()
+            ->all();
+    }
+
+    protected function getExplicitUserActivityEntries(User $user): array
+    {
+        return UserActivityLog::query()
+            ->where('user_id', $user->id)
+            ->latest('occurred_at')
+            ->take(100)
+            ->get()
+            ->map(fn (UserActivityLog $log) => $this->buildActivityEntry(
+                'audit-' . $log->id,
+                $log->event_type,
+                $log->title,
+                $log->description,
+                optional($log->occurred_at)->toIso8601String(),
+                'audit',
+                $log->metadata ?? []
+            ))
+            ->all();
+    }
+
+    protected function getLifecycleActivityEntries(User $user): array
+    {
+        $entries = [];
+        $hasCreatedAudit = UserActivityLog::query()
+            ->where('user_id', $user->id)
+            ->where('event_type', 'account_created')
+            ->exists();
+
+        if (!$hasCreatedAudit && $user->created_at) {
+            $creator = $user->created_by_name ? ' by ' . $user->created_by_name : '';
+            $entries[] = $this->buildActivityEntry(
+                'lifecycle-created-' . $user->id,
+                'account_created',
+                'Account created',
+                sprintf('Created as %s%s.', $this->formatRoleLabel($user->role), $creator),
+                $user->created_at->toIso8601String(),
+                'lifecycle'
+            );
+        }
+
+        $hasUpdatedAudit = UserActivityLog::query()
+            ->where('user_id', $user->id)
+            ->whereIn('event_type', ['account_updated', 'profile_updated'])
+            ->exists();
+
+        if (
+            !$hasUpdatedAudit
+            && $user->updated_at
+            && $user->created_at
+            && $user->updated_at->gt($user->created_at)
+        ) {
+            $entries[] = $this->buildActivityEntry(
+                'lifecycle-updated-' . $user->id,
+                'account_updated',
+                'Account details updated',
+                'Profile details were changed.',
+                $user->updated_at->toIso8601String(),
+                'lifecycle'
+            );
+        }
+
+        return $entries;
+    }
+
+    protected function getSessionActivityEntries(User $user): array
+    {
+        return collect(DB::table('system_overview_sessions')
+            ->where('user_id', $user->id)
+            ->whereNotNull('started_at')
+            ->orderByDesc('started_at')
+            ->limit(20)
+            ->get())
+            ->map(function ($session) {
+                $route = trim((string) ($session->current_route ?? ''));
+                $description = $route !== '' ? 'Session started on ' . $route . '.' : 'Dashboard session started.';
+
+                return $this->buildActivityEntry(
+                    'session-' . $session->id,
+                    'login',
+                    'User logged in',
+                    $description,
+                    $session->started_at ? \Illuminate\Support\Carbon::parse($session->started_at)->toIso8601String() : null,
+                    'session',
+                    [
+                        'route' => $route,
+                        'last_activity_at' => $session->last_activity_at,
+                    ]
+                );
+            })
+            ->all();
+    }
+
+    protected function getRouteActivityEntries(User $user): array
+    {
+        return collect(DB::table('system_overview_route_events')
+            ->where('user_id', $user->id)
+            ->where('event_type', '!=', 'heartbeat')
+            ->orderByDesc('occurred_at')
+            ->limit(40)
+            ->get())
+            ->map(function ($event) {
+                $route = trim((string) ($event->route_path ?? ''));
+                $pageKey = trim((string) ($event->page_key ?? ''));
+                $component = trim((string) ($event->component_name ?? ''));
+                $actionName = trim((string) ($event->action_name ?? ''));
+
+                $title = match ($event->event_type) {
+                    'component_mount' => 'Opened page component',
+                    'blocker' => 'Workflow blocker encountered',
+                    'error' => 'System error encountered',
+                    default => Str::of((string) $event->event_type)->replace('_', ' ')->title()->toString(),
+                };
+
+                $details = collect([
+                    $route !== '' ? 'Route ' . $route : null,
+                    $pageKey !== '' ? 'Page ' . $pageKey : null,
+                    $component !== '' ? 'Component ' . $component : null,
+                    $actionName !== '' ? 'Action ' . $actionName : null,
+                ])->filter()->implode(' · ');
+
+                return $this->buildActivityEntry(
+                    'route-' . $event->id,
+                    'route_' . $event->event_type,
+                    $title,
+                    $details !== '' ? $details . '.' : null,
+                    $event->occurred_at ? \Illuminate\Support\Carbon::parse($event->occurred_at)->toIso8601String() : null,
+                    'telemetry'
+                );
+            })
+            ->all();
+    }
+
+    protected function getAccountLinkActivityEntries(User $user): array
+    {
+        return AccountLink::query()
+            ->where(function ($query) use ($user) {
+                $query->where('main_account_id', $user->id)
+                    ->orWhere('linked_account_id', $user->id);
+            })
+            ->with(['mainAccount:id,name', 'linkedAccount:id,name'])
+            ->orderByDesc('linked_at')
+            ->limit(20)
+            ->get()
+            ->map(function (AccountLink $link) use ($user) {
+                $otherAccount = (int) $link->main_account_id === (int) $user->id
+                    ? $link->linkedAccount
+                    : $link->mainAccount;
+
+                return $this->buildActivityEntry(
+                    'link-' . $link->id,
+                    'account_linked',
+                    'Account linked',
+                    $otherAccount ? 'Linked with ' . $otherAccount->name . '.' : 'Account link was created.',
+                    optional($link->linked_at ?? $link->created_at)?->toIso8601String(),
+                    'link',
+                    [
+                        'shared_details' => $link->shared_details ?? [],
+                    ]
+                );
+            })
+            ->all();
+    }
+
+    protected function getShootRelatedActivityEntries(User $user): array
+    {
+        $shoots = \App\Models\Shoot::query()
+            ->where(function ($query) use ($user) {
+                $query->where('client_id', $user->id)
+                    ->orWhere('photographer_id', $user->id)
+                    ->orWhere('editor_id', $user->id)
+                    ->orWhere('rep_id', $user->id);
+            })
+            ->orderByDesc('updated_at')
+            ->limit(25)
+            ->get([
+                'id',
+                'client_id',
+                'photographer_id',
+                'editor_id',
+                'rep_id',
+                'address',
+                'created_at',
+                'updated_at',
+                'workflow_status',
+                'photos_uploaded_at',
+                'editing_completed_at',
+                'completed_at',
+                'admin_verified_at',
+            ]);
+
+        $entries = collect();
+
+        foreach ($shoots as $shoot) {
+            $address = trim((string) ($shoot->address ?? 'Shoot #' . $shoot->id));
+
+            if ((int) $shoot->client_id === (int) $user->id) {
+                $entries->push($this->buildActivityEntry(
+                    'shoot-client-' . $shoot->id,
+                    'shoot_booked',
+                    'Shoot booked',
+                    sprintf('Shoot #%s at %s.', $shoot->id, $address),
+                    optional($shoot->created_at)?->toIso8601String(),
+                    'shoot'
+                ));
+            }
+
+            if ((int) $shoot->photographer_id === (int) $user->id) {
+                $entries->push($this->buildActivityEntry(
+                    'shoot-photographer-' . $shoot->id,
+                    'shoot_assigned',
+                    'Assigned as photographer',
+                    sprintf('Shoot #%s at %s.', $shoot->id, $address),
+                    optional($shoot->created_at)?->toIso8601String(),
+                    'shoot'
+                ));
+            }
+
+            if ((int) $shoot->editor_id === (int) $user->id) {
+                $entries->push($this->buildActivityEntry(
+                    'shoot-editor-' . $shoot->id,
+                    'editing_assigned',
+                    'Assigned as editor',
+                    sprintf('Shoot #%s at %s.', $shoot->id, $address),
+                    optional($shoot->created_at)?->toIso8601String(),
+                    'shoot'
+                ));
+            }
+
+            if ((int) $shoot->rep_id === (int) $user->id) {
+                $entries->push($this->buildActivityEntry(
+                    'shoot-rep-' . $shoot->id,
+                    'rep_assigned',
+                    'Assigned as sales rep',
+                    sprintf('Shoot #%s at %s.', $shoot->id, $address),
+                    optional($shoot->created_at)?->toIso8601String(),
+                    'shoot'
+                ));
+            }
+
+            $milestoneAt = $shoot->admin_verified_at
+                ?? $shoot->completed_at
+                ?? $shoot->editing_completed_at
+                ?? $shoot->photos_uploaded_at;
+
+            if ($milestoneAt && optional($shoot->created_at)?->ne($milestoneAt)) {
+                $entries->push($this->buildActivityEntry(
+                    'shoot-stage-' . $shoot->id,
+                    'shoot_stage_' . ($shoot->workflow_status ?? 'updated'),
+                    'Shoot reached ' . $this->formatRoleLabel((string) ($shoot->workflow_status ?? 'updated')) . ' stage',
+                    sprintf('Shoot #%s at %s.', $shoot->id, $address),
+                    optional($milestoneAt)?->toIso8601String(),
+                    'shoot'
+                ));
+            }
+        }
+
+        $shootIds = $shoots->pluck('id')->values();
+        if ($shootIds->isNotEmpty()) {
+            $entries = $entries->merge(
+                \App\Models\ShootActivityLog::query()
+                    ->whereIn('shoot_id', $shootIds)
+                    ->with('shoot:id,address')
+                    ->latest('created_at')
+                    ->limit(40)
+                    ->get()
+                    ->map(function (\App\Models\ShootActivityLog $log) {
+                        $title = Str::of((string) $log->action)->replace('_', ' ')->title()->toString();
+                        $shootLabel = $log->shoot ? 'Shoot #' . $log->shoot_id . ' at ' . ($log->shoot->address ?? 'unknown address') : 'Shoot #' . $log->shoot_id;
+                        $description = $log->description ?: $shootLabel . '.';
+
+                        return $this->buildActivityEntry(
+                            'shoot-log-' . $log->id,
+                            'shoot_activity_' . $log->action,
+                            $title,
+                            $description,
+                            optional($log->created_at)?->toIso8601String(),
+                            'shoot',
+                            $log->metadata ?? []
+                        );
+                    })
+            );
+        }
+
+        return $entries->all();
+    }
+
+    protected function getMessageActivityEntries(User $user): array
+    {
+        $email = strtolower(trim((string) $user->email));
+        $phone = preg_replace('/\D+/', '', (string) ($user->phone ?? $user->phonenumber ?? ''));
+
+        $query = \App\Models\Message::query()
+            ->where(function ($builder) use ($user, $email, $phone) {
+                $builder->where('related_account_id', $user->id)
+                    ->orWhere('created_by', $user->id)
+                    ->orWhere('sender_user_id', $user->id);
+
+                if ($email !== '') {
+                    $builder->orWhereRaw('LOWER(COALESCE(to_address, "")) = ?', [$email])
+                        ->orWhereRaw('LOWER(COALESCE(from_address, "")) = ?', [$email]);
+                }
+
+                if ($phone !== '') {
+                    $builder->orWhereRaw('REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(to_address, ""), "+", ""), "-", ""), "(", ""), ")", ""), " ", "") = ?', [$phone])
+                        ->orWhereRaw('REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(from_address, ""), "+", ""), "-", ""), "(", ""), ")", ""), " ", "") = ?', [$phone]);
+                }
+            })
+            ->latest('created_at')
+            ->limit(25);
+
+        return $query->get()
+            ->map(function (\App\Models\Message $message) {
+                $isOutbound = strtoupper((string) $message->direction) === 'OUTBOUND';
+                $channel = strtoupper((string) $message->channel) === 'SMS' ? 'Text message' : 'Email';
+                $title = $channel . ' ' . ($isOutbound ? 'sent' : 'received');
+                $counterparty = $isOutbound ? ($message->to_address ?: 'recipient') : ($message->from_address ?: 'sender');
+                $description = collect([
+                    $counterparty ? 'With ' . $counterparty : null,
+                    $message->subject ? 'Subject: ' . $message->subject : null,
+                    $message->status ? 'Status: ' . $message->status : null,
+                ])->filter()->implode(' · ');
+
+                return $this->buildActivityEntry(
+                    'message-' . $message->id,
+                    'message_' . strtolower((string) $message->channel) . '_' . strtolower((string) $message->direction),
+                    $title,
+                    $description !== '' ? $description . '.' : null,
+                    optional($message->created_at)?->toIso8601String(),
+                    'messaging'
+                );
+            })
+            ->all();
+    }
+
+    protected function buildActivityEntry(
+        string $id,
+        string $type,
+        string $title,
+        ?string $description,
+        ?string $timestamp,
+        string $source,
+        array $metadata = []
+    ): array {
+        return [
+            'id' => $id,
+            'type' => $type,
+            'title' => $title,
+            'description' => $description,
+            'timestamp' => $timestamp,
+            'source' => $source,
+            'metadata' => $metadata,
+        ];
+    }
+
     /**
      * Delete a user (Super Admin only)
      */
@@ -1430,6 +2031,15 @@ class UserController extends Controller
             'email' => $user->email,
             'role' => $user->role,
         ];
+
+        $this->logUserActivity(
+            $user,
+            'account_deleted',
+            'Account deleted',
+            sprintf('Account deleted by %s.', $viewer->name),
+            $viewer,
+            $deletedUser
+        );
 
         $user->delete();
 

@@ -192,6 +192,11 @@ class User extends Authenticatable
         return $this->hasMany(GoogleCalendarEventMapping::class);
     }
 
+    public function activityLogs()
+    {
+        return $this->hasMany(UserActivityLog::class);
+    }
+
     public function ghostAccessibleShoots()
     {
         return $this->belongsToMany(Shoot::class, 'shoot_ghost_users')
