@@ -475,4 +475,42 @@ class ShootFilesTest extends TestCase
         $this->assertSame($adminPayload['url'], $adminPayload['original_url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final.jpg', $adminPayload['url']);
     }
+
+    #[Test]
+    public function non_watermarked_media_payload_prefers_web_preview_over_thumbnail(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'paid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'final-web.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/final-web-original.jpg',
+            'web_path' => 'shoots/' . $shoot->id . '/completed/final-web.jpg',
+            'thumbnail_path' => 'shoots/' . $shoot->id . '/completed/final-thumb.jpg',
+            'placeholder_path' => 'shoots/' . $shoot->id . '/completed/final-placeholder.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+        Storage::disk('public')->put($file->web_path, 'web-preview');
+        Storage::disk('public')->put($file->thumbnail_path, 'thumb-preview');
+        Storage::disk('public')->put($file->placeholder_path, 'placeholder-preview');
+
+        Sanctum::actingAs($client);
+
+        $payload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertFalse($payload['uses_watermark']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['web_url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['medium_url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb.jpg', $payload['thumb_url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web-original.jpg', $payload['original_url']);
+    }
 }

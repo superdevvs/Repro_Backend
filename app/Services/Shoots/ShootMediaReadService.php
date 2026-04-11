@@ -236,31 +236,60 @@ class ShootMediaReadService
         $mediumUrl = null;
         $largeUrl = null;
         $originalUrl = null;
+        $webUrl = null;
+        $placeholderUrl = null;
 
         if ($needsWatermark) {
             $thumbUrl = $this->resolvePreviewPath($file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path);
             $mediumUrl = $this->resolvePreviewPath(
                 $file->watermarked_web_path ?? $file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path
             );
+            $webUrl = $mediumUrl;
             $largeUrl = $mediumUrl;
             $url = $mediumUrl ?? $thumbUrl;
             $originalUrl = $url;
+            $placeholderUrl = $this->resolvePreviewPath($file->watermarked_placeholder_path);
 
             if (!$thumbUrl && !$mediumUrl && $file->shouldBeWatermarked()) {
                 $this->queueWatermark($file);
             }
         } else {
+            if ($this->shouldGenerateOptimizedPreview($file)) {
+                $this->shootFileAccessService->generateOptimizedVersions($file);
+                $file->refresh();
+            }
+
             $originalUrl = $dropboxUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
-            $url = $originalUrl;
             $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
-            $mediumUrl = $this->resolvePreviewPath($file->web_path ?? $file->thumbnail_path ?? $file->placeholder_path);
+            $mediumUrl = $this->resolvePreviewPath($file->web_path);
+            $placeholderUrl = $this->resolvePreviewPath($file->placeholder_path);
+
+            if (!$mediumUrl && $this->canGenerateOptimizedPreview($file)) {
+                $generated = $this->shootFileAccessService->generateOptimizedVersions($file);
+                if (!empty($generated)) {
+                    $file->refresh();
+                    $thumbUrl = $this->resolvePreviewPath(
+                        $generated['thumbnail'] ?? $file->thumbnail_path ?? $file->placeholder_path
+                    );
+                    $mediumUrl = $this->resolvePreviewPath($generated['web'] ?? $file->web_path);
+                    $placeholderUrl = $this->resolvePreviewPath($generated['placeholder'] ?? $file->placeholder_path);
+                }
+            }
+
+            if (!$mediumUrl) {
+                $mediumUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
+            }
+
+            $webUrl = $mediumUrl;
             $largeUrl = $mediumUrl;
+            $url = $webUrl ?? $originalUrl;
 
             if (!$thumbUrl) {
                 $thumbUrl = $mediumUrl ?? $originalUrl;
             }
             if (!$mediumUrl) {
                 $mediumUrl = $thumbUrl ?? $originalUrl;
+                $webUrl = $mediumUrl;
                 $largeUrl = $mediumUrl;
             }
         }
@@ -301,12 +330,15 @@ class ShootMediaReadService
         }
 
         foreach ([
+            'thumbnail_url' => $thumbUrl,
             'thumb_url' => $thumbUrl,
             'thumb' => $thumbUrl,
+            'web_url' => $webUrl,
             'medium_url' => $mediumUrl,
             'medium' => $mediumUrl,
             'large_url' => $largeUrl,
             'large' => $largeUrl,
+            'placeholder_url' => $placeholderUrl,
             'original_url' => $originalUrl,
             'original' => $originalUrl,
         ] as $key => $value) {
@@ -393,5 +425,33 @@ class ShootMediaReadService
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    protected function shouldGenerateOptimizedPreview(ShootFile $file): bool
+    {
+        if (!$this->canGenerateOptimizedPreview($file)) {
+            return false;
+        }
+
+        return empty($file->web_path) || empty($file->thumbnail_path);
+    }
+
+    protected function canGenerateOptimizedPreview(ShootFile $file): bool
+    {
+        if ($this->authorizationSupport->isRawCameraFile($file)) {
+            return false;
+        }
+
+        $mimeType = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        if ($mimeType !== '' && !Str::startsWith($mimeType, 'image/')) {
+            return false;
+        }
+
+        $filename = strtolower((string) ($file->filename ?? $file->stored_filename ?? $file->path ?? ''));
+        if ($filename === '') {
+            return false;
+        }
+
+        return (bool) preg_match('/\.(jpg|jpeg|png|webp|gif|tif|tiff|heic|heif)$/i', $filename);
     }
 }
