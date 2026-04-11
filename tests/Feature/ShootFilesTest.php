@@ -515,6 +515,44 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
+    public function non_watermarked_media_payload_does_not_label_thumbnail_as_web_preview(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'paid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'final-thumb-only.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/final-thumb-only-original.jpg',
+            'web_path' => null,
+            'thumbnail_path' => 'shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg',
+            'placeholder_path' => 'shoots/' . $shoot->id . '/completed/final-thumb-only-placeholder.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+        Storage::disk('public')->put($file->thumbnail_path, 'thumb-preview');
+        Storage::disk('public')->put($file->placeholder_path, 'placeholder-preview');
+
+        Sanctum::actingAs($client);
+
+        $payload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertFalse($payload['uses_watermark']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg', $payload['url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg', $payload['thumb_url']);
+        $this->assertArrayNotHasKey('web_url', $payload);
+        $this->assertArrayNotHasKey('medium_url', $payload);
+        $this->assertArrayNotHasKey('large_url', $payload);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb-only-original.jpg', $payload['original_url']);
+    }
+
+    #[Test]
     public function dropbox_backed_media_payload_generates_web_preview_instead_of_using_original_for_display(): void
     {
         Storage::fake('public');
