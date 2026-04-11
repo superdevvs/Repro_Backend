@@ -118,6 +118,13 @@ class InvoiceService
             $invoices = collect();
 
             foreach ($grouped as $photographerId => $photographerServices) {
+                $shootIds = $photographerServices->pluck('shoot_id')->unique();
+                $relatedShoots = $shoots->whereIn('id', $shootIds);
+                $totalAmount = $photographerServices->sum('photographer_pay');
+                $amountPaid = $relatedShoots
+                    ->flatMap(fn (Shoot $shoot) => $shoot->payments)
+                    ->sum(fn ($payment) => (float) $payment->amount);
+
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('photographer_id', $photographerId)
                     ->where('billing_period_start', $start->toDateString())
@@ -125,6 +132,13 @@ class InvoiceService
                     ->first();
 
                 if ($existingInvoice) {
+                    $existingInvoice->update([
+                        'total_amount' => $totalAmount,
+                        'amount_paid' => $amountPaid,
+                        'is_paid' => $totalAmount > 0 ? $amountPaid >= $totalAmount : false,
+                    ]);
+                    $existingInvoice->shoots()->sync($shootIds->all());
+                    $existingInvoice->refreshTotals();
                     $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
                     continue;
                 }
@@ -179,16 +193,6 @@ class InvoiceService
                         ],
                     ]);
                 }
-
-                // Calculate totals from service rows
-                $totalAmount = $photographerServices->sum('photographer_pay');
-                
-                // Get payments for shoots this photographer worked on
-                $shootIds = $photographerServices->pluck('shoot_id')->unique();
-                $relatedShoots = $shoots->whereIn('id', $shootIds);
-                $amountPaid = $relatedShoots
-                    ->flatMap(fn (Shoot $shoot) => $shoot->payments)
-                    ->sum(fn ($payment) => (float) $payment->amount);
 
                 $invoice->update([
                     'total_amount' => $totalAmount,
@@ -430,6 +434,14 @@ class InvoiceService
                     continue;
                 }
 
+                $commissionRate = (float) data_get($rep->metadata, 'repDetails.commissionPercentage', 0);
+                $grossTotal = (float) $repShoots->sum('total_quote');
+                $commissionTotal = $commissionRate > 0 ? round($grossTotal * ($commissionRate / 100), 2) : 0;
+                $invoiceNotes = $commissionRate > 0
+                    ? sprintf('Commission rate: %s%% on $%s gross', $commissionRate, number_format($grossTotal, 2))
+                    : null;
+                $shootIds = $repShoots->pluck('id')->all();
+
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('sales_rep_id', $repId)
                     ->whereNull('photographer_id')
@@ -438,14 +450,15 @@ class InvoiceService
                     ->first();
 
                 if ($existingInvoice) {
+                    $existingInvoice->update([
+                        'total_amount' => $commissionTotal,
+                        'notes' => $invoiceNotes,
+                    ]);
+                    $existingInvoice->shoots()->sync($shootIds);
+                    $existingInvoice->refreshTotals();
                     $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
                     continue;
                 }
-
-                // Calculate commission
-                $commissionRate = (float) data_get($rep->metadata, 'repDetails.commissionPercentage', 0);
-                $grossTotal = (float) $repShoots->sum('total_quote');
-                $commissionTotal = $commissionRate > 0 ? round($grossTotal * ($commissionRate / 100), 2) : 0;
 
                 // Create invoice
                 $invoice = Invoice::create([
@@ -459,9 +472,7 @@ class InvoiceService
                     'status' => Invoice::STATUS_DRAFT,
                     'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
                     'total_amount' => $commissionTotal,
-                    'notes' => $commissionRate > 0
-                        ? sprintf('Commission rate: %s%% on $%s gross', $commissionRate, number_format($grossTotal, 2))
-                        : null,
+                    'notes' => $invoiceNotes,
                 ]);
 
                 // Create invoice items for each shoot
@@ -494,7 +505,7 @@ class InvoiceService
                 }
 
                 // Sync shoots
-                $invoice->shoots()->sync($repShoots->pluck('id')->all());
+                $invoice->shoots()->sync($shootIds);
 
                 // Refresh totals
                 $invoice->refreshTotals();
