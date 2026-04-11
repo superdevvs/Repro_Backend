@@ -6,7 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\User;
+use App\Services\InvoiceService;
 use App\Services\MailService;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,10 +17,12 @@ use Illuminate\Support\Facades\Log;
 class InvoiceApprovalController extends Controller
 {
     protected $mailService;
+    protected $invoiceService;
 
-    public function __construct(MailService $mailService)
+    public function __construct(MailService $mailService, InvoiceService $invoiceService)
     {
         $this->mailService = $mailService;
+        $this->invoiceService = $invoiceService;
     }
 
     /**
@@ -42,6 +46,8 @@ class InvoiceApprovalController extends Controller
             'per_page' => 'nullable|integer|min:1|max:100',
         ]);
 
+        $this->hydrateReviewQueueForWindow($filters);
+
         $query = $this->buildReviewQueueQuery($filters);
 
         $summaryQuery = clone $query;
@@ -53,7 +59,7 @@ class InvoiceApprovalController extends Controller
         $summary = [
             'invoice_count' => (clone $query)->count(),
             'total_amount' => round((float) (clone $query)->sum('total_amount'), 2),
-            'needs_review_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING_APPROVAL] ?? 0),
+            'needs_review_count' => (int) (($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING_APPROVAL] ?? 0) + ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING] ?? 0)),
             'approved_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_APPROVED] ?? 0),
             'returned_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_REJECTED] ?? 0),
         ];
@@ -137,7 +143,10 @@ class InvoiceApprovalController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if ($invoice->approval_status !== Invoice::APPROVAL_STATUS_PENDING_APPROVAL) {
+        if (!in_array($invoice->approval_status, [
+            Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+            Invoice::APPROVAL_STATUS_PENDING,
+        ], true)) {
             return response()->json([
                 'message' => 'Invoice is not pending approval'
             ], 422);
@@ -206,7 +215,10 @@ class InvoiceApprovalController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if ($invoice->approval_status !== Invoice::APPROVAL_STATUS_PENDING_APPROVAL) {
+        if (!in_array($invoice->approval_status, [
+            Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+            Invoice::APPROVAL_STATUS_PENDING,
+        ], true)) {
             return response()->json([
                 'message' => 'Invoice is not pending approval'
             ], 422);
@@ -266,7 +278,14 @@ class InvoiceApprovalController extends Controller
             ]);
 
         if (!empty($filters['approval_status'])) {
-            $query->where('approval_status', $filters['approval_status']);
+            if ($filters['approval_status'] === Invoice::APPROVAL_STATUS_PENDING_APPROVAL) {
+                $query->whereIn('approval_status', [
+                    Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+                    Invoice::APPROVAL_STATUS_PENDING,
+                ]);
+            } else {
+                $query->where('approval_status', $filters['approval_status']);
+            }
         }
 
         if (!empty($filters['search'])) {
@@ -292,9 +311,10 @@ class InvoiceApprovalController extends Controller
 
         return $query
             ->orderByRaw(
-                'CASE approval_status WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END',
+                'CASE approval_status WHEN ? THEN 0 WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END',
                 [
                     Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+                    Invoice::APPROVAL_STATUS_PENDING,
                     Invoice::APPROVAL_STATUS_REJECTED,
                     Invoice::APPROVAL_STATUS_APPROVED,
                 ]
@@ -441,6 +461,20 @@ class InvoiceApprovalController extends Controller
             'salesRep', 'salesrep' => 'salesRep',
             default => 'photographer',
         };
+    }
+
+    private function hydrateReviewQueueForWindow(array $filters): void
+    {
+        if (!empty($filters['start']) && !empty($filters['end'])) {
+            $start = Carbon::parse($filters['start'])->startOfDay();
+            $end = Carbon::parse($filters['end'])->endOfDay();
+        } else {
+            $end = now()->startOfWeek()->subDay()->endOfDay();
+            $start = $end->copy()->startOfWeek();
+        }
+
+        $this->invoiceService->generateForPeriod($start, $end, false);
+        $this->invoiceService->generateSalesRepInvoicesForPeriod($start, $end, false);
     }
 }
 

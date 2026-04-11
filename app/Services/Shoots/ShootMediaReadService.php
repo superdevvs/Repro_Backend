@@ -287,14 +287,18 @@ class ShootMediaReadService
             'thumbnail_path' => $needsWatermark ? null : $file->thumbnail_path,
             'web_path' => $needsWatermark ? null : $file->web_path,
             'placeholder_path' => $needsWatermark ? null : $file->placeholder_path,
-            'watermarked_storage_path' => $file->watermarked_storage_path,
-            'watermarked_thumbnail_path' => $file->watermarked_thumbnail_path,
-            'watermarked_web_path' => $file->watermarked_web_path,
-            'watermarked_placeholder_path' => $file->watermarked_placeholder_path,
+            'uses_watermark' => $needsWatermark,
             'processed_at' => $file->processed_at,
             'created_at' => $file->created_at?->toIso8601String(),
             'uploaded_at' => $file->uploaded_at?->toIso8601String() ?? $file->created_at?->toIso8601String(),
         ];
+
+        if ($needsWatermark) {
+            $fileData['watermarked_storage_path'] = $file->watermarked_storage_path;
+            $fileData['watermarked_thumbnail_path'] = $file->watermarked_thumbnail_path;
+            $fileData['watermarked_web_path'] = $file->watermarked_web_path;
+            $fileData['watermarked_placeholder_path'] = $file->watermarked_placeholder_path;
+        }
 
         foreach ([
             'thumb_url' => $thumbUrl,

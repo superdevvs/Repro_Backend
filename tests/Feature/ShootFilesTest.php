@@ -387,4 +387,92 @@ class ShootFilesTest extends TestCase
         $this->postJson('/api/shoots/' . $shoot->id . '/media/' . $video->id . '/cover')
             ->assertStatus(422);
     }
+
+    #[Test]
+    public function unpaid_client_receives_watermarked_media_payload(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'unpaid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'preview.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/preview.jpg',
+            'web_path' => null,
+            'thumbnail_path' => null,
+            'placeholder_path' => null,
+            'watermarked_storage_path' => 'shoots/' . $shoot->id . '/watermarked/preview.jpg',
+            'watermarked_web_path' => 'shoots/' . $shoot->id . '/watermarked/preview_web.jpg',
+            'watermarked_thumbnail_path' => 'shoots/' . $shoot->id . '/watermarked/preview_thumb.jpg',
+            'watermarked_placeholder_path' => 'shoots/' . $shoot->id . '/watermarked/preview_placeholder.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->watermarked_web_path, 'preview-web');
+        Storage::disk('public')->put($file->watermarked_thumbnail_path, 'preview-thumb');
+        Storage::disk('public')->put($file->watermarked_placeholder_path, 'preview-placeholder');
+
+        Sanctum::actingAs($client);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited');
+        $response->assertOk();
+
+        $payload = $response->json('data.0');
+
+        $this->assertTrue($payload['uses_watermark']);
+        $this->assertNull($payload['path']);
+        $this->assertNull($payload['thumbnail_path']);
+        $this->assertNull($payload['web_path']);
+        $this->assertArrayHasKey('watermarked_web_path', $payload);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/preview_web.jpg', $payload['url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/preview_web.jpg', $payload['original_url']);
+    }
+
+    #[Test]
+    public function admin_and_paid_clients_receive_non_watermarked_media_payloads(): void
+    {
+        $shoot = $this->createShoot([
+            'payment_status' => 'paid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+        $admin = $this->insertUser(['role' => 'admin']);
+
+        $this->createShootFile($shoot, [
+            'filename' => 'final.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/final.jpg',
+            'web_path' => null,
+            'thumbnail_path' => null,
+            'placeholder_path' => null,
+            'watermarked_storage_path' => 'shoots/' . $shoot->id . '/watermarked/final.jpg',
+            'watermarked_web_path' => 'shoots/' . $shoot->id . '/watermarked/final_web.jpg',
+            'watermarked_thumbnail_path' => 'shoots/' . $shoot->id . '/watermarked/final_thumb.jpg',
+            'watermarked_placeholder_path' => 'shoots/' . $shoot->id . '/watermarked/final_placeholder.jpg',
+        ]);
+
+        Sanctum::actingAs($client);
+        $clientPayload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertFalse($clientPayload['uses_watermark']);
+        $this->assertArrayNotHasKey('watermarked_web_path', $clientPayload);
+        $this->assertSame($clientPayload['url'], $clientPayload['original_url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final.jpg', $clientPayload['url']);
+
+        $shoot->update(['payment_status' => 'unpaid']);
+
+        Sanctum::actingAs($admin);
+        $adminPayload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertFalse($adminPayload['uses_watermark']);
+        $this->assertArrayNotHasKey('watermarked_web_path', $adminPayload);
+        $this->assertSame($adminPayload['url'], $adminPayload['original_url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final.jpg', $adminPayload['url']);
+    }
 }

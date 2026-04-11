@@ -46,7 +46,13 @@ class InvoiceService
                     $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
                 },
             ])
-            ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+            ->where(function ($query) use ($start, $end) {
+                $query->whereBetween('completed_at', [$start, $end])
+                    ->orWhere(function ($innerQuery) use ($start, $end) {
+                        $innerQuery->whereNull('completed_at')
+                            ->whereBetween('admin_verified_at', [$start, $end]);
+                    });
+            })
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
                 Shoot::WORKFLOW_ADMIN_VERIFIED,
@@ -395,7 +401,13 @@ class InvoiceService
         $end = $end->copy()->endOfDay();
 
         $shoots = Shoot::with(['services', 'rep:id,name,email,role,secondary_roles,metadata'])
-            ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+            ->where(function ($query) use ($start, $end) {
+                $query->whereBetween('completed_at', [$start, $end])
+                    ->orWhere(function ($innerQuery) use ($start, $end) {
+                        $innerQuery->whereNull('completed_at')
+                            ->whereBetween('admin_verified_at', [$start, $end]);
+                    });
+            })
             ->whereNotNull('rep_id')
             ->whereIn('workflow_status', [
                 Shoot::WORKFLOW_COMPLETED,
