@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 class Invoice extends Model
 {
@@ -244,22 +245,28 @@ class Invoice extends Model
     public function resolvePaymentMetadata(): array
     {
         $method = $this->payment_method;
-        $details = is_array($this->payment_details) ? $this->payment_details : null;
+        $details = is_array($this->payment_details) ? $this->payment_details : [];
         $paidAt = $this->paid_at;
+        $completedPayments = $this->relatedCompletedPayments();
+        $latestPayment = $completedPayments
+            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
+            ->first();
+        $paymentBreakdown = $this->buildPaymentBreakdown($completedPayments);
 
-        if ($method && $details !== null && $paidAt) {
-            return [
-                'payment_method' => $method,
-                'payment_details' => $details,
-                'paid_at' => $paidAt,
-            ];
+        if ($paymentBreakdown !== []) {
+            $details['payment_breakdown'] = $paymentBreakdown;
         }
 
-        $latestPayment = $this->latestCompletedPayment();
+        $resolvedMethod = $method ?: $latestPayment?->payment_method;
+        if (count($paymentBreakdown) > 1) {
+            $resolvedMethod = 'mixed';
+        } elseif (count($paymentBreakdown) === 1) {
+            $resolvedMethod = $paymentBreakdown[0]['method'] ?? $resolvedMethod;
+        }
 
         return [
-            'payment_method' => $method ?: $latestPayment?->payment_method,
-            'payment_details' => $details ?? $latestPayment?->payment_details,
+            'payment_method' => $resolvedMethod,
+            'payment_details' => $details !== [] ? $details : ($latestPayment?->payment_details ?? null),
             'paid_at' => $paidAt ?: $latestPayment?->processed_at,
         ];
     }
@@ -289,15 +296,8 @@ class Invoice extends Model
             return (float) $this->getAttribute('total_paid_amount');
         }
 
-        if ($this->relationLoaded('payments')) {
-            return (float) $this->payments
-                ->where('status', Payment::STATUS_COMPLETED)
-                ->sum('amount');
-        }
-
-        return (float) $this->payments()
-            ->where('status', Payment::STATUS_COMPLETED)
-            ->sum('amount');
+        return (float) $this->relatedCompletedPayments()
+            ->sum(fn (Payment $payment) => (float) $payment->amount);
     }
 
     public function balanceDue(): float
@@ -371,7 +371,65 @@ class Invoice extends Model
         return $payments
             ->merge($shootPayments)
             ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
-            ->unique(fn (Payment $payment) => (string) ($payment->id ?? spl_object_id($payment)))
+            ->unique(fn (Payment $payment) => $this->paymentDeduplicationKey($payment))
             ->values();
+    }
+
+    private function buildPaymentBreakdown(Collection $payments): array
+    {
+        return $payments
+            ->groupBy(fn (Payment $payment) => $this->normalizePaymentMethodKey($payment->payment_method))
+            ->map(function (Collection $groupedPayments, string $method) {
+                $latestPayment = $groupedPayments
+                    ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
+                    ->first();
+
+                return [
+                    'method' => $method,
+                    'amount' => round((float) $groupedPayments->sum('amount'), 2),
+                    'details' => is_array($latestPayment?->payment_details) ? $latestPayment->payment_details : null,
+                    'paid_at' => $latestPayment?->processed_at instanceof Carbon
+                        ? $latestPayment->processed_at->toIso8601String()
+                        : null,
+                ];
+            })
+            ->sortByDesc('amount')
+            ->values()
+            ->all();
+    }
+
+    private function normalizePaymentMethodKey(?string $method): string
+    {
+        $normalized = Str::of((string) $method)
+            ->trim()
+            ->lower()
+            ->replace('-', '_')
+            ->replace(' ', '_')
+            ->value();
+
+        return match ($normalized) {
+            'manual' => 'other',
+            'bank_transfer' => 'ach',
+            'cheque' => 'check',
+            '', null => 'other',
+            default => $normalized,
+        };
+    }
+
+    private function paymentDeduplicationKey(Payment $payment): string
+    {
+        if (!empty($payment->stripe_session_id)) {
+            return 'stripe_session:' . $payment->stripe_session_id;
+        }
+
+        if (!empty($payment->stripe_payment_id)) {
+            return 'stripe_payment:' . $payment->stripe_payment_id;
+        }
+
+        if (!empty($payment->square_payment_id)) {
+            return 'square_payment:' . $payment->square_payment_id;
+        }
+
+        return 'payment:' . (string) ($payment->id ?? spl_object_id($payment));
     }
 }

@@ -157,7 +157,11 @@ class ShootPaymentsController extends Controller
                 $invoice = $this->invoiceService->generateForShoot($shoot);
             }
 
-            $amount = $validated['amount'] ?? $shoot->total_quote ?? 0;
+            $currentPaid = $shoot->fresh(['payments'])?->calculateCanonicalTotalPaid() ?? $shoot->calculateCanonicalTotalPaid();
+            $remainingBalance = max(((float) ($shoot->total_quote ?? 0)) - $currentPaid, 0);
+            $amount = array_key_exists('amount', $validated)
+                ? round((float) $validated['amount'], 2)
+                : $remainingBalance;
             $paymentType = $validated['payment_type'] ?? 'manual';
             $paymentDetails = $validated['payment_details'] ?? null;
             $paymentDate = $validated['payment_date'] ?? null;
@@ -188,8 +192,16 @@ class ShootPaymentsController extends Controller
 
             $processedAt = $paymentDate ? Carbon::parse($paymentDate) : now();
             if ($amount <= 0) {
-                $currentPaid = $shoot->fresh(['payments'])?->calculateCanonicalTotalPaid() ?? $shoot->calculateCanonicalTotalPaid();
-                $amount = max(($shoot->total_quote ?? 0) - $currentPaid, 0);
+                $amount = $remainingBalance;
+            }
+
+            if ($remainingBalance > 0 && $amount > ($remainingBalance + 0.01)) {
+                return response()->json([
+                    'message' => 'Payment amount cannot exceed the remaining balance',
+                    'data' => [
+                        'remaining_balance' => round($remainingBalance, 2),
+                    ],
+                ], 422);
             }
 
             if ($amount <= 0) {

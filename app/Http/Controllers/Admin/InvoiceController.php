@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
+use App\Models\Payment;
+use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\Messaging\AutomationService;
@@ -110,6 +112,7 @@ class InvoiceController extends Controller
     {
         $data = $request->validate([
             'paid_at' => ['nullable', 'date'],
+            'amount_paid' => ['nullable', 'numeric', 'min:0'],
             'payment_method' => ['nullable', 'string', 'in:square,zelle,cash,check,ach,other,manual,bank_transfer'],
             'payment_details' => ['nullable', 'array'],
         ]);
@@ -152,13 +155,66 @@ class InvoiceController extends Controller
             ], 422);
         }
 
-        $invoice->markPaid(isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : null);
+        $invoiceTotal = round((float) ($invoice->total ?? $invoice->total_amount ?? 0), 2);
+        $currentPaid = round($invoice->totalPaid(), 2);
+        if ($currentPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
+            $currentPaid = round((float) $invoice->getAttribute('amount_paid'), 2);
+        }
+        $remainingBalance = round(max($invoiceTotal - $currentPaid, 0), 2);
+        $paymentAmount = array_key_exists('amount_paid', $data)
+            ? round((float) ($data['amount_paid'] ?? 0), 2)
+            : $remainingBalance;
+
+        if ($paymentAmount <= 0) {
+            $paymentAmount = $remainingBalance;
+        }
+
+        if ($remainingBalance > 0 && $paymentAmount > ($remainingBalance + 0.01)) {
+            return response()->json([
+                'message' => 'Payment amount cannot exceed the remaining balance',
+                'data' => [
+                    'remaining_balance' => $remainingBalance,
+                ],
+            ], 422);
+        }
+
+        if ($remainingBalance <= 0) {
+            $paymentAmount = 0.0;
+        }
+
+        $paidAt = isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now();
+        $amountPaid = round(
+            min(
+                $currentPaid + $paymentAmount,
+                $invoiceTotal > 0 ? $invoiceTotal : ($currentPaid + $paymentAmount)
+            ),
+            2
+        );
+        $isPaid = $invoiceTotal > 0
+            ? $amountPaid >= ($invoiceTotal - 0.01)
+            : $amountPaid > 0;
+        $effectivePaidAt = $paymentAmount > 0
+            ? $paidAt
+            : ($invoice->latestCompletedPayment()?->processed_at ?? $invoice->paid_at ?? now());
+
+        $invoice->fill([
+            'amount_paid' => $amountPaid,
+            'is_paid' => $isPaid,
+            'paid_at' => $isPaid ? $effectivePaidAt : null,
+            'status' => $isPaid
+                ? Invoice::STATUS_PAID
+                : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
+                    ? Invoice::STATUS_SENT
+                    : ($invoice->status ?? Invoice::STATUS_SENT)),
+        ]);
 
         if ($paymentMethod !== null) {
             $invoice->payment_method = $paymentMethod;
             $invoice->payment_details = $paymentDetails;
-            $invoice->save();
         }
+
+        $invoice->save();
+        $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
 
         $invoice->loadMissing(['client', 'photographer']);
         $context = [
@@ -176,8 +232,60 @@ class InvoiceController extends Controller
 
         return response()->json([
             'message' => 'Invoice marked as paid.',
-            'data' => $invoice->fresh(['items', 'user']),
+            'data' => $this->buildInvoiceResponse($invoice),
         ]);
+    }
+
+    private function syncShootPaymentFromInvoice(
+        Invoice $invoice,
+        float $paymentAmount,
+        ?string $paymentMethod,
+        mixed $paymentDetails,
+        Carbon $paidAt
+    ): void {
+        if ($paymentAmount <= 0) {
+            return;
+        }
+
+        $shoot = $invoice->shoot ?: ($invoice->shoot_id ? Shoot::find($invoice->shoot_id) : null);
+        if (!$shoot) {
+            return;
+        }
+
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'invoice_id' => $invoice->id,
+            'amount' => $paymentAmount,
+            'currency' => 'USD',
+            'payment_method' => $paymentMethod,
+            'payment_details' => is_array($paymentDetails) ? $paymentDetails : null,
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => $paidAt,
+        ]);
+
+        $shoot->loadMissing('payments');
+        $shoot->syncPaymentStatusFromRecords($paymentMethod ?: $shoot->payment_type);
+    }
+
+    private function buildInvoiceResponse(Invoice $invoice): Invoice
+    {
+        return $invoice
+            ->fresh([
+                'items',
+                'user',
+                'client',
+                'photographer',
+                'payments',
+                'shoot',
+                'shoot.client',
+                'shoot.photographer',
+                'shoot.payments',
+                'shoots',
+                'shoots.client',
+                'shoots.photographer',
+                'shoots.payments',
+            ])
+            ->applyResolvedPaymentMetadata();
     }
 
     public function addMiscItem(Request $request, Invoice $invoice)

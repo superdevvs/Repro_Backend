@@ -230,17 +230,52 @@ class InvoiceController extends Controller
             ], 422);
         }
 
-        $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? 0);
-        $amountPaid = round((float) ($data['amount_paid'] ?? $invoiceTotal), 2);
+        $invoiceTotal = round((float) ($invoice->total ?? $invoice->total_amount ?? 0), 2);
+        $currentPaid = round($invoice->totalPaid(), 2);
+        if ($currentPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
+            $currentPaid = round((float) $invoice->getAttribute('amount_paid'), 2);
+        }
+        $remainingBalance = round(max($invoiceTotal - $currentPaid, 0), 2);
+        $paymentAmount = array_key_exists('amount_paid', $data)
+            ? round((float) ($data['amount_paid'] ?? 0), 2)
+            : $remainingBalance;
+
+        if ($paymentAmount <= 0) {
+            $paymentAmount = $remainingBalance;
+        }
+
+        if ($remainingBalance > 0 && $paymentAmount > ($remainingBalance + 0.01)) {
+            return response()->json([
+                'message' => 'Payment amount cannot exceed the remaining balance',
+                'data' => [
+                    'remaining_balance' => $remainingBalance,
+                ],
+            ], 422);
+        }
+
+        if ($remainingBalance <= 0) {
+            $paymentAmount = 0.0;
+        }
+
         $paidAt = isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now();
+        $amountPaid = round(
+            min(
+                $currentPaid + $paymentAmount,
+                $invoiceTotal > 0 ? $invoiceTotal : ($currentPaid + $paymentAmount)
+            ),
+            2
+        );
         $isPaid = $invoiceTotal > 0
             ? $amountPaid >= ($invoiceTotal - 0.01)
             : $amountPaid > 0;
+        $effectivePaidAt = $paymentAmount > 0
+            ? $paidAt
+            : ($invoice->latestCompletedPayment()?->processed_at ?? $invoice->paid_at ?? now());
 
         $invoice->fill([
             'is_paid' => $isPaid,
             'amount_paid' => $amountPaid,
-            'paid_at' => $isPaid ? $paidAt : null,
+            'paid_at' => $isPaid ? $effectivePaidAt : null,
             'status' => $isPaid
                 ? Invoice::STATUS_PAID
                 : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
@@ -258,7 +293,7 @@ class InvoiceController extends Controller
         }
 
         $invoice->save();
-        $this->syncShootPaymentFromInvoice($invoice, $amountPaid, $paymentMethod, $paymentDetails, $paidAt);
+        $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
 
         $invoice->loadMissing(['client', 'photographer']);
         if ($isPaid) {
@@ -277,18 +312,35 @@ class InvoiceController extends Controller
         }
 
         return response()->json([
-            'data' => $invoice->fresh(['photographer', 'salesRep'])->loadCount('shoots'),
+            'data' => $invoice
+                ->fresh([
+                    'photographer',
+                    'salesRep',
+                    'client',
+                    'payments',
+                    'shoot',
+                    'shoot.client',
+                    'shoot.photographer',
+                    'shoot.payments',
+                    'shoots',
+                    'shoots.client',
+                    'shoots.photographer',
+                    'shoots.payments',
+                    'items',
+                ])
+                ->loadCount('shoots')
+                ->applyResolvedPaymentMetadata(),
         ]);
     }
 
     private function syncShootPaymentFromInvoice(
         Invoice $invoice,
-        float $amountPaid,
+        float $paymentAmount,
         ?string $paymentMethod,
         mixed $paymentDetails,
         Carbon $paidAt
     ): void {
-        if ($amountPaid <= 0) {
+        if ($paymentAmount <= 0) {
             return;
         }
 
@@ -297,32 +349,16 @@ class InvoiceController extends Controller
             return;
         }
 
-        $payment = Payment::query()
-            ->where('invoice_id', $invoice->id)
-            ->where('shoot_id', $shoot->id)
-            ->where('status', Payment::STATUS_COMPLETED)
-            ->first();
-
-        if ($payment) {
-            $payment->fill([
-                'amount' => $amountPaid,
-                'payment_method' => $paymentMethod,
-                'payment_details' => is_array($paymentDetails) ? $paymentDetails : null,
-                'processed_at' => $paidAt,
-            ]);
-            $payment->save();
-        } else {
-            Payment::create([
-                'shoot_id' => $shoot->id,
-                'invoice_id' => $invoice->id,
-                'amount' => $amountPaid,
-                'currency' => 'USD',
-                'payment_method' => $paymentMethod,
-                'payment_details' => is_array($paymentDetails) ? $paymentDetails : null,
-                'status' => Payment::STATUS_COMPLETED,
-                'processed_at' => $paidAt,
-            ]);
-        }
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'invoice_id' => $invoice->id,
+            'amount' => $paymentAmount,
+            'currency' => 'USD',
+            'payment_method' => $paymentMethod,
+            'payment_details' => is_array($paymentDetails) ? $paymentDetails : null,
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => $paidAt,
+        ]);
 
         $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
             ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);

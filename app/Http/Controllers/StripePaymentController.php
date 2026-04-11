@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Carbon\Carbon;
+use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Models\User;
@@ -53,7 +55,8 @@ class StripePaymentController extends Controller
      */
     public function createCheckoutSession(Request $request, Shoot $shoot)
     {
-        $amountToPay = (int) round(($shoot->total_quote - $shoot->total_paid) * 100);
+        $shoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
+        $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
 
         // Allow an optional partial payment amount from the request
         if ($request->has('amount')) {
@@ -125,7 +128,9 @@ class StripePaymentController extends Controller
      */
     public function createEmbeddedCheckoutSession(Request $request, Shoot $shoot)
     {
-        $amountToPay = (int) round(($shoot->total_quote - $shoot->total_paid) * 100);
+        $shoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
+        $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
+        $returnTo = $this->sanitizeReturnTo($request->input('return_to'));
 
         if ($request->has('amount')) {
             $requestedAmount = (int) round($request->input('amount') * 100);
@@ -145,6 +150,15 @@ class StripePaymentController extends Controller
             $currency = config('services.stripe.currency', 'USD');
             $client = User::find($shoot->client_id);
 
+            $metadata = [
+                'shoot_id' => (string) $shoot->id,
+                'type' => 'single',
+            ];
+
+            if ($returnTo) {
+                $metadata['return_to'] = $returnTo;
+            }
+
             $sessionParams = [
                 'payment_method_types' => ['card'],
                 'mode' => 'payment',
@@ -162,12 +176,9 @@ class StripePaymentController extends Controller
                     ],
                     'quantity' => 1,
                 ]],
-                'metadata' => [
-                    'shoot_id' => (string) $shoot->id,
-                    'type' => 'single',
-                ],
+                'metadata' => $metadata,
                 'client_reference_id' => 'shoot:' . $shoot->id,
-                'return_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
+                'return_url' => $this->buildEmbeddedReturnUrl($shoot, $returnTo, $paymentUrl),
             ];
 
             $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $client);
@@ -214,7 +225,8 @@ class StripePaymentController extends Controller
             $shootIds = [];
 
             foreach ($shoots as $shoot) {
-                $amountToPay = (int) round(($shoot->total_quote - $shoot->total_paid) * 100);
+                $shoot->loadMissing('payments');
+                $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
                 if ($amountToPay <= 0) continue;
 
                 $totalAmount += $amountToPay;
@@ -299,7 +311,8 @@ class StripePaymentController extends Controller
             $shootIds = [];
 
             foreach ($shoots as $shoot) {
-                $amountToPay = (int) round(($shoot->total_quote - $shoot->total_paid) * 100);
+                $shoot->loadMissing('payments');
+                $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
                 if ($amountToPay <= 0) continue;
 
                 $totalAmount += $amountToPay;
@@ -458,15 +471,20 @@ class StripePaymentController extends Controller
     public function reconcileShootPayments(Shoot $shoot, ?string $sessionId = null): array
     {
         $shoot = $shoot->fresh(['payments', 'client']) ?? $shoot->loadMissing(['payments', 'client']);
+        $session = $sessionId ? $this->retrieveCheckoutSession($sessionId) : null;
+        $resolvedReturnTo = $this->resolveReturnToFromSession($session);
+        $lastPaymentAmount = $this->resolveLastPaymentAmountFromSession($session);
         $summary = $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: 'stripe');
 
-        if (($summary['remaining_balance'] ?? 0) <= 0) {
+        if (($summary['remaining_balance'] ?? 0) <= 0 && !$session) {
             return [
                 'reconciled' => false,
                 'session_id' => null,
                 'total_paid' => $summary['total_paid'],
                 'payment_status' => $summary['payment_status'],
                 'remaining_balance' => $summary['remaining_balance'],
+                'last_payment_amount' => null,
+                'return_to' => null,
             ];
         }
 
@@ -483,9 +501,7 @@ class StripePaymentController extends Controller
         }
 
         try {
-            $session = $sessionId
-                ? $this->retrieveCheckoutSession($sessionId)
-                : $this->findRecentPaidSessionForShoot($shoot);
+            $session = $session ?: $this->findRecentPaidSessionForShoot($shoot);
 
             if (!$session) {
                 return [
@@ -494,8 +510,13 @@ class StripePaymentController extends Controller
                     'total_paid' => $summary['total_paid'],
                     'payment_status' => $summary['payment_status'],
                     'remaining_balance' => $summary['remaining_balance'],
+                    'last_payment_amount' => null,
+                    'return_to' => null,
                 ];
             }
+
+            $resolvedReturnTo = $this->resolveReturnToFromSession($session);
+            $lastPaymentAmount = $this->resolveLastPaymentAmountFromSession($session);
 
             $matchedShootId = $session->metadata->shoot_id ?? null;
             if ($matchedShootId !== null && (string) $matchedShootId !== (string) $shoot->id) {
@@ -505,6 +526,8 @@ class StripePaymentController extends Controller
                     'total_paid' => $summary['total_paid'],
                     'payment_status' => $summary['payment_status'],
                     'remaining_balance' => $summary['remaining_balance'],
+                    'last_payment_amount' => $lastPaymentAmount,
+                    'return_to' => $resolvedReturnTo,
                 ];
             }
 
@@ -515,6 +538,8 @@ class StripePaymentController extends Controller
                     'total_paid' => $summary['total_paid'],
                     'payment_status' => $summary['payment_status'],
                     'remaining_balance' => $summary['remaining_balance'],
+                    'last_payment_amount' => $lastPaymentAmount,
+                    'return_to' => $resolvedReturnTo,
                 ];
             }
 
@@ -528,6 +553,8 @@ class StripePaymentController extends Controller
                 'total_paid' => $freshSummary['total_paid'],
                 'payment_status' => $freshSummary['payment_status'],
                 'remaining_balance' => $freshSummary['remaining_balance'],
+                'last_payment_amount' => $lastPaymentAmount,
+                'return_to' => $resolvedReturnTo,
             ];
         } finally {
             optional($lock)->release();
@@ -829,6 +856,17 @@ class StripePaymentController extends Controller
             ?? $shoot->syncPaymentStatusFromRecords('stripe');
         $totalPaid = $paymentSummary['total_paid'];
         $newPaymentStatus = $paymentSummary['payment_status'];
+        $invoice = $this->findClientInvoiceForShoot($shoot);
+
+        $this->syncClientInvoiceFromShootPayment(
+            $invoice,
+            $shoot,
+            $payment,
+            $totalPaid,
+            'stripe',
+            $payment->payment_details,
+            $payment->processed_at instanceof Carbon ? $payment->processed_at : now()
+        );
 
         // Clear watermark-sensitive caches so client sees non-watermarked images
         $this->clearShootCachesAfterPayment($shoot);
@@ -897,6 +935,143 @@ class StripePaymentController extends Controller
             'amount' => $amount,
             'payment_status' => $newPaymentStatus,
         ]);
+    }
+
+    protected function calculateCanonicalOutstandingAmountCents(Shoot $shoot): int
+    {
+        $totalQuote = (float) ($shoot->total_quote ?? 0);
+        $totalPaid = $shoot->calculateCanonicalTotalPaid();
+
+        return (int) round(max($totalQuote - $totalPaid, 0) * 100);
+    }
+
+    protected function sanitizeReturnTo(mixed $returnTo): ?string
+    {
+        if (!is_string($returnTo)) {
+            return null;
+        }
+
+        $trimmed = trim($returnTo);
+        if ($trimmed === '' || str_contains($trimmed, "\r") || str_contains($trimmed, "\n")) {
+            return null;
+        }
+
+        $frontendUrl = rtrim((string) config('app.frontend_url', 'http://localhost:5173'), '/');
+
+        if (str_starts_with($trimmed, '/')) {
+            return $trimmed;
+        }
+
+        if (!preg_match('/^[a-z][a-z0-9+\-.]*:/i', $trimmed)) {
+            return null;
+        }
+
+        $frontendParts = parse_url($frontendUrl);
+        $returnParts = parse_url($trimmed);
+
+        if (!$frontendParts || !$returnParts) {
+            return null;
+        }
+
+        $sameOrigin =
+            (($frontendParts['scheme'] ?? null) === ($returnParts['scheme'] ?? null))
+            && (($frontendParts['host'] ?? null) === ($returnParts['host'] ?? null))
+            && (($frontendParts['port'] ?? null) === ($returnParts['port'] ?? null));
+
+        if (!$sameOrigin) {
+            return null;
+        }
+
+        $path = $returnParts['path'] ?? '/';
+        $query = isset($returnParts['query']) ? '?' . $returnParts['query'] : '';
+        $fragment = isset($returnParts['fragment']) ? '#' . $returnParts['fragment'] : '';
+
+        return $path . $query . $fragment;
+    }
+
+    protected function buildEmbeddedReturnUrl(Shoot $shoot, ?string $returnTo, string $paymentUrl): string
+    {
+        if (!$returnTo) {
+            return $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}';
+        }
+
+        $frontendUrl = rtrim((string) config('app.frontend_url', 'http://localhost:5173'), '/');
+
+        return $frontendUrl
+            . '/payment-return/shoot/' . $shoot->id
+            . '?session_id={CHECKOUT_SESSION_ID}&return_to=' . rawurlencode($returnTo);
+    }
+
+    protected function resolveReturnToFromSession($session): ?string
+    {
+        $metadataReturnTo = $session?->metadata?->return_to ?? null;
+        return $this->sanitizeReturnTo($metadataReturnTo);
+    }
+
+    protected function resolveLastPaymentAmountFromSession($session): ?float
+    {
+        $amountTotal = $session?->amount_total ?? null;
+        if (!is_numeric($amountTotal)) {
+            return null;
+        }
+
+        return round(((float) $amountTotal) / 100, 2);
+    }
+
+    protected function findClientInvoiceForShoot(Shoot $shoot): ?Invoice
+    {
+        return Invoice::query()
+            ->where('shoot_id', $shoot->id)
+            ->where(function ($query) use ($shoot) {
+                $query->where('role', Invoice::ROLE_CLIENT);
+
+                if ($shoot->client_id) {
+                    $query->orWhere('client_id', $shoot->client_id);
+                }
+            })
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    protected function syncClientInvoiceFromShootPayment(
+        ?Invoice $invoice,
+        Shoot $shoot,
+        ?Payment $payment,
+        float $shootTotalPaid,
+        ?string $paymentMethod,
+        mixed $paymentDetails,
+        Carbon $processedAt
+    ): void {
+        if (!$invoice) {
+            return;
+        }
+
+        $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? $shoot->total_quote ?? 0);
+        $amountPaid = round(min($shootTotalPaid, $invoiceTotal > 0 ? $invoiceTotal : $shootTotalPaid), 2);
+        $isPaid = $invoiceTotal > 0
+            ? $amountPaid >= ($invoiceTotal - 0.01)
+            : $amountPaid > 0;
+
+        $invoice->amount_paid = $amountPaid;
+        $invoice->is_paid = $isPaid;
+        $invoice->status = $isPaid
+            ? Invoice::STATUS_PAID
+            : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
+                ? Invoice::STATUS_SENT
+                : ($invoice->status ?? Invoice::STATUS_SENT));
+        $invoice->paid_at = $isPaid ? $processedAt : null;
+
+        if ($paymentMethod !== null && $paymentMethod !== '') {
+            $invoice->payment_method = $paymentMethod;
+            $invoice->payment_details = is_array($paymentDetails) ? $paymentDetails : null;
+        }
+
+        $invoice->save();
+
+        if ($payment && (int) $payment->invoice_id !== (int) $invoice->id) {
+            $payment->invoice_id = $invoice->id;
+            $payment->save();
+        }
     }
 
     /**

@@ -149,11 +149,11 @@ class ClientBillingService
         $status = $this->resolveStatus($balance, $dueDate);
         $primaryShoot = $relatedShoots->first() ?: $invoice->shoot;
 
-        $paymentData = $this->resolvePaymentMetadata(
-            $invoice->payment_method,
-            $invoice->payment_details,
-            $relatedShoots
-        );
+        $resolvedPayment = $invoice->resolvePaymentMetadata();
+        $paymentData = [
+            'method' => $resolvedPayment['payment_method'] ?? null,
+            'details' => $resolvedPayment['payment_details'] ?? null,
+        ];
 
         return [
             'id' => 'invoice-' . $invoice->id,
@@ -383,35 +383,81 @@ class ClientBillingService
         mixed $details,
         Collection $relatedShoots
     ): array {
+        $resolvedDetails = is_array($details) ? $details : null;
         if ($method) {
             return [
                 'method' => (string) $method,
-                'details' => is_array($details) ? $details : null,
+                'details' => $resolvedDetails,
             ];
         }
 
-        $latestPayment = $relatedShoots
-            ->map(fn (Shoot $shoot) => $this->latestCompletedPayment($shoot))
+        $completedPayments = $relatedShoots
+            ->flatMap(fn (Shoot $shoot) => $shoot->getCanonicalCompletedPayments())
             ->filter()
+            ->values();
+        $latestPayment = $completedPayments
             ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
             ->first();
+        $paymentBreakdown = $this->buildPaymentBreakdown($completedPayments);
+        $resolvedMethod = $latestPayment?->payment_method;
+
+        if (count($paymentBreakdown) > 1) {
+            $resolvedMethod = 'mixed';
+        } elseif (count($paymentBreakdown) === 1) {
+            $resolvedMethod = $paymentBreakdown[0]['method'] ?? $resolvedMethod;
+        }
+
+        if ($paymentBreakdown !== []) {
+            $resolvedDetails = $resolvedDetails ?? [];
+            $resolvedDetails['payment_breakdown'] = $paymentBreakdown;
+        }
 
         return [
-            'method' => $latestPayment?->payment_method,
-            'details' => $latestPayment?->payment_details,
+            'method' => $resolvedMethod,
+            'details' => $resolvedDetails ?? $latestPayment?->payment_details,
         ];
     }
 
     private function latestCompletedPayment(Shoot $shoot): ?Payment
     {
-        $payments = $shoot->relationLoaded('payments')
-            ? $shoot->payments
-            : $shoot->payments()->get();
-
-        return $payments
-            ->filter(fn (Payment $payment) => $payment->status === Payment::STATUS_COMPLETED)
+        return $shoot->getCanonicalCompletedPayments()
             ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
             ->first();
+    }
+
+    private function buildPaymentBreakdown(Collection $payments): array
+    {
+        return $payments
+            ->groupBy(fn (Payment $payment) => $this->normalizePaymentMethodKey($payment->payment_method))
+            ->map(function (Collection $groupedPayments, string $method) {
+                $latestPayment = $groupedPayments
+                    ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
+                    ->first();
+
+                return [
+                    'method' => $method,
+                    'amount' => round((float) $groupedPayments->sum('amount'), 2),
+                    'details' => is_array($latestPayment?->payment_details) ? $latestPayment->payment_details : null,
+                    'paid_at' => $this->normalizeDateTime($latestPayment?->processed_at),
+                ];
+            })
+            ->sortByDesc('amount')
+            ->values()
+            ->all();
+    }
+
+    private function normalizePaymentMethodKey(?string $method): string
+    {
+        $normalized = strtolower(trim((string) $method));
+        $normalized = str_replace(['-', ' '], '_', $normalized);
+
+        return match ($normalized) {
+            'manual' => 'other',
+            'bank_transfer' => 'ach',
+            'cheque' => 'check',
+            '', null => 'other',
+            default => $normalized,
+        };
     }
 
     private function extractInvoiceServices(Invoice $invoice): array
