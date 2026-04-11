@@ -70,13 +70,18 @@ class InvoiceService
             $services = $shoot->services;
 
             if ($services->isEmpty() && $shoot->service) {
+                $propertySqft = $this->extractShootSqft($shoot);
+                $defaultPay = method_exists($shoot->service, 'getPhotographerPayForSqft')
+                    ? $shoot->service->getPhotographerPayForSqft($propertySqft)
+                    : null;
+
                 $serviceRows->push([
                     'shoot_id' => $shoot->id,
                     'shoot' => $shoot,
                     'service_id' => $shoot->service->id,
                     'service_name' => $shoot->service->name ?? 'Service',
                     'resolved_photographer_id' => $fallbackId,
-                    'photographer_pay' => (float) ($shoot->total_quote ?? $shoot->base_quote ?? 0),
+                    'photographer_pay' => (float) ($defaultPay ?? $shoot->service->photographer_pay ?? 0),
                     'scheduled_date' => $shoot->scheduled_date,
                     'address' => $shoot->address ?? 'Location TBD',
                 ]);
@@ -95,7 +100,10 @@ class InvoiceService
                     continue;
                 }
                 
-                $pay = (float) ($service->pivot->photographer_pay ?? 0);
+                $pivotPay = $service->pivot->photographer_pay ?? null;
+                $pay = ($pivotPay !== null && $pivotPay !== '')
+                    ? (float) $pivotPay
+                    : (float) ($service->photographer_pay ?? 0);
                 $qty = (int) ($service->pivot->quantity ?? 1);
                 
                 $serviceRows->push([
@@ -127,11 +135,37 @@ class InvoiceService
 
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('photographer_id', $photographerId)
+                    ->where('role', Invoice::ROLE_PHOTOGRAPHER)
                     ->where('billing_period_start', $start->toDateString())
                     ->where('billing_period_end', $end->toDateString())
                     ->first();
 
                 if ($existingInvoice) {
+                    $existingInvoice->items()
+                        ->where('type', InvoiceItem::TYPE_CHARGE)
+                        ->delete();
+
+                    foreach ($photographerServices as $serviceRow) {
+                        $existingInvoice->items()->create([
+                            'shoot_id' => $serviceRow['shoot_id'],
+                            'type' => InvoiceItem::TYPE_CHARGE,
+                            'description' => sprintf(
+                                'Shoot #%d - %s - %s',
+                                $serviceRow['shoot_id'],
+                                $serviceRow['address'],
+                                $serviceRow['service_name']
+                            ),
+                            'quantity' => 1,
+                            'unit_amount' => $serviceRow['photographer_pay'],
+                            'total_amount' => $serviceRow['photographer_pay'],
+                            'recorded_at' => $serviceRow['scheduled_date'],
+                            'meta' => [
+                                'service_id' => $serviceRow['service_id'],
+                                'service_name' => $serviceRow['service_name'],
+                            ],
+                        ]);
+                    }
+
                     $existingInvoice->update([
                         'total_amount' => $totalAmount,
                         'amount_paid' => $amountPaid,
@@ -234,6 +268,23 @@ class InvoiceService
 
             return $invoices;
         });
+    }
+
+    private function extractShootSqft(Shoot $shoot): ?int
+    {
+        $propertyDetails = $shoot->property_details;
+
+        if (is_string($propertyDetails)) {
+            $propertyDetails = json_decode($propertyDetails, true);
+        }
+
+        if (!is_array($propertyDetails)) {
+            return null;
+        }
+
+        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? null;
+
+        return is_numeric($sqft) ? (int) $sqft : null;
     }
 
     public function generateInvoice(User $user, string $role, Carbon $start, Carbon $end): Invoice

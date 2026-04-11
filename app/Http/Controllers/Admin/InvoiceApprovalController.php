@@ -89,7 +89,10 @@ class InvoiceApprovalController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if (!$invoice->photographer_id && !$invoice->sales_rep_id) {
+        if (!in_array($invoice->role, [
+            Invoice::ROLE_PHOTOGRAPHER,
+            Invoice::ROLE_SALES_REP,
+        ], true)) {
             return response()->json(['message' => 'Payout invoice not found'], 404);
         }
 
@@ -260,9 +263,13 @@ class InvoiceApprovalController extends Controller
     {
         $query = Invoice::query()
             ->when($this->normalizeQueueRole($filters['role'] ?? null) === 'salesRep', function (Builder $builder) {
-                $builder->whereNotNull('sales_rep_id');
+                $builder
+                    ->where('role', Invoice::ROLE_SALES_REP)
+                    ->whereNotNull('sales_rep_id');
             }, function (Builder $builder) {
-                $builder->whereNotNull('photographer_id');
+                $builder
+                    ->where('role', Invoice::ROLE_PHOTOGRAPHER)
+                    ->whereNotNull('photographer_id');
             })
             ->with([
                 'photographer',
