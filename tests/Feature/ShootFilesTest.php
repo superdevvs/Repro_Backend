@@ -513,4 +513,68 @@ class ShootFilesTest extends TestCase
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb.jpg', $payload['thumb_url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web-original.jpg', $payload['original_url']);
     }
+
+    #[Test]
+    public function dropbox_backed_media_payload_generates_web_preview_instead_of_using_original_for_display(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'paid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $tempSource = tempnam(sys_get_temp_dir(), 'shoot-preview-');
+        file_put_contents($tempSource, 'dropbox-original');
+
+        app()->instance(ImageProcessingService::class, new class extends ImageProcessingService {
+            public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
+            {
+                $paths = [
+                    'thumbnail' => "shoots/{$shootId}/completed/generated-thumb.jpg",
+                    'web' => "shoots/{$shootId}/completed/generated-web.jpg",
+                    'placeholder' => "shoots/{$shootId}/completed/generated-placeholder.jpg",
+                ];
+
+                foreach ($paths as $path) {
+                    Storage::disk('public')->put($path, 'generated-preview');
+                }
+
+                return $paths;
+            }
+        });
+
+        $dropbox = \Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('downloadToTemp')
+            ->once()
+            ->andReturn($tempSource);
+        $dropbox->shouldReceive('getTemporaryLink')
+            ->once()
+            ->andReturn('https://dropbox.test/original/final.jpg');
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $this->createShootFile($shoot, [
+            'filename' => 'final.jpg',
+            'path' => 'remote/final.jpg',
+            'storage_path' => null,
+            'dropbox_path' => '/shoots/' . $shoot->id . '/completed/final.jpg',
+        ]);
+
+        Sanctum::actingAs($client);
+
+        $payload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertFalse($payload['uses_watermark']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['web_url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-thumb.jpg', $payload['thumb_url']);
+        $this->assertSame('https://dropbox.test/original/final.jpg', $payload['original_url']);
+
+        if (file_exists($tempSource)) {
+            @unlink($tempSource);
+        }
+    }
 }

@@ -113,11 +113,17 @@ class ShootFileAccessService
 
     public function generateOptimizedVersions(ShootFile $file): array
     {
-        try {
-            $sourcePath = null;
+        $tempPath = null;
 
-            if ($file->path && !Str::startsWith($file->path, 'http') && Storage::disk('public')->exists($file->path)) {
-                $sourcePath = Storage::disk('public')->path($file->path);
+        try {
+            $sourcePath = $this->findLocalFilePath($file);
+
+            if (
+                !$sourcePath
+                && ($file->dropbox_path || $file->storage_path)
+            ) {
+                $tempPath = $this->dropboxService->downloadToTemp($file->dropbox_path ?: $file->storage_path);
+                $sourcePath = $tempPath;
             }
 
             if (!$sourcePath || !file_exists($sourcePath)) {
@@ -158,6 +164,10 @@ class ShootFileAccessService
             ]);
 
             return [];
+        } finally {
+            if ($tempPath && file_exists($tempPath)) {
+                @unlink($tempPath);
+            }
         }
     }
 
