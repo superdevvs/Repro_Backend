@@ -266,7 +266,9 @@ class ShootMediaController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        return $this->shootMediaReadService->previewFileResponse($file);
+        $needsWatermark = $this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user);
+
+        return $this->shootMediaReadService->previewFileResponse($file, $needsWatermark);
     }
 
     public function bulkDownloadMedia(Request $request, Shoot $shoot)

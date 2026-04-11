@@ -23,8 +23,32 @@ class ShootMediaReadService
     ) {
     }
 
-    public function previewFileResponse(ShootFile $file)
+    public function previewFileResponse(ShootFile $file, bool $needsWatermark = false)
     {
+        if ($needsWatermark) {
+            $watermarkedPreviewPath = $file->watermarked_web_path
+                ?? $file->watermarked_thumbnail_path
+                ?? $file->watermarked_placeholder_path;
+
+            if ($watermarkedPreviewPath) {
+                $response = $this->buildPreviewResponseFromPath($watermarkedPreviewPath);
+                if ($response) {
+                    return $response;
+                }
+            }
+
+            if ($file->shouldBeWatermarked()) {
+                $this->queueWatermark($file);
+
+                return response()->json([
+                    'message' => 'Watermarked preview is being generated. Please retry in a few minutes.',
+                    'code' => 'watermark_processing',
+                ], 409);
+            }
+
+            return response()->json(['message' => 'File not available'], 404);
+        }
+
         if ($file->path && Storage::disk('public')->exists($file->path)) {
             $path = Storage::disk('public')->path($file->path);
             $mimeType = mime_content_type($path) ?: 'image/jpeg';
@@ -403,6 +427,31 @@ class ShootMediaReadService
                 'path' => $path,
                 'error' => $e->getMessage(),
             ]);
+        }
+
+        return null;
+    }
+
+    protected function buildPreviewResponseFromPath(?string $path)
+    {
+        if (!$path) {
+            return null;
+        }
+
+        $localPath = $this->shootFileAccessService->resolveLocalPath($path);
+        if ($localPath && file_exists($localPath)) {
+            $mimeType = mime_content_type($localPath) ?: 'image/jpeg';
+
+            return response()->file($localPath, ['Content-Type' => $mimeType]);
+        }
+
+        if (preg_match('/^https?:\/\//i', $path)) {
+            return redirect($path);
+        }
+
+        $resolvedUrl = $this->resolvePreviewPath($path);
+        if ($resolvedUrl) {
+            return redirect($resolvedUrl);
         }
 
         return null;

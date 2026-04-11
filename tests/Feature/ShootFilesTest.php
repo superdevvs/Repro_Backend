@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\ProcessImageJob;
 use App\Jobs\SyncShootFileToDropboxJob;
+use App\Jobs\GenerateWatermarkedImageJob;
 use App\Services\ImageProcessingService;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -432,6 +433,49 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
+    public function partial_client_receives_watermarked_media_payload(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'partial',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'partial-preview.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/partial-preview.jpg',
+            'web_path' => 'shoots/' . $shoot->id . '/completed/partial-preview-web.jpg',
+            'thumbnail_path' => 'shoots/' . $shoot->id . '/completed/partial-preview-thumb.jpg',
+            'watermarked_storage_path' => 'shoots/' . $shoot->id . '/watermarked/partial-preview.jpg',
+            'watermarked_web_path' => 'shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg',
+            'watermarked_thumbnail_path' => 'shoots/' . $shoot->id . '/watermarked/partial-preview_thumb.jpg',
+            'watermarked_placeholder_path' => 'shoots/' . $shoot->id . '/watermarked/partial-preview_placeholder.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+        Storage::disk('public')->put($file->web_path, 'web-preview');
+        Storage::disk('public')->put($file->thumbnail_path, 'thumb-preview');
+        Storage::disk('public')->put($file->watermarked_web_path, 'watermarked-web');
+        Storage::disk('public')->put($file->watermarked_thumbnail_path, 'watermarked-thumb');
+        Storage::disk('public')->put($file->watermarked_placeholder_path, 'watermarked-placeholder');
+
+        Sanctum::actingAs($client);
+
+        $payload = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=edited')
+            ->assertOk()
+            ->json('data.0');
+
+        $this->assertTrue($payload['uses_watermark']);
+        $this->assertNull($payload['path']);
+        $this->assertNull($payload['web_path']);
+        $this->assertNull($payload['thumbnail_path']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['url']);
+        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['original_url']);
+    }
+
+    #[Test]
     public function admin_and_paid_clients_receive_non_watermarked_media_payloads(): void
     {
         $shoot = $this->createShoot([
@@ -512,6 +556,145 @@ class ShootFilesTest extends TestCase
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['medium_url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb.jpg', $payload['thumb_url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web-original.jpg', $payload['original_url']);
+    }
+
+    #[Test]
+    public function unpaid_client_preview_route_serves_watermarked_preview_file(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'unpaid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'locked-preview.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/locked-preview-original.jpg',
+            'watermarked_web_path' => 'shoots/' . $shoot->id . '/watermarked/locked-preview_web.jpg',
+            'watermarked_thumbnail_path' => 'shoots/' . $shoot->id . '/watermarked/locked-preview_thumb.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+        Storage::disk('public')->put($file->watermarked_web_path, 'watermarked-web');
+        Storage::disk('public')->put($file->watermarked_thumbnail_path, 'watermarked-thumb');
+
+        Sanctum::actingAs($client);
+
+        $response = $this->get('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/preview');
+
+        $response->assertOk();
+        $this->assertInstanceOf(\Symfony\Component\HttpFoundation\BinaryFileResponse::class, $response->baseResponse);
+        $this->assertSame(
+            'locked-preview_web.jpg',
+            $response->baseResponse->getFile()->getFilename()
+        );
+    }
+
+    #[Test]
+    public function partial_client_preview_route_serves_watermarked_preview_file(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'partial',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'partial-locked-preview.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/partial-locked-preview-original.jpg',
+            'watermarked_web_path' => 'shoots/' . $shoot->id . '/watermarked/partial-locked-preview_web.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+        Storage::disk('public')->put($file->watermarked_web_path, 'watermarked-web');
+
+        Sanctum::actingAs($client);
+
+        $response = $this->get('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/preview');
+
+        $response->assertOk();
+        $this->assertInstanceOf(\Symfony\Component\HttpFoundation\BinaryFileResponse::class, $response->baseResponse);
+        $this->assertSame(
+            'partial-locked-preview_web.jpg',
+            $response->baseResponse->getFile()->getFilename()
+        );
+    }
+
+    #[Test]
+    public function paid_client_and_admin_preview_route_serve_original_file(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'paid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+        $admin = $this->insertUser(['role' => 'admin']);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'open-preview.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/open-preview-original.jpg',
+            'watermarked_web_path' => 'shoots/' . $shoot->id . '/watermarked/open-preview_web.jpg',
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+        Storage::disk('public')->put($file->watermarked_web_path, 'watermarked-web');
+
+        Sanctum::actingAs($client);
+        $clientResponse = $this->get('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/preview');
+        $clientResponse->assertOk();
+        $this->assertInstanceOf(\Symfony\Component\HttpFoundation\BinaryFileResponse::class, $clientResponse->baseResponse);
+        $this->assertSame(
+            'open-preview-original.jpg',
+            $clientResponse->baseResponse->getFile()->getFilename()
+        );
+
+        $shoot->update(['payment_status' => 'unpaid']);
+
+        Sanctum::actingAs($admin);
+        $adminResponse = $this->get('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/preview');
+        $adminResponse->assertOk();
+        $this->assertInstanceOf(\Symfony\Component\HttpFoundation\BinaryFileResponse::class, $adminResponse->baseResponse);
+        $this->assertSame(
+            'open-preview-original.jpg',
+            $adminResponse->baseResponse->getFile()->getFilename()
+        );
+    }
+
+    #[Test]
+    public function locked_client_preview_route_queues_watermark_and_never_falls_back_to_original(): void
+    {
+        Storage::fake('public');
+        Queue::fake([GenerateWatermarkedImageJob::class]);
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'unpaid',
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'queued-preview.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/queued-preview-original.jpg',
+            'watermarked_web_path' => null,
+            'watermarked_thumbnail_path' => null,
+            'watermarked_placeholder_path' => null,
+        ]);
+
+        Storage::disk('public')->put($file->path, 'original');
+
+        Sanctum::actingAs($client);
+
+        $this->getJson('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/preview')
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'watermark_processing');
+
+        Queue::assertPushed(GenerateWatermarkedImageJob::class);
     }
 
     #[Test]
