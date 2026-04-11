@@ -3,14 +3,16 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
-use App\Models\Shoot;
+use App\Models\ShootShareLink;
 use Illuminate\Http\JsonResponse;
 
 class PublicShootShareLinkController extends Controller
 {
-    public function show(Shoot $shoot, int $linkId): JsonResponse
+    public function show(string $token): JsonResponse
     {
-        $link = $shoot->shareLinks()->find($linkId);
+        $link = ShootShareLink::query()
+            ->where('public_token', $token)
+            ->first();
 
         if (!$link) {
             return response()->json([

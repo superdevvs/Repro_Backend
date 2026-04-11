@@ -74,7 +74,7 @@ Route::get('/weather', [WeatherController::class, 'show'])
 Route::get('/ip-location', [IpLocationController::class, 'show'])
     ->middleware('throttle:60,1');
 
-Route::get('/public/share-links/{shoot}/{linkId}', [PublicShootShareLinkController::class, 'show'])
+Route::get('/public/share-links/{token}', [PublicShootShareLinkController::class, 'show'])
     ->name('api.public.share-links.show');
 
 $shootMediaCorsPreflight = function (Request $request) {
@@ -90,16 +90,18 @@ $shootMediaCorsPreflight = function (Request $request) {
 Route::options('/shoots/{shoot}/editor-download-raw', $shootMediaCorsPreflight);
 Route::options('/shoots/{shoot}/generate-share-link', $shootMediaCorsPreflight);
 
-// Debug route to check PHP upload limits
-Route::get('/php-limits', function () {
-    return response()->json([
-        'upload_max_filesize' => ini_get('upload_max_filesize'),
-        'post_max_size' => ini_get('post_max_size'),
-        'memory_limit' => ini_get('memory_limit'),
-        'max_execution_time' => ini_get('max_execution_time'),
-        'max_file_uploads' => ini_get('max_file_uploads'),
-    ]);
-});
+if (!app()->environment('production')) {
+    // Debug route to check PHP upload limits
+    Route::get('/php-limits', function () {
+        return response()->json([
+            'upload_max_filesize' => ini_get('upload_max_filesize'),
+            'post_max_size' => ini_get('post_max_size'),
+            'memory_limit' => ini_get('memory_limit'),
+            'max_execution_time' => ini_get('max_execution_time'),
+            'max_file_uploads' => ini_get('max_file_uploads'),
+        ]);
+    });
+}
 
 // AI Chat health check (no auth required)
 Route::get('/ai/health', function () {
@@ -173,16 +175,12 @@ Route::get('google-calendar/callback', [GoogleCalendarController::class, 'callba
 Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook'])
     ->name('webhooks.stripe');
 
-// Public Stripe checkout for single shoot (no auth, used by payment link emails)
-Route::post('shoots/{shoot}/create-stripe-checkout', [StripePaymentController::class, 'createCheckoutSession'])
-    ->name('api.shoots.stripe.checkout');
-
-// Embedded Stripe checkout (renders inside app dialog)
-Route::post('shoots/{shoot}/create-stripe-embedded-checkout', [StripePaymentController::class, 'createEmbeddedCheckoutSession'])
-    ->name('api.shoots.stripe.embedded-checkout');
-
-Route::post('shoots/{shoot}/confirm-stripe-session', [StripePaymentController::class, 'confirmCheckoutSession'])
-    ->name('api.shoots.stripe.confirm-session');
+Route::get('public/payments/{token}', [ShootPaymentsController::class, 'getPublicPaymentDetails'])
+    ->name('api.public.payments.show');
+Route::post('public/payments/{token}/checkout', [StripePaymentController::class, 'createPublicEmbeddedCheckoutSession'])
+    ->name('api.public.payments.checkout');
+Route::post('public/payments/{token}/confirm', [StripePaymentController::class, 'confirmPublicCheckoutSession'])
+    ->name('api.public.payments.confirm');
 
 // Twilio SMS Webhooks (no auth - webhook verification handled in controller)
 Route::post('webhooks/twilio/messaging', [TwilioWebhookController::class, 'messaging'])
@@ -209,20 +207,16 @@ Route::middleware('external_api_key')->prefix('external')->group(function () {
         ->name('external.services');
 });
 
-Route::get('test/dropbox-config', [App\Http\Controllers\TestDropboxController::class, 'debugConfig']);
-Route::get('test/dropbox-curl', [App\Http\Controllers\TestDropboxController::class, 'testWithCurl']);
-Route::get('test/dropbox-connection', [App\Http\Controllers\TestDropboxController::class, 'testConnection']);
-Route::get('test/dropbox-folder', [App\Http\Controllers\TestDropboxController::class, 'testFolderCreation']);
-Route::get('test/folder-structure', [App\Http\Controllers\TestDropboxController::class, 'testFolderStructure']);
-Route::get('test/create-shoot', [App\Http\Controllers\TestDropboxController::class, 'createTestShoot']);
-Route::post('test/create-shoot-api', [App\Http\Controllers\TestDropboxController::class, 'createTestShootViaAPI']);
-Route::get('dropbox/setup-long-lived-token', [App\Http\Controllers\TestDropboxController::class, 'setupLongLivedToken']);
-
-Route::get('public/share-links/{shoot}/{linkId}', [PublicShootShareLinkController::class, 'show'])
-    ->name('api.public.share-links.show');
-
-Route::get('shoots/{shoot}/payment-details', [ShootPaymentsController::class, 'getPaymentDetails'])
-    ->name('api.shoots.payment-details');
+if (!app()->environment('production')) {
+    Route::get('test/dropbox-config', [App\Http\Controllers\TestDropboxController::class, 'debugConfig']);
+    Route::get('test/dropbox-curl', [App\Http\Controllers\TestDropboxController::class, 'testWithCurl']);
+    Route::get('test/dropbox-connection', [App\Http\Controllers\TestDropboxController::class, 'testConnection']);
+    Route::get('test/dropbox-folder', [App\Http\Controllers\TestDropboxController::class, 'testFolderCreation']);
+    Route::get('test/folder-structure', [App\Http\Controllers\TestDropboxController::class, 'testFolderStructure']);
+    Route::get('test/create-shoot', [App\Http\Controllers\TestDropboxController::class, 'createTestShoot']);
+    Route::post('test/create-shoot-api', [App\Http\Controllers\TestDropboxController::class, 'createTestShootViaAPI']);
+    Route::get('dropbox/setup-long-lived-token', [App\Http\Controllers\TestDropboxController::class, 'setupLongLivedToken']);
+}
 
 Route::prefix('address')->group(function () {
     Route::get('search', [App\Http\Controllers\AddressLookupController::class, 'searchAddresses']);
@@ -240,14 +234,16 @@ Route::prefix('address')->group(function () {
 });
 
 // Mail test endpoints (remove in production)
-Route::prefix('test/mail')->group(function () {
-    Route::get('config', [App\Http\Controllers\TestMailController::class, 'getMailConfig']);
-    Route::get('account-created', [App\Http\Controllers\TestMailController::class, 'testAccountCreated']);
-    Route::get('shoot-scheduled', [App\Http\Controllers\TestMailController::class, 'testShootScheduled']);
-    Route::get('shoot-ready', [App\Http\Controllers\TestMailController::class, 'testShootReady']);
-    Route::get('payment-confirmation', [App\Http\Controllers\TestMailController::class, 'testPaymentConfirmation']);
-    Route::get('all', [App\Http\Controllers\TestMailController::class, 'testAllEmails']);
-});
+if (!app()->environment('production')) {
+    Route::prefix('test/mail')->group(function () {
+        Route::get('config', [App\Http\Controllers\TestMailController::class, 'getMailConfig']);
+        Route::get('account-created', [App\Http\Controllers\TestMailController::class, 'testAccountCreated']);
+        Route::get('shoot-scheduled', [App\Http\Controllers\TestMailController::class, 'testShootScheduled']);
+        Route::get('shoot-ready', [App\Http\Controllers\TestMailController::class, 'testShootReady']);
+        Route::get('payment-confirmation', [App\Http\Controllers\TestMailController::class, 'testPaymentConfirmation']);
+        Route::get('all', [App\Http\Controllers\TestMailController::class, 'testAllEmails']);
+    });
+}
 
 // Group of routes that require user authentication (e.g., using Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
@@ -263,6 +259,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // but checkout is now handled by Stripe.
     Route::post('shoots/{shoot}/create-checkout-link', [StripePaymentController::class, 'createCheckoutSession'])
         ->name('api.shoots.payment.create-link');
+    Route::post('shoots/{shoot}/create-stripe-checkout', [StripePaymentController::class, 'createCheckoutSession'])
+        ->name('api.shoots.stripe.checkout');
+    Route::post('shoots/{shoot}/create-stripe-embedded-checkout', [StripePaymentController::class, 'createEmbeddedCheckoutSession'])
+        ->name('api.shoots.stripe.embedded-checkout');
+    Route::post('shoots/{shoot}/confirm-stripe-session', [StripePaymentController::class, 'confirmCheckoutSession'])
+        ->name('api.shoots.stripe.confirm-session');
+    Route::get('shoots/{shoot}/payment-details', [ShootPaymentsController::class, 'getPaymentDetails'])
+        ->name('api.shoots.payment-details');
 
     // Legacy compatibility route for older multi-pay callers.
     Route::post('payments/multiple-shoots', [StripePaymentController::class, 'payMultipleShoots'])
@@ -400,7 +404,7 @@ Route::middleware('auth:sanctum')->prefix('client')->group(function () {
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin')->group(function () {
     Route::get('invoices', [InvoiceController::class, 'index']);
     // Static routes MUST come before the {invoice} wildcard to avoid being swallowed
-    Route::post('invoices/generate', [InvoiceController::class, 'generate']);
+    Route::post('invoices/generate', [App\Http\Controllers\Admin\InvoiceController::class, 'generate']);
     Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
     Route::get('invoices/review-queue', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewQueue']);
     // Wildcard routes
@@ -409,6 +413,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
     Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
     Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
+    Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
     Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
     Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
 
@@ -772,38 +777,23 @@ Route::middleware(['auth:sanctum', 'role:photographer,admin,superadmin,editing_m
 });
 
 Route::prefix('photographer/availability')->group(function () {
-    // Get all availability for a photographer
-    Route::get('/{photographerId}', [PhotographerAvailabilityController::class, 'index']);
-
-    // Add single availability
-    Route::post('/', [PhotographerAvailabilityController::class, 'store']);
-
-    // Bulk add availability (weekly schedule)
-    Route::post('/bulk', [PhotographerAvailabilityController::class, 'bulkStore']);
-
-    // Bulk fetch availability for multiple photographers (optimized)
-    Route::post('/bulk-index', [PhotographerAvailabilityController::class, 'bulkIndex']);
-
-    // Get booked slots with shoot details for a photographer
-    Route::post('/booked-slots', [PhotographerAvailabilityController::class, 'getBookedSlotsWithDetails']);
-
-    // Update availability
-    Route::put('/{id}', [PhotographerAvailabilityController::class, 'update']);
-
-    // Delete single availability
-    Route::delete('/{id}', [PhotographerAvailabilityController::class, 'destroy']);
-
-    // Clear all availability for a photographer
-    Route::delete('/clear/{photographerId}', [PhotographerAvailabilityController::class, 'clearAll']);
-
-    // Check availability for a specific date (for one photographer)
-    Route::post('/check', [PhotographerAvailabilityController::class, 'checkAvailability']);
-
     // Find all photographers available for given date & time
     Route::post('/available-photographers', [PhotographerAvailabilityController::class, 'availablePhotographers']);
 
     // Get comprehensive photographer info for booking (distance, availability, bookings)
     Route::post('/for-booking', [PhotographerAvailabilityController::class, 'getPhotographersForBooking']);
+});
+
+Route::middleware('auth:sanctum')->prefix('photographer/availability')->group(function () {
+    Route::get('/{photographerId}', [PhotographerAvailabilityController::class, 'index']);
+    Route::post('/', [PhotographerAvailabilityController::class, 'store']);
+    Route::post('/bulk', [PhotographerAvailabilityController::class, 'bulkStore']);
+    Route::post('/bulk-index', [PhotographerAvailabilityController::class, 'bulkIndex']);
+    Route::post('/booked-slots', [PhotographerAvailabilityController::class, 'getBookedSlotsWithDetails']);
+    Route::put('/{id}', [PhotographerAvailabilityController::class, 'update']);
+    Route::delete('/{id}', [PhotographerAvailabilityController::class, 'destroy']);
+    Route::delete('/clear/{photographerId}', [PhotographerAvailabilityController::class, 'clearAll']);
+    Route::post('/check', [PhotographerAvailabilityController::class, 'checkAvailability']);
 });
 
 Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {

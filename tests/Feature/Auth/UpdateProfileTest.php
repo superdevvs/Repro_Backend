@@ -229,4 +229,39 @@ class UpdateProfileTest extends TestCase
         $this->assertNull($user->client_discount_type);
         $this->assertNull($user->client_discount_value);
     }
+
+    public function test_profile_update_with_about_field_works_when_users_table_has_no_about_column(): void
+    {
+        $user = User::factory()->create([
+            'role' => 'client',
+        ]);
+
+        $token = $user->createToken('about-fallback')->plainTextToken;
+
+        $response = $this
+            ->withHeader('Authorization', 'Bearer ' . $token)
+            ->putJson('/api/profile', [
+                'name' => 'Client With Bio',
+                'phonenumber' => '1234567890',
+                'about' => 'Client bio stored through compatibility fallback.',
+                'preferences' => [
+                    'notificationEmail' => true,
+                    'notificationSMS' => true,
+                ],
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('user.name', 'Client With Bio')
+            ->assertJsonPath('user.about', 'Client bio stored through compatibility fallback.');
+
+        $user->refresh();
+
+        $this->assertSame('Client With Bio', $user->name);
+        $this->assertSame('1234567890', $user->phonenumber);
+        $this->assertSame('Client bio stored through compatibility fallback.', $user->about);
+        $this->assertSame(
+            'Client bio stored through compatibility fallback.',
+            $user->metadata['about'] ?? null,
+        );
+    }
 }

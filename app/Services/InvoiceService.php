@@ -41,6 +41,7 @@ class InvoiceService
                     $query->where('status', Payment::STATUS_COMPLETED);
                 },
                 'photographer',
+                'service',
                 'services' => function ($q) {
                     $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
                 },
@@ -60,7 +61,24 @@ class InvoiceService
         $serviceRows = collect();
         foreach ($shoots as $shoot) {
             $fallbackId = $shoot->photographer_id;
-            foreach ($shoot->services as $service) {
+            $services = $shoot->services;
+
+            if ($services->isEmpty() && $shoot->service) {
+                $serviceRows->push([
+                    'shoot_id' => $shoot->id,
+                    'shoot' => $shoot,
+                    'service_id' => $shoot->service->id,
+                    'service_name' => $shoot->service->name ?? 'Service',
+                    'resolved_photographer_id' => $fallbackId,
+                    'photographer_pay' => (float) ($shoot->total_quote ?? $shoot->base_quote ?? 0),
+                    'scheduled_date' => $shoot->scheduled_date,
+                    'address' => $shoot->address ?? 'Location TBD',
+                ]);
+
+                continue;
+            }
+
+            foreach ($services as $service) {
                 $resolvedId = $service->pivot->photographer_id ?? $fallbackId;
                 if (!$resolvedId) {
                     \Log::warning('Unresolved photographer for invoice', [
@@ -107,6 +125,10 @@ class InvoiceService
 
                 // Create invoice
                 $invoice = Invoice::create([
+                    'user_id' => $photographerId,
+                    'role' => Invoice::ROLE_PHOTOGRAPHER,
+                    'period_start' => $start->toDateString(),
+                    'period_end' => $end->toDateString(),
                     'photographer_id' => $photographerId,
                     'billing_period_start' => $start->toDateString(),
                     'billing_period_end' => $end->toDateString(),
@@ -202,6 +224,166 @@ class InvoiceService
 
             return $invoices;
         });
+    }
+
+    public function generateInvoice(User $user, string $role, Carbon $start, Carbon $end): Invoice
+    {
+        $normalizedRole = strtolower($role);
+
+        return match ($normalizedRole) {
+            Invoice::ROLE_CLIENT => $this->generateClientInvoice($user, $start, $end),
+            Invoice::ROLE_PHOTOGRAPHER => $this->generatePhotographerInvoice($user, $start, $end),
+            default => throw new \InvalidArgumentException("Unsupported invoice role [{$role}]"),
+        };
+    }
+
+    protected function generateClientInvoice(User $user, Carbon $start, Carbon $end): Invoice
+    {
+        $start = $start->copy()->startOfDay();
+        $end = $end->copy()->endOfDay();
+
+        $shoots = Shoot::with([
+                'payments' => function ($query) {
+                    $query->where('status', Payment::STATUS_COMPLETED);
+                },
+                'services',
+            ])
+            ->where('client_id', $user->id)
+            ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+            ->get();
+
+        return DB::transaction(function () use ($user, $start, $end, $shoots) {
+            $invoice = Invoice::firstOrNew([
+                'user_id' => $user->id,
+                'role' => Invoice::ROLE_CLIENT,
+                'period_start' => $start->toDateString(),
+                'period_end' => $end->toDateString(),
+            ]);
+
+            $invoiceData = [
+                'issue_date' => now(),
+                'due_date' => $end->copy()->addDays(30),
+                'is_sent' => true,
+                'status' => Invoice::STATUS_SENT,
+            ];
+
+            if ($this->invoiceTableHasColumn('client_id')) {
+                $invoiceData['client_id'] = $user->id;
+            }
+
+            if ($this->invoiceTableHasColumn('billing_period_start')) {
+                $invoiceData['billing_period_start'] = $start->toDateString();
+            }
+
+            if ($this->invoiceTableHasColumn('billing_period_end')) {
+                $invoiceData['billing_period_end'] = $end->toDateString();
+            }
+
+            if (!$invoice->exists && $this->invoiceTableHasColumn('invoice_number')) {
+                $invoiceData['invoice_number'] = $this->generateNextInvoiceNumber();
+            }
+
+            $invoice->fill($invoiceData);
+            $invoice->save();
+
+            $invoice->items()->delete();
+
+            foreach ($shoots as $shoot) {
+                $serviceNames = $shoot->services->pluck('name')->filter()->implode(', ');
+                $description = trim(sprintf(
+                    'Shoot #%d%s%s',
+                    $shoot->id,
+                    $shoot->address ? ' - ' . $shoot->address : '',
+                    $serviceNames !== '' ? ' - ' . $serviceNames : ''
+                ));
+
+                $invoice->items()->create([
+                    'shoot_id' => $shoot->id,
+                    'type' => InvoiceItem::TYPE_CHARGE,
+                    'description' => $description,
+                    'quantity' => 1,
+                    'unit_amount' => (float) ($shoot->total_quote ?? 0),
+                    'total_amount' => (float) ($shoot->total_quote ?? 0),
+                    'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
+                    'meta' => [
+                        'shoot_id' => $shoot->id,
+                    ],
+                ]);
+
+                foreach ($shoot->payments as $payment) {
+                    $invoice->items()->create([
+                        'shoot_id' => $shoot->id,
+                        'type' => InvoiceItem::TYPE_PAYMENT,
+                        'description' => 'Payment received',
+                        'quantity' => 1,
+                        'unit_amount' => (float) $payment->amount,
+                        'total_amount' => (float) $payment->amount,
+                        'recorded_at' => $payment->processed_at ?? $payment->created_at,
+                        'meta' => [
+                            'payment_id' => $payment->id,
+                            'payment_method' => $payment->payment_method,
+                        ],
+                    ]);
+                }
+            }
+
+            $invoice->shoots()->sync($shoots->pluck('id')->all());
+            $invoice->refreshTotals();
+
+            $invoice->refresh();
+            $chargesTotal = (float) ($invoice->charges_total ?? $invoice->total_amount ?? 0);
+            $paymentsTotal = (float) ($invoice->payments_total ?? 0);
+            $balanceDue = max($chargesTotal - $paymentsTotal, 0);
+
+            $normalizedTotals = [
+                'amount_paid' => $paymentsTotal,
+                'is_paid' => $chargesTotal > 0 ? $balanceDue <= 0.01 : false,
+                'status' => $chargesTotal > 0 && $balanceDue <= 0.01
+                    ? Invoice::STATUS_PAID
+                    : Invoice::STATUS_SENT,
+            ];
+
+            if ($this->invoiceTableHasColumn('charges_total')) {
+                $normalizedTotals['charges_total'] = number_format($chargesTotal, 2, '.', '');
+            }
+
+            if ($this->invoiceTableHasColumn('payments_total')) {
+                $normalizedTotals['payments_total'] = number_format($paymentsTotal, 2, '.', '');
+            }
+
+            if ($this->invoiceTableHasColumn('balance_due')) {
+                $normalizedTotals['balance_due'] = number_format($balanceDue, 2, '.', '');
+            }
+
+            $invoice->forceFill($normalizedTotals)->save();
+
+            return $invoice->fresh(['items', 'user', 'client', 'shoots']);
+        });
+    }
+
+    protected function generatePhotographerInvoice(User $user, Carbon $start, Carbon $end): Invoice
+    {
+        $invoices = $this->generateForPeriod($start, $end, false);
+        $invoice = $invoices->first(fn (Invoice $candidate) => (int) $candidate->photographer_id === (int) $user->id);
+
+        if ($invoice instanceof Invoice) {
+            return $invoice;
+        }
+
+        return Invoice::firstOrCreate(
+            [
+                'user_id' => $user->id,
+                'role' => Invoice::ROLE_PHOTOGRAPHER,
+                'period_start' => $start->copy()->startOfDay()->toDateString(),
+                'period_end' => $end->copy()->endOfDay()->toDateString(),
+            ],
+            [
+                'photographer_id' => $user->id,
+                'billing_period_start' => $start->copy()->startOfDay()->toDateString(),
+                'billing_period_end' => $end->copy()->endOfDay()->toDateString(),
+                'status' => Invoice::STATUS_DRAFT,
+            ]
+        );
     }
 
     /**
@@ -679,5 +861,18 @@ class InvoiceService
         }
 
         return in_array($column, $columns, true);
+    }
+
+    protected function generateNextInvoiceNumber(): string
+    {
+        $lastInvoice = Invoice::whereNotNull('invoice_number')
+            ->orderByDesc('id')
+            ->first();
+
+        $lastNumber = $lastInvoice
+            ? (int) preg_replace('/\D/', '', (string) $lastInvoice->invoice_number)
+            : 0;
+
+        return 'Invoice ' . str_pad((string) ($lastNumber + 1), 5, '0', STR_PAD_LEFT);
     }
 }

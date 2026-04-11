@@ -1129,8 +1129,8 @@ class MailService
 
     public function generatePaymentLink(Shoot $shoot): string
     {
-        $frontendUrl = config('app.frontend_url', 'https://reprodashboard.com');
-        return "{$frontendUrl}/payment/{$shoot->id}";
+        return app(\App\Services\Payments\PublicPaymentAccessTokenService::class)
+            ->buildPublicUrl($shoot);
     }
 
     public function generateStoredPasswordResetLink(User $user): string

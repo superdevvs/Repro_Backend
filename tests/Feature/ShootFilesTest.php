@@ -14,50 +14,14 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 class ShootFilesTest extends TestCase
 {
-    protected ?string $testDatabasePath = null;
-
-    public function createApplication()
-    {
-        $databaseDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'database';
-        $source = $databaseDir . DIRECTORY_SEPARATOR . 'database.sqlite';
-        $copy = $databaseDir . DIRECTORY_SEPARATOR . 'test-shoot-files-' . uniqid('', true) . '.sqlite';
-        copy($source, $copy);
-
-        $this->testDatabasePath = $copy;
-
-        putenv('DB_CONNECTION=sqlite');
-        putenv('DB_DATABASE=' . $copy);
-        $_ENV['DB_CONNECTION'] = 'sqlite';
-        $_ENV['DB_DATABASE'] = $copy;
-        $_SERVER['DB_CONNECTION'] = 'sqlite';
-        $_SERVER['DB_DATABASE'] = $copy;
-
-        $app = require __DIR__ . '/../../bootstrap/app.php';
-        $app->make(Kernel::class)->bootstrap();
-
-        return $app;
-    }
-
-    protected function tearDown(): void
-    {
-        DB::disconnect();
-        parent::tearDown();
-
-        if ($this->testDatabasePath && file_exists($this->testDatabasePath)) {
-            try {
-                @unlink($this->testDatabasePath);
-            } catch (\Throwable $exception) {
-                // Ignore temp DB cleanup issues on Windows file handles.
-            }
-        }
-    }
+    use RefreshDatabase;
 
     protected function insertUser(array $attributes = []): User
     {

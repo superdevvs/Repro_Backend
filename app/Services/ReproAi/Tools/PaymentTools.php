@@ -5,6 +5,7 @@ namespace App\Services\ReproAi\Tools;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Models\User;
+use App\Services\Payments\PublicPaymentAccessTokenService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
 
@@ -63,8 +64,8 @@ class PaymentTools
 
             $amountInCents = (int) round($amountToPay * 100);
             $currency = strtolower(config('services.stripe.currency', 'USD'));
-            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
             $client = User::find($shoot->client_id);
+            $paymentUrl = app(PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot);
 
             $sessionParams = [
                 'payment_method_types' => ['card'],
@@ -85,8 +86,8 @@ class PaymentTools
                     'type' => 'single',
                 ],
                 'client_reference_id' => 'shoot:' . $shoot->id,
-                'success_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true&session_id={CHECKOUT_SESSION_ID}',
-                'cancel_url'  => $frontendUrl . '/payment/' . $shoot->id,
+                'success_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
+                'cancel_url'  => $paymentUrl,
             ];
 
             if ($client && $client->email) {

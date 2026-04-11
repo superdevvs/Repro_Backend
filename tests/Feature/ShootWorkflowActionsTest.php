@@ -414,6 +414,46 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     /** @test */
+    public function start_editing_auto_assigns_lane_specific_editor_without_sqlite_json_length(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->editingManager);
+
+        $this->service->category()->update(['name' => 'Photos']);
+
+        $this->editor->update([
+            'metadata' => ['editing_capabilities' => ['photo']],
+        ]);
+
+        User::factory()->create([
+            'role' => 'editor',
+            'name' => 'Workflow Video Editor',
+            'email' => 'workflow-video-editor@test.com',
+            'metadata' => ['editing_capabilities' => ['video']],
+        ]);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+            'editor_id' => null,
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/start-editing");
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Shoot moved to editing.');
+
+        $shoot->refresh();
+
+        $this->assertSame($this->editor->id, $shoot->editor_id);
+        $this->assertDatabaseHas('shoot_service', [
+            'shoot_id' => $shoot->id,
+            'service_id' => $this->service->id,
+            'editor_id' => $this->editor->id,
+        ]);
+    }
+
+    /** @test */
     public function editing_manager_can_complete_a_ready_shoot_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);

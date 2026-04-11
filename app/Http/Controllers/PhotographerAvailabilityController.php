@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\PhotographerAvailability;
+use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\AddressLookupService;
 use Illuminate\Http\Request;
@@ -258,8 +259,12 @@ class PhotographerAvailabilityController extends Controller
         }
     }
 
-    public function index($photographerId)
+    public function index(Request $request, $photographerId)
     {
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $photographerId)) {
+            return $response;
+        }
+
         $availabilities = PhotographerAvailability::where('photographer_id', $photographerId)->get();
         return response()->json(['data' => $availabilities]);
     }
@@ -274,6 +279,10 @@ class PhotographerAvailabilityController extends Controller
             'end_time' => 'required|date_format:H:i|after:start_time',
             'status' => 'sometimes|in:available,unavailable',
         ]);
+
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+            return $response;
+        }
 
         // Ensure non-null day_of_week to satisfy DB constraint
         $data = $validated;
@@ -317,6 +326,10 @@ class PhotographerAvailabilityController extends Controller
     public function destroy($id)
     {
         $availability = PhotographerAvailability::findOrFail($id);
+        if ($response = $this->denyUnlessCanManageAvailability(request()->user(), (int) $availability->photographer_id)) {
+            return $response;
+        }
+
         $photographerId = $availability->photographer_id;
         
         $availability->delete();
@@ -334,6 +347,10 @@ class PhotographerAvailabilityController extends Controller
                 'photographer_id' => 'required|exists:users,id',
                 'date' => 'required|date',
             ]);
+
+            if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+                return $response;
+            }
 
             $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
             $date = \Carbon\Carbon::parse($validated['date']);
@@ -421,6 +438,9 @@ class PhotographerAvailabilityController extends Controller
         ]);
 
         $availability = PhotographerAvailability::findOrFail($id);
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $availability->photographer_id)) {
+            return $response;
+        }
         
         // Merge validated data with existing data to get complete values
         $finalData = array_merge([
@@ -486,6 +506,10 @@ class PhotographerAvailabilityController extends Controller
             'availabilities.*.end_time' => 'required|date_format:H:i|after:availabilities.*.start_time',
             'availabilities.*.status' => 'sometimes|in:available,unavailable',
         ]);
+
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+            return $response;
+        }
 
         $created = [];
         $errors = [];
@@ -626,8 +650,12 @@ class PhotographerAvailabilityController extends Controller
         return response()->json(['data' => $merged]);
     }
 
-    public function clearAll($photographerId)
+    public function clearAll(Request $request, $photographerId)
     {
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $photographerId)) {
+            return $response;
+        }
+
         PhotographerAvailability::where('photographer_id', $photographerId)->delete();
         
         // Clear availability cache
@@ -648,6 +676,10 @@ class PhotographerAvailabilityController extends Controller
             'from_date' => 'sometimes|date',
             'to_date' => 'sometimes|date|after_or_equal:from_date',
         ]);
+
+        if ($response = $this->denyUnlessCanManageAllPhotographers($request->user(), $validated['photographer_ids'])) {
+            return $response;
+        }
 
         $photographerIds = $validated['photographer_ids'];
         sort($photographerIds); // Sort for consistent cache key
@@ -693,6 +725,10 @@ class PhotographerAvailabilityController extends Controller
             'from_date' => 'required|date',
             'to_date' => 'required|date|after_or_equal:from_date',
         ]);
+
+        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+            return $response;
+        }
 
         $photographerId = $validated['photographer_id'];
         $fromDate = \Carbon\Carbon::parse($validated['from_date']);
@@ -999,11 +1035,8 @@ class PhotographerAvailabilityController extends Controller
                 $endTime = $scheduledAt->copy()->addMinutes($duration);
                 
                 return [
-                    'shoot_id' => $shoot->id,
                     'start_time' => $scheduledAt->format('H:i'),
                     'end_time' => $endTime->format('H:i'),
-                    'title' => $shoot->title ?? 'Shoot #' . $shoot->id,
-                    'address' => $shoot->property_address ?? $shoot->address,
                     'status' => $shoot->status,
                 ];
             })->values()->toArray();
@@ -1055,22 +1088,7 @@ class PhotographerAvailabilityController extends Controller
             $result[] = [
                 'id' => $photographerId,
                 'name' => $photographer->name,
-                'email' => $photographer->email,
                 'distance' => $distanceMiles,
-                'home_address' => [
-                    'address' => $homeAddress,
-                    'city' => $homeCity,
-                    'state' => $homeState,
-                    'zip' => $homeZip,
-                ],
-                'origin_address' => [
-                    'address' => $originAddress,
-                    'city' => $originCity,
-                    'state' => $originState,
-                    'zip' => $originZip,
-                ],
-                'distance_from' => $distanceFrom,
-                'previous_shoot_id' => $previousShootId,
                 'availability_slots' => $availabilitySlots->map(fn($s) => [
                     'start_time' => $s->start_time,
                     'end_time' => $s->end_time,
@@ -1082,8 +1100,6 @@ class PhotographerAvailabilityController extends Controller
                 'is_available_at_time' => $isAvailableAtTime,
                 'has_availability' => count($netAvailableSlots) > 0,
                 'shoots_count_today' => $shootsOnDate->count(),
-                'travel_range' => $metadata['travel_range'] ?? null,
-                'travel_range_unit' => $metadata['travel_range_unit'] ?? 'miles',
             ];
         }
 
@@ -1224,6 +1240,52 @@ class PhotographerAvailabilityController extends Controller
                 'photographer_id' => $photographerId
             ]);
         }
+    }
+
+    protected function denyUnlessCanManageAvailability(?User $user, int $photographerId)
+    {
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        if ($this->isStaffAvailabilityManager($user)) {
+            return null;
+        }
+
+        if ($user->role === 'photographer' && (int) $user->id === $photographerId) {
+            return null;
+        }
+
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    protected function denyUnlessCanManageAllPhotographers(?User $user, array $photographerIds)
+    {
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        if ($this->isStaffAvailabilityManager($user)) {
+            return null;
+        }
+
+        if ($user->role === 'photographer') {
+            $requestedIds = collect($photographerIds)
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values();
+
+            if ($requestedIds->count() === 1 && (int) $requestedIds->first() === (int) $user->id) {
+                return null;
+            }
+        }
+
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    protected function isStaffAvailabilityManager(User $user): bool
+    {
+        return in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
     }
 
 

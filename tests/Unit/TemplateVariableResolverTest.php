@@ -5,8 +5,7 @@ namespace Tests\Unit;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\TemplateVariableResolver;
-use Illuminate\Support\Carbon;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
 class TemplateVariableResolverTest extends TestCase
 {
@@ -25,22 +24,23 @@ class TemplateVariableResolverTest extends TestCase
     public function test_resolves_shoot_context_values(): void
     {
         $resolver = new TemplateVariableResolver();
-        $shoot = new Shoot([
+        $shoot = new Shoot();
+        $shoot->setRawAttributes([
             'id' => 10,
             'address' => '123 Main St',
             'city' => 'Austin',
             'state' => 'TX',
             'zip' => '78701',
-            'scheduled_date' => Carbon::parse('2025-01-10'),
+            'scheduled_date' => '2025-01-10 00:00:00',
             'time' => '10:00 AM',
             'total_quote' => 250,
-        ]);
+        ], true);
 
         $variables = $resolver->resolve(['shoot' => $shoot]);
 
         $this->assertSame('123 Main St, Austin, TX, 78701', $variables['shoot_location']);
         $this->assertSame('Jan 10, 2025', $variables['shoot_date']);
         $this->assertSame('10:00 AM', $variables['shoot_time']);
-        $this->assertSame(250, $variables['shoot_total']);
+        $this->assertSame(250.0, $variables['shoot_total']);
     }
 }

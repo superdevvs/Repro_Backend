@@ -386,6 +386,11 @@ class Shoot extends Model
         return $this->hasMany(ShootShareLink::class);
     }
 
+    public function publicPaymentAccessTokens()
+    {
+        return $this->hasMany(PublicPaymentAccessToken::class);
+    }
+
     public function activeShareLinks()
     {
         return $this->shareLinks()

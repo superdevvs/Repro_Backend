@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Payment;
+use App\Models\PublicPaymentAccessToken;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -96,7 +97,7 @@ class ShootRouteSplitControllersTest extends TestCase
     }
 
     /** @test */
-    public function payment_details_route_still_returns_the_public_payment_payload(): void
+    public function public_payment_token_route_returns_the_sanitized_payment_payload(): void
     {
         $shoot = Shoot::factory()->create([
             'client_id' => $this->client->id,
@@ -120,11 +121,16 @@ class ShootRouteSplitControllersTest extends TestCase
             'status' => Payment::STATUS_COMPLETED,
         ]);
 
-        $response = $this->getJson("/api/shoots/{$shoot->id}/payment-details");
+        $token = PublicPaymentAccessToken::create([
+            'shoot_id' => $shoot->id,
+            'created_by' => $this->admin->id,
+        ]);
+
+        $response = $this->getJson("/api/public/payments/{$token->token}");
 
         $response->assertOk()
             ->assertJsonPath('data.id', $shoot->id)
-            ->assertJsonPath('data.client.email', $this->client->email)
+            ->assertJsonPath('data.client', null)
             ->assertJsonPath('data.payments.0.status', Payment::STATUS_COMPLETED);
     }
 
@@ -451,6 +457,7 @@ class ShootRouteSplitControllersTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('data.0.id', $shareLink->id)
+            ->assertJsonPath('data.0.public_token', $shareLink->public_token)
             ->assertJsonPath('data.0.media_stage', 'raw')
             ->assertJsonPath('data.0.created_by.id', $this->admin->id)
             ->assertJsonStructure([
@@ -469,6 +476,6 @@ class ShootRouteSplitControllersTest extends TestCase
             ]);
 
         $this->assertIsString($listedShareUrl);
-        $this->assertStringEndsWith("/{$shoot->id}/{$shareLink->id}", $listedShareUrl);
+        $this->assertStringEndsWith("/share/{$shareLink->public_token}", $listedShareUrl);
     }
 }

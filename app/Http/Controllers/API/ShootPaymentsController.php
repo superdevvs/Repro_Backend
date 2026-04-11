@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\ShootActivityLogger;
@@ -265,6 +266,9 @@ class ShootPaymentsController extends Controller
             }
 
             $this->shootPaymentStatusSupport->clearShootCachesAfterPayment($shoot);
+            if ($newPaymentStatus === 'paid') {
+                app(PublicPaymentAccessTokenService::class)->revokeTokensForShoot($shoot);
+            }
 
             try {
                 if ($shoot->client) {
@@ -361,38 +365,70 @@ class ShootPaymentsController extends Controller
         $shoot = $this->shootPaymentStatusSupport->reconcileStripePaymentState($shoot, ['client', 'services', 'payments']);
 
         return response()->json([
-            'data' => [
-                'id' => $shoot->id,
-                'address' => $shoot->address,
-                'city' => $shoot->city,
-                'state' => $shoot->state,
-                'zip' => $shoot->zip,
-                'scheduled_date' => $shoot->scheduled_date?->toISOString(),
-                'time' => $shoot->time,
-                'total_quote' => (float) ($shoot->total_quote ?? 0),
-                'service_subtotal' => (float) (($shoot->base_quote ?? 0) + ($shoot->discount_amount ?? 0)),
-                'base_quote' => (float) ($shoot->base_quote ?? 0),
-                'discount_type' => $shoot->discount_type,
-                'discount_value' => $shoot->discount_value !== null ? (float) $shoot->discount_value : null,
-                'discount_amount' => (float) ($shoot->discount_amount ?? 0),
-                'discounted_subtotal' => (float) ($shoot->base_quote ?? 0),
-                'tax_amount' => (float) ($shoot->tax_amount ?? 0),
-                'services' => $shoot->services->map(fn ($service) => [
-                    'name' => $service->name,
-                    'pivot' => [
-                        'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
-                        'quantity' => (int) ($service->pivot->quantity ?? 1),
-                    ],
-                ]),
-                'client' => $shoot->client ? [
-                    'name' => $shoot->client->name,
-                    'email' => $shoot->client->email,
-                ] : null,
-                'payments' => $shoot->payments->map(fn ($payment) => [
-                    'amount' => (float) $payment->amount,
-                    'status' => $payment->status,
-                ]),
-            ],
+            'data' => $this->buildPaymentDetailsPayload($shoot, true),
         ]);
+    }
+
+    public function getPublicPaymentDetails(string $token)
+    {
+        $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);
+        if (!$accessToken) {
+            return response()->json([
+                'message' => 'This payment link is unavailable.',
+            ], 410);
+        }
+
+        $accessToken->markAccessed();
+        $shoot = $this->shootPaymentStatusSupport->reconcileStripePaymentState(
+            $accessToken->shoot->load(['services', 'payments']),
+            ['services', 'payments']
+        );
+
+        return response()->json([
+            'data' => array_merge(
+                $this->buildPaymentDetailsPayload($shoot, false),
+                [
+                    'token_expires_at' => $accessToken->expires_at?->toIso8601String(),
+                ]
+            ),
+        ]);
+    }
+
+    protected function buildPaymentDetailsPayload(Shoot $shoot, bool $includeClient): array
+    {
+        return [
+            'id' => $shoot->id,
+            'address' => $shoot->address,
+            'city' => $shoot->city,
+            'state' => $shoot->state,
+            'zip' => $shoot->zip,
+            'scheduled_date' => $shoot->scheduled_date?->toISOString(),
+            'time' => $shoot->time,
+            'total_quote' => (float) ($shoot->total_quote ?? 0),
+            'service_subtotal' => (float) (($shoot->base_quote ?? 0) + ($shoot->discount_amount ?? 0)),
+            'base_quote' => (float) ($shoot->base_quote ?? 0),
+            'discount_type' => $shoot->discount_type,
+            'discount_value' => $shoot->discount_value !== null ? (float) $shoot->discount_value : null,
+            'discount_amount' => (float) ($shoot->discount_amount ?? 0),
+            'discounted_subtotal' => (float) ($shoot->base_quote ?? 0),
+            'tax_amount' => (float) ($shoot->tax_amount ?? 0),
+            'services' => $shoot->services->map(fn ($service) => [
+                'name' => $service->name,
+                'pivot' => [
+                    'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
+                    'quantity' => (int) ($service->pivot->quantity ?? 1),
+                ],
+            ]),
+            'payments' => $shoot->payments->map(fn ($payment) => [
+                'amount' => (float) $payment->amount,
+                'status' => $payment->status,
+            ]),
+            'payment_status' => $shoot->payment_status,
+            'amount_due' => max((float) ($shoot->total_quote ?? 0) - $shoot->calculateCanonicalTotalPaid(), 0),
+            'client' => $includeClient && $shoot->client ? [
+                'name' => $shoot->client->name,
+                'email' => $shoot->client->email,
+            ] : null,
+        ];
     }
 }

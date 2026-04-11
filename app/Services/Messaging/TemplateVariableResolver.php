@@ -17,10 +17,10 @@ class TemplateVariableResolver
         $portalUrl = $this->resolvePortalUrl();
         $recipientType = strtolower((string) ($context['recipient_type'] ?? 'client'));
         $derived = [
-            'company_name' => config('mail.from.name', config('app.name', '')),
-            'company_email' => config('mail.from.address', ''),
-            'company_phone' => config('app.company_phone', ''),
-            'company_address' => config('app.company_address', ''),
+            'company_name' => $this->configValue('mail.from.name', $this->configValue('app.name', '')),
+            'company_email' => $this->configValue('mail.from.address', ''),
+            'company_phone' => $this->configValue('app.company_phone', ''),
+            'company_address' => $this->configValue('app.company_address', ''),
             'portal_url' => $portalUrl,
             'current_date' => now()->format('M j, Y'),
             'recipient_type' => $recipientType,
@@ -150,7 +150,7 @@ class TemplateVariableResolver
 
     private function resolvePortalUrl(): string
     {
-        $portalUrl = config('app.frontend_url', config('app.url', ''));
+        $portalUrl = $this->configValue('app.frontend_url', $this->configValue('app.url', ''));
         if (empty($portalUrl)) {
             return 'https://reprodashboard.com';
         }
@@ -161,6 +161,15 @@ class TemplateVariableResolver
         }
 
         return $portalUrl;
+    }
+
+    private function configValue(string $key, mixed $default = null): mixed
+    {
+        try {
+            return config($key, $default);
+        } catch (\Throwable $exception) {
+            return $default;
+        }
     }
 
     private function formatShootTime(Shoot $shoot): string
@@ -174,12 +183,14 @@ class TemplateVariableResolver
             }
         }
 
-        if ($shoot->scheduled_at) {
-            return $shoot->scheduled_at->format('g:i A');
+        $scheduledAt = $this->getDateAttribute($shoot, 'scheduled_at');
+        if ($scheduledAt) {
+            return $scheduledAt->format('g:i A');
         }
 
-        if ($shoot->scheduled_date && $shoot->scheduled_date->format('H:i') !== '00:00') {
-            return $shoot->scheduled_date->format('g:i A');
+        $scheduledDate = $this->getDateAttribute($shoot, 'scheduled_date');
+        if ($scheduledDate && $scheduledDate->format('H:i') !== '00:00') {
+            return $scheduledDate->format('g:i A');
         }
 
         return 'TBD';
@@ -193,11 +204,15 @@ class TemplateVariableResolver
             $notes[] = $shoot->shoot_notes;
         }
 
-        if (!$shoot->relationLoaded('notes')) {
+        if (!$shoot->relationLoaded('notes') && $this->canLoadShootRelations($shoot)) {
             $shoot->load('notes');
         }
 
-        foreach ($shoot->notes ?? [] as $note) {
+        $loadedNotes = $shoot->relationLoaded('notes')
+            ? ($shoot->getRelation('notes') ?? [])
+            : [];
+
+        foreach ($loadedNotes as $note) {
             if (!empty($note->content) && $note->visibility === 'client_visible') {
                 $notes[] = $note->content;
             }
@@ -236,7 +251,9 @@ class TemplateVariableResolver
     private function resolveShoot(array $context): ?Shoot
     {
         if (isset($context['shoot']) && $context['shoot'] instanceof Shoot) {
-            $context['shoot']->loadMissing(['client', 'photographer', 'service', 'services', 'notes']);
+            if ($this->canLoadShootRelations($context['shoot'])) {
+                $context['shoot']->loadMissing(['client', 'photographer', 'service', 'services', 'notes']);
+            }
             return $context['shoot'];
         }
 
@@ -267,15 +284,19 @@ class TemplateVariableResolver
      */
     private function resolveShootVariables(Shoot $shoot): array
     {
-        $shoot->loadMissing(['photographer', 'services', 'notes']);
+        if ($this->canLoadShootRelations($shoot)) {
+            $shoot->loadMissing(['photographer', 'services', 'notes']);
+        }
         $location = $this->buildShootLocation($shoot);
-        $shootDate = $shoot->scheduled_date
-            ? $shoot->scheduled_date->format('M j, Y')
-            : ($shoot->scheduled_at?->format('M j, Y'));
+        $scheduledDate = $this->getDateAttribute($shoot, 'scheduled_date');
+        $scheduledAt = $this->getDateAttribute($shoot, 'scheduled_at');
+        $shootDate = $scheduledDate
+            ? $scheduledDate->format('M j, Y')
+            : ($scheduledAt?->format('M j, Y'));
         $shootTime = $this->formatShootTime($shoot);
         $total = $shoot->total_quote ?? $shoot->base_quote ?? null;
-        $paymentLink = $shoot->id
-            ? rtrim($this->resolvePortalUrl(), '/') . "/payment/{$shoot->id}"
+        $paymentLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
+            ? app(\App\Services\Payments\PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot)
             : null;
         $formattedServices = $this->formatServices($shoot);
         $servicesProvided = $formattedServices['text'];
@@ -292,12 +313,12 @@ class TemplateVariableResolver
             'services_provided' => $servicesProvided,
             'services_provided_html' => $servicesProvidedHtml,
             'assigned_photographers' => $assignedPhotographers,
-            'shoot_total' => $total !== null ? '$' . number_format((float) $total, 2) : null,
+            'shoot_total' => $total !== null ? (float) $total : null,
             'shoot_quote' => $total !== null ? '$' . number_format((float) $total, 2) : null,
             'shoot_notes' => $this->formatShootNotes($shoot),
-            'shoot_completed_date' => $shoot->completed_at?->format('M j, Y')
-                ?? $shoot->editing_completed_at?->format('M j, Y')
-                ?? $shoot->admin_verified_at?->format('M j, Y'),
+            'shoot_completed_date' => $this->getDateAttribute($shoot, 'completed_at')?->format('M j, Y')
+                ?? $this->getDateAttribute($shoot, 'editing_completed_at')?->format('M j, Y')
+                ?? $this->getDateAttribute($shoot, 'admin_verified_at')?->format('M j, Y'),
             'photo_count' => $shoot->edited_photo_count ?? $shoot->expected_final_count ?? null,
             'mls_tour_link' => $shoot->iguide_tour_url ?? null,
             'pay_link' => $paymentLink,
@@ -312,7 +333,10 @@ class TemplateVariableResolver
      */
     private function formatServices(Shoot $shoot): array
     {
-        $services = $shoot->services ?? collect();
+        $services = $shoot->relationLoaded('services')
+            ? collect($shoot->getRelation('services') ?? [])
+            : collect();
+        $photographerName = $this->resolveLoadedPhotographerName($shoot);
 
         if ($services->count() > 0) {
             $textLines = [];
@@ -333,10 +357,10 @@ class TemplateVariableResolver
 
                 $assignedPhotographerName = '';
                 $assignedPhotographerId = $service->pivot->photographer_id ?? null;
-                if ($assignedPhotographerId) {
+                if ($assignedPhotographerId && $this->canUseApplicationContainer()) {
                     $assignedPhotographerName = User::find($assignedPhotographerId)?->name ?? '';
-                } elseif (!empty($shoot->photographer?->name)) {
-                    $assignedPhotographerName = $shoot->photographer->name;
+                } elseif ($photographerName !== '') {
+                    $assignedPhotographerName = $photographerName;
                 }
 
                 $line = implode(' - ', array_filter($lineParts, fn ($part) => $part !== ''));
@@ -373,7 +397,10 @@ class TemplateVariableResolver
             ];
         }
 
-        $single = $shoot->package_name ?: ($shoot->service?->name ?? $shoot->service_category ?? 'Service details will appear in the dashboard.');
+        $singleServiceName = $shoot->relationLoaded('service')
+            ? ($shoot->getRelation('service')?->name ?? null)
+            : null;
+        $single = $shoot->package_name ?: ($singleServiceName ?? $shoot->service_category ?? 'Service details will appear in the dashboard.');
 
         return [
             'text' => '- ' . $single,
@@ -384,14 +411,19 @@ class TemplateVariableResolver
     private function formatAssignedPhotographers(Shoot $shoot): string
     {
         $names = [];
+        $loadedPhotographerName = $this->resolveLoadedPhotographerName($shoot);
 
-        if (!empty($shoot->photographer?->name)) {
-            $names[] = $shoot->photographer->name;
+        if ($loadedPhotographerName !== '') {
+            $names[] = $loadedPhotographerName;
         }
 
-        foreach ($shoot->services ?? [] as $service) {
+        $services = $shoot->relationLoaded('services')
+            ? ($shoot->getRelation('services') ?? [])
+            : [];
+
+        foreach ($services as $service) {
             $photographerId = $service->pivot->photographer_id ?? null;
-            if ($photographerId) {
+            if ($photographerId && $this->canUseApplicationContainer()) {
                 $name = User::find($photographerId)?->name;
                 if ($name) {
                     $names[] = $name;
@@ -402,6 +434,15 @@ class TemplateVariableResolver
         $names = array_values(array_unique(array_filter($names)));
 
         return $names ? implode(', ', $names) : '';
+    }
+
+    private function resolveLoadedPhotographerName(Shoot $shoot): string
+    {
+        if (!$shoot->relationLoaded('photographer')) {
+            return '';
+        }
+
+        return (string) ($shoot->getRelation('photographer')?->name ?? '');
     }
 
     private function resolveRecipientFirstName(array $context, array $derived, string $recipientType): string
@@ -741,5 +782,50 @@ HTML;
         ]);
 
         return $parts ? implode(', ', $parts) : 'N/A';
+    }
+
+    private function getDateAttribute(object $model, string $attribute): ?\Carbon\CarbonInterface
+    {
+        if ($this->canUseEloquentRelations()) {
+            $value = $model->{$attribute} ?? null;
+
+            return $value instanceof \Carbon\CarbonInterface
+                ? $value
+                : ($value ? \Carbon\Carbon::parse($value) : null);
+        }
+
+        if (!method_exists($model, 'getRawOriginal')) {
+            return null;
+        }
+
+        $value = $model->getRawOriginal($attribute);
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        try {
+            return \Carbon\Carbon::parse($value);
+        } catch (\Throwable $exception) {
+            return null;
+        }
+    }
+
+    private function canUseApplicationContainer(): bool
+    {
+        try {
+            return function_exists('app') && app()->bound('config');
+        } catch (\Throwable $exception) {
+            return false;
+        }
+    }
+
+    private function canUseEloquentRelations(): bool
+    {
+        return Shoot::getConnectionResolver() !== null;
+    }
+
+    private function canLoadShootRelations(Shoot $shoot): bool
+    {
+        return $this->canUseEloquentRelations() && $shoot->exists;
     }
 }

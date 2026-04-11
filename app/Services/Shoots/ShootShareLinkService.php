@@ -179,7 +179,7 @@ class ShootShareLinkService
                 'media_stage' => $normalizedMediaStage,
                 'dropbox_path' => $shareLinkSourcePath,
                 'download_count' => 0,
-                'expires_at' => null,
+                'expires_at' => now()->addDays(7),
             ]);
             $shareLinkId = $shareLinkRecord->id;
             $expiresAt = $shareLinkRecord->expires_at?->toIso8601String();
@@ -203,7 +203,7 @@ class ShootShareLinkService
         );
 
         $publicShareLink = $shareLinkId
-            ? $this->buildPublicShareUrl($shoot->id, $shareLinkId)
+            ? $this->buildPublicShareUrl($shareLinkRecord)
             : $shareLink;
 
         return [
@@ -230,7 +230,7 @@ class ShootShareLinkService
 
         if ($existingLink) {
             return [
-                'share_link' => $this->buildPublicShareUrl($shoot->id, $existingLink->id),
+                'share_link' => $this->buildPublicShareUrl($existingLink),
                 'share_link_id' => $existingLink->id,
                 'media_stage' => $normalizedMediaStage,
                 'file_count' => 0,
@@ -256,10 +256,10 @@ class ShootShareLinkService
         };
     }
 
-    public function buildPublicShareUrl(int|string $shootId, int|string $shareLinkId): string
+    public function buildPublicShareUrl(ShootShareLink $shareLink): string
     {
         $frontendBaseUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
 
-        return "{$frontendBaseUrl}/{$shootId}/{$shareLinkId}";
+        return "{$frontendBaseUrl}/share/{$shareLink->public_token}";
     }
 }

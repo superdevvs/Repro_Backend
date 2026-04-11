@@ -11,11 +11,12 @@ class ShootShareLinkReadService
     {
         $link->loadMissing('creator:id,name');
         $frontendBaseUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
-        $publicShareUrl = "{$frontendBaseUrl}/{$link->shoot_id}/{$link->id}";
+        $publicShareUrl = "{$frontendBaseUrl}/share/{$link->public_token}";
 
         return [
             'id' => $link->id,
             'share_url' => $publicShareUrl,
+            'public_token' => $link->public_token,
             'media_stage' => $link->media_stage ?: 'raw',
             'download_count' => $link->download_count,
             'created_at' => $link->created_at->toIso8601String(),

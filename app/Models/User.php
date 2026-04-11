@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
@@ -52,6 +53,13 @@ class User extends Authenticatable
         'pinterest_url',
     ];
 
+    /**
+     * Cache schema checks so legacy attribute fallbacks stay cheap.
+     *
+     * @var array<string, bool>
+     */
+    protected static array $usersTableColumnCache = [];
+
 
     /**
      * The attributes that should be hidden for serialization.
@@ -61,6 +69,15 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+    ];
+
+    /**
+     * Accessor-backed attributes that should always be serialized.
+     *
+     * @var list<string>
+     */
+    protected $appends = [
+        'about',
     ];
 
     /**
@@ -78,6 +95,59 @@ class User extends Authenticatable
             'shoot_cc_emails' => 'array',
             'client_discount_value' => 'decimal:2',
         ];
+    }
+
+    protected function usersTableHasColumn(string $column): bool
+    {
+        if (array_key_exists($column, self::$usersTableColumnCache)) {
+            return self::$usersTableColumnCache[$column];
+        }
+
+        try {
+            return self::$usersTableColumnCache[$column] = Schema::hasColumn($this->getTable(), $column);
+        } catch (\Throwable $exception) {
+            Log::warning('Unable to inspect users table column metadata.', [
+                'column' => $column,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return self::$usersTableColumnCache[$column] = false;
+        }
+    }
+
+    public function getAboutAttribute($value): ?string
+    {
+        if ($value !== null || $this->usersTableHasColumn('about')) {
+            return $value;
+        }
+
+        $metadata = $this->metadata;
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true) ?? [];
+        }
+
+        $about = is_array($metadata) ? ($metadata['about'] ?? null) : null;
+
+        return is_string($about) ? $about : null;
+    }
+
+    public function setAboutAttribute($value): void
+    {
+        if ($this->usersTableHasColumn('about')) {
+            $this->attributes['about'] = $value;
+            return;
+        }
+
+        $metadata = $this->metadata;
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true) ?? [];
+        }
+        if (!is_array($metadata)) {
+            $metadata = [];
+        }
+
+        $metadata['about'] = $value;
+        $this->attributes['metadata'] = json_encode($metadata);
     }
 
     public function getFirstNameAttribute(): string

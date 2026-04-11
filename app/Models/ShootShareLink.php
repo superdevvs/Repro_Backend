@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 class ShootShareLink extends Model
 {
@@ -15,8 +16,10 @@ class ShootShareLink extends Model
         'created_by',
         'share_url',
         'media_stage',
+        'public_token',
         'dropbox_path',
         'download_count',
+        'last_accessed_at',
         'expires_at',
         'is_revoked',
         'revoked_at',
@@ -26,9 +29,23 @@ class ShootShareLink extends Model
     protected $casts = [
         'expires_at' => 'datetime',
         'revoked_at' => 'datetime',
+        'last_accessed_at' => 'datetime',
         'is_revoked' => 'boolean',
         'download_count' => 'integer',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $link): void {
+            if (!is_string($link->public_token) || trim($link->public_token) === '') {
+                $link->public_token = Str::random(64);
+            }
+
+            if ($link->expires_at === null) {
+                $link->expires_at = now()->addDays(7);
+            }
+        });
+    }
 
     public function shoot(): BelongsTo
     {
@@ -57,7 +74,10 @@ class ShootShareLink extends Model
 
     public function incrementDownloadCount(): void
     {
-        $this->increment('download_count');
+        $this->forceFill([
+            'last_accessed_at' => now(),
+            'download_count' => (int) $this->download_count + 1,
+        ])->save();
     }
 
     public function revoke(int $userId): void

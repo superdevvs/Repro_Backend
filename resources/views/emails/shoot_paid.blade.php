@@ -10,7 +10,7 @@
 @endsection
 
 @section('content')
-<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Thank you. This shoot is now marked as paid.</strong></p>
+<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Thank you. This shoot has been marked as paid.</strong></p>
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
         <tr>

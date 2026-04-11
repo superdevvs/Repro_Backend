@@ -434,6 +434,8 @@ class AutomationWorkflowExecutor
                 'contact_email' => $recipient['email'],
                 'contact_name' => $recipient['name'] ?? 'Recipient',
                 'contact_type' => $recipient['type'] ?? 'other',
+                'tags_json' => $context['tags_json'] ?? null,
+                'attachments_json' => $context['attachments_json'] ?? null,
             ]);
 
             $sentTo[] = $recipient['email'];
@@ -474,6 +476,8 @@ class AutomationWorkflowExecutor
                 'contact_phone' => $recipient['phone'],
                 'contact_name' => $recipient['name'] ?? 'Recipient',
                 'contact_type' => $recipient['type'] ?? 'other',
+                'tags_json' => $context['tags_json'] ?? null,
+                'attachments_json' => $context['attachments_json'] ?? null,
             ]);
 
             $sentTo[] = $recipient['phone'];
@@ -510,6 +514,11 @@ class AutomationWorkflowExecutor
                 'contact_email' => $recipient['email'],
                 'contact_name' => $recipient['name'] ?? 'Team member',
                 'contact_type' => $recipient['type'] ?? 'internal',
+                'related_shoot_id' => $context['shoot_id'] ?? null,
+                'related_account_id' => $context['account_id'] ?? null,
+                'related_invoice_id' => $context['invoice_id'] ?? null,
+                'tags_json' => $context['tags_json'] ?? null,
+                'attachments_json' => $context['attachments_json'] ?? null,
             ], 'INBOUND');
 
             $deliveredTo[] = $recipient['email'];

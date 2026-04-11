@@ -64,6 +64,23 @@ class ShootWorkflowTransitionSupportService
             }
         }
 
+        if (
+            $shoot->photographer
+            && $shoot->photographer->email
+            && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
+        ) {
+            try {
+                $this->mailService->sendShootCancelledEmail($shoot->photographer, $shoot);
+                $systemEmailAlreadySent = true;
+            } catch (\Throwable $e) {
+                Log::warning('Failed to send cancellation email to photographer', [
+                    'shoot_id' => $shoot->id,
+                    'photographer_id' => $shoot->photographer->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         try {
             $this->automationService->handleEvent('SHOOT_CANCELED', [
                 'shoot' => $shoot->fresh(['client', 'photographer', 'services']),
@@ -144,14 +161,15 @@ class ShootWorkflowTransitionSupportService
 
         $editors = User::query()
             ->where('role', 'editor')
-            ->when($lane, function ($query) use ($lane) {
-                $query->where(function ($editorQuery) use ($lane) {
-                    $editorQuery->whereJsonContains('metadata->editing_capabilities', $lane)
-                        ->orWhereNull('metadata')
-                        ->orWhereRaw("JSON_LENGTH(COALESCE(JSON_EXTRACT(metadata, '$.editing_capabilities'), JSON_ARRAY())) = 0");
-                });
-            })
+            ->orderBy('id')
             ->get(['id', 'name', 'metadata']);
+
+        if ($lane) {
+            $editors = $editors
+                ->filter(fn (User $editor) => $editor->canEditLane($lane))
+                ->values();
+        }
+
         if ($editors->isEmpty()) {
             throw new \InvalidArgumentException($lane ? "No {$lane} editors available" : 'No editors available');
         }

@@ -34,7 +34,6 @@ class AuthController extends Controller
             'password' => 'required|string|min:6|confirmed',
             'phonenumber' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
-            'role' => ['required', Rule::in(['superadmin', 'admin', 'editing_manager', 'client', 'photographer', 'editor', 'salesRep'])],
             'avatar' => 'nullable|url',
             'bio' => 'nullable|string',
         ]);
@@ -49,7 +48,7 @@ class AuthController extends Controller
             'password' => Hash::make($validated['password']),
             'phonenumber' => $validated['phonenumber'] ?? null,
             'company_name' => $validated['company_name'] ?? null,
-            'role' => $validated['role'],
+            'role' => 'client',
             'avatar' => $validated['avatar'] ?? null,
             'bio' => $validated['bio'] ?? null,
             'account_status' => 'active',
@@ -216,6 +215,11 @@ class AuthController extends Controller
         if (array_key_exists('travel_range_unit', $validated)) {
             $metadata['travel_range_unit'] = $validated['travel_range_unit'];
             unset($validated['travel_range_unit']);
+        }
+
+        if (array_key_exists('about', $validated)) {
+            $metadata['about'] = $validated['about'];
+            unset($validated['about']);
         }
 
         if ($passwordChanged) {

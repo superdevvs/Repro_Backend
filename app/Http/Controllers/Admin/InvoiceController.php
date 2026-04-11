@@ -92,7 +92,7 @@ class InvoiceController extends Controller
 
         return response()->json([
             'message' => 'Invoice generated successfully.',
-            'data' => $invoice,
+            'data' => $this->serializeGeneratedInvoice($invoice),
         ], 201);
     }
 
@@ -270,5 +270,21 @@ class InvoiceController extends Controller
                 'error' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serializeGeneratedInvoice(Invoice $invoice): array
+    {
+        $payload = $invoice->toArray();
+
+        foreach (['charges_total', 'payments_total', 'balance_due'] as $field) {
+            if (array_key_exists($field, $payload) && $payload[$field] !== null) {
+                $payload[$field] = number_format((float) $payload[$field], 2, '.', '');
+            }
+        }
+
+        return $payload;
     }
 }

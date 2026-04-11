@@ -364,12 +364,8 @@ class ShootEditingAssignmentService
     {
         return User::query()
             ->where('role', 'editor')
-            ->where(function (Builder $query) use ($lane) {
-                $query->whereJsonContains('metadata->editing_capabilities', $lane)
-                    ->orWhereNull('metadata')
-                    ->orWhereRaw("JSON_LENGTH(COALESCE(JSON_EXTRACT(metadata, '$.editing_capabilities'), JSON_ARRAY())) = 0");
-            })
             ->orderBy('id')
-            ->first();
+            ->get(['id', 'name', 'role', 'metadata'])
+            ->first(fn (User $editor) => $editor->canEditLane($lane));
     }
 }

@@ -30,6 +30,7 @@ class MessagingService
         private readonly TemplateRenderer $renderer,
         private readonly Providers\TwilioSmsProvider $twilioProvider,
         private readonly Providers\CakemailProvider $cakemailProvider,
+        private readonly Providers\LocalSmtpProvider $localSmtpProvider,
     ) {
     }
 
@@ -685,12 +686,19 @@ class MessagingService
 
     protected function getEmailProvider(MessageChannel $channel): EmailProviderInterface
     {
-        if ($channel->provider !== 'CAKEMAIL') {
-            Log::warning('Non-CakeMail provider requested; forcing CakeMail.', [
-                'channel_id' => $channel->id,
-                'provider' => $channel->provider,
-            ]);
-        }
+        return match (strtoupper((string) $channel->provider)) {
+            'LOCAL_SMTP' => $this->localSmtpProvider,
+            'CAKEMAIL' => $this->cakemailProvider,
+            default => $this->logAndReturnCakeMailProvider($channel),
+        };
+    }
+
+    protected function logAndReturnCakeMailProvider(MessageChannel $channel): EmailProviderInterface
+    {
+        Log::warning('Unknown email provider requested; defaulting to CakeMail.', [
+            'channel_id' => $channel->id,
+            'provider' => $channel->provider,
+        ]);
 
         return $this->cakemailProvider;
     }

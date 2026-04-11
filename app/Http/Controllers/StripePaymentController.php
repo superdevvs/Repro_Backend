@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Models\User;
+use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
@@ -69,7 +70,7 @@ class StripePaymentController extends Controller
         try {
             $this->initStripe();
 
-            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
+            $paymentUrl = app(PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot);
             $currency = config('services.stripe.currency', 'USD');
             $client = User::find($shoot->client_id);
 
@@ -94,8 +95,8 @@ class StripePaymentController extends Controller
                     'type' => 'single',
                 ],
                 'client_reference_id' => 'shoot:' . $shoot->id,
-                'success_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true&session_id={CHECKOUT_SESSION_ID}',
-                'cancel_url'  => $frontendUrl . '/payment/' . $shoot->id,
+                'success_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
+                'cancel_url'  => $paymentUrl,
             ];
 
             $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $client);
@@ -140,7 +141,7 @@ class StripePaymentController extends Controller
         try {
             $this->initStripe();
 
-            $frontendUrl = config('app.frontend_url', 'http://localhost:5173');
+            $paymentUrl = app(PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot);
             $currency = config('services.stripe.currency', 'USD');
             $client = User::find($shoot->client_id);
 
@@ -166,7 +167,7 @@ class StripePaymentController extends Controller
                     'type' => 'single',
                 ],
                 'client_reference_id' => 'shoot:' . $shoot->id,
-                'return_url' => $frontendUrl . '/payment/' . $shoot->id . '?success=true&session_id={CHECKOUT_SESSION_ID}',
+                'return_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
             ];
 
             $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $client);
@@ -428,6 +429,30 @@ class StripePaymentController extends Controller
                 'error' => 'Could not confirm Stripe payment session.',
             ], 500);
         }
+    }
+
+    public function createPublicEmbeddedCheckoutSession(Request $request, string $token)
+    {
+        $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);
+        if (!$accessToken) {
+            return response()->json(['error' => 'This payment link is unavailable.'], 410);
+        }
+
+        $accessToken->markAccessed();
+
+        return $this->createEmbeddedCheckoutSession($request, $accessToken->shoot);
+    }
+
+    public function confirmPublicCheckoutSession(Request $request, string $token)
+    {
+        $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);
+        if (!$accessToken) {
+            return response()->json(['error' => 'This payment link is unavailable.'], 410);
+        }
+
+        $accessToken->markAccessed();
+
+        return $this->confirmCheckoutSession($request, $accessToken->shoot);
     }
 
     public function reconcileShootPayments(Shoot $shoot, ?string $sessionId = null): array
@@ -827,6 +852,8 @@ class StripePaymentController extends Controller
 
         // If fully paid, log completion and fire automation
         if ($newPaymentStatus === 'paid' && $oldPaymentStatus !== 'paid') {
+            app(PublicPaymentAccessTokenService::class)->revokeTokensForShoot($shoot);
+
             $this->activityLogger->log(
                 $shoot,
                 'payment_completed',
