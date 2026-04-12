@@ -24,6 +24,14 @@ class User extends Authenticatable
         'name',
         'username',
         'email',
+        'email_status',
+        'verification_sent_at',
+        'email_last_delivery_attempt_at',
+        'email_last_bounced_at',
+        'email_bounce_reason',
+        'email_warning_code',
+        'email_warning_message',
+        'email_suggested_correction',
         'phone',
         'phonenumber',
         'company_name',
@@ -78,6 +86,7 @@ class User extends Authenticatable
      */
     protected $appends = [
         'about',
+        'email_health',
     ];
 
     /**
@@ -89,6 +98,9 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'verification_sent_at' => 'datetime',
+            'email_last_delivery_attempt_at' => 'datetime',
+            'email_last_bounced_at' => 'datetime',
             'password' => 'hashed',
             'metadata' => 'array',
             'secondary_roles' => 'array',
@@ -148,6 +160,21 @@ class User extends Authenticatable
 
         $metadata['about'] = $value;
         $this->attributes['metadata'] = json_encode($metadata);
+    }
+
+    public function getEmailHealthAttribute(): array
+    {
+        return [
+            'status' => $this->attributes['email_status'] ?? null,
+            'verification_sent_at' => optional($this->verification_sent_at)?->toIso8601String(),
+            'email_verified_at' => optional($this->email_verified_at)?->toIso8601String(),
+            'last_delivery_attempt_at' => optional($this->email_last_delivery_attempt_at)?->toIso8601String(),
+            'last_bounce_at' => optional($this->email_last_bounced_at)?->toIso8601String(),
+            'bounce_reason' => $this->attributes['email_bounce_reason'] ?? null,
+            'warning_code' => $this->attributes['email_warning_code'] ?? null,
+            'warning_message' => $this->attributes['email_warning_message'] ?? null,
+            'suggested_correction' => $this->attributes['email_suggested_correction'] ?? null,
+        ];
     }
 
     public function getFirstNameAttribute(): string

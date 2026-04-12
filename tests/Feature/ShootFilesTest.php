@@ -312,6 +312,41 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
+    public function photographer_receives_structured_invalid_workflow_stage_error_for_raw_uploads(): void
+    {
+        Storage::fake('public');
+
+        $photographer = $this->insertUser(['role' => 'photographer']);
+        $shoot = $this->createShoot([
+            'photographer_id' => $photographer->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+
+        Sanctum::actingAs($photographer);
+
+        $response = $this->postJson('/api/shoots/' . $shoot->id . '/upload', [
+            'upload_type' => 'raw',
+            'files' => [
+                UploadedFile::fake()->create('batch.nef', 100, 'image/x-nikon-nef'),
+            ],
+        ]);
+
+        $response->assertStatus(400);
+        $response->assertJsonPath('error_type', 'invalid_workflow_stage');
+        $response->assertJsonPath('message', 'Cannot upload raw files at this workflow stage');
+        $response->assertJsonStructure([
+            'upload_limits' => [
+                'per_file',
+                'per_file_bytes',
+                'total_request',
+                'total_request_bytes',
+                'max_file_uploads',
+            ],
+        ]);
+    }
+
+    #[Test]
     public function client_can_set_hero_image_for_their_own_shoot_and_it_is_logged_in_activity(): void
     {
         $shoot = $this->createShoot();

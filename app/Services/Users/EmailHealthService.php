@@ -1,0 +1,314 @@
+<?php
+
+namespace App\Services\Users;
+
+use App\Models\User;
+use Illuminate\Support\Str;
+
+class EmailHealthService
+{
+    public const STATUS_VERIFIED = 'verified';
+    public const STATUS_UNVERIFIED = 'unverified';
+    public const STATUS_RISKY = 'risky';
+    public const STATUS_BOUNCED = 'bounced';
+    public const STATUS_INVALID = 'invalid';
+
+    /**
+     * @var array<string, string>
+     */
+    protected const DOMAIN_SUGGESTIONS = [
+        'gmail.con' => 'gmail.com',
+        'gmail.co' => 'gmail.com',
+        'gmial.com' => 'gmail.com',
+        'gmal.com' => 'gmail.com',
+        'gnail.com' => 'gmail.com',
+        'outlok.com' => 'outlook.com',
+        'outlook.con' => 'outlook.com',
+        'hotnail.com' => 'hotmail.com',
+        'hotmial.com' => 'hotmail.com',
+        'yaho.com' => 'yahoo.com',
+        'yahoo.con' => 'yahoo.com',
+        'icloud.con' => 'icloud.com',
+        'icloud.co' => 'icloud.com',
+        'test.con' => 'test.com',
+    ];
+
+    /**
+     * @var array<string, string>
+     */
+    protected const COMMON_TLD_CORRECTIONS = [
+        'con' => 'com',
+        'cmo' => 'com',
+        'cm' => 'com',
+        'vom' => 'com',
+        'ogr' => 'org',
+        'ogn' => 'org',
+        'nte' => 'net',
+        'nte.' => 'net',
+    ];
+
+    /**
+     * @var array<int, string>
+     */
+    protected const COMMON_DOMAINS = [
+        'gmail.com',
+        'googlemail.com',
+        'outlook.com',
+        'hotmail.com',
+        'live.com',
+        'msn.com',
+        'icloud.com',
+        'me.com',
+        'mac.com',
+        'yahoo.com',
+        'aol.com',
+        'proton.me',
+        'protonmail.com',
+        'comcast.net',
+        'att.net',
+        'verizon.net',
+    ];
+
+    /**
+     * @var array<int, string>
+     */
+    protected const ALLOWLISTED_SEND_SOURCES = [
+        'ACCOUNT_CREATED',
+        'CLIENT_EMAIL_VERIFICATION',
+    ];
+
+    /**
+     * @return array{
+     *   valid: bool,
+     *   normalized_email: string,
+     *   status: string,
+     *   warning_code: string|null,
+     *   warning_message: string|null,
+     *   suggested_correction: string|null,
+     *   requires_confirmation: bool,
+     *   error_message: string|null
+     * }
+     */
+    public function analyzeForSave(string $email): array
+    {
+        $normalized = Str::lower(trim($email));
+
+        if (!filter_var($normalized, FILTER_VALIDATE_EMAIL)) {
+            return [
+                'valid' => false,
+                'normalized_email' => $normalized,
+                'status' => self::STATUS_INVALID,
+                'warning_code' => 'invalid_syntax',
+                'warning_message' => 'Please enter a valid email address.',
+                'suggested_correction' => null,
+                'requires_confirmation' => false,
+                'error_message' => 'Please enter a valid email address.',
+            ];
+        }
+
+        [, $domain] = explode('@', $normalized, 2);
+        $suggestedEmail = $this->detectSuggestedCorrection($normalized);
+
+        if ($suggestedEmail !== null && $suggestedEmail !== $normalized) {
+            $suggestedDomain = explode('@', $suggestedEmail, 2)[1] ?? $suggestedEmail;
+
+            return [
+                'valid' => true,
+                'normalized_email' => $normalized,
+                'status' => self::STATUS_RISKY,
+                'warning_code' => 'common_typo',
+                'warning_message' => sprintf('%s looks like a typo. Use %s instead?', $domain, $suggestedDomain),
+                'suggested_correction' => $suggestedEmail,
+                'requires_confirmation' => true,
+                'error_message' => null,
+            ];
+        }
+
+        if (!$this->domainCanReceiveMail($domain)) {
+            return [
+                'valid' => false,
+                'normalized_email' => $normalized,
+                'status' => self::STATUS_INVALID,
+                'warning_code' => 'domain_no_mail',
+                'warning_message' => 'This email domain cannot receive mail. Please check the address.',
+                'suggested_correction' => null,
+                'requires_confirmation' => false,
+                'error_message' => 'This email domain cannot receive mail. Please check the address.',
+            ];
+        }
+
+        if (!$this->isCommonDomain($domain)) {
+            return [
+                'valid' => true,
+                'normalized_email' => $normalized,
+                'status' => self::STATUS_RISKY,
+                'warning_code' => 'unusual_domain',
+                'warning_message' => 'This domain looks unusual. Please confirm before saving.',
+                'suggested_correction' => null,
+                'requires_confirmation' => false,
+                'error_message' => null,
+            ];
+        }
+
+        return [
+            'valid' => true,
+            'normalized_email' => $normalized,
+            'status' => self::STATUS_UNVERIFIED,
+            'warning_code' => null,
+            'warning_message' => null,
+            'suggested_correction' => null,
+            'requires_confirmation' => false,
+            'error_message' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $analysis
+     * @return array<string, mixed>
+     */
+    public function buildAttributesForSave(string $email, array $analysis): array
+    {
+        return [
+            'email' => $analysis['normalized_email'] ?? Str::lower(trim($email)),
+            'email_status' => $analysis['status'] ?? self::STATUS_UNVERIFIED,
+            'verification_sent_at' => null,
+            'email_verified_at' => null,
+            'email_last_delivery_attempt_at' => null,
+            'email_last_bounced_at' => null,
+            'email_bounce_reason' => null,
+            'email_warning_code' => $analysis['warning_code'] ?? null,
+            'email_warning_message' => $analysis['warning_message'] ?? null,
+            'email_suggested_correction' => $analysis['suggested_correction'] ?? null,
+        ];
+    }
+
+    public function markVerificationSent(User $user): void
+    {
+        $user->forceFill([
+            'verification_sent_at' => now(),
+        ])->save();
+    }
+
+    public function markVerified(User $user): void
+    {
+        $user->forceFill([
+            'email_status' => self::STATUS_VERIFIED,
+            'email_verified_at' => now(),
+            'email_warning_code' => null,
+            'email_warning_message' => null,
+            'email_suggested_correction' => null,
+            'email_bounce_reason' => null,
+        ])->save();
+    }
+
+    public function markDelivered(User $user): void
+    {
+        $attributes = [
+            'email_last_delivery_attempt_at' => now(),
+        ];
+
+        if (blank($user->email_status)) {
+            $attributes['email_status'] = $user->email_verified_at
+                ? self::STATUS_VERIFIED
+                : self::STATUS_UNVERIFIED;
+        }
+
+        $user->forceFill($attributes)->save();
+    }
+
+    public function markBounced(User $user, ?string $reason = null): void
+    {
+        $user->forceFill([
+            'email_status' => self::STATUS_BOUNCED,
+            'email_last_bounced_at' => now(),
+            'email_bounce_reason' => $reason,
+            'email_warning_code' => 'bounced',
+            'email_warning_message' => 'Delivery failed for this email address. Please correct it before sending again.',
+        ])->save();
+    }
+
+    public function markRisky(User $user, ?string $reason = null): void
+    {
+        if ($user->email_status === self::STATUS_BOUNCED || $user->email_status === self::STATUS_INVALID) {
+            return;
+        }
+
+        $user->forceFill([
+            'email_status' => self::STATUS_RISKY,
+            'email_warning_code' => 'delivery_risky',
+            'email_warning_message' => $reason ?: 'Recent delivery results suggest this email may be risky.',
+        ])->save();
+    }
+
+    public function extractSalesRepId(User $user): ?int
+    {
+        $metadata = is_array($user->metadata) ? $user->metadata : [];
+        $candidate = $metadata['accountRepId']
+            ?? $metadata['account_rep_id']
+            ?? $metadata['repId']
+            ?? $metadata['rep_id']
+            ?? $user->created_by_id
+            ?? null;
+
+        return is_numeric($candidate) ? (int) $candidate : null;
+    }
+
+    public function automatedSendBlockedReason(?User $recipient, string $sendSource): ?string
+    {
+        if (!$recipient || $recipient->role !== 'client') {
+            return null;
+        }
+
+        if (in_array($sendSource, self::ALLOWLISTED_SEND_SOURCES, true)) {
+            return null;
+        }
+
+        $status = strtolower((string) ($recipient->email_status ?? ''));
+        if ($status === '') {
+            return null;
+        }
+
+        return match ($status) {
+            self::STATUS_INVALID, self::STATUS_BOUNCED => 'This client email is blocked because it is invalid or has bounced.',
+            self::STATUS_UNVERIFIED, self::STATUS_RISKY => 'This client email is not verified yet and automated sending is currently suppressed.',
+            default => null,
+        };
+    }
+
+    protected function detectSuggestedCorrection(string $email): ?string
+    {
+        [$local, $domain] = explode('@', Str::lower(trim($email)), 2);
+
+        if (isset(self::DOMAIN_SUGGESTIONS[$domain])) {
+            return $local . '@' . self::DOMAIN_SUGGESTIONS[$domain];
+        }
+
+        $domainParts = explode('.', $domain);
+        if (count($domainParts) < 2) {
+            return null;
+        }
+
+        $tld = array_pop($domainParts);
+        if (isset(self::COMMON_TLD_CORRECTIONS[$tld])) {
+            return $local . '@' . implode('.', $domainParts) . '.' . self::COMMON_TLD_CORRECTIONS[$tld];
+        }
+
+        return null;
+    }
+
+    protected function isCommonDomain(string $domain): bool
+    {
+        return in_array(Str::lower($domain), self::COMMON_DOMAINS, true);
+    }
+
+    protected function domainCanReceiveMail(string $domain): bool
+    {
+        try {
+            return checkdnsrr($domain, 'MX')
+                || checkdnsrr($domain, 'A')
+                || checkdnsrr($domain, 'AAAA');
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+}

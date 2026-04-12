@@ -4,12 +4,20 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\Message;
+use App\Models\User;
+use App\Models\UserActivityLog;
+use App\Services\Users\EmailHealthService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class CakemailWebhookController extends Controller
 {
+    public function __construct(
+        private readonly EmailHealthService $emailHealthService,
+    ) {
+    }
+
     /**
      * Handle incoming Cakemail webhook events
      * Events: email.delivered, email.opened, email.clicked, email.bounced, email.unsubscribed
@@ -54,15 +62,21 @@ class CakemailWebhookController extends Controller
     protected function handleDelivered(array $payload): void
     {
         $messageId = $payload['data']['email_id'] ?? $payload['email_id'] ?? null;
-        
+        $message = null;
+
         if ($messageId) {
-            Message::where('provider_message_id', $messageId)
-                ->update([
-                    'status' => 'DELIVERED',
-                    'delivered_at' => now(),
-                ]);
+            $message = Message::where('provider_message_id', $messageId)->first();
+            $message?->update([
+                'status' => 'DELIVERED',
+                'delivered_at' => now(),
+            ]);
 
             Log::info('Cakemail: Email delivered', ['message_id' => $messageId]);
+        }
+
+        $user = $this->resolveRelatedUser($message, $payload);
+        if ($user) {
+            $this->emailHealthService->markDelivered($user);
         }
     }
 
@@ -129,18 +143,43 @@ class CakemailWebhookController extends Controller
     {
         $messageId = $payload['data']['email_id'] ?? $payload['email_id'] ?? null;
         $bounceType = $payload['data']['bounce_type'] ?? $payload['bounce_type'] ?? 'unknown';
-        
+        $bounceReason = $payload['data']['reason'] ?? $payload['data']['diagnostic_code'] ?? $payload['reason'] ?? "Bounce type: {$bounceType}";
+        $message = null;
+
         if ($messageId) {
-            Message::where('provider_message_id', $messageId)
-                ->update([
-                    'status' => 'BOUNCED',
-                    'error_message' => "Bounce type: {$bounceType}",
-                ]);
+            $message = Message::where('provider_message_id', $messageId)->first();
+            $message?->update([
+                'status' => 'BOUNCED',
+                'error_message' => $bounceReason,
+            ]);
 
             Log::warning('Cakemail: Email bounced', [
                 'message_id' => $messageId,
                 'bounce_type' => $bounceType,
             ]);
+        }
+
+        $user = $this->resolveRelatedUser($message, $payload);
+        if ($user) {
+            $this->emailHealthService->markBounced($user, $bounceReason);
+
+            UserActivityLog::record(
+                $user,
+                'email_bounced',
+                'Client email bounced',
+                sprintf(
+                    'Email to %s bounced. Entered address: %s. Please correct the client email.',
+                    $user->name ?: 'the client',
+                    strtolower((string) $user->email)
+                ),
+                null,
+                [
+                    'email' => strtolower((string) $user->email),
+                    'bounce_reason' => $bounceReason,
+                    'bounce_type' => $bounceType,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
         }
     }
 
@@ -179,6 +218,57 @@ class CakemailWebhookController extends Controller
                     'error_message' => 'Marked as spam by recipient',
                 ]);
         }
+
+        $user = $this->resolveRelatedUser(
+            $messageId ? Message::where('provider_message_id', $messageId)->first() : null,
+            $payload
+        );
+
+        if ($user) {
+            $reason = 'Marked as spam by the recipient.';
+            $this->emailHealthService->markRisky($user, $reason);
+
+            UserActivityLog::record(
+                $user,
+                'email_delivery_risky',
+                'Client email marked risky',
+                sprintf('Email deliverability for %s was marked risky. %s', $user->email, $reason),
+                null,
+                [
+                    'email' => strtolower((string) $user->email),
+                    'risk_reason' => $reason,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
+        }
+    }
+
+    protected function resolveRelatedUser(?Message $message, array $payload): ?User
+    {
+        $candidateId = $message?->related_account_id;
+        if ($candidateId) {
+            $user = User::find($candidateId);
+            if ($user) {
+                return $user;
+            }
+        }
+
+        $email = strtolower(trim((string) (
+            $payload['data']['email']
+            ?? $payload['email']
+            ?? $payload['data']['recipient']
+            ?? $payload['recipient']
+            ?? $message?->to_address
+            ?? ''
+        )));
+
+        if ($email === '') {
+            return null;
+        }
+
+        return User::query()
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->first();
     }
 
     /**

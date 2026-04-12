@@ -9,6 +9,7 @@ use App\Models\AccountLink;
 use App\Models\UserActivityLog;
 use App\Services\Messaging\AutomationService;
 use App\Services\MailService;
+use App\Services\Users\EmailHealthService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
@@ -19,6 +20,11 @@ use Illuminate\Support\Str;
 class UserController extends Controller
 {
     private const PRIMARY_SUPERADMIN_EMAIL = 'aj@reprophotos.com';
+
+    public function __construct(
+        private readonly EmailHealthService $emailHealthService,
+    ) {
+    }
 
     public function index(Request $request)
     {
@@ -145,6 +151,7 @@ class UserController extends Controller
         $rules = [
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users',
+            'email_warning_override' => 'nullable|boolean',
             'username' => 'nullable|string|unique:users',
             'phone_number' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
@@ -200,6 +207,14 @@ class UserController extends Controller
                 ], 422);
             }
         }
+
+        $emailHealthMutation = $this->resolveEmailHealthMutation($validated);
+        if ($emailHealthMutation['response'] !== null) {
+            return $emailHealthMutation['response'];
+        }
+
+        unset($validated['email_warning_override']);
+        $validated = array_merge($validated, $emailHealthMutation['attributes']);
 
         $serviceGroupIdsProvided = array_key_exists('service_group_ids', $validated);
         $serviceGroupIds = collect($validated['service_group_ids'] ?? [])
@@ -335,6 +350,20 @@ class UserController extends Controller
                 'email' => $user->email,
             ]
         );
+        if ($emailHealthMutation['warning_override']) {
+            $this->logUserActivity(
+                $user,
+                'email_warning_override',
+                'Email warning overridden',
+                'The creator confirmed saving an email that matched a likely typo pattern.',
+                $admin,
+                [
+                    'email' => $user->email,
+                    'suggested_correction' => $emailHealthMutation['analysis']['suggested_correction'] ?? null,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
+        }
         if ($this->serviceGroupsFeatureAvailable() && $user->role === 'client') {
             if (!$serviceGroupIdsProvided && empty($serviceGroupIds)) {
                 $serviceGroupIds = $this->getDefaultServiceGroupIds();
@@ -361,6 +390,21 @@ class UserController extends Controller
             } else {
                 $mailService->sendAccountCreatedEmail($user, $resetLink);
             }
+
+            if ($user->role === 'client' && $mailService->sendClientEmailVerificationEmail($user)) {
+                $this->emailHealthService->markVerificationSent($user);
+                $this->logUserActivity(
+                    $user,
+                    'email_verification_requested',
+                    'Email verification sent',
+                    'A verification email was sent to the client address.',
+                    $admin,
+                    [
+                        'email' => $user->email,
+                        'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                    ]
+                );
+            }
         } catch (\Exception $e) {
             \Log::warning('Failed to send account creation email', [
                 'user_id' => $user->id,
@@ -383,39 +427,10 @@ class UserController extends Controller
         }
 
         $viewer = $request->user();
-        if ($this->isSalesRepUser($viewer)) {
-            $repId = (string) $viewer->id;
-            $numericRepId = is_numeric($viewer->id) ? (int) $viewer->id : null;
-            $clientIdsFromShoots = \App\Models\Shoot::where('rep_id', $viewer->id)
-                ->pluck('client_id')
-                ->filter()
-                ->map(fn ($id) => (string) $id)
-                ->unique()
-                ->values()
-                ->all();
-
-            $clientsQuery->where(function ($query) use ($repId, $numericRepId, $clientIdsFromShoots) {
-                $query->whereJsonContains('metadata->accountRepId', $repId)
-                    ->orWhereJsonContains('metadata->account_rep_id', $repId)
-                    ->orWhereJsonContains('metadata->repId', $repId)
-                    ->orWhereJsonContains('metadata->rep_id', $repId)
-                    ->orWhere('created_by_id', $repId);
-
-                if ($numericRepId !== null) {
-                    $query->orWhereJsonContains('metadata->accountRepId', $numericRepId)
-                        ->orWhereJsonContains('metadata->account_rep_id', $numericRepId)
-                        ->orWhereJsonContains('metadata->repId', $numericRepId)
-                        ->orWhereJsonContains('metadata->rep_id', $numericRepId);
-                }
-
-                if (!empty($clientIdsFromShoots)) {
-                    $query->orWhereIn('id', $clientIdsFromShoots);
-                }
-            });
-        }
 
         $clients = $clientsQuery->get()->map(function ($client) {
             $clientData = $client->toArray();
+            $clientData['email_health'] = $client->email_health;
             $rep = null;
 
             // First, check if client has rep stored in metadata
@@ -544,6 +559,7 @@ class UserController extends Controller
         $rules = [
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|email|unique:users,email,' . $id,
+            'email_warning_override' => 'nullable|boolean',
             'username' => 'nullable|string|unique:users,username,' . $id,
             'phone_number' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
@@ -607,6 +623,16 @@ class UserController extends Controller
                 'message' => 'Only aj@reprophotos.com can be a superadmin.',
             ], 422);
         }
+
+        $previousEmail = strtolower((string) $user->email);
+        $previousEmailStatus = strtolower((string) ($user->email_status ?? ''));
+        $emailHealthMutation = $this->resolveEmailHealthMutation($validated, $user);
+        if ($emailHealthMutation['response'] !== null) {
+            return $emailHealthMutation['response'];
+        }
+
+        unset($validated['email_warning_override']);
+        $validated = array_merge($validated, $emailHealthMutation['attributes']);
 
         $serviceGroupIdsProvided = array_key_exists('service_group_ids', $validated);
         $serviceGroupIds = collect($validated['service_group_ids'] ?? [])
@@ -758,6 +784,63 @@ class UserController extends Controller
                     'changed_fields' => $changedFields,
                 ]
             );
+        }
+
+        if ($emailHealthMutation['warning_override']) {
+            $this->logUserActivity(
+                $user,
+                'email_warning_override',
+                'Email warning overridden',
+                'The editor confirmed keeping a likely typo email address.',
+                $admin,
+                [
+                    'email' => $user->email,
+                    'suggested_correction' => $emailHealthMutation['analysis']['suggested_correction'] ?? null,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
+        }
+
+        if ($emailHealthMutation['email_changed'] && $user->role === 'client') {
+            try {
+                $mailService = app(MailService::class);
+                if ($mailService->sendClientEmailVerificationEmail($user)) {
+                    $this->emailHealthService->markVerificationSent($user);
+                }
+            } catch (\Throwable $exception) {
+                \Log::warning('Failed to send client email verification email after update', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+
+            $this->logUserActivity(
+                $user,
+                'email_verification_requested',
+                'Email verification sent',
+                'A new verification email was sent after the client email changed.',
+                $admin,
+                [
+                    'email' => $user->email,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
+
+            if ($previousEmailStatus === EmailHealthService::STATUS_BOUNCED && $previousEmail !== strtolower((string) $user->email)) {
+                $this->logUserActivity(
+                    $user,
+                    'email_corrected_after_bounce',
+                    'Bounced email corrected',
+                    sprintf('Client email changed from %s to %s after a bounce warning.', $previousEmail, strtolower((string) $user->email)),
+                    $admin,
+                    [
+                        'previous_email' => $previousEmail,
+                        'updated_email' => strtolower((string) $user->email),
+                        'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                    ]
+                );
+            }
         }
 
         return response()->json([
@@ -961,28 +1044,7 @@ class UserController extends Controller
 
     protected function salesRepOwnsClient(User $salesRep, User $client, ?array $scope = null): bool
     {
-        if ($client->role !== 'client') {
-            return false;
-        }
-
-        $scope = $scope ?? $this->getSalesRepShootScope($salesRep);
-        $repId = (string) $salesRep->id;
-        $metadata = is_array($client->metadata) ? $client->metadata : [];
-        $repCandidate = $metadata['accountRepId']
-            ?? $metadata['account_rep_id']
-            ?? $metadata['repId']
-            ?? $metadata['rep_id']
-            ?? null;
-
-        if ($repCandidate !== null && (string) $repCandidate === $repId) {
-            return true;
-        }
-
-        if ($client->created_by_id !== null && (string) $client->created_by_id === $repId) {
-            return true;
-        }
-
-        return in_array((string) $client->id, $scope['client_ids'] ?? [], true);
+        return $client->role === 'client';
     }
 
     protected function salesRepOwnsPhotographer(User $salesRep, User $photographer, ?array $scope = null): bool
@@ -1026,9 +1088,7 @@ class UserController extends Controller
         }
 
         $clientUsers = $clientQuery
-            ->get()
-            ->filter(fn (User $client) => $this->salesRepOwnsClient($salesRep, $client, $scope))
-            ->values();
+            ->get();
 
         $photographerUsers = $photographerQuery
             ->get()
@@ -1050,6 +1110,108 @@ class UserController extends Controller
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array{
+     *   attributes: array<string, mixed>,
+     *   analysis: array<string, mixed>|null,
+     *   warning_override: bool,
+     *   email_changed: bool,
+     *   response: \Illuminate\Http\JsonResponse|null
+     * }
+     */
+    protected function resolveEmailHealthMutation(array $validated, ?User $existingUser = null): array
+    {
+        $targetRole = $validated['role'] ?? $existingUser?->role;
+        $email = strtolower(trim((string) ($validated['email'] ?? $existingUser?->email ?? '')));
+        $warningOverride = (bool) ($validated['email_warning_override'] ?? false);
+        $emailChanged = $existingUser
+            ? array_key_exists('email', $validated) && $email !== strtolower(trim((string) $existingUser->email))
+            : true;
+
+        if ($targetRole !== 'client') {
+            return [
+                'attributes' => $existingUser && $existingUser->role === 'client' && ($validated['role'] ?? null) !== 'client'
+                    ? $this->clearEmailHealthAttributes()
+                    : [],
+                'analysis' => null,
+                'warning_override' => false,
+                'email_changed' => $emailChanged,
+                'response' => null,
+            ];
+        }
+
+        if ($email === '' || (!$emailChanged && $existingUser)) {
+            return [
+                'attributes' => [],
+                'analysis' => null,
+                'warning_override' => false,
+                'email_changed' => $emailChanged,
+                'response' => null,
+            ];
+        }
+
+        $analysis = $this->emailHealthService->analyzeForSave($email);
+        if (!$analysis['valid'] || ($analysis['requires_confirmation'] && !$warningOverride)) {
+            return [
+                'attributes' => [],
+                'analysis' => $analysis,
+                'warning_override' => $warningOverride,
+                'email_changed' => $emailChanged,
+                'response' => $this->buildEmailHealthValidationResponse($email, $analysis),
+            ];
+        }
+
+        return [
+            'attributes' => $this->emailHealthService->buildAttributesForSave($email, $analysis),
+            'analysis' => $analysis,
+            'warning_override' => $warningOverride,
+            'email_changed' => $emailChanged,
+            'response' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $analysis
+     */
+    protected function buildEmailHealthValidationResponse(string $email, array $analysis)
+    {
+        return response()->json([
+            'message' => $analysis['error_message'] ?? $analysis['warning_message'] ?? 'Email validation failed.',
+            'errors' => [
+                'email' => [
+                    $analysis['error_message'] ?? $analysis['warning_message'] ?? 'Email validation failed.',
+                ],
+            ],
+            'email_health' => [
+                'status' => $analysis['status'] ?? null,
+                'warning_code' => $analysis['warning_code'] ?? null,
+                'warning_message' => $analysis['warning_message'] ?? null,
+                'suggested_correction' => $analysis['suggested_correction'] ?? null,
+                'requires_confirmation' => (bool) ($analysis['requires_confirmation'] ?? false),
+                'entered_email' => $email,
+            ],
+        ], 422);
+    }
+
+    /**
+     * @return array<string, null>
+     */
+    protected function clearEmailHealthAttributes(): array
+    {
+        return [
+            'email_status' => null,
+            'verification_sent_at' => null,
+            'email_verified_at' => null,
+            'email_last_delivery_attempt_at' => null,
+            'email_last_bounced_at' => null,
+            'email_bounce_reason' => null,
+            'email_warning_code' => null,
+            'email_warning_message' => null,
+            'email_suggested_correction' => null,
+        ];
     }
 
     protected function normalizeClientDiscount(?string $role, mixed $discountType, mixed $discountValue): array
@@ -1106,6 +1268,7 @@ class UserController extends Controller
         }
         $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
+        $payload['email_health'] = $user->email_health;
         $payload['editingCapabilities'] = $user->getEditingCapabilities();
         $payload['editing_capabilities'] = $payload['editingCapabilities'];
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
@@ -1394,6 +1557,7 @@ class UserController extends Controller
         }
         $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
+        $payload['email_health'] = $user->email_health;
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
         $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
             ? (float) $payload['client_discount_value']

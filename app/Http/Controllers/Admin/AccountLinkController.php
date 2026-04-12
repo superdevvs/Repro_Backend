@@ -690,28 +690,7 @@ class AccountLinkController extends Controller
 
     private function salesRepOwnsClient(User $salesRep, User $client, ?array $scope = null): bool
     {
-        if ($this->normalizeRole($client->role) !== 'client') {
-            return false;
-        }
-
-        $scope = $scope ?? $this->getSalesRepShootScope($salesRep);
-        $repId = (string) $salesRep->id;
-        $metadata = is_array($client->metadata) ? $client->metadata : [];
-        $repCandidate = $metadata['accountRepId']
-            ?? $metadata['account_rep_id']
-            ?? $metadata['repId']
-            ?? $metadata['rep_id']
-            ?? null;
-
-        if ($repCandidate !== null && (string) $repCandidate === $repId) {
-            return true;
-        }
-
-        if ($client->created_by_id !== null && (string) $client->created_by_id === $repId) {
-            return true;
-        }
-
-        return in_array((string) $client->id, $scope['client_ids'] ?? [], true);
+        return $this->normalizeRole($client->role) === 'client';
     }
 
     private function ensureSalesRepCanManageRelationship(User $salesRep, User $mainAccount, User $clientAccount, ?array $scope = null): ?JsonResponse

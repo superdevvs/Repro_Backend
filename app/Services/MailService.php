@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Carbon\CarbonInterface;
@@ -15,6 +16,7 @@ use App\Models\Payment;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\ShootEmailMatrix;
 use App\Services\Messaging\TemplateRenderer;
+use App\Services\Users\EmailHealthService;
 
 class MailService
 {
@@ -38,7 +40,9 @@ class MailService
                 'resetLink' => $resetLink,
             ])->render();
 
-            $this->sendViaCakemail($user->email, 'New Account Information', $html, 'ACCOUNT_CREATED');
+            $this->sendViaCakemail($user->email, 'New Account Information', $html, 'ACCOUNT_CREATED', [], [], [
+                'related_account_id' => $user->id,
+            ]);
 
             Log::info('Account created email sent', [
                 'user_id' => $user->id,
@@ -53,6 +57,56 @@ class MailService
                 'error' => $e->getMessage()
             ]);
             
+            return false;
+        }
+    }
+
+    public function generateClientEmailVerificationLink(User $user): string
+    {
+        return URL::temporarySignedRoute(
+            'api.email-verification.verify',
+            now()->addDays(7),
+            [
+                'user' => $user->id,
+                'hash' => sha1(Str::lower((string) $user->email)),
+            ],
+        );
+    }
+
+    public function sendClientEmailVerificationEmail(User $user): bool
+    {
+        try {
+            $verificationLink = $this->generateClientEmailVerificationLink($user);
+            $html = view('emails.client_email_verification', [
+                'user' => $user,
+                'verificationLink' => $verificationLink,
+            ])->render();
+
+            $this->sendViaCakemail(
+                $user->email,
+                'Verify Your Email Address',
+                $html,
+                'CLIENT_EMAIL_VERIFICATION',
+                [],
+                [],
+                [
+                    'related_account_id' => $user->id,
+                ],
+            );
+
+            Log::info('Client email verification email sent', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send client email verification email', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'error' => $exception->getMessage(),
+            ]);
+
             return false;
         }
     }
@@ -2057,11 +2111,29 @@ HTML;
         string $html,
         string $sendSource,
         array $cc = [],
-        array $tags = []
+        array $tags = [],
+        array $extraPayload = []
     ): void
     {
         if (!is_string($to) || trim($to) === '') {
             throw new \InvalidArgumentException('Recipient email is required to send mail.');
+        }
+
+        $relatedAccountId = $extraPayload['related_account_id'] ?? null;
+        if ($relatedAccountId) {
+            $recipient = User::query()->find($relatedAccountId);
+            $blockedReason = app(EmailHealthService::class)->automatedSendBlockedReason($recipient, $sendSource);
+
+            if ($blockedReason !== null) {
+                Log::warning('Automated email send blocked by email health state.', [
+                    'send_source' => $sendSource,
+                    'related_account_id' => $relatedAccountId,
+                    'email' => $to,
+                    'reason' => $blockedReason,
+                ]);
+
+                throw new \RuntimeException($blockedReason);
+            }
         }
 
         $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
@@ -2077,6 +2149,10 @@ HTML;
 
         if ($tags !== []) {
             $payload['tags_json'] = array_values($tags);
+        }
+
+        if ($relatedAccountId) {
+            $payload['related_account_id'] = $relatedAccountId;
         }
 
         $messagingService = app(MessagingService::class);

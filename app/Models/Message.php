@@ -29,6 +29,7 @@ class Message extends Model
         'status',
         'send_source',
         'tags_json',
+        'metadata',
         'error_message',
         'scheduled_at',
         'sent_at',
@@ -56,6 +57,7 @@ class Message extends Model
         'tags_json' => 'array',
         'cc_addresses_json' => 'array',
         'bcc_addresses_json' => 'array',
+        'metadata' => 'array',
     ];
 
     public function thread(): BelongsTo

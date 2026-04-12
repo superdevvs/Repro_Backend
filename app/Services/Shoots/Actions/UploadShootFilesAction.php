@@ -34,6 +34,7 @@ class UploadShootFilesAction
         ]);
 
         $files = $request->file('files');
+        $uploadLimits = $this->buildUploadLimits();
         if (!$files) {
             $contentLength = (int) $request->header('Content-Length', 0);
             $postMaxSize = $this->parseSize(ini_get('post_max_size'));
@@ -45,6 +46,7 @@ class UploadShootFilesAction
                         'error_type' => 'oversize',
                         'message' => 'Upload too large. Maximum allowed: ' . ini_get('post_max_size'),
                         'errors' => ['files' => ['The uploaded file exceeds the server limit of ' . ini_get('post_max_size')]],
+                        'upload_limits' => $uploadLimits,
                     ],
                 ];
             }
@@ -54,10 +56,11 @@ class UploadShootFilesAction
                 'payload' => [
                     'error_type' => 'invalid_file',
                     'message' => 'No files received. The file may have been too large or the upload was interrupted.',
-                    'errors' => ['files' => ['No valid files were received by the server.']],
-                    'debug' => [
-                        'post_max_size' => ini_get('post_max_size'),
-                        'upload_max_filesize' => ini_get('upload_max_filesize'),
+                        'errors' => ['files' => ['No valid files were received by the server.']],
+                        'upload_limits' => $uploadLimits,
+                        'debug' => [
+                            'post_max_size' => ini_get('post_max_size'),
+                            'upload_max_filesize' => ini_get('upload_max_filesize'),
                         'content_length' => $contentLength,
                     ],
                 ],
@@ -76,6 +79,7 @@ class UploadShootFilesAction
                         'error_type' => 'invalid_file',
                         'message' => 'Invalid file uploaded',
                         'errors' => ['files' => ['One or more files failed to upload properly.']],
+                        'upload_limits' => $uploadLimits,
                     ],
                 ];
             }
@@ -86,7 +90,16 @@ class UploadShootFilesAction
                     'payload' => [
                         'error_type' => 'oversize',
                         'message' => 'File too large: ' . $file->getClientOriginalName(),
-                        'errors' => ['files' => ['File exceeds 500MB limit: ' . $file->getClientOriginalName()]],
+                        'errors' => [
+                            $this->buildUploadError(
+                                $file->getClientOriginalName(),
+                                'oversize',
+                                'File exceeds the 500MB upload limit.',
+                                false,
+                                'Split the upload into smaller files or export a smaller version before retrying.',
+                            ),
+                        ],
+                        'upload_limits' => $uploadLimits,
                     ],
                 ];
             }
@@ -118,6 +131,7 @@ class UploadShootFilesAction
                     'error_type' => 'invalid_workflow_stage',
                     'message' => 'Cannot upload raw files at this workflow stage',
                     'current_status' => $shoot->workflow_status,
+                    'upload_limits' => $uploadLimits,
                 ],
             ];
         }
@@ -129,6 +143,7 @@ class UploadShootFilesAction
                     'error_type' => 'forbidden',
                     'message' => 'You do not have permission to upload edited files',
                     'current_status' => $shoot->workflow_status,
+                    'upload_limits' => $uploadLimits,
                 ],
             ];
         }
@@ -144,6 +159,7 @@ class UploadShootFilesAction
                     'error_type' => 'invalid_workflow_stage',
                     'message' => 'Cannot upload edited files at this workflow stage',
                     'current_status' => $shoot->workflow_status,
+                    'upload_limits' => $uploadLimits,
                 ],
             ];
         }
@@ -192,11 +208,16 @@ class UploadShootFilesAction
                         'web_url' => $webUrl,
                     ];
                 } catch (\Exception $e) {
-                    $errors[] = [
-                        'filename' => $file->getClientOriginalName(),
-                        'error_type' => 'upload_failed',
-                        'error' => $e->getMessage(),
-                    ];
+                    $classifiedError = $this->classifyUploadException($file->getClientOriginalName(), $e);
+                    $errors[] = $classifiedError;
+
+                    Log::warning('Shoot file upload failed for one file.', [
+                        'shoot_id' => $shoot->id,
+                        'file_name' => $file->getClientOriginalName(),
+                        'error_type' => $classifiedError['error_type'],
+                        'retryable' => $classifiedError['retryable'],
+                        'message' => $classifiedError['message'],
+                    ]);
                 }
             }
 
@@ -232,6 +253,7 @@ class UploadShootFilesAction
                     'success_count' => count($uploadedFiles),
                     'error_count' => count($errors),
                     'partial_success' => count($uploadedFiles) > 0 && count($errors) > 0,
+                    'upload_limits' => $uploadLimits,
                     'shoot_status' => $shoot->workflow_status,
                     'raw_photo_count' => $shoot->raw_photo_count,
                     'edited_photo_count' => $shoot->edited_photo_count,
@@ -247,12 +269,138 @@ class UploadShootFilesAction
             return [
                 'status' => 500,
                 'payload' => [
-                    'error_type' => 'upload_failed',
+                    'error_type' => 'server_error',
                     'message' => 'Failed to upload files',
                     'error' => $e->getMessage(),
+                    'upload_limits' => $uploadLimits,
                 ],
             ];
         }
+    }
+
+    /**
+     * @return array{
+     *   per_file:string,
+     *   per_file_bytes:int,
+     *   total_request:string,
+     *   total_request_bytes:int,
+     *   max_file_uploads:int
+     * }
+     */
+    protected function buildUploadLimits(): array
+    {
+        return [
+            'per_file' => '500MB',
+            'per_file_bytes' => 500 * 1024 * 1024,
+            'total_request' => (string) ini_get('post_max_size'),
+            'total_request_bytes' => $this->parseSize((string) ini_get('post_max_size')),
+            'max_file_uploads' => (int) ini_get('max_file_uploads'),
+        ];
+    }
+
+    /**
+     * @return array{
+     *   file_name:string,
+     *   filename:string,
+     *   error_type:string,
+     *   message:string,
+     *   retryable:bool,
+     *   next_step:string|null
+     * }
+     */
+    protected function buildUploadError(
+        string $fileName,
+        string $errorType,
+        string $message,
+        bool $retryable,
+        ?string $nextStep = null
+    ): array {
+        return [
+            'file_name' => $fileName,
+            'filename' => $fileName,
+            'error_type' => $errorType,
+            'message' => $message,
+            'retryable' => $retryable,
+            'next_step' => $nextStep,
+        ];
+    }
+
+    /**
+     * @return array{
+     *   file_name:string,
+     *   filename:string,
+     *   error_type:string,
+     *   message:string,
+     *   retryable:bool,
+     *   next_step:string|null
+     * }
+     */
+    protected function classifyUploadException(string $fileName, \Throwable $exception): array
+    {
+        $message = trim((string) $exception->getMessage());
+        $lowerMessage = strtolower($message);
+        $extension = strtolower((string) pathinfo($fileName, PATHINFO_EXTENSION));
+        $isRawFile = in_array($extension, ['nef', 'cr2', 'cr3', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw'], true);
+
+        if (str_contains($lowerMessage, 'permission') || str_contains($lowerMessage, 'forbidden')) {
+            return $this->buildUploadError(
+                $fileName,
+                'forbidden',
+                'You do not have permission to upload this file for the current shoot.',
+                false,
+                'Check the assigned role and shoot permissions before trying again.',
+            );
+        }
+
+        if (str_contains($lowerMessage, 'workflow') || str_contains($lowerMessage, 'stage')) {
+            return $this->buildUploadError(
+                $fileName,
+                'invalid_workflow_stage',
+                'This shoot is not currently in a stage that accepts this upload.',
+                false,
+                'Move the shoot to the correct workflow stage before retrying.',
+            );
+        }
+
+        if (str_contains($lowerMessage, 'network') || str_contains($lowerMessage, 'timeout') || str_contains($lowerMessage, 'connection')) {
+            return $this->buildUploadError(
+                $fileName,
+                'network_failure',
+                'The upload connection was interrupted before this file finished transferring.',
+                true,
+                'Retry this file. If the issue continues, check the network connection.',
+            );
+        }
+
+        if (str_contains($lowerMessage, 'unsupported') || str_contains($lowerMessage, 'format')) {
+            return $this->buildUploadError(
+                $fileName,
+                'unsupported_format',
+                'This file format is not supported for the selected upload lane.',
+                false,
+                'Convert the file to a supported format before uploading again.',
+            );
+        }
+
+        if (str_contains($lowerMessage, 'storage') || str_contains($lowerMessage, 'dropbox') || str_contains($lowerMessage, 'disk') || $isRawFile) {
+            return $this->buildUploadError(
+                $fileName,
+                'storage_failure',
+                $isRawFile
+                    ? 'The RAW file could not be stored or processed after upload.'
+                    : 'The file reached the server but could not be stored successfully.',
+                true,
+                'Retry this file. If it fails again, support should review the upload diagnostics.',
+            );
+        }
+
+        return $this->buildUploadError(
+            $fileName,
+            'server_error',
+            $message !== '' ? $message : 'The server could not finish processing this file.',
+            true,
+            'Retry this file. If the same error repeats, support should inspect the upload logs.',
+        );
     }
 
     protected function parseSize(string $size): int

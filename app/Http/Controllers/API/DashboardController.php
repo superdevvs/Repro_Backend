@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\ShootActivityLog;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Models\UserActivityLog;
 use App\Models\WorkflowLog;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
@@ -845,10 +846,12 @@ class DashboardController extends Controller
 
         // Fetch email notifications based on role
         $emailNotifications = $this->getEmailNotificationsForRole($role, $userId);
+        $emailIssueNotifications = $this->getEmailIssueNotificationsForRole($role, $userId);
 
         // Merge and sort by timestamp
         return $formattedShootLogs
             ->concat($emailNotifications)
+            ->concat($emailIssueNotifications)
             ->sortByDesc('timestamp')
             ->take(50)
             ->values();
@@ -903,6 +906,50 @@ class DashboardController extends Controller
                 'to' => $email->to_address,
                 'subject' => $email->subject,
                 'direction' => $email->direction,
+            ];
+        });
+    }
+
+    protected function getEmailIssueNotificationsForRole(string $role, int $userId): Collection
+    {
+        if (!in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true)) {
+            return collect([]);
+        }
+
+        $logs = UserActivityLog::query()
+            ->with('user:id,name,email,email_status')
+            ->whereIn('event_type', [
+                'email_bounced',
+                'email_delivery_risky',
+                'email_verification_requested',
+                'email_corrected_after_bounce',
+            ])
+            ->latest('occurred_at')
+            ->limit(40)
+            ->get();
+
+        if ($role === 'salesrep') {
+            $logs = $logs
+                ->filter(fn (UserActivityLog $log) => (int) ($log->metadata['sales_rep_id'] ?? 0) === $userId)
+                ->values();
+        }
+
+        return $logs->map(function (UserActivityLog $log) {
+            return [
+                'id' => 'email-issue-' . $log->id,
+                'message' => $log->description ?: $log->title,
+                'action' => $log->event_type,
+                'type' => 'message',
+                'timestamp' => optional($log->occurred_at ?? $log->created_at)->toDateTimeString(),
+                'emailId' => null,
+                'accountId' => $log->user_id,
+                'accountName' => $log->user?->name,
+                'to' => $log->user?->email,
+                'subject' => $log->title,
+                'direction' => 'SYSTEM',
+                'metadata' => array_merge($log->metadata ?? [], [
+                    'email_status' => $log->user?->email_status,
+                ]),
             ];
         });
     }

@@ -48,6 +48,7 @@ use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
+use App\Http\Controllers\API\ClientEmailVerificationController;
 use App\Http\Controllers\API\Admin\SystemOverviewController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
@@ -191,6 +192,10 @@ Route::post('webhooks/twilio/status', [TwilioWebhookController::class, 'status']
 // Cakemail Email Webhooks (no auth - webhook verification handled in controller)
 Route::match(['get', 'post'], 'webhooks/cakemail', [App\Http\Controllers\API\CakemailWebhookController::class, 'handle'])
     ->name('webhooks.cakemail');
+
+Route::get('email/verify/{user}/{hash}', ClientEmailVerificationController::class)
+    ->middleware('signed')
+    ->name('api.email-verification.verify');
 
 // MMM Punchout return callback (public endpoint)
 Route::post('integrations/mmm/return', [IntegrationController::class, 'mmmReturn'])
