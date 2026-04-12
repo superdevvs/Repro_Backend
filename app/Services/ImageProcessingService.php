@@ -12,6 +12,7 @@ use Exception;
 class ImageProcessingService
 {
     protected ImageManager $manager;
+    protected RawThumbnailService $rawThumbnailService;
     
     // Supported RAW formats
     protected const RAW_FORMATS = [
@@ -28,9 +29,10 @@ class ImageProcessingService
         'placeholder' => ['width' => 20, 'height' => 20, 'quality' => 30]
     ];
     
-    public function __construct()
+    public function __construct(?RawThumbnailService $rawThumbnailService = null)
     {
         $this->manager = new ImageManager(new Driver());
+        $this->rawThumbnailService = $rawThumbnailService ?: new RawThumbnailService();
     }
     
     /**
@@ -137,6 +139,8 @@ class ImageProcessingService
                 'web_path' => $generatedPaths['web'] ?? null,
                 'placeholder_path' => $generatedPaths['placeholder'] ?? null,
                 'processed_at' => now(),
+                'processing_failed_at' => null,
+                'processing_error' => null,
             ]);
             
             // Clean up
@@ -177,17 +181,17 @@ class ImageProcessingService
                 Log::warning("RAW preview extraction failed: " . $e->getMessage());
             }
             
-            // Fallback: Try exiftool for formats like CR3 (BMFF container) where byte scanning fails
+            // CR3/BMFF and similar formats are more reliable via the dedicated RAW thumbnail pipeline.
             try {
-                $image = $this->extractWithExiftool($filePath);
+                $image = $this->extractWithRawThumbnailService($filePath);
                 if ($image) {
-                    Log::info("Successfully extracted RAW preview using exiftool");
+                    Log::info("Successfully extracted RAW preview using RawThumbnailService");
                     return $image;
                 }
             } catch (Exception $e) {
-                Log::warning("ExifTool RAW extraction failed: " . $e->getMessage());
+                Log::warning("RawThumbnailService extraction failed: " . $e->getMessage());
             }
-            
+
             // Last resort: Create a placeholder for RAW files that don't have extractable previews
             Log::warning("Could not extract preview from RAW file, using placeholder");
             return $this->createRawPlaceholder();
@@ -268,6 +272,30 @@ class ImageProcessingService
         }
 
         return null;
+    }
+
+    /**
+     * Extract a RAW preview through the shared thumbnail service so CR3 files can
+     * fall back to ExifTool, dcraw, or ImageMagick before we give up.
+     */
+    protected function extractWithRawThumbnailService(string $filePath)
+    {
+        $baseName = pathinfo($filePath, PATHINFO_FILENAME);
+        $thumbnailDir = '_temp/raw-preview-staging';
+        $thumbnailName = $baseName . '_' . uniqid('', true) . '_preview.jpg';
+        $relativePath = $this->rawThumbnailService->generateThumbnail($filePath, $thumbnailDir, $thumbnailName);
+
+        if (!$relativePath || !Storage::disk('public')->exists($relativePath)) {
+            return null;
+        }
+
+        $absolutePath = Storage::disk('public')->path($relativePath);
+        $imageData = @file_get_contents($absolutePath);
+        $image = $imageData !== false ? @imagecreatefromstring($imageData) : false;
+
+        Storage::disk('public')->delete($relativePath);
+
+        return $image !== false ? $image : null;
     }
 
     /**
@@ -544,6 +572,49 @@ class ImageProcessingService
         $newHeight = max($newHeight, 1);
         
         return [$newWidth, $newHeight];
+    }
+
+    public function needsPreviewRegeneration(ShootFile $shootFile): bool
+    {
+        if (!self::isRawFile($shootFile->filename ?? '')) {
+            return false;
+        }
+
+        if (empty($shootFile->thumbnail_path) || empty($shootFile->web_path)) {
+            return true;
+        }
+
+        $previewDimensions = array_filter([
+            $this->getStoredImageDimensions($shootFile->thumbnail_path),
+            $this->getStoredImageDimensions($shootFile->web_path),
+        ]);
+
+        if ($previewDimensions === []) {
+            return true;
+        }
+
+        foreach ($previewDimensions as [$width, $height]) {
+            if ($width > 360 || $height > 360) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    protected function getStoredImageDimensions(?string $path): ?array
+    {
+        if (!$path || !Storage::disk('public')->exists($path)) {
+            return null;
+        }
+
+        $absolutePath = Storage::disk('public')->path($path);
+        $imageInfo = @getimagesize($absolutePath);
+        if ($imageInfo === false) {
+            return null;
+        }
+
+        return [(int) $imageInfo[0], (int) $imageInfo[1]];
     }
     
     /**

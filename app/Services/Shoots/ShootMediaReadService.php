@@ -2,10 +2,12 @@
 
 namespace App\Services\Shoots;
 
+use App\Jobs\ProcessImageJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\ImageProcessingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -18,6 +20,7 @@ class ShootMediaReadService
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootFileAccessService $shootFileAccessService,
+        protected ImageProcessingService $imageProcessingService,
         protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootPaymentStatusSupport $paymentStatusSupport
     ) {
@@ -278,6 +281,10 @@ class ShootMediaReadService
                 $this->queueWatermark($file);
             }
         } else {
+            if ($this->shouldQueueRawPreviewRefresh($file)) {
+                $this->queueRawPreviewRefresh($file);
+            }
+
             if ($this->shouldGenerateOptimizedPreview($file)) {
                 $this->shootFileAccessService->generateOptimizedVersions($file);
                 $file->refresh();
@@ -495,5 +502,37 @@ class ShootMediaReadService
         }
 
         return (bool) preg_match('/\.(jpg|jpeg|png|webp|gif|tif|tiff|heic|heif)$/i', $filename);
+    }
+
+    protected function shouldQueueRawPreviewRefresh(ShootFile $file): bool
+    {
+        if (!$this->authorizationSupport->isRawCameraFile($file)) {
+            return false;
+        }
+
+        if ($file->processing_failed_at?->gt(now()->subMinutes(5))) {
+            return false;
+        }
+
+        return $this->imageProcessingService->needsPreviewRegeneration($file);
+    }
+
+    protected function queueRawPreviewRefresh(ShootFile $file): void
+    {
+        $cacheKey = 'raw_preview_refresh_' . $file->id;
+
+        if (!Cache::add($cacheKey, true, now()->addMinutes(5))) {
+            return;
+        }
+
+        try {
+            ProcessImageJob::dispatch($file->fresh());
+        } catch (\Exception $e) {
+            Cache::forget($cacheKey);
+            Log::warning('Failed to queue RAW preview refresh', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }

@@ -347,6 +347,58 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
+    public function listing_raw_files_queues_reprocessing_for_small_cr3_placeholder_previews(): void
+    {
+        Storage::fake('public');
+        Queue::fake([ProcessImageJob::class]);
+
+        $admin = $this->insertUser(['role' => 'admin']);
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+
+        $thumbnailPath = 'shoots/' . $shoot->id . '/thumbnails/bracket_thumbnail.jpg';
+        $webPath = 'shoots/' . $shoot->id . '/webs/bracket_web.jpg';
+        $rawPath = 'shoots/' . $shoot->id . '/todo/bracket.cr3';
+
+        $thumbnailImage = UploadedFile::fake()->image('thumb.jpg', 300, 300);
+        $webImage = UploadedFile::fake()->image('web.jpg', 300, 300);
+
+        Storage::disk('public')->put($thumbnailPath, file_get_contents($thumbnailImage->getRealPath()));
+        Storage::disk('public')->put($webPath, file_get_contents($webImage->getRealPath()));
+        Storage::disk('public')->put($rawPath, 'raw-binary-placeholder');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'bracket.cr3',
+            'stored_filename' => 'bracket.cr3',
+            'path' => $rawPath,
+            'file_type' => 'image/x-canon-cr3',
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'thumbnail_path' => $thumbnailPath,
+            'web_path' => $webPath,
+            'processed_at' => now(),
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $this->getJson('/api/shoots/' . $shoot->id . '/files?type=raw')
+            ->assertOk()
+            ->assertJsonFragment([
+                'id' => $file->id,
+                'filename' => 'bracket.cr3',
+            ]);
+
+        Queue::assertPushed(ProcessImageJob::class, function (ProcessImageJob $job) use ($file) {
+            $reflection = new \ReflectionProperty($job, 'shootFile');
+            $reflection->setAccessible(true);
+
+            return $reflection->getValue($job)->id === $file->id;
+        });
+    }
+
+    #[Test]
     public function client_can_set_hero_image_for_their_own_shoot_and_it_is_logged_in_activity(): void
     {
         $shoot = $this->createShoot();
