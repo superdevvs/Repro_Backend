@@ -214,7 +214,7 @@ class ShootController extends Controller
         ]);
     }
 
-    public function destroy($shootId)
+    public function destroy(Request $request, $shootId)
     {
         $user = auth()->user();
         if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
@@ -222,10 +222,16 @@ class ShootController extends Controller
         }
 
         $shoot = Shoot::findOrFail($shootId);
-        $this->deleteShootAction->execute($shoot, $user);
+        $deleteMedia = $request->boolean('delete_media');
+        $result = $this->deleteShootAction->execute($shoot, $user, [
+            'delete_media' => $deleteMedia,
+        ]);
 
         return response()->json([
-            'message' => 'Shoot deleted successfully',
+            'message' => $deleteMedia
+                ? 'Shoot and uploaded media deleted successfully'
+                : 'Shoot deleted from the dashboard successfully',
+            'data' => $result,
         ]);
     }
 

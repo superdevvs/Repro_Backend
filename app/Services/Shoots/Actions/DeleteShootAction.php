@@ -8,6 +8,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootMediaMutationSupportService;
 use Throwable;
 use Illuminate\Support\Facades\Log;
 
@@ -17,14 +18,17 @@ class DeleteShootAction
         protected AutomationService $automationService,
         protected MailService $mailService,
         protected ShootActivityLogger $activityLogger,
-        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
+        protected ShootMediaMutationSupportService $shootMediaMutationSupportService
     ) {
     }
 
-    public function execute(Shoot $shoot, User $user): void
+    public function execute(Shoot $shoot, User $user, array $options = []): array
     {
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+        $deleteMedia = (bool) ($options['delete_media'] ?? false);
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'files', 'mediaAlbums']);
         $context = [];
+        $deletedMediaFiles = 0;
 
         try {
             $context = $this->automationService->buildShootContext($shoot);
@@ -79,8 +83,18 @@ class DeleteShootAction
             Log::warning('Failed to log shoot deletion activity: ' . $e->getMessage());
         }
 
+        if ($deleteMedia) {
+            $deletedMediaFiles = $this->shootMediaMutationSupportService->deleteShootMediaAssets($shoot);
+        }
+
         $shootId = $shoot->id;
         $shoot->delete();
         $this->googleCalendarSyncDispatcher->dispatchShootRemoval($shootId);
+
+        return [
+            'shoot_id' => $shootId,
+            'delete_media' => $deleteMedia,
+            'deleted_media_files' => $deletedMediaFiles,
+        ];
     }
 }

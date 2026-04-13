@@ -304,6 +304,7 @@ Route::middleware('auth:sanctum')->post('/system-telemetry/events', [SystemTelem
 
 // Self profile update (authenticated user updates their own profile)
 Route::middleware('auth:sanctum')->put('/profile', [AuthController::class, 'updateProfile']);
+Route::middleware('auth:sanctum')->post('/profile/email-verification/resend', [AuthController::class, 'resendEmailVerification']);
 Route::middleware('auth:sanctum')->post('/profile/tax-document', [AuthController::class, 'uploadTaxDocument']);
 
 // Debug route to check current user role

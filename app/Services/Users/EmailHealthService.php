@@ -21,6 +21,7 @@ class EmailHealthService
         'gmail.co' => 'gmail.com',
         'gmial.com' => 'gmail.com',
         'gmal.com' => 'gmail.com',
+        'gail.com' => 'gmail.com',
         'gnail.com' => 'gmail.com',
         'outlok.com' => 'outlook.com',
         'outlook.con' => 'outlook.com',
@@ -283,6 +284,11 @@ class EmailHealthService
             return $local . '@' . self::DOMAIN_SUGGESTIONS[$domain];
         }
 
+        $closestCommonDomain = $this->detectClosestCommonDomain($domain);
+        if ($closestCommonDomain !== null) {
+            return $local . '@' . $closestCommonDomain;
+        }
+
         $domainParts = explode('.', $domain);
         if (count($domainParts) < 2) {
             return null;
@@ -299,6 +305,50 @@ class EmailHealthService
     protected function isCommonDomain(string $domain): bool
     {
         return in_array(Str::lower($domain), self::COMMON_DOMAINS, true);
+    }
+
+    protected function detectClosestCommonDomain(string $domain): ?string
+    {
+        $normalizedDomain = Str::lower(trim($domain));
+        if ($normalizedDomain === '' || $this->isCommonDomain($normalizedDomain)) {
+            return null;
+        }
+
+        $candidateParts = explode('.', $normalizedDomain);
+        if (count($candidateParts) !== 2) {
+            return null;
+        }
+
+        [$candidateRoot, $candidateTld] = $candidateParts;
+        if ($candidateRoot === '' || $candidateTld === '') {
+            return null;
+        }
+
+        foreach (self::COMMON_DOMAINS as $commonDomain) {
+            $commonParts = explode('.', $commonDomain);
+            if (count($commonParts) !== 2) {
+                continue;
+            }
+
+            [$commonRoot, $commonTld] = $commonParts;
+            if ($candidateTld !== $commonTld) {
+                continue;
+            }
+
+            if (($candidateRoot[0] ?? null) !== ($commonRoot[0] ?? null)) {
+                continue;
+            }
+
+            if (abs(strlen($candidateRoot) - strlen($commonRoot)) > 1) {
+                continue;
+            }
+
+            if (levenshtein($candidateRoot, $commonRoot) <= 1) {
+                return $commonDomain;
+            }
+        }
+
+        return null;
     }
 
     protected function domainCanReceiveMail(string $domain): bool

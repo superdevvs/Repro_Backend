@@ -846,12 +846,12 @@ class DashboardController extends Controller
 
         // Fetch email notifications based on role
         $emailNotifications = $this->getEmailNotificationsForRole($role, $userId);
-        $emailIssueNotifications = $this->getEmailIssueNotificationsForRole($role, $userId);
+        $userAccountNotifications = $this->getUserAccountNotificationsForRole($role, $userId);
 
         // Merge and sort by timestamp
         return $formattedShootLogs
             ->concat($emailNotifications)
-            ->concat($emailIssueNotifications)
+            ->concat($userAccountNotifications)
             ->sortByDesc('timestamp')
             ->take(50)
             ->values();
@@ -910,36 +910,56 @@ class DashboardController extends Controller
         });
     }
 
-    protected function getEmailIssueNotificationsForRole(string $role, int $userId): Collection
+    protected function getUserAccountNotificationsForRole(string $role, int $userId): Collection
     {
-        if (!in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true)) {
+        $baseQuery = UserActivityLog::query()
+            ->with('user:id,name,email,email_status')
+            ->latest('occurred_at')
+            ->limit(40);
+
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            $logs = $baseQuery
+                ->whereIn('event_type', [
+                    'account_created',
+                    'email_bounced',
+                    'email_delivery_risky',
+                    'email_verification_requested',
+                    'email_corrected_after_bounce',
+                ])
+                ->get();
+        } elseif ($role === 'salesrep') {
+            $logs = $baseQuery
+                ->whereIn('event_type', [
+                    'email_bounced',
+                    'email_delivery_risky',
+                    'email_verification_requested',
+                    'email_corrected_after_bounce',
+                ])
+                ->get()
+                ->filter(fn (UserActivityLog $log) => (int) ($log->metadata['sales_rep_id'] ?? 0) === $userId)
+                ->values();
+        } elseif ($role === 'client') {
+            $logs = $baseQuery
+                ->where('user_id', $userId)
+                ->whereIn('event_type', [
+                    'email_bounced',
+                    'email_delivery_risky',
+                    'email_verification_requested',
+                    'email_corrected_after_bounce',
+                ])
+                ->get();
+        } else {
             return collect([]);
         }
 
-        $logs = UserActivityLog::query()
-            ->with('user:id,name,email,email_status')
-            ->whereIn('event_type', [
-                'email_bounced',
-                'email_delivery_risky',
-                'email_verification_requested',
-                'email_corrected_after_bounce',
-            ])
-            ->latest('occurred_at')
-            ->limit(40)
-            ->get();
+        return $logs->map(function (UserActivityLog $log) use ($role) {
+            $accountSearch = rawurlencode((string) ($log->user?->email ?: $log->user?->name ?: ''));
 
-        if ($role === 'salesrep') {
-            $logs = $logs
-                ->filter(fn (UserActivityLog $log) => (int) ($log->metadata['sales_rep_id'] ?? 0) === $userId)
-                ->values();
-        }
-
-        return $logs->map(function (UserActivityLog $log) {
             return [
                 'id' => 'email-issue-' . $log->id,
                 'message' => $log->description ?: $log->title,
                 'action' => $log->event_type,
-                'type' => 'message',
+                'type' => 'system',
                 'timestamp' => optional($log->occurred_at ?? $log->created_at)->toDateTimeString(),
                 'emailId' => null,
                 'accountId' => $log->user_id,
@@ -947,6 +967,10 @@ class DashboardController extends Controller
                 'to' => $log->user?->email,
                 'subject' => $log->title,
                 'direction' => 'SYSTEM',
+                'actionUrl' => $role === 'client'
+                    ? '/settings?tab=profile'
+                    : ($accountSearch !== '' ? '/accounts?role=client&search=' . $accountSearch : '/accounts?role=client'),
+                'actionLabel' => $role === 'client' ? 'Update email' : 'View account',
                 'metadata' => array_merge($log->metadata ?? [], [
                     'email_status' => $log->user?->email_status,
                 ]),

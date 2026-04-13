@@ -50,11 +50,40 @@ class ShootMediaMutationSupportService
         return $shoot->fresh(['files']);
     }
 
+    public function deleteShootMediaAssets(Shoot $shoot): int
+    {
+        $shoot->loadMissing(['files', 'mediaAlbums']);
+        $deletedFileCount = 0;
+
+        foreach ($shoot->files as $file) {
+            $this->deleteStoredAssets($file);
+            $deletedFileCount++;
+        }
+
+        foreach ($shoot->mediaAlbums as $album) {
+            $coverImagePath = $this->normalizePublicStoragePath($album->cover_image_path);
+            if ($coverImagePath && Storage::disk('public')->exists($coverImagePath)) {
+                Storage::disk('public')->delete($coverImagePath);
+            }
+        }
+
+        $this->clearShootFilesCache($shoot);
+
+        return $deletedFileCount;
+    }
+
+    public function deleteStoredAssets(ShootFile $file): void
+    {
+        foreach ($this->collectStoredAssetPaths($file) as $storedPath) {
+            if (Storage::disk('public')->exists($storedPath)) {
+                Storage::disk('public')->delete($storedPath);
+            }
+        }
+    }
+
     public function deleteFile(Shoot $shoot, ShootFile $file): Shoot
     {
-        if ($file->path && Storage::disk('public')->exists($file->path)) {
-            Storage::disk('public')->delete($file->path);
-        }
+        $this->deleteStoredAssets($file);
 
         $file->delete();
 
@@ -106,5 +135,65 @@ class ShootMediaMutationSupportService
             'folder_path' => "/shoots/{$shoot->id}/{$type}/{$photographerId}/",
             'is_watermarked' => false,
         ]);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function collectStoredAssetPaths(ShootFile $file): array
+    {
+        $paths = [
+            $file->path,
+            $file->storage_path,
+            $file->thumbnail_path,
+            $file->web_path,
+            $file->placeholder_path,
+            $file->watermarked_storage_path,
+            $file->watermarked_thumbnail_path,
+            $file->watermarked_web_path,
+            $file->watermarked_placeholder_path,
+        ];
+
+        return array_values(array_filter(array_unique(array_map(
+            fn (?string $path) => $this->normalizePublicStoragePath($path),
+            $paths
+        ))));
+    }
+
+    protected function normalizePublicStoragePath(?string $storedPath): ?string
+    {
+        if (!is_string($storedPath)) {
+            return null;
+        }
+
+        $normalized = trim(str_replace('\\', '/', $storedPath));
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (filter_var($normalized, FILTER_VALIDATE_URL)) {
+            $parsedPath = parse_url($normalized, PHP_URL_PATH);
+            $normalized = is_string($parsedPath) ? $parsedPath : $normalized;
+        }
+
+        $normalized = ltrim($normalized, '/');
+
+        foreach (['storage/', 'public/', 'app/public/'] as $prefix) {
+            if (str_starts_with($normalized, $prefix)) {
+                $normalized = substr($normalized, strlen($prefix));
+                break;
+            }
+        }
+
+        if (preg_match('/^[A-Za-z]:\//', $normalized) === 1) {
+            $publicRoot = str_replace('\\', '/', storage_path('app/public'));
+            if (str_starts_with($normalized, $publicRoot . '/')) {
+                $normalized = substr($normalized, strlen($publicRoot) + 1);
+            } else {
+                return null;
+            }
+        }
+
+        return $normalized !== '' ? $normalized : null;
     }
 }

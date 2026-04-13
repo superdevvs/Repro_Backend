@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\ServiceGroup;
 use App\Models\User;
+use App\Models\UserActivityLog;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -13,16 +14,23 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Users\EmailHealthService;
 
 class AuthController extends Controller
 {
     protected $mailService;
     protected $automationService;
+    protected $emailHealthService;
 
-    public function __construct(MailService $mailService, AutomationService $automationService)
+    public function __construct(
+        MailService $mailService,
+        AutomationService $automationService,
+        EmailHealthService $emailHealthService
+    )
     {
         $this->mailService = $mailService;
         $this->automationService = $automationService;
+        $this->emailHealthService = $emailHealthService;
     }
 
     public function register(Request $request)
@@ -36,15 +44,26 @@ class AuthController extends Controller
             'company_name' => 'nullable|string|max:255',
             'avatar' => 'nullable|url',
             'bio' => 'nullable|string',
+            'email_warning_override' => 'sometimes|boolean',
         ]);
 
+        $emailHealthMutation = $this->resolveEmailHealthMutation(
+            (string) $validated['email'],
+            $request->boolean('email_warning_override')
+        );
+
+        if ($emailHealthMutation['response']) {
+            return $emailHealthMutation['response'];
+        }
+
         // Auto-generate username from email if not provided
-        $username = $validated['username'] ?? explode('@', $validated['email'])[0] . '_' . uniqid();
+        $normalizedEmail = $emailHealthMutation['attributes']['email'] ?? strtolower(trim((string) $validated['email']));
+        $username = $validated['username'] ?? explode('@', $normalizedEmail)[0] . '_' . uniqid();
 
         $user = User::create([
             'name' => $validated['name'],
             'username' => $username,
-            'email' => $validated['email'],
+            'email' => $normalizedEmail,
             'password' => Hash::make($validated['password']),
             'phonenumber' => $validated['phonenumber'] ?? null,
             'company_name' => $validated['company_name'] ?? null,
@@ -52,6 +71,7 @@ class AuthController extends Controller
             'avatar' => $validated['avatar'] ?? null,
             'bio' => $validated['bio'] ?? null,
             'account_status' => 'active',
+            ...$emailHealthMutation['attributes'],
         ]);
 
         if ($user->role === 'client') {
@@ -59,6 +79,31 @@ class AuthController extends Controller
             if ($defaultServiceGroup) {
                 $user->serviceGroups()->sync([$defaultServiceGroup->id]);
             }
+        }
+
+        $this->recordUserActivity(
+            $user,
+            'account_created',
+            'Account created',
+            'A new client registered through the public signup form.',
+            [
+                'role' => $user->role,
+                'email' => $user->email,
+            ]
+        );
+
+        if ($emailHealthMutation['warning_override']) {
+            $this->recordUserActivity(
+                $user,
+                'email_warning_override',
+                'Email warning overridden',
+                'The client confirmed saving an email that matched a likely typo pattern during registration.',
+                [
+                    'email' => $user->email,
+                    'suggested_correction' => $emailHealthMutation['analysis']['suggested_correction'] ?? null,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
         }
 
         $token = $user->createToken('auth_token')->plainTextToken;
@@ -75,9 +120,23 @@ class AuthController extends Controller
             $this->mailService->sendAccountCreatedEmail($user, $resetLink);
         }
 
+        if ($user->role === 'client' && $this->mailService->sendClientEmailVerificationEmail($user)) {
+            $this->emailHealthService->markVerificationSent($user);
+            $this->recordUserActivity(
+                $user,
+                'email_verification_requested',
+                'Email verification sent',
+                'A verification email was sent to the client address after registration.',
+                [
+                    'email' => $user->email,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
+        }
+
         return response()->json([
             'message' => 'User registered successfully.',
-            'user' => $user,
+            'user' => $user->fresh(),
             'token' => $token,
         ], 201);
     }
@@ -173,17 +232,35 @@ class AuthController extends Controller
             'preferences.notifications.shootReminders' => 'nullable|boolean',
             'preferences.notifications.paymentReminders' => 'nullable|boolean',
             'preferences.notifications.weeklySummaries' => 'nullable|boolean',
+            'email_warning_override' => 'sometimes|boolean',
         ]);
 
         $incomingEmail = $validated['email'] ?? null;
         $currentEmail = strtolower((string) $user->email);
         $emailChanged = is_string($incomingEmail) && $incomingEmail !== $currentEmail;
         $passwordChanged = !empty($validated['new_password']);
+        $previousEmail = $currentEmail;
+        $previousEmailStatus = strtolower((string) ($user->email_status ?? ''));
 
         if (($emailChanged || $passwordChanged) && !Hash::check((string) ($validated['current_password'] ?? ''), (string) $user->password)) {
             throw ValidationException::withMessages([
                 'current_password' => ['The current password is incorrect.'],
             ]);
+        }
+
+        $emailHealthMutation = null;
+        if ($emailChanged) {
+            $emailHealthMutation = $this->resolveEmailHealthMutation(
+                (string) $incomingEmail,
+                $request->boolean('email_warning_override')
+            );
+
+            if ($emailHealthMutation['response']) {
+                return $emailHealthMutation['response'];
+            }
+
+            $validated = array_merge($validated, $emailHealthMutation['attributes']);
+            $validated['email'] = $emailHealthMutation['attributes']['email'];
         }
 
         // Map phone_number to phonenumber if provided
@@ -226,10 +303,69 @@ class AuthController extends Controller
             $validated['password'] = $validated['new_password'];
         }
         unset($validated['current_password'], $validated['new_password'], $validated['new_password_confirmation']);
+        unset($validated['email_warning_override']);
 
         $user->fill($validated);
         $user->metadata = $metadata;
         $user->save();
+
+        if ($emailChanged && $emailHealthMutation && $emailHealthMutation['warning_override']) {
+            $this->recordUserActivity(
+                $user,
+                'email_warning_override',
+                'Email warning overridden',
+                'The client confirmed keeping a likely typo email address while updating their profile.',
+                [
+                    'email' => $user->email,
+                    'suggested_correction' => $emailHealthMutation['analysis']['suggested_correction'] ?? null,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                ]
+            );
+        }
+
+        if ($emailChanged && $user->role === 'client') {
+            $verificationSent = false;
+
+            try {
+                if ($this->mailService->sendClientEmailVerificationEmail($user)) {
+                    $this->emailHealthService->markVerificationSent($user);
+                    $verificationSent = true;
+                }
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send client email verification email after self-service profile update', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+
+            if ($verificationSent) {
+                $this->recordUserActivity(
+                    $user,
+                    'email_verification_requested',
+                    'Email verification sent',
+                    'A new verification email was sent after the client updated their email address.',
+                    [
+                        'email' => $user->email,
+                        'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                    ]
+                );
+            }
+
+            if ($previousEmailStatus === EmailHealthService::STATUS_BOUNCED && $previousEmail !== strtolower((string) $user->email)) {
+                $this->recordUserActivity(
+                    $user,
+                    'email_corrected_after_bounce',
+                    'Bounced email corrected',
+                    sprintf('Client email changed from %s to %s after a bounce warning.', $previousEmail, strtolower((string) $user->email)),
+                    [
+                        'previous_email' => $previousEmail,
+                        'updated_email' => strtolower((string) $user->email),
+                        'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                    ]
+                );
+            }
+        }
 
         if ($termsAccepted) {
             $metadata = $user->metadata ?? [];
@@ -259,6 +395,49 @@ class AuthController extends Controller
                 ? 'Profile updated successfully. Please sign in again to continue.'
                 : 'Profile updated successfully',
             'reauth_required' => $reauthRequired,
+            'user' => $user->fresh(),
+        ]);
+    }
+
+    public function resendEmailVerification(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        if (strtolower((string) $user->role) !== 'client') {
+            return response()->json(['message' => 'Only client accounts can resend verification emails.'], 403);
+        }
+
+        if ($user->email_status === EmailHealthService::STATUS_VERIFIED) {
+            return response()->json([
+                'message' => 'This email address is already verified.',
+                'user' => $user->fresh(),
+            ]);
+        }
+
+        if (!$this->mailService->sendClientEmailVerificationEmail($user)) {
+            return response()->json([
+                'message' => 'Unable to send a verification email right now. Please try again.',
+            ], 422);
+        }
+
+        $this->emailHealthService->markVerificationSent($user);
+        $this->recordUserActivity(
+            $user,
+            'email_verification_requested',
+            'Email verification sent',
+            'A new verification email was requested from the client dashboard.',
+            [
+                'email' => $user->email,
+                'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Verification email sent. Check your inbox to verify your address.',
             'user' => $user->fresh(),
         ]);
     }
@@ -444,5 +623,56 @@ class AuthController extends Controller
         }
 
         return $context;
+    }
+
+    protected function resolveEmailHealthMutation(string $email, bool $warningOverride = false): array
+    {
+        $analysis = $this->emailHealthService->analyzeForSave($email);
+
+        if (!$analysis['valid'] || (($analysis['requires_confirmation'] ?? false) && !$warningOverride)) {
+            return [
+                'attributes' => [],
+                'analysis' => $analysis,
+                'warning_override' => $warningOverride,
+                'response' => $this->buildEmailHealthValidationResponse($email, $analysis),
+            ];
+        }
+
+        return [
+            'attributes' => $this->emailHealthService->buildAttributesForSave($email, $analysis),
+            'analysis' => $analysis,
+            'warning_override' => $warningOverride,
+            'response' => null,
+        ];
+    }
+
+    protected function buildEmailHealthValidationResponse(string $email, array $analysis)
+    {
+        return response()->json([
+            'message' => $analysis['error_message'] ?? $analysis['warning_message'] ?? 'Email validation failed.',
+            'errors' => [
+                'email' => [
+                    $analysis['error_message'] ?? $analysis['warning_message'] ?? 'Email validation failed.',
+                ],
+            ],
+            'email_health' => [
+                'status' => $analysis['status'] ?? null,
+                'warning_code' => $analysis['warning_code'] ?? null,
+                'warning_message' => $analysis['warning_message'] ?? null,
+                'suggested_correction' => $analysis['suggested_correction'] ?? null,
+                'requires_confirmation' => (bool) ($analysis['requires_confirmation'] ?? false),
+                'entered_email' => strtolower(trim($email)),
+            ],
+        ], 422);
+    }
+
+    protected function recordUserActivity(
+        User $user,
+        string $eventType,
+        string $title,
+        ?string $description = null,
+        array $metadata = []
+    ): void {
+        UserActivityLog::record($user, $eventType, $title, $description, null, $metadata);
     }
 }
