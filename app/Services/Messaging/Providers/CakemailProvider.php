@@ -11,7 +11,7 @@ use Illuminate\Support\Str;
 
 class CakemailProvider implements EmailProviderInterface
 {
-    protected string $baseUrl = 'https://api.cakemail.dev';
+    protected string $baseUrl;
     protected string $username;
     protected string $password;
     protected ?string $defaultSenderId;
@@ -19,6 +19,7 @@ class CakemailProvider implements EmailProviderInterface
 
     public function __construct()
     {
+        $this->baseUrl = rtrim((string) config('services.cakemail.base_url', 'https://api.cakemail.dev'), '/');
         $this->username = config('services.cakemail.username', '');
         $this->password = config('services.cakemail.password', '');
         $this->defaultSenderId = config('services.cakemail.sender_id');
@@ -37,8 +38,11 @@ class CakemailProvider implements EmailProviderInterface
             throw new \RuntimeException('Failed to authenticate with Cakemail API');
         }
 
-        $senderId = $channel->config_json['cakemail_sender_id'] ?? $this->defaultSenderId;
-        $listId = $channel->config_json['cakemail_list_id'] ?? $this->defaultListId;
+        $channelConfig = is_array($channel->config_json) ? $channel->config_json : [];
+        $senderId = $channelConfig['cakemail_sender_id'] ?? $this->defaultSenderId;
+        $listId = isset($channelConfig['cakemail_list_id'])
+            ? (int) $channelConfig['cakemail_list_id']
+            : $this->defaultListId;
         $messageId = $this->sendSingleEmail($token, $channel, $payload, (string) $payload['to'], $senderId, $listId);
 
         foreach ($this->normalizeRecipientList($payload['cc'] ?? []) as $ccEmail) {
@@ -631,6 +635,8 @@ class CakemailProvider implements EmailProviderInterface
         ?int $listId
     ): string {
         $contentType = $payload['type'] ?? 'transactional';
+        $html = $this->resolveHtmlBody($payload);
+        $text = $this->resolveTextBody($payload, $html);
 
         $emailPayload = [
             'sender' => [
@@ -640,8 +646,8 @@ class CakemailProvider implements EmailProviderInterface
             'content' => [
                 'type' => $contentType,
                 'subject' => $payload['subject'] ?? 'Message from Repro HQ',
-                'html' => $payload['html'] ?? $payload['body_html'] ?? '',
-                'text' => $payload['text'] ?? $payload['body_text'] ?? strip_tags($payload['html'] ?? ''),
+                'html' => $html,
+                'text' => $text,
                 'encoding' => $payload['encoding'] ?? 'utf-8',
             ],
             'email' => $recipientEmail,
@@ -730,5 +736,40 @@ class CakemailProvider implements EmailProviderInterface
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    protected function resolveHtmlBody(array $payload): string
+    {
+        $html = trim((string) ($payload['html'] ?? $payload['body_html'] ?? ''));
+
+        if ($html !== '') {
+            return $html;
+        }
+
+        $text = trim((string) ($payload['text'] ?? $payload['body_text'] ?? ''));
+        if ($text === '') {
+            return '';
+        }
+
+        $escaped = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+
+        return nl2br($escaped, false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    protected function resolveTextBody(array $payload, string $html): string
+    {
+        $text = trim((string) ($payload['text'] ?? $payload['body_text'] ?? ''));
+
+        if ($text !== '') {
+            return $text;
+        }
+
+        return trim(html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8'));
     }
 }

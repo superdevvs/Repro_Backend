@@ -63,14 +63,17 @@ class MailService
 
     public function generateClientEmailVerificationLink(User $user): string
     {
-        return URL::temporarySignedRoute(
+        $relativeSignedUrl = URL::temporarySignedRoute(
             'api.email-verification.verify',
             now()->addDays(7),
             [
                 'user' => $user->id,
                 'hash' => sha1(Str::lower((string) $user->email)),
             ],
+            absolute: false,
         );
+
+        return $this->buildAbsoluteApiUrl($relativeSignedUrl);
     }
 
     public function sendClientEmailVerificationEmail(User $user): bool
@@ -80,6 +83,7 @@ class MailService
             $html = view('emails.client_email_verification', [
                 'user' => $user,
                 'verificationLink' => $verificationLink,
+                'dashboardUrl' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
             ])->render();
 
             $this->sendViaCakemail(
@@ -109,6 +113,17 @@ class MailService
 
             return false;
         }
+    }
+
+    private function buildAbsoluteApiUrl(string $path): string
+    {
+        if (Str::startsWith($path, ['http://', 'https://'])) {
+            return $path;
+        }
+
+        $apiBaseUrl = rtrim((string) config('app.url', 'https://api.reprodashboard.com'), '/');
+
+        return $apiBaseUrl . '/' . ltrim($path, '/');
     }
 
     /**

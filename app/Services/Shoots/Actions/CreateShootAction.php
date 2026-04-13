@@ -253,13 +253,14 @@ class CreateShootAction
                 }
             }
 
+            $shootBookedDispatch = null;
             if (!$treatAsClientRequest) {
                 try {
                     $context = $automationService->buildShootContext($shoot);
                     if ($shoot->rep) {
                         $context['rep'] = $shoot->rep;
                     }
-                    $automationService->handleEvent('SHOOT_BOOKED', $context);
+                    $shootBookedDispatch = $automationService->handleEvent('SHOOT_BOOKED', $context);
                 } catch (\Exception $e) {
                     Log::error('Failed to trigger SHOOT_BOOKED automation', [
                         'shoot_id' => $shoot->id,
@@ -272,7 +273,7 @@ class CreateShootAction
                 try {
                     $shoot->loadMissing(['client', 'photographer', 'services']);
                     $client = $shoot->client;
-                    if ($client && !$automationService->hasActiveTrigger('SHOOT_BOOKED')) {
+                    if ($client && $automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false) {
                         $paymentLink = $mailService->generatePaymentLink($shoot);
                         $mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
                     }

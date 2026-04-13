@@ -1016,12 +1016,18 @@ class StripePaymentController extends Controller
             $context['payment_id'] = $payment->id;
             $context['payment_status'] = $newPaymentStatus;
             $context['amount_paid'] = $totalPaid;
-            $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
+            $paymentCompletedDispatch = $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
         }
 
         // Send payment confirmation email fallback only when no automation is active.
         $client = User::find($shoot->client_id);
-        if ($client && !$this->automationService->hasActiveTrigger('PAYMENT_COMPLETED')) {
+        if (
+            $client
+            && $this->automationService->shouldUseFallback(
+                'PAYMENT_COMPLETED',
+                $paymentCompletedDispatch ?? null
+            ) !== false
+        ) {
             try {
                 $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment);
 

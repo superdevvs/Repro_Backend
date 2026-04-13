@@ -87,7 +87,7 @@ class ScheduleShootAction
         $shootChangeSummary = $this->mailService->buildShootChangeSummary($beforeSnapshot, $shoot);
         $context['shoot_changes'] = $shootChangeSummary['summary'];
         $context['shoot_changes_html'] = $shootChangeSummary['html'];
-        $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
+        $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
 
         if ($originalPhotographerId && $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
             $previousPhotographer = User::find($originalPhotographerId);
@@ -108,7 +108,7 @@ class ScheduleShootAction
             $this->automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $context);
         }
 
-        if ($shoot->client && !$this->automationService->hasActiveTrigger('SHOOT_SCHEDULED')) {
+        if ($shoot->client && $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false) {
             $paymentLink = $this->mailService->generatePaymentLink($shoot);
             $this->mailService->sendShootScheduledEmail($shoot->client, $shoot, $paymentLink);
         }

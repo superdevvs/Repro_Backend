@@ -80,6 +80,8 @@ return Application::configure(basePath: dirname(__DIR__))
                     $status = 403;
                 } elseif ($e instanceof \Illuminate\Validation\ValidationException) {
                     $status = 422;
+                } elseif ($e instanceof \Illuminate\Routing\Exceptions\InvalidSignatureException) {
+                    $status = 403;
                 } elseif ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
                     $status = 404;
                 } elseif ($e instanceof \Illuminate\Auth\AuthenticationException) {

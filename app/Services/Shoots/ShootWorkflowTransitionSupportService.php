@@ -134,9 +134,12 @@ class ShootWorkflowTransitionSupportService
             $context['user'] = $user;
             $context['decline_reason'] = $shoot->declined_reason;
 
-            if ($this->automationService->hasActiveTrigger('SHOOT_REQUEST_DECLINED')) {
-                $this->automationService->handleEvent('SHOOT_REQUEST_DECLINED', $context);
-            } elseif ($shoot->client && $shoot->client->email) {
+            $declineDispatch = $this->automationService->handleEvent('SHOOT_REQUEST_DECLINED', $context);
+            if (
+                $shoot->client
+                && $shoot->client->email
+                && $this->automationService->shouldUseFallback('SHOOT_REQUEST_DECLINED', $declineDispatch) !== false
+            ) {
                 $this->mailService->sendShootRequestDeclinedEmail($shoot->client, $shoot);
             }
         } catch (\Exception $e) {

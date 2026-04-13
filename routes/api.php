@@ -194,7 +194,6 @@ Route::match(['get', 'post'], 'webhooks/cakemail', [App\Http\Controllers\API\Cak
     ->name('webhooks.cakemail');
 
 Route::get('email/verify/{user}/{hash}', ClientEmailVerificationController::class)
-    ->middleware('signed')
     ->name('api.email-verification.verify');
 
 // MMM Punchout return callback (public endpoint)

@@ -36,9 +36,31 @@ class AutomationService
     /**
      * Handle an automation trigger event
      */
-    public function handleEvent(string $triggerType, array $context): void
+    public function handleEvent(string $triggerType, array $context): array
     {
-        $this->workflowExecutor->executeEventTrigger($triggerType, $context);
+        try {
+            return $this->workflowExecutor->executeEventTrigger($triggerType, $context);
+        } catch (\Throwable $exception) {
+            Log::error('Automation event dispatch failed before workflow execution completed', [
+                'trigger_type' => $triggerType,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return $this->emptyDispatchSummary($triggerType, $exception->getMessage());
+        }
+    }
+
+    public function shouldUseFallback(string $triggerType, ?array $dispatchResult = null): bool
+    {
+        if (!is_array($dispatchResult)) {
+            return true;
+        }
+
+        if (($dispatchResult['active_rule_count'] ?? 0) === 0) {
+            return true;
+        }
+
+        return !($dispatchResult['handled'] ?? false);
     }
 
     /**
@@ -376,8 +398,10 @@ class AutomationService
             $context['tags_json'] = [$tag];
 
             if ($this->hasActiveTrigger('SHOOT_REMINDER')) {
-                $this->handleEvent('SHOOT_REMINDER', $context);
-                continue;
+                $dispatchResult = $this->handleEvent('SHOOT_REMINDER', $context);
+                if ($this->shouldUseFallback('SHOOT_REMINDER', $dispatchResult) === false) {
+                    continue;
+                }
             }
 
             if ($this->mailService && !empty($context['client'])) {
@@ -713,6 +737,32 @@ class AutomationService
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @return array{
+     *   trigger_type: string,
+     *   active_rule_count: int,
+     *   run_count: int,
+     *   completed_run_count: int,
+     *   waiting_run_count: int,
+     *   failed_run_count: int,
+     *   handled: bool,
+     *   errors: array<int, array{automation_id: int, message: string}>
+     * }
+     */
+    private function emptyDispatchSummary(string $triggerType, ?string $errorMessage = null): array
+    {
+        return [
+            'trigger_type' => $triggerType,
+            'active_rule_count' => 0,
+            'run_count' => 0,
+            'completed_run_count' => 0,
+            'waiting_run_count' => 0,
+            'failed_run_count' => $errorMessage ? 1 : 0,
+            'handled' => false,
+            'errors' => $errorMessage ? [['automation_id' => 0, 'message' => $errorMessage]] : [],
+        ];
     }
 }
 

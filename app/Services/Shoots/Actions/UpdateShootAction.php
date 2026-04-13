@@ -459,23 +459,6 @@ class UpdateShootAction
                 ->unique('id')
                 ->values();
 
-            try {
-                if ($client && !$automationService->hasActiveTrigger('SHOOT_UPDATED')) {
-                    $mailService->sendShootUpdatedEmail(
-                        $client,
-                        $shoot,
-                        $changesSummary,
-                        $notifyClient,
-                        $photographerChanged ? false : $notifyPhotographer
-                    );
-                }
-            } catch (\Exception $e) {
-                Log::error('Failed to send shoot updated email', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-
             if (
                 $photographerNewlyAssigned
                 && $shoot->photographer
@@ -530,6 +513,7 @@ class UpdateShootAction
                 }
             }
 
+            $shootUpdatedDispatch = null;
             try {
                 $context = $automationService->buildShootContext($shoot);
                 if ($shoot->rep) {
@@ -542,7 +526,7 @@ class UpdateShootAction
                 $context['photographer_changed'] = $photographerChanged;
                 $context['system_email_already_sent'] = $systemEmailAlreadySent;
 
-                $automationService->handleEvent('SHOOT_UPDATED', $context);
+                $shootUpdatedDispatch = $automationService->handleEvent('SHOOT_UPDATED', $context);
 
                 if ($photographerChanged) {
                     $context['previous_photographer_id'] = $originalPhotographerId;
@@ -577,6 +561,23 @@ class UpdateShootAction
                     'shoot_id' => $shoot->id,
                     'error' => $e->getMessage(),
                 ]);
+            }
+
+            if ($client && $automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false) {
+                try {
+                    $mailService->sendShootUpdatedEmail(
+                        $client,
+                        $shoot,
+                        $changesSummary,
+                        $notifyClient,
+                        $photographerChanged ? false : $notifyPhotographer
+                    );
+                } catch (\Exception $e) {
+                    Log::error('Failed to send shoot updated email', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
             if (

@@ -334,12 +334,18 @@ class PaymentController extends Controller
                     $context['payment_id'] = $payment->id;
                     $context['payment_status'] = $newPaymentStatus;
                     $context['amount_paid'] = $totalPaid;
-                    $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
+                    $paymentCompletedDispatch = $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
                 }
 
                 // Dispatch payment confirmation email fallback only when no automation is active.
                 $client = User::find($shoot->client_id);
-                if ($client && !$this->automationService->hasActiveTrigger('PAYMENT_COMPLETED')) {
+                if (
+                    $client
+                    && $this->automationService->shouldUseFallback(
+                        'PAYMENT_COMPLETED',
+                        $paymentCompletedDispatch ?? null
+                    ) !== false
+                ) {
                     try {
                         $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment);
                         
@@ -573,7 +579,25 @@ class PaymentController extends Controller
                             $context['payment_id'] = $paymentRecord->id;
                             $context['payment_status'] = $newPaymentStatus;
                             $context['amount_paid'] = $totalPaid;
-                            $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
+                            $paymentCompletedDispatch = $this->automationService->handleEvent('PAYMENT_COMPLETED', $context);
+
+                            $client = User::find($shoot->client_id);
+                            if (
+                                $client
+                                && $this->automationService->shouldUseFallback(
+                                    'PAYMENT_COMPLETED',
+                                    $paymentCompletedDispatch ?? null
+                                ) !== false
+                            ) {
+                                try {
+                                    $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $paymentRecord);
+                                } catch (\Exception $e) {
+                                    Log::error('Failed to send payment confirmation email after direct Square payment', [
+                                        'shoot_id' => $shoot->id,
+                                        'error' => $e->getMessage(),
+                                    ]);
+                                }
+                            }
                         }
 
                         return response()->json([

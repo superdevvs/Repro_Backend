@@ -385,9 +385,8 @@ class UserController extends Controller
             $accountCreatedContext['client'] = $user;
             $accountCreatedContext['password_reset_link'] = $resetLink;
 
-            if ($automationService->hasActiveTrigger('ACCOUNT_CREATED')) {
-                $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-            } else {
+            $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
+            if ($automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
                 $mailService->sendAccountCreatedEmail($user, $resetLink);
             }
 

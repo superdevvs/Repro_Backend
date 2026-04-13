@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Message;
 use App\Models\User;
 use App\Models\UserActivityLog;
+use App\Services\MailService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
@@ -208,6 +209,52 @@ class UserEmailHealthTest extends TestCase
         $response->assertJsonPath('email_health.status', 'risky');
         $response->assertJsonPath('email_health.warning_code', 'common_typo');
         $response->assertJsonPath('email_health.suggested_correction', 'name@gmail.com');
+    }
+
+    public function test_client_email_verification_link_validates_successfully_even_if_the_app_url_changes(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $link = app(MailService::class)->generateClientEmailVerificationLink($client);
+
+        config(['app.url' => 'https://different-public-host.example']);
+
+        $uri = parse_url($link, PHP_URL_PATH) . '?' . parse_url($link, PHP_URL_QUERY);
+
+        $this->get($uri)
+            ->assertOk()
+            ->assertSee('Email verified')
+            ->assertSee('Open dashboard');
+
+        $this->assertDatabaseHas('users', [
+            'id' => $client->id,
+            'email_status' => 'verified',
+        ]);
+    }
+
+    public function test_invalid_client_email_verification_signature_renders_a_branded_html_page(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $link = app(MailService::class)->generateClientEmailVerificationLink($client);
+        $path = (string) parse_url($link, PHP_URL_PATH);
+
+        parse_str((string) parse_url($link, PHP_URL_QUERY), $query);
+        $query['signature'] = 'tampered-signature';
+
+        $this->get($path . '?' . http_build_query($query))
+            ->assertStatus(403)
+            ->assertSee('Verification link invalid')
+            ->assertSee('Open dashboard')
+            ->assertDontSee('"message":"Invalid signature."', false);
     }
 
     public function test_sales_rep_can_list_all_client_accounts_company_wide(): void

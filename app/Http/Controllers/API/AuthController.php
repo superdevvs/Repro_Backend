@@ -114,9 +114,8 @@ class AuthController extends Controller
         $accountCreatedContext['client'] = $user;
         $accountCreatedContext['password_reset_link'] = $resetLink;
 
-        if ($this->automationService->hasActiveTrigger('ACCOUNT_CREATED')) {
-            $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-        } else {
+        $accountCreatedDispatch = $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
+        if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
             $this->mailService->sendAccountCreatedEmail($user, $resetLink);
         }
 

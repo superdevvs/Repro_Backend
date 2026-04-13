@@ -321,13 +321,13 @@ class ShootMutationActionsTest extends TestCase
                     && ($context['shoot_id'] ?? null) === $shoot->id
                     && ($context['request_modified'] ?? false) === true;
             })
-            ->andReturnNull();
+            ->andReturnUsing(fn (string $triggerType) => $this->emptyAutomationDispatchSummary($triggerType));
         $automationService->shouldReceive('handleEvent')
             ->zeroOrMoreTimes()
             ->withArgs(function (string $triggerType) {
                 return in_array($triggerType, ['SHOOT_BOOKED', 'SHOOT_SCHEDULED'], true);
             })
-            ->andReturnNull();
+            ->andReturnUsing(fn (string $triggerType) => $this->emptyAutomationDispatchSummary($triggerType));
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
@@ -751,7 +751,7 @@ class ShootMutationActionsTest extends TestCase
         $response = $this->deleteJson("/api/shoots/{$shoot->id}");
 
         $response->assertOk()
-            ->assertJsonPath('message', 'Shoot deleted successfully');
+            ->assertJsonPath('message', 'Shoot deleted from the dashboard successfully');
 
         $this->assertDatabaseMissing('shoots', [
             'id' => $shoot->id,
@@ -809,7 +809,10 @@ class ShootMutationActionsTest extends TestCase
                 'photographers' => $shoot->photographer ? [$shoot->photographer] : [],
             ]
         );
-        $automationService->shouldReceive('handleEvent')->zeroOrMoreTimes()->andReturnNull();
+        $automationService->shouldReceive('handleEvent')
+            ->zeroOrMoreTimes()
+            ->andReturnUsing(fn (string $triggerType) => $this->emptyAutomationDispatchSummary($triggerType));
+        $automationService->shouldReceive('shouldUseFallback')->zeroOrMoreTimes()->andReturnTrue();
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
@@ -834,5 +837,19 @@ class ShootMutationActionsTest extends TestCase
         $configure($mailService);
 
         $this->app->instance(MailService::class, $mailService);
+    }
+
+    protected function emptyAutomationDispatchSummary(string $triggerType): array
+    {
+        return [
+            'trigger_type' => $triggerType,
+            'active_rule_count' => 0,
+            'run_count' => 0,
+            'completed_run_count' => 0,
+            'waiting_run_count' => 0,
+            'failed_run_count' => 0,
+            'handled' => false,
+            'errors' => [],
+        ];
     }
 }

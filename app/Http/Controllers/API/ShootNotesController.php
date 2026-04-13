@@ -60,7 +60,7 @@ class ShootNotesController extends Controller
         ]);
 
         $allowedTypes = match ($role) {
-            'admin', 'superadmin', 'editing_manager' => ['shoot', 'company', 'photographer', 'editing'],
+            'admin', 'superadmin' => ['shoot', 'company', 'photographer', 'editing'],
             'client' => ['shoot'],
             'photographer' => ['photographer', 'shoot'],
             'editor' => [],
@@ -126,7 +126,7 @@ class ShootNotesController extends Controller
         ]);
 
         $allowed = [];
-        if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        if (in_array($role, ['admin', 'superadmin'], true)) {
             $allowed = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
         } elseif ($role === 'client') {
             $allowed = ['shoot_notes'];
@@ -176,7 +176,7 @@ class ShootNotesController extends Controller
         ]);
 
         $allowed = [];
-        if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        if (in_array($role, ['admin', 'superadmin'], true)) {
             $allowed = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
         } elseif ($role === 'client') {
             $allowed = ['shoot_notes'];

@@ -28,7 +28,7 @@ class AutomationWorkflowExecutor
     ) {
     }
 
-    public function executeEventTrigger(string $triggerType, array $context): void
+    public function executeEventTrigger(string $triggerType, array $context): array
     {
         $rules = AutomationRule::query()
             ->active()
@@ -36,9 +36,27 @@ class AutomationWorkflowExecutor
             ->with(['template', 'channel'])
             ->get();
 
+        $runs = [];
+        $errors = [];
+
         foreach ($rules as $rule) {
-            $this->executeAutomation($rule, $context);
+            try {
+                $runs[] = $this->executeAutomation($rule, $context);
+            } catch (\Throwable $exception) {
+                $errors[] = [
+                    'automation_id' => $rule->id,
+                    'message' => $exception->getMessage(),
+                ];
+
+                Log::error('Automation workflow event dispatch failed', [
+                    'trigger_type' => $triggerType,
+                    'automation_id' => $rule->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
         }
+
+        return $this->summarizeEventDispatch($triggerType, $rules, $runs, $errors);
     }
 
     public function executeAutomation(AutomationRule $automation, array $context, bool $simulate = false): array|AutomationRun
@@ -746,5 +764,47 @@ class AutomationWorkflowExecutor
         }
 
         return $trace;
+    }
+
+    /**
+     * @param  Collection<int, AutomationRule>  $rules
+     * @param  array<int, AutomationRun>  $runs
+     * @param  array<int, array{automation_id: int, message: string}>  $errors
+     * @return array{
+     *   trigger_type: string,
+     *   active_rule_count: int,
+     *   run_count: int,
+     *   completed_run_count: int,
+     *   waiting_run_count: int,
+     *   failed_run_count: int,
+     *   handled: bool,
+     *   errors: array<int, array{automation_id: int, message: string}>
+     * }
+     */
+    private function summarizeEventDispatch(string $triggerType, Collection $rules, array $runs, array $errors): array
+    {
+        $completedRunCount = collect($runs)
+            ->filter(fn ($run) => $run instanceof AutomationRun && $run->status === 'completed')
+            ->count();
+        $waitingRunCount = collect($runs)
+            ->filter(fn ($run) => $run instanceof AutomationRun && $run->status === 'waiting')
+            ->count();
+        $failedRunCount = collect($runs)
+            ->filter(fn ($run) => !($run instanceof AutomationRun) || $run->status === 'failed')
+            ->count() + count($errors);
+        $activeRuleCount = $rules->count();
+
+        return [
+            'trigger_type' => $triggerType,
+            'active_rule_count' => $activeRuleCount,
+            'run_count' => count($runs),
+            'completed_run_count' => $completedRunCount,
+            'waiting_run_count' => $waitingRunCount,
+            'failed_run_count' => $failedRunCount,
+            'handled' => $activeRuleCount > 0
+                && $failedRunCount === 0
+                && ($completedRunCount + $waitingRunCount) === $activeRuleCount,
+            'errors' => $errors,
+        ];
     }
 }

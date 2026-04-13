@@ -113,13 +113,6 @@ class BookingTools
                 // Create Dropbox folders if scheduled
                 if ($shoot->status === 'scheduled') {
                     $this->dropboxService->createShootFolders($shoot);
-                    
-                    // Send email notification
-                    $client = User::find($userId);
-                    if ($client && !$this->automationService->hasActiveTrigger('SHOOT_BOOKED')) {
-                        $paymentLink = $this->mailService->generatePaymentLink($shoot);
-                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
-                    }
                 }
 
                 $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
@@ -127,10 +120,18 @@ class BookingTools
                 if ($shoot->rep) {
                     $context['rep'] = $shoot->rep;
                 }
-                $this->automationService->handleEvent('SHOOT_BOOKED', $context);
+                $shootBookedDispatch = $this->automationService->handleEvent('SHOOT_BOOKED', $context);
                 if ($shoot->scheduled_at) {
                     $context['scheduled_at'] = $shoot->scheduled_at?->toISOString();
                     $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
+                }
+
+                if ($shoot->status === 'scheduled') {
+                    $client = User::find($userId);
+                    if ($client && $this->automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false) {
+                        $paymentLink = $this->mailService->generatePaymentLink($shoot);
+                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
+                    }
                 }
 
                 DB::commit();

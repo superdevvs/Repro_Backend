@@ -110,9 +110,9 @@ class ApproveShootAction
             $this->automationService->handleEvent($requestApprovalTrigger, $context);
         }
         $this->automationService->handleEvent('SHOOT_BOOKED', $context);
-        $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
+        $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
 
-        if (!$this->automationService->hasActiveTrigger('SHOOT_SCHEDULED')) {
+        if ($this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false) {
             $paymentLink = $shoot->client ? $this->mailService->generatePaymentLink($shoot) : '';
 
             if ($shoot->client && $notifyClient !== false) {
