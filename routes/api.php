@@ -527,7 +527,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/files/{file}/preview', [ShootMediaController::class, 'previewFile']);
     Route::get('/shoots/{shoot}/media', [ShootMediaController::class, 'listMedia']);
     Route::get('/shoots/{shoot}/media/download-zip', [ShootMediaController::class, 'downloadMediaZip']);
-    Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor');
+    Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor,admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');
     Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
     Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootMediaController::class, 'revokeShareLink']);

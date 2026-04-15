@@ -450,15 +450,15 @@ class ShootMediaController extends Controller
     public function editorDownloadRaw(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if ($user->role !== 'editor') {
+        if (!$this->shootAuthorizationSupport->hasRole($user, ['editor', 'admin', 'superadmin', 'editing_manager'])) {
             return $this->withCors(
-                response()->json(['error' => 'Only editors can download raw files via this endpoint'], 403),
+                response()->json(['error' => 'You are not authorized to download raw files via this endpoint'], 403),
                 $request,
             );
         }
         if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
             return $this->withCors(
-                response()->json(['error' => 'You can only access raw files for shoots assigned to you'], 403),
+                response()->json(['error' => 'You are not authorized to access raw files for this shoot'], 403),
                 $request,
             );
         }

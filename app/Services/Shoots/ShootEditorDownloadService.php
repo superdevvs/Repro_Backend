@@ -16,6 +16,7 @@ class ShootEditorDownloadService
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootActivityLogger $activityLogger,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected ShootShareLinkService $shootShareLinkService,
         protected ShootEditingAssignmentService $shootEditingAssignmentService
     ) {
@@ -33,7 +34,11 @@ class ShootEditorDownloadService
             $filesQuery->whereIn('id', $fileIdsParam);
         }
 
-        $files = $this->shootEditingAssignmentService->filterFilesForEditor($filesQuery->get(), $shoot, $user);
+        $allFiles = $filesQuery->get();
+        $isEditorDownload = $this->shootAuthorizationSupport->hasRole($user, ['editor']);
+        $files = $isEditorDownload
+            ? $this->shootEditingAssignmentService->filterFilesForEditor($allFiles, $shoot, $user)
+            : $allFiles;
         $fileCount = $files->count();
         $dropboxEnabled = $this->dropboxService->isEnabled();
         $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
@@ -53,16 +58,19 @@ class ShootEditorDownloadService
 
         $this->activityLogger->log(
             $shoot,
-            'raw_downloaded_by_editor',
+            $isEditorDownload ? 'raw_downloaded_by_editor' : 'raw_downloaded_by_admin',
             [
-                'editor_id' => $user->id,
-                'editor_name' => $user->name,
+                'downloader_id' => $user->id,
+                'downloader_name' => $user->name,
+                'downloader_role' => $user->role,
                 'file_count' => $fileCount > 0 ? $fileCount : 'all',
             ],
             $user
         );
 
-        $this->notifyAdminsOfEditorDownload($shoot, $user, $fileCount > 0 ? $fileCount : 0);
+        if ($isEditorDownload) {
+            $this->notifyAdminsOfEditorDownload($shoot, $user, $fileCount > 0 ? $fileCount : 0);
+        }
 
         if ($dropboxEnabled && $folderPath && empty($fileIdsParam)) {
             try {

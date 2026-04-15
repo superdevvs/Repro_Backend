@@ -410,6 +410,43 @@ class ShootMediaActionsTest extends TestCase
     }
 
     /** @test */
+    public function admin_can_download_raw_files_from_an_in_progress_shoot(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+        $rawPath = 'shoots/' . $shoot->id . '/todo/raw-photo.jpg';
+        Storage::disk('public')->put($rawPath, 'raw-photo-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'raw-photo.jpg',
+            'stored_filename' => 'raw-photo.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
+            'Accept' => 'application/json, application/zip',
+        ]);
+
+        $response->assertOk();
+        $this->assertStringContainsString(
+            'shoot-' . $shoot->id . '-raw-files.zip',
+            (string) $response->headers->get('content-disposition')
+        );
+    }
+
+    /** @test */
     public function original_media_zip_download_returns_preparing_and_queues_generation(): void
     {
         Storage::fake('public');
