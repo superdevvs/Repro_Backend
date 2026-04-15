@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
@@ -23,7 +24,8 @@ class ShootPaymentsController extends Controller
         protected InvoiceService $invoiceService,
         protected MailService $mailService,
         protected ShootActivityLogger $activityLogger,
-        protected ShootPaymentStatusSupport $shootPaymentStatusSupport
+        protected ShootPaymentStatusSupport $shootPaymentStatusSupport,
+        protected StripePaymentMetadataService $stripePaymentMetadataService
     ) {
     }
 
@@ -408,7 +410,14 @@ class ShootPaymentsController extends Controller
 
     protected function buildPaymentDetailsPayload(Shoot $shoot, bool $includeClient): array
     {
-        $latestCompletedPayment = $this->resolveLatestCompletedPayment($shoot);
+        $payments = ($shoot->payments ?? collect())->map(function ($payment) {
+            if (!$payment instanceof Payment) {
+                return $payment;
+            }
+
+            return $this->stripePaymentMetadataService->hydratePaymentRecordIfNeeded($payment);
+        });
+        $latestReceiptPayment = $this->stripePaymentMetadataService->resolveLatestReceiptPayment($payments);
 
         return [
             'id' => $shoot->id,
@@ -433,45 +442,18 @@ class ShootPaymentsController extends Controller
                     'quantity' => (int) ($service->pivot->quantity ?? 1),
                 ],
             ]),
-            'payments' => $shoot->payments->map(fn ($payment) => [
-                'amount' => (float) $payment->amount,
-                'status' => $payment->status,
-            ]),
+            'payments' => $payments
+                ->filter(fn ($payment) => $payment instanceof Payment)
+                ->map(fn (Payment $payment) => $this->stripePaymentMetadataService->serializePayment($payment))
+                ->values()
+                ->all(),
             'payment_status' => $shoot->payment_status,
             'amount_due' => max((float) ($shoot->total_quote ?? 0) - $shoot->calculateCanonicalTotalPaid(), 0),
-            'receipt' => $this->buildReceiptPayload($latestCompletedPayment),
+            'receipt' => $this->stripePaymentMetadataService->buildReceiptPayload($latestReceiptPayment),
             'client' => $includeClient && $shoot->client ? [
                 'name' => $shoot->client->name,
                 'email' => $shoot->client->email,
             ] : null,
-        ];
-    }
-
-    protected function resolveLatestCompletedPayment(Shoot $shoot): ?Payment
-    {
-        $payments = $shoot->payments ?? collect();
-
-        return $payments
-            ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
-            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? optional($payment->created_at)->timestamp ?? 0)
-            ->first();
-    }
-
-    protected function buildReceiptPayload(?Payment $payment): ?array
-    {
-        if (!$payment) {
-            return null;
-        }
-
-        $paidAt = $payment->processed_at ?? $payment->created_at;
-
-        return [
-            'number' => 'PAY-' . str_pad((string) $payment->id, 6, '0', STR_PAD_LEFT),
-            'amount' => (float) $payment->amount,
-            'currency' => strtoupper((string) ($payment->currency ?: 'USD')),
-            'paid_at' => $paidAt?->toIso8601String(),
-            'provider' => 'stripe',
-            'status' => $payment->status,
         ];
     }
 }

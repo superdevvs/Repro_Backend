@@ -8,6 +8,7 @@ use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Models\User;
+use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -27,12 +28,19 @@ class StripePaymentController extends Controller
     protected $mailService;
     protected $activityLogger;
     protected $automationService;
+    protected $stripePaymentMetadataService;
 
-    public function __construct(MailService $mailService, ShootActivityLogger $activityLogger, AutomationService $automationService)
+    public function __construct(
+        MailService $mailService,
+        ShootActivityLogger $activityLogger,
+        AutomationService $automationService,
+        StripePaymentMetadataService $stripePaymentMetadataService
+    )
     {
         $this->mailService = $mailService;
         $this->activityLogger = $activityLogger;
         $this->automationService = $automationService;
+        $this->stripePaymentMetadataService = $stripePaymentMetadataService;
     }
 
     /**
@@ -612,7 +620,7 @@ class StripePaymentController extends Controller
         }
 
         try {
-            return DB::transaction(function () use ($shootId, $paymentIntentId, $amountTotal, $currency, $sessionId) {
+            return DB::transaction(function () use ($shootId, $paymentIntentId, $amountTotal, $currency, $sessionId, $session) {
                 $shoot = Shoot::find($shootId);
 
                 if (!$shoot) {
@@ -636,6 +644,7 @@ class StripePaymentController extends Controller
                     'processed_at' => now(),
                 ]);
 
+                $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
                 $this->updateShootPaymentStatus($shoot, $payment, $amountTotal);
 
                 return true;
@@ -673,7 +682,7 @@ class StripePaymentController extends Controller
             $this->initStripe();
             $lineItems = StripeSession::allLineItems($sessionId, ['limit' => 100]);
 
-            return DB::transaction(function () use ($shootIds, $paymentIntentId, $currency, $sessionId, $lineItems) {
+            return DB::transaction(function () use ($shootIds, $paymentIntentId, $currency, $sessionId, $lineItems, $session) {
                 // Double-check for duplicates inside transaction
                 if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
                     return false;
@@ -705,6 +714,7 @@ class StripePaymentController extends Controller
                         'processed_at' => now(),
                     ]);
 
+                    $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
                     $this->updateShootPaymentStatus($shoot, $payment, $amount);
                 }
 
@@ -779,25 +789,17 @@ class StripePaymentController extends Controller
 
     protected function buildReceiptPayloadForShoot(Shoot $shoot): ?array
     {
-        $latestCompletedPayment = $shoot->payments
-            ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
-            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? optional($payment->created_at)->timestamp ?? 0)
-            ->first();
+        $payments = ($shoot->payments ?? collect())->map(function ($payment) {
+            if (!$payment instanceof Payment) {
+                return $payment;
+            }
 
-        if (!$latestCompletedPayment) {
-            return null;
-        }
+            return $this->stripePaymentMetadataService->hydratePaymentRecordIfNeeded($payment);
+        });
 
-        $paidAt = $latestCompletedPayment->processed_at ?? $latestCompletedPayment->created_at;
+        $latestReceiptPayment = $this->stripePaymentMetadataService->resolveLatestReceiptPayment($payments);
 
-        return [
-            'number' => 'PAY-' . str_pad((string) $latestCompletedPayment->id, 6, '0', STR_PAD_LEFT),
-            'amount' => (float) $latestCompletedPayment->amount,
-            'currency' => strtoupper((string) ($latestCompletedPayment->currency ?: 'USD')),
-            'paid_at' => $paidAt?->toIso8601String(),
-            'provider' => 'stripe',
-            'status' => $latestCompletedPayment->status,
-        ];
+        return $this->stripePaymentMetadataService->buildReceiptPayload($latestReceiptPayment);
     }
 
     protected function buildStripePaymentDescriptionForMultipleShoots($shoots): string
@@ -984,7 +986,7 @@ class StripePaymentController extends Controller
         $this->activityLogger->log(
             $shoot,
             'payment_received',
-            [
+            array_merge([
                 'payment_id' => $payment->id,
                 'amount' => $amount,
                 'currency' => $payment->currency,
@@ -993,7 +995,7 @@ class StripePaymentController extends Controller
                 'old_status' => $oldPaymentStatus,
                 'new_status' => $newPaymentStatus,
                 'provider' => 'stripe',
-            ],
+            ], $this->stripePaymentMetadataService->buildActivityMetadata($payment)),
             null
         );
 
@@ -1242,50 +1244,99 @@ class StripePaymentController extends Controller
                 return response()->json(['error' => 'This payment was not processed via Stripe.'], 400);
             }
 
+            $existingDetails = is_array($paymentRecord->payment_details) ? $paymentRecord->payment_details : [];
+            if (
+                $paymentRecord->status === Payment::STATUS_REFUNDED
+                || !empty($existingDetails['refunded_at'])
+                || !empty($existingDetails['refund_status'])
+            ) {
+                return response()->json(['error' => 'This Stripe payment has already been refunded.'], 400);
+            }
+
+            $refundAmount = round((float) $request->input('amount', $paymentRecord->amount), 2);
+            if ($refundAmount > ((float) $paymentRecord->amount + 0.01)) {
+                return response()->json(['error' => 'Refund amount cannot exceed the recorded payment amount.'], 422);
+            }
+
             $refundParams = [
                 'payment_intent' => $paymentRecord->stripe_payment_id,
+                'amount' => (int) round($refundAmount * 100),
             ];
-
-            // If a specific amount is requested (partial refund)
-            if ($request->has('amount')) {
-                $refundParams['amount'] = (int) round($request->input('amount') * 100);
-            }
 
             $refund = Refund::create($refundParams);
 
             if (in_array($refund->status, ['succeeded', 'pending'])) {
-                $paymentRecord->status = Payment::STATUS_REFUNDED;
-                $paymentRecord->save();
-
-                $shoot = $paymentRecord->shoot;
-                if ($shoot) {
-                    $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('stripe')
-                        ?? $shoot->syncPaymentStatusFromRecords('stripe');
-                    $totalPaid = $paymentSummary['total_paid'];
-                    $newStatus = $paymentSummary['payment_status'];
-
-                    $this->activityLogger->log(
-                        $shoot,
-                        'payment_refunded',
-                        [
-                            'payment_id' => $paymentRecord->id,
-                            'refund_amount' => $request->input('amount', $paymentRecord->amount),
-                            'new_payment_status' => $newStatus,
-                            'provider' => 'stripe',
-                        ],
-                        auth()->user()
+                $responsePayload = DB::transaction(function () use ($paymentRecord, $refund, $refundAmount) {
+                    $paymentRecord->status = Payment::STATUS_REFUNDED;
+                    $paymentRecord->payment_details = $this->stripePaymentMetadataService->mergeRefundDetails(
+                        $paymentRecord,
+                        $refund,
+                        $refundAmount
                     );
+                    $paymentRecord->save();
+                    $paymentRecord = $paymentRecord->fresh() ?? $paymentRecord;
 
-                    $context = $this->automationService->buildShootContext($shoot);
-                    $context['payment'] = $paymentRecord;
-                    $context['payment_id'] = $paymentRecord->id;
-                    $context['refund_amount'] = $request->input('amount', $paymentRecord->amount);
-                    $context['payment_status'] = $newStatus;
-                    $this->automationService->handleEvent('PAYMENT_REFUNDED', $context);
-                }
+                    $shoot = $paymentRecord->shoot;
+                    $payload = [
+                        'payment' => $this->stripePaymentMetadataService->serializePayment($paymentRecord),
+                    ];
+
+                    if ($shoot) {
+                        $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('stripe')
+                            ?? $shoot->syncPaymentStatusFromRecords('stripe');
+                        $totalPaid = $paymentSummary['total_paid'];
+                        $newStatus = $paymentSummary['payment_status'];
+                        $invoice = $this->findClientInvoiceForShoot($shoot);
+                        $refundProcessedAt = Carbon::parse($paymentRecord->payment_details['refunded_at'] ?? now()->toIso8601String());
+
+                        $this->syncClientInvoiceFromShootPayment(
+                            $invoice,
+                            $shoot,
+                            $paymentRecord,
+                            $totalPaid,
+                            'stripe',
+                            $paymentRecord->payment_details,
+                            $refundProcessedAt
+                        );
+
+                        $this->clearShootCachesAfterPayment($shoot);
+
+                        $this->activityLogger->log(
+                            $shoot,
+                            'payment_refunded',
+                            array_merge([
+                                'payment_id' => $paymentRecord->id,
+                                'refund_amount' => $refundAmount,
+                                'new_payment_status' => $newStatus,
+                                'provider' => 'stripe',
+                            ], $this->stripePaymentMetadataService->buildActivityMetadata($paymentRecord)),
+                            auth()->user()
+                        );
+
+                        $context = $this->automationService->buildShootContext($shoot);
+                        $context['payment'] = $paymentRecord;
+                        $context['payment_id'] = $paymentRecord->id;
+                        $context['refund_amount'] = $refundAmount;
+                        $context['payment_status'] = $newStatus;
+                        $this->automationService->handleEvent('PAYMENT_REFUNDED', $context);
+
+                        $payload = array_merge($payload, [
+                            'total_paid' => $totalPaid,
+                            'payment_status' => $newStatus,
+                            'receipt' => $this->buildReceiptPayloadForShoot($shoot->fresh(['payments']) ?? $shoot->loadMissing('payments')),
+                        ]);
+                    }
+
+                    return $payload;
+                });
 
                 Log::info("Stripe refund processed for payment ID: {$paymentRecord->id}");
-                return response()->json(['status' => 'success', 'refund' => $refund]);
+
+                return response()->json([
+                    'status' => 'success',
+                    'refund' => $refund,
+                    'data' => $responsePayload,
+                ]);
             }
 
             return response()->json(['error' => 'Refund was not successful.', 'refund_status' => $refund->status], 400);

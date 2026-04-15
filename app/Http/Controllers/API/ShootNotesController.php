@@ -3,13 +3,18 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Models\Payment;
 use App\Models\Shoot;
+use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Http\Request;
 
 class ShootNotesController extends Controller
 {
-    public function __construct(protected ShootActivityLogger $activityLogger)
+    public function __construct(
+        protected ShootActivityLogger $activityLogger,
+        protected StripePaymentMetadataService $stripePaymentMetadataService
+    )
     {
     }
 
@@ -262,14 +267,39 @@ class ShootNotesController extends Controller
             ->with('user:id,name,role')
             ->orderBy('created_at', 'desc')
             ->get();
+        $paymentIds = $activityLogs
+            ->map(function ($log) {
+                $metadata = is_array($log->metadata) ? $log->metadata : [];
+
+                return $metadata['payment_id'] ?? $metadata['paymentId'] ?? null;
+            })
+            ->filter()
+            ->map(fn ($paymentId) => (string) $paymentId)
+            ->unique()
+            ->values();
+        $paymentsById = Payment::query()
+            ->whereIn('id', $paymentIds)
+            ->get()
+            ->map(function (Payment $payment) {
+                return $this->stripePaymentMetadataService->hydratePaymentRecordIfNeeded($payment);
+            })
+            ->keyBy(fn (Payment $payment) => (string) $payment->id);
 
         return response()->json([
-            'data' => $activityLogs->map(function ($log) {
+            'data' => $activityLogs->map(function ($log) use ($paymentsById) {
+                $metadata = is_array($log->metadata) ? $log->metadata : [];
+                $paymentId = isset($metadata['payment_id']) ? (string) $metadata['payment_id'] : (isset($metadata['paymentId']) ? (string) $metadata['paymentId'] : null);
+                $payment = $paymentId ? $paymentsById->get($paymentId) : null;
+
+                if ($payment instanceof Payment) {
+                    $metadata = array_merge($metadata, $this->stripePaymentMetadataService->buildActivityMetadata($payment));
+                }
+
                 return [
                     'id' => $log->id,
                     'action' => $log->action,
                     'description' => $log->description,
-                    'metadata' => $log->metadata ?? [],
+                    'metadata' => $metadata,
                     'created_at' => $log->created_at->toIso8601String(),
                     'timestamp' => $log->created_at->toIso8601String(),
                     'user' => $log->user ? [
