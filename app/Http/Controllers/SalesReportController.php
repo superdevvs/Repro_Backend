@@ -49,6 +49,32 @@ class SalesReportController extends Controller
     }
 
     /**
+     * Get sales summary for authenticated sales rep
+     */
+    public function mySummary(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$this->salesReportService->isSalesRep($user)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'start_date' => ['nullable', 'date_format:Y-m-d'],
+            'end_date' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+        ]);
+
+        [$startDate, $endDate] = $this->resolveSummaryWindow(
+            $validated['start_date'] ?? null,
+            $validated['end_date'] ?? null,
+        );
+
+        $report = $this->salesReportService->generateSummaryForSalesRep($user, $startDate, $endDate);
+
+        return response()->json($report);
+    }
+
+    /**
      * Admin: Get weekly sales report for a specific sales rep
      */
     public function salesRepReport(Request $request, $salesRepId)
@@ -132,6 +158,19 @@ class SalesReportController extends Controller
         );
 
         return in_array($normalizedRole, $normalizedAllowed, true);
+    }
+
+    private function resolveSummaryWindow(?string $startDate, ?string $endDate): array
+    {
+        $resolvedEnd = $endDate
+            ? Carbon::createFromFormat('Y-m-d', $endDate)
+            : Carbon::today();
+
+        $resolvedStart = $startDate
+            ? Carbon::createFromFormat('Y-m-d', $startDate)
+            : $resolvedEnd->copy()->subDays(29);
+
+        return [$resolvedStart->startOfDay(), $resolvedEnd->endOfDay()];
     }
 }
 

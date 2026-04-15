@@ -222,6 +222,33 @@ class ShootAuthorizationSupport
         return true;
     }
 
+    public function canDownloadShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        if (!$this->canAccessShootMedia($shoot, $user)) {
+            return false;
+        }
+
+        if ($this->hasRole($user, ['editor'])) {
+            return $this->canEditorDownloadRawFile($shoot, $file, $user);
+        }
+
+        if ($this->isClientUser($user)) {
+            return $this->isClientInteractableEditedFile($file);
+        }
+
+        return true;
+    }
+
+    public function canEditorDownloadRawFile(Shoot $shoot, ShootFile $file, User $editor): bool
+    {
+        if (!app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $editor)) {
+            return false;
+        }
+
+        return $file->workflow_stage === ShootFile::STAGE_TODO;
+    }
+
     protected function normalizeRole(string $role): string
     {
         return strtolower(str_replace(['-', ' '], ['_', '_'], trim($role)));

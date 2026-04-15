@@ -6,6 +6,7 @@ use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\Request;
@@ -15,12 +16,23 @@ class DownloadSelectedShootFilesAction
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootFileAccessService $fileAccess,
-        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport
     ) {
     }
 
     public function execute(Request $request, Shoot $shoot, ?User $user)
     {
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])) {
+            return response()->json([
+                'message' => 'Editors can only download raw files via the raw download endpoint.',
+            ], 403);
+        }
+
         if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }

@@ -264,7 +264,7 @@ class ShootMediaController extends Controller
     {
         $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
-        if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
+        if (!$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {

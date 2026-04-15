@@ -33,9 +33,12 @@ class ShootMediaActionsTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+    protected User $editingManager;
     protected User $editor;
     protected User $client;
     protected User $photographer;
+    protected User $salesRep;
+    protected User $unassignedSalesRep;
     protected Service $service;
 
     protected function setUp(): void
@@ -52,6 +55,11 @@ class ShootMediaActionsTest extends TestCase
             'email' => 'media-editor@test.com',
         ]);
 
+        $this->editingManager = User::factory()->create([
+            'role' => 'editing_manager',
+            'email' => 'media-editing-manager@test.com',
+        ]);
+
         $this->client = User::factory()->create([
             'role' => 'client',
             'email' => 'media-client@test.com',
@@ -60,6 +68,16 @@ class ShootMediaActionsTest extends TestCase
         $this->photographer = User::factory()->create([
             'role' => 'photographer',
             'email' => 'media-photographer@test.com',
+        ]);
+
+        $this->salesRep = User::factory()->create([
+            'role' => 'salesRep',
+            'email' => 'media-sales-rep@test.com',
+        ]);
+
+        $this->unassignedSalesRep = User::factory()->create([
+            'role' => 'salesRep',
+            'email' => 'media-sales-rep-unassigned@test.com',
         ]);
 
         $this->service = Service::factory()->create([
@@ -444,6 +462,523 @@ class ShootMediaActionsTest extends TestCase
             'shoot-' . $shoot->id . '-raw-files.zip',
             (string) $response->headers->get('content-disposition')
         );
+    }
+
+    /** @test */
+    public function editing_manager_can_download_raw_files_from_an_in_progress_shoot(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editingManager);
+
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+        $rawPath = 'shoots/' . $shoot->id . '/todo/editing-manager-raw.jpg';
+        Storage::disk('public')->put($rawPath, 'editing-manager-raw-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'editing-manager-raw.jpg',
+            'stored_filename' => 'editing-manager-raw.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
+            'Accept' => 'application/json, application/zip',
+        ]);
+
+        $response->assertOk();
+        $this->assertStringContainsString(
+            'shoot-' . $shoot->id . '-raw-files.zip',
+            (string) $response->headers->get('content-disposition')
+        );
+    }
+
+    /** @test */
+    public function editing_manager_can_download_selected_files_zip(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editingManager);
+
+        $shoot = $this->createShoot();
+        $originalPath = 'shoots/' . $shoot->id . '/completed/editing-manager-selected.jpg';
+        Storage::disk('public')->put($originalPath, 'editing-manager-selected-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'editing-manager-selected.jpg',
+            'stored_filename' => 'editing-manager-selected.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->post('/api/shoots/' . $shoot->id . '/files/download', [
+            'file_ids' => [$file->id],
+            'size' => 'original',
+        ], [
+            'Accept' => 'application/zip',
+        ]);
+
+        $response->assertOk();
+        $this->assertStringContainsString(
+            'shoot-' . $shoot->id . '-selected.zip',
+            (string) $response->headers->get('content-disposition')
+        );
+    }
+
+    /** @test */
+    public function editing_manager_can_get_a_single_file_download_url(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editingManager);
+
+        $shoot = $this->createShoot();
+        $originalPath = 'shoots/' . $shoot->id . '/completed/editing-manager-single.jpg';
+        Storage::disk('public')->put($originalPath, 'editing-manager-single-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'editing-manager-single.jpg',
+            'stored_filename' => 'editing-manager-single.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+
+        $response->assertOk()
+            ->assertJsonStructure(['url']);
+
+        $this->assertNotEmpty($response->json('url'));
+    }
+
+    /** @test */
+    public function assigned_editor_can_download_raw_files_via_the_editor_raw_endpoint(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editor);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $rawPath = 'shoots/' . $shoot->id . '/todo/editor-raw-download.jpg';
+        Storage::disk('public')->put($rawPath, 'editor-raw-download-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'editor-raw-download.jpg',
+            'stored_filename' => 'editor-raw-download.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
+            'Accept' => 'application/json, application/zip',
+        ]);
+
+        $response->assertOk();
+        $this->assertStringContainsString(
+            'shoot-' . $shoot->id . '-raw-files.zip',
+            (string) $response->headers->get('content-disposition')
+        );
+    }
+
+    /** @test */
+    public function unassigned_editor_cannot_download_raw_files_via_the_editor_raw_endpoint(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editor);
+
+        $otherEditor = User::factory()->create([
+            'role' => 'editor',
+            'email' => 'other-media-editor@test.com',
+        ]);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $otherEditor->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $rawPath = 'shoots/' . $shoot->id . '/todo/unassigned-editor-raw.jpg';
+        Storage::disk('public')->put($rawPath, 'unassigned-editor-raw-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'unassigned-editor-raw.jpg',
+            'stored_filename' => 'unassigned-editor-raw.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/editor-download-raw');
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function editor_cannot_download_archive_zip_files(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editor);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/editor-archive.jpg';
+        Storage::disk('public')->put($originalPath, 'editor-archive-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'editor-archive.jpg',
+            'stored_filename' => 'editor-archive.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function editor_cannot_download_selected_files_zip(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editor);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/editor-selected.jpg';
+        Storage::disk('public')->put($originalPath, 'editor-selected-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'editor-selected.jpg',
+            'stored_filename' => 'editor-selected.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->postJson('/api/shoots/' . $shoot->id . '/files/download', [
+            'file_ids' => [$file->id],
+            'size' => 'original',
+        ]);
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function assigned_editor_can_get_a_single_raw_file_download_url(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editor);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+        ]);
+        $rawPath = 'shoots/' . $shoot->id . '/todo/editor-single-raw.jpg';
+        Storage::disk('public')->put($rawPath, 'editor-single-raw-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'editor-single-raw.jpg',
+            'stored_filename' => 'editor-single-raw.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+
+        $response->assertOk()
+            ->assertJsonStructure(['url']);
+
+        $this->assertNotEmpty($response->json('url'));
+    }
+
+    /** @test */
+    public function editor_cannot_download_an_edited_single_file(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->editor);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/editor-single-edited.jpg';
+        Storage::disk('public')->put($originalPath, 'editor-single-edited-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'editor-single-edited.jpg',
+            'stored_filename' => 'editor-single-edited.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function assigned_sales_rep_can_download_a_delivered_archive(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $webPath = 'shoots/' . $shoot->id . '/web/sales-rep-front_web.jpg';
+        $originalPath = 'shoots/' . $shoot->id . '/completed/sales-rep-front.jpg';
+        Storage::disk('public')->put($webPath, 'sales-rep-small-preview');
+        Storage::disk('public')->put($originalPath, 'sales-rep-original-photo');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'sales-rep-front.jpg',
+            'stored_filename' => 'sales-rep-front.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'web_path' => $webPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small');
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+
+        $response->assertOk()
+            ->assertJsonPath('type', 'redirect');
+
+        $this->assertStringContainsString(
+            '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
+            (string) $response->json('url')
+        );
+    }
+
+    /** @test */
+    public function unassigned_sales_rep_cannot_download_a_delivered_archive(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->unassignedSalesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $webPath = 'shoots/' . $shoot->id . '/web/unassigned-sales-rep-front_web.jpg';
+        $originalPath = 'shoots/' . $shoot->id . '/completed/unassigned-sales-rep-front.jpg';
+        Storage::disk('public')->put($webPath, 'unassigned-sales-rep-small-preview');
+        Storage::disk('public')->put($originalPath, 'unassigned-sales-rep-original-photo');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'unassigned-sales-rep-front.jpg',
+            'stored_filename' => 'unassigned-sales-rep-front.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'web_path' => $webPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function assigned_sales_rep_can_download_selected_edited_files(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/sales-rep-selected.jpg';
+        Storage::disk('public')->put($originalPath, 'sales-rep-selected-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'sales-rep-selected.jpg',
+            'stored_filename' => 'sales-rep-selected.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->post('/api/shoots/' . $shoot->id . '/files/download', [
+            'file_ids' => [$file->id],
+            'size' => 'original',
+        ], [
+            'Accept' => 'application/zip',
+        ]);
+
+        $response->assertOk();
+        $this->assertStringContainsString(
+            'shoot-' . $shoot->id . '-selected.zip',
+            (string) $response->headers->get('content-disposition')
+        );
+    }
+
+    /** @test */
+    public function unassigned_sales_rep_cannot_download_selected_edited_files(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->unassignedSalesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/unassigned-sales-rep-selected.jpg';
+        Storage::disk('public')->put($originalPath, 'unassigned-sales-rep-selected-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'unassigned-sales-rep-selected.jpg',
+            'stored_filename' => 'unassigned-sales-rep-selected.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->postJson('/api/shoots/' . $shoot->id . '/files/download', [
+            'file_ids' => [$file->id],
+            'size' => 'original',
+        ]);
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function assigned_sales_rep_can_download_a_single_media_file(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/sales-rep-single.jpg';
+        Storage::disk('public')->put($originalPath, 'sales-rep-single-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'sales-rep-single.jpg',
+            'stored_filename' => 'sales-rep-single.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+
+        $response->assertOk()
+            ->assertJsonStructure(['url']);
+
+        $this->assertNotEmpty($response->json('url'));
+    }
+
+    /** @test */
+    public function unassigned_sales_rep_cannot_download_a_single_media_file(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->unassignedSalesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $originalPath = 'shoots/' . $shoot->id . '/completed/unassigned-sales-rep-single.jpg';
+        Storage::disk('public')->put($originalPath, 'unassigned-sales-rep-single-bytes');
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'unassigned-sales-rep-single.jpg',
+            'stored_filename' => 'unassigned-sales-rep-single.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+
+        $response->assertForbidden();
+    }
+
+    /** @test */
+    public function sales_rep_cannot_download_raw_files_from_the_editor_raw_endpoint(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->salesRep);
+
+        $shoot = $this->createShoot([
+            'rep_id' => $this->salesRep->id,
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+        $rawPath = 'shoots/' . $shoot->id . '/todo/sales-rep-raw.jpg';
+        Storage::disk('public')->put($rawPath, 'sales-rep-raw-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'sales-rep-raw.jpg',
+            'stored_filename' => 'sales-rep-raw.jpg',
+            'path' => $rawPath,
+            'storage_path' => $rawPath,
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/editor-download-raw');
+
+        $response->assertForbidden();
     }
 
     /** @test */

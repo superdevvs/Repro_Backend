@@ -5,6 +5,7 @@ namespace App\Services\Shoots\Actions;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootMediaArchiveService;
 use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
@@ -18,13 +19,26 @@ class DownloadShootMediaZipAction
         protected DropboxWorkflowService $dropboxService,
         protected ShootMediaArchiveService $shootMediaArchiveService,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
-        protected ShootFileAccessService $shootFileAccessService
+        protected ShootFileAccessService $shootFileAccessService,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport
     ) {
     }
 
     public function execute(Request $request, Shoot $shoot)
     {
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
+        $user = $request->user();
+
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ($this->shootAuthorizationSupport->hasRole($user, ['editor'])) {
+            return response()->json([
+                'message' => 'Editors can only download raw files via the raw download endpoint.',
+            ], 403);
+        }
+
+        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }
 
