@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Service;
@@ -10,6 +11,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\ShootMediaArchiveService;
 use App\Services\Shoots\Actions\VerifyShootFileAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
@@ -18,10 +20,12 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
 use Tests\TestCase;
+use ZipArchive;
 
 class ShootMediaActionsTest extends TestCase
 {
@@ -65,7 +69,7 @@ class ShootMediaActionsTest extends TestCase
     }
 
     /** @test */
-    public function admin_can_upload_raw_files_and_promote_scheduled_shoot_to_uploaded(): void
+    public function admin_can_finalize_raw_upload_after_queue_completes(): void
     {
         Storage::fake('public');
         Queue::fake();
@@ -104,17 +108,32 @@ class ShootMediaActionsTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('success_count', 1)
-            ->assertJsonPath('shoot_status', Shoot::STATUS_UPLOADED)
+            ->assertJsonPath('shoot_status', Shoot::STATUS_SCHEDULED)
             ->assertJsonPath('raw_photo_count', 1);
 
         $shoot->refresh();
 
-        $this->assertSame(Shoot::STATUS_UPLOADED, $shoot->workflow_status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
         $this->assertDatabaseHas('shoot_files', [
             'shoot_id' => $shoot->id,
             'workflow_stage' => ShootFile::STAGE_TODO,
             'media_type' => 'raw',
         ]);
+
+        Queue::assertNotPushed(SyncShootIguideJob::class);
+
+        $finalizeResponse = $this->post('/api/shoots/' . $shoot->id . '/upload/finalize-raw', [], [
+            'Accept' => 'application/json',
+        ]);
+
+        $finalizeResponse->assertOk()
+            ->assertJsonPath('shoot_status', Shoot::STATUS_UPLOADED)
+            ->assertJsonPath('workflow_status_changed', true)
+            ->assertJsonPath('raw_photo_count', 1);
+
+        $shoot->refresh();
+
+        $this->assertSame(Shoot::STATUS_UPLOADED, $shoot->workflow_status);
         Queue::assertPushed(SyncShootIguideJob::class, function (SyncShootIguideJob $job) use ($shoot) {
             return $job->shootId === $shoot->id;
         });
@@ -348,6 +367,186 @@ class ShootMediaActionsTest extends TestCase
             'id' => $second->id,
             'sort_order' => 1,
         ]);
+    }
+
+    /** @test */
+    public function media_zip_download_returns_a_cached_archive_redirect_when_small_zip_is_ready(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
+        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        Storage::disk('public')->put($webPath, 'small-preview-bytes');
+        Storage::disk('public')->put($originalPath, 'original-photo-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'front.jpg',
+            'stored_filename' => 'front.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'web_path' => $webPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $archiveService = app(ShootMediaArchiveService::class);
+        $archiveService->generateArchive($shoot, 'edited', 'small');
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+
+        $response->assertOk()
+            ->assertJsonPath('type', 'redirect');
+
+        $this->assertStringContainsString(
+            '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
+            (string) $response->json('url')
+        );
+    }
+
+    /** @test */
+    public function original_media_zip_download_returns_preparing_and_queues_generation(): void
+    {
+        Storage::fake('public');
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        Storage::disk('public')->put($originalPath, 'original-photo-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'front.jpg',
+            'stored_filename' => 'front.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=original');
+
+        $response->assertStatus(202)
+            ->assertJsonPath('type', 'preparing');
+
+        $this->assertStringContainsString(
+            '/api/shoots/' . $shoot->id . '/media/download-zip',
+            (string) $response->json('status_url')
+        );
+        $this->assertStringContainsString('type=edited', (string) $response->json('status_url'));
+        $this->assertStringContainsString('size=original', (string) $response->json('status_url'));
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->type === 'edited'
+                && $job->size === 'original';
+        });
+    }
+
+    /** @test */
+    public function public_signed_media_archive_route_redirects_when_cached_archive_is_ready(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot();
+        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
+        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        Storage::disk('public')->put($webPath, 'small-preview-bytes');
+        Storage::disk('public')->put($originalPath, 'original-photo-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'front.jpg',
+            'stored_filename' => 'front.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'web_path' => $webPath,
+            'media_type' => 'edited',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small');
+
+        $signedUrl = URL::temporarySignedRoute(
+            'api.public.shoot-media.download',
+            now()->addMinutes(5),
+            [
+                'shoot' => $shoot->id,
+                'type' => 'edited',
+                'size' => 'small',
+            ]
+        );
+
+        $response = $this->getJson($signedUrl);
+
+        $response->assertOk()
+            ->assertJsonPath('type', 'redirect');
+
+        $this->assertStringContainsString(
+            '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
+            (string) $response->json('url')
+        );
+    }
+
+    /** @test */
+    public function moving_a_shoot_to_editing_queues_the_raw_small_archive(): void
+    {
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+
+        $shoot->updateWorkflowStatus(Shoot::STATUS_EDITING, $this->admin->id);
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->type === 'raw'
+                && $job->size === 'small';
+        });
+    }
+
+    /** @test */
+    public function moving_a_shoot_to_ready_or_delivered_queues_the_edited_small_archive(): void
+    {
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+
+        $readyShoot = $this->createShoot([
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+        $readyShoot->updateWorkflowStatus(Shoot::STATUS_READY, $this->admin->id);
+
+        $deliveredShoot = $this->createShoot([
+            'status' => Shoot::STATUS_READY,
+            'workflow_status' => Shoot::STATUS_READY,
+        ]);
+        $deliveredShoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->admin->id);
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($readyShoot) {
+            return $job->shootId === $readyShoot->id
+                && $job->type === 'edited'
+                && $job->size === 'small';
+        });
+
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, function (GenerateShootMediaArchiveJob $job) use ($deliveredShoot) {
+            return $job->shootId === $deliveredShoot->id
+                && $job->type === 'edited'
+                && $job->size === 'small';
+        });
     }
 
     protected function createShoot(array $overrides = []): Shoot

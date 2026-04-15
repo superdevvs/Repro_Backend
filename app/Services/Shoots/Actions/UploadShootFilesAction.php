@@ -2,7 +2,6 @@
 
 namespace App\Services\Shoots\Actions;
 
-use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
@@ -172,7 +171,6 @@ class UploadShootFilesAction
             $isExtra = $request->boolean('is_extra', false);
             $mediaTypeOverride = $request->input('media_type');
             $serviceCategory = $request->input('service_category');
-            $shouldQueueIguideSync = false;
 
             foreach ($files as $file) {
                 try {
@@ -224,12 +222,6 @@ class UploadShootFilesAction
             $shoot = $this->support->refreshMediaCounters($shoot->fresh());
             $this->support->clearShootFilesCache($shoot);
 
-            if (count($uploadedFiles) > 0 && in_array($shoot->workflow_status, [Shoot::STATUS_SCHEDULED, 'scheduled', 'booked'], true)) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $user ? $user->id : auth()->id());
-                $shoot->save();
-                $shouldQueueIguideSync = true;
-            }
-
             if ($uploadType === 'edited' && count($uploadedFiles) > 0 && $user && in_array($user->role, ['admin', 'superadmin', 'editor', 'editing_manager'], true)) {
                 $hasEditedFiles = $shoot->files()->whereIn('workflow_stage', ['completed', 'verified'])->exists();
                 if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_READY, Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified'], true)) {
@@ -239,10 +231,6 @@ class UploadShootFilesAction
             }
 
             DB::commit();
-
-            if ($shouldQueueIguideSync) {
-                SyncShootIguideJob::dispatch($shoot->id);
-            }
 
             return [
                 'status' => 200,

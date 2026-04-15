@@ -11,6 +11,7 @@ use App\Services\Shoots\Actions\DeleteShootMediaAction;
 use App\Services\Shoots\Actions\DownloadSelectedShootFilesAction;
 use App\Services\Shoots\Actions\DownloadShootMediaAction;
 use App\Services\Shoots\Actions\DownloadShootMediaZipAction;
+use App\Services\Shoots\Actions\FinalizeRawUploadAction;
 use App\Services\Shoots\Actions\GenerateShootShareLinkAction;
 use App\Services\Shoots\Actions\MoveShootFileToCompletedAction;
 use App\Services\Shoots\Actions\ReorderShootMediaAction;
@@ -43,6 +44,7 @@ class ShootMediaController extends Controller
         protected ShootEditorDownloadService $shootEditorDownloadService,
         protected ShootShareLinkReadService $shootShareLinkReadService,
         protected UploadShootFilesAction $uploadShootFilesAction,
+        protected FinalizeRawUploadAction $finalizeRawUploadAction,
         protected MoveShootFileToCompletedAction $moveShootFileToCompletedAction,
         protected VerifyShootFileAction $verifyShootFileAction,
         protected ToggleShootFileExtraAction $toggleShootFileExtraAction,
@@ -63,6 +65,25 @@ class ShootMediaController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $result = $this->uploadShootFilesAction->execute($request, $shoot, auth()->user());
+
+        return response()->json($result['payload'], $result['status']);
+    }
+
+    public function finalizeRawUpload(Request $request, $shootId)
+    {
+        $shoot = Shoot::findOrFail($shootId);
+        $user = $request->user();
+        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
+
+        if (!$isAdmin && !$shoot->canUploadPhotos()) {
+            return response()->json([
+                'error_type' => 'invalid_workflow_stage',
+                'message' => 'Cannot finalize raw uploads at this workflow stage',
+                'current_status' => $shoot->workflow_status,
+            ], 400);
+        }
+
+        $result = $this->finalizeRawUploadAction->execute($shoot, $user);
 
         return response()->json($result['payload'], $result['status']);
     }

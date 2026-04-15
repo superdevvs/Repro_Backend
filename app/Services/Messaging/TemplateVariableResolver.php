@@ -302,6 +302,12 @@ class TemplateVariableResolver
         $servicesProvided = $formattedServices['text'];
         $servicesProvidedHtml = $formattedServices['html'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
+        $smallZipLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
+            ? app(\App\Services\Shoots\ShootMediaArchiveService::class)->buildPublicDownloadUrl($shoot, 'edited', 'small')
+            : null;
+        $fullZipLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
+            ? app(\App\Services\Shoots\ShootMediaArchiveService::class)->buildPublicDownloadUrl($shoot, 'edited', 'original')
+            : null;
 
         return [
             'shoot_id' => $shoot->id,
@@ -313,6 +319,8 @@ class TemplateVariableResolver
             'services_provided' => $servicesProvided,
             'services_provided_html' => $servicesProvidedHtml,
             'assigned_photographers' => $assignedPhotographers,
+            'small_zip_link' => $smallZipLink,
+            'full_zip_link' => $fullZipLink,
             'shoot_total' => $total !== null ? (float) $total : null,
             'shoot_quote' => $total !== null ? '$' . number_format((float) $total, 2) : null,
             'shoot_notes' => $this->formatShootNotes($shoot),

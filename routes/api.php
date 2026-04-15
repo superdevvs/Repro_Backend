@@ -44,6 +44,7 @@ use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\FotelloController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\EditorRatesController;
+use App\Http\Controllers\API\PublicShootMediaArchiveController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\WeatherController;
@@ -77,6 +78,9 @@ Route::get('/ip-location', [IpLocationController::class, 'show'])
 
 Route::get('/public/share-links/{token}', [PublicShootShareLinkController::class, 'show'])
     ->name('api.public.share-links.show');
+Route::get('/public/shoot-media/{shoot}/download-zip', [PublicShootMediaArchiveController::class, 'show'])
+    ->middleware('signed')
+    ->name('api.public.shoot-media.download');
 
 $shootMediaCorsPreflight = function (Request $request) {
     $origin = $request->headers->get('Origin', '*');
@@ -516,6 +520,7 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
+    Route::post('/shoots/{shoot}/upload/finalize-raw', [ShootMediaController::class, 'finalizeRawUpload']);
     Route::post('/shoots/{shoot}/upload-extra', [ShootMediaController::class, 'uploadExtra']);
     Route::get('/shoots/{shoot}/files', [ShootMediaController::class, 'getFiles']);
     Route::post('/shoots/{shoot}/files/download', [ShootMediaController::class, 'downloadSelectedFiles']);
