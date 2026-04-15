@@ -107,12 +107,26 @@ class ApproveShootAction
                 $context['request_modified'] = true;
             }
 
-            $this->automationService->handleEvent($requestApprovalTrigger, $context);
+            $requestApprovalDispatch = $this->automationService->handleEvent($requestApprovalTrigger, $context);
+            Log::info('Shoot request approval dispatch evaluated', [
+                'shoot_id' => $shoot->id,
+                'trigger_type' => $requestApprovalTrigger,
+                'dispatch' => $this->formatDispatchSummaryForLog($requestApprovalDispatch),
+            ]);
         }
         $this->automationService->handleEvent('SHOOT_BOOKED', $context);
         $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
+        $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false;
+        Log::info('Shoot approval fallback decision evaluated', [
+            'shoot_id' => $shoot->id,
+            'trigger_type' => 'SHOOT_SCHEDULED',
+            'fallback_used' => $shouldUseFallback,
+            'dispatch' => $this->formatDispatchSummaryForLog($shootScheduledDispatch),
+            'notify_client' => $notifyClient,
+            'notify_photographer' => $notifyPhotographer,
+        ]);
 
-        if ($this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false) {
+        if ($shouldUseFallback) {
             $paymentLink = $shoot->client ? $this->mailService->generatePaymentLink($shoot) : '';
 
             if ($shoot->client && $notifyClient !== false) {
@@ -144,5 +158,22 @@ class ApproveShootAction
         }
 
         return false;
+    }
+
+    private function formatDispatchSummaryForLog(?array $dispatch): array
+    {
+        if (!is_array($dispatch)) {
+            return [
+                'present' => false,
+            ];
+        }
+
+        return [
+            'present' => true,
+            'active_rule_count' => $dispatch['active_rule_count'] ?? null,
+            'handled' => $dispatch['handled'] ?? null,
+            'failed_run_count' => $dispatch['failed_run_count'] ?? null,
+            'error_count' => count($dispatch['errors'] ?? []),
+        ];
     }
 }

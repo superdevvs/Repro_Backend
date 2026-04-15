@@ -414,6 +414,73 @@ class ShootMutationActionsTest extends TestCase
     }
 
     /** @test */
+    public function admin_created_scheduled_shoot_uses_booked_fallback_to_notify_client_and_photographer(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $shoot) => [
+                'shoot' => $shoot,
+                'shoot_id' => $shoot->id,
+                'client' => $shoot->client,
+                'photographer' => $shoot->photographer,
+                'photographers' => $shoot->photographer ? [$shoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_BOOKED')
+            ->andReturn([
+                'trigger_type' => 'SHOOT_BOOKED',
+                'active_rule_count' => 1,
+                'run_count' => 1,
+                'completed_run_count' => 0,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 1,
+                'handled' => false,
+                'errors' => [
+                    ['automation_id' => 2, 'message' => 'Failed to authenticate with Cakemail API'],
+                ],
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_BOOKED', Mockery::type('array'))
+            ->andReturnTrue();
+        $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootScheduledEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $shoot, string $paymentLink, ?bool $notifyPhotographer = null) {
+                    return $recipient->is($this->client)
+                        && $shoot->client_id === $this->client->id
+                        && $shoot->photographer_id === $this->photographer->id
+                        && $paymentLink === 'https://example.test/payment'
+                        && $notifyPhotographer === true;
+                })
+                ->andReturnTrue();
+        });
+
+        $response = $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'address' => '88 Fallback Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1],
+            ],
+            'scheduled_at' => now()->addDays(4)->setTime(12, 15)->format('Y-m-d H:i:s'),
+        ]);
+
+        $response->assertCreated();
+    }
+
+    /** @test */
     public function admin_reassigning_a_photographer_uses_the_dedicated_photographer_change_email(): void
     {
         Sanctum::actingAs($this->admin);

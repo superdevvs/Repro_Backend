@@ -128,9 +128,17 @@ class BookingTools
 
                 if ($shoot->status === 'scheduled') {
                     $client = User::find($userId);
-                    if ($client && $this->automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false) {
+                    $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false;
+                    Log::info('AI shoot booking fallback decision evaluated', [
+                        'shoot_id' => $shoot->id,
+                        'trigger_type' => 'SHOOT_BOOKED',
+                        'fallback_used' => $shouldUseFallback,
+                        'dispatch' => $this->formatDispatchSummaryForLog($shootBookedDispatch),
+                    ]);
+
+                    if ($client && $shouldUseFallback) {
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
-                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
+                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, true);
                     }
                 }
 
@@ -171,5 +179,22 @@ class BookingTools
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    private function formatDispatchSummaryForLog(?array $dispatch): array
+    {
+        if (!is_array($dispatch)) {
+            return [
+                'present' => false,
+            ];
+        }
+
+        return [
+            'present' => true,
+            'active_rule_count' => $dispatch['active_rule_count'] ?? null,
+            'handled' => $dispatch['handled'] ?? null,
+            'failed_run_count' => $dispatch['failed_run_count'] ?? null,
+            'error_count' => count($dispatch['errors'] ?? []),
+        ];
     }
 }

@@ -74,4 +74,56 @@ class CakemailProviderTest extends TestCase
                 && str_contains((string) $payload['content']['html'], '<br');
         });
     }
+
+    public function test_send_requires_an_explicit_cakemail_base_url(): void
+    {
+        config([
+            'services.cakemail.username' => 'mailer@example.com',
+            'services.cakemail.password' => 'secret-password',
+            'services.cakemail.sender_id' => 'sender-default',
+            'services.cakemail.list_id' => 8651530,
+            'services.cakemail.base_url' => null,
+        ]);
+
+        $provider = new CakemailProvider();
+        $provider->clearCache();
+
+        $channel = new MessageChannel([
+            'type' => 'EMAIL',
+            'provider' => 'CAKEMAIL',
+            'display_name' => 'Default Mailer',
+            'from_email' => 'mailer@example.com',
+            'config_json' => null,
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Cakemail base URL is not configured. Set CAKEMAIL_BASE_URL before sending transactional email.');
+
+        $provider->send($channel, [
+            'to' => 'recipient@example.com',
+            'subject' => 'Shoot update',
+            'text' => "Line one\nLine two",
+            'html' => '',
+        ]);
+    }
+
+    public function test_connection_returns_an_actionable_error_when_base_url_is_missing(): void
+    {
+        config([
+            'services.cakemail.username' => 'mailer@example.com',
+            'services.cakemail.password' => 'secret-password',
+            'services.cakemail.base_url' => null,
+        ]);
+
+        $provider = new CakemailProvider();
+        $provider->clearCache();
+
+        $result = $provider->testConnection();
+
+        $this->assertFalse($result['success']);
+        $this->assertSame(
+            'Cakemail base URL is not configured. Set CAKEMAIL_BASE_URL before sending transactional email.',
+            $result['error']
+        );
+    }
 }

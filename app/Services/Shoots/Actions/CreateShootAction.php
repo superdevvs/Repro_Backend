@@ -273,9 +273,17 @@ class CreateShootAction
                 try {
                     $shoot->loadMissing(['client', 'photographer', 'services']);
                     $client = $shoot->client;
-                    if ($client && $automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false) {
+                    $shouldUseFallback = $automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false;
+                    Log::info('Shoot booking fallback decision evaluated', [
+                        'shoot_id' => $shoot->id,
+                        'trigger_type' => 'SHOOT_BOOKED',
+                        'fallback_used' => $shouldUseFallback,
+                        'dispatch' => $this->formatDispatchSummaryForLog($shootBookedDispatch),
+                    ]);
+
+                    if ($client && $shouldUseFallback) {
                         $paymentLink = $mailService->generatePaymentLink($shoot);
-                        $mailService->sendShootScheduledEmail($client, $shoot, $paymentLink);
+                        $mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, true);
                     }
                 } catch (\Exception $e) {
                     Log::error('Failed to send shoot scheduled email during creation', [
@@ -285,5 +293,22 @@ class CreateShootAction
                 }
             }
         });
+    }
+
+    private function formatDispatchSummaryForLog(?array $dispatch): array
+    {
+        if (!is_array($dispatch)) {
+            return [
+                'present' => false,
+            ];
+        }
+
+        return [
+            'present' => true,
+            'active_rule_count' => $dispatch['active_rule_count'] ?? null,
+            'handled' => $dispatch['handled'] ?? null,
+            'failed_run_count' => $dispatch['failed_run_count'] ?? null,
+            'error_count' => count($dispatch['errors'] ?? []),
+        ];
     }
 }

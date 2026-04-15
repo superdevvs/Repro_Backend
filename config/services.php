@@ -197,7 +197,7 @@ return [
         'password' => env('CAKEMAIL_PASSWORD'),
         'sender_id' => env('CAKEMAIL_SENDER_ID'),
         'list_id' => env('CAKEMAIL_LIST_ID'),
-        'base_url' => env('CAKEMAIL_BASE_URL', 'https://api.cakemail.dev'),
+        'base_url' => env('CAKEMAIL_BASE_URL'),
         'webhook_secret' => env('CAKEMAIL_WEBHOOK_SECRET'),
     ],
 

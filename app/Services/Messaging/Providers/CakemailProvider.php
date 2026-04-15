@@ -11,7 +11,7 @@ use Illuminate\Support\Str;
 
 class CakemailProvider implements EmailProviderInterface
 {
-    protected string $baseUrl;
+    protected ?string $baseUrl;
     protected string $username;
     protected string $password;
     protected ?string $defaultSenderId;
@@ -19,7 +19,8 @@ class CakemailProvider implements EmailProviderInterface
 
     public function __construct()
     {
-        $this->baseUrl = rtrim((string) config('services.cakemail.base_url', 'https://api.cakemail.dev'), '/');
+        $configuredBaseUrl = trim((string) config('services.cakemail.base_url', ''));
+        $this->baseUrl = $configuredBaseUrl !== '' ? rtrim($configuredBaseUrl, '/') : null;
         $this->username = config('services.cakemail.username', '');
         $this->password = config('services.cakemail.password', '');
         $this->defaultSenderId = config('services.cakemail.sender_id');
@@ -32,11 +33,7 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function send(MessageChannel $channel, array $payload): string
     {
-        $token = $this->getAccessToken();
-
-        if (!$token) {
-            throw new \RuntimeException('Failed to authenticate with Cakemail API');
-        }
+        $token = $this->requireAccessToken();
 
         $channelConfig = is_array($channel->config_json) ? $channel->config_json : [];
         $senderId = $channelConfig['cakemail_sender_id'] ?? $this->defaultSenderId;
@@ -71,11 +68,7 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function sendWithTemplate(int $templateId, string $toEmail, array $customAttributes = []): string
     {
-        $token = $this->getAccessToken();
-
-        if (!$token) {
-            throw new \RuntimeException('Failed to authenticate with Cakemail API');
-        }
+        $token = $this->requireAccessToken();
 
         $payload = [
             'email' => $toEmail,
@@ -112,6 +105,11 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function getAccessToken(): ?string
     {
+        if ($configurationIssue = $this->configurationIssue()) {
+            $this->logConfigurationIssue($configurationIssue);
+            return null;
+        }
+
         $cacheKey = 'cakemail_token_' . md5($this->username);
 
         // Check cache first
@@ -576,6 +574,15 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function testConnection(): array
     {
+        if ($configurationIssue = $this->configurationIssue()) {
+            $this->logConfigurationIssue($configurationIssue);
+
+            return [
+                'success' => false,
+                'error' => $configurationIssue,
+            ];
+        }
+
         $token = $this->getAccessToken();
 
         if (!$token) {
@@ -624,6 +631,21 @@ class CakemailProvider implements EmailProviderInterface
         Cache::forget($cacheKey);
         Cache::forget($cacheKey . '_refresh');
         Cache::forget($cacheKey . '_accounts');
+    }
+
+    protected function requireAccessToken(): string
+    {
+        $token = $this->getAccessToken();
+
+        if ($token) {
+            return $token;
+        }
+
+        if ($configurationIssue = $this->configurationIssue()) {
+            throw new \RuntimeException($configurationIssue);
+        }
+
+        throw new \RuntimeException('Failed to authenticate with Cakemail API');
     }
 
     protected function sendSingleEmail(
@@ -771,5 +793,30 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         return trim(html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8'));
+    }
+
+    protected function configurationIssue(): ?string
+    {
+        if (!$this->baseUrl) {
+            return 'Cakemail base URL is not configured. Set CAKEMAIL_BASE_URL before sending transactional email.';
+        }
+
+        if (!filter_var($this->baseUrl, FILTER_VALIDATE_URL)) {
+            return sprintf(
+                'Cakemail base URL "%s" is invalid. Set CAKEMAIL_BASE_URL to a valid absolute URL before sending transactional email.',
+                $this->baseUrl
+            );
+        }
+
+        return null;
+    }
+
+    protected function logConfigurationIssue(string $message): void
+    {
+        Log::error('Cakemail configuration is not ready for delivery.', [
+            'error' => $message,
+            'base_url' => $this->baseUrl,
+            'username' => $this->username !== '' ? $this->username : null,
+        ]);
     }
 }
