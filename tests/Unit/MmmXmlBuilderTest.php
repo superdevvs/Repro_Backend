@@ -53,4 +53,28 @@ class MmmXmlBuilderTest extends TestCase
         $this->assertNotNull($supplierPartId);
         $this->assertSame('', $supplierPartId->textContent);
     }
+
+    #[Test]
+    public function it_prefers_the_start_page_url_when_parsing_a_punchout_response(): void
+    {
+        $parsed = app(MmmXmlBuilder::class)->parsePunchoutSetupResponse(<<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE cXML SYSTEM "http://xml.cXML.org/schemas/cXML/1.2.007/cXML.dtd">
+<cXML payloadID="response" timestamp="2026-04-17T00:00:00Z" version="1.0" xml:lang="en">
+  <Response>
+    <Status code="200" text="OK"/>
+    <PunchOutSetupResponse>
+      <StartPage>
+        <URL>ProductCats.asp?cid=&amp;el=abc123</URL>
+      </StartPage>
+    </PunchOutSetupResponse>
+  </Response>
+</cXML>
+XML);
+
+        $this->assertSame('200', $parsed['status_code']);
+        $this->assertSame('OK', $parsed['status_text']);
+        $this->assertSame('ProductCats.asp?cid=&el=abc123', $parsed['redirect_url']);
+        $this->assertTrue($parsed['success']);
+    }
 }

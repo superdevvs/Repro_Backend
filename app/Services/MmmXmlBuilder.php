@@ -107,6 +107,7 @@ class MmmXmlBuilder
         try {
             $dom = new \DOMDocument();
             $dom->loadXML($xml);
+            $xpath = new \DOMXPath($dom);
 
             $status = $dom->getElementsByTagName('Status')->item(0);
             if ($status) {
@@ -114,7 +115,8 @@ class MmmXmlBuilder
                 $result['status_text'] = $status->getAttribute('text') ?: null;
             }
 
-            $urlNode = $dom->getElementsByTagName('URL')->item(0);
+            $urlNode = $xpath->query('/*[local-name()="cXML"]/*[local-name()="Response"]/*[local-name()="PunchOutSetupResponse"]/*[local-name()="StartPage"]/*[local-name()="URL"]')->item(0)
+                ?: $dom->getElementsByTagName('URL')->item(0);
             if ($urlNode) {
                 $result['redirect_url'] = trim($urlNode->textContent);
             }

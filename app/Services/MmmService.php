@@ -163,6 +163,8 @@ class MmmService
             }
 
             $parsed = $this->xmlBuilder->parsePunchoutSetupResponse($responseBody);
+            $parsed['redirect_url'] = $this->resolveRedirectUrl($parsed['redirect_url'] ?? null);
+            $parsed['success'] = ($parsed['status_code'] === '200') && !empty($parsed['redirect_url']);
 
             return [
                 'success' => $parsed['success'],
@@ -268,6 +270,49 @@ class MmmService
         }
 
         return $value;
+    }
+
+    private function resolveRedirectUrl(?string $redirectUrl): ?string
+    {
+        $candidate = trim((string) $redirectUrl);
+        if ($candidate === '') {
+            return null;
+        }
+
+        if (preg_match('/^https?:\/\//i', $candidate)) {
+            return $candidate;
+        }
+
+        $baseUrl = trim((string) $this->punchoutUrl);
+        $baseParts = $baseUrl !== '' ? parse_url($baseUrl) : false;
+
+        if ($baseParts === false || empty($baseParts['scheme']) || empty($baseParts['host'])) {
+            return $candidate;
+        }
+
+        $origin = sprintf(
+            '%s://%s%s',
+            $baseParts['scheme'],
+            $baseParts['host'],
+            isset($baseParts['port']) ? ':' . $baseParts['port'] : '',
+        );
+
+        if (str_starts_with($candidate, '//')) {
+            return $baseParts['scheme'] . ':' . $candidate;
+        }
+
+        $basePath = $baseParts['path'] ?? '/';
+        $baseDirectory = preg_replace('#/[^/]*$#', '/', $basePath) ?: '/';
+
+        if (str_starts_with($candidate, '/')) {
+            return $origin . $candidate;
+        }
+
+        if (str_starts_with($candidate, '?')) {
+            return $origin . $basePath . $candidate;
+        }
+
+        return $origin . $baseDirectory . $candidate;
     }
 
     private function splitName(?User $user): array

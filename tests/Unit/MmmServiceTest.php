@@ -116,6 +116,51 @@ class MmmServiceTest extends TestCase
         $this->assertNull(app(MmmService::class)->validateConfig());
     }
 
+    #[Test]
+    public function send_punchout_request_resolves_relative_redirect_urls_against_the_mmm_host(): void
+    {
+        config([
+            'services.mmm.enabled' => true,
+            'services.mmm.duns' => 'Wqsw5cPn3Neo9Blz',
+            'services.mmm.shared_secret' => 'XxdU9n5pP8bWb4DG',
+            'services.mmm.user_agent' => 'REPro Photos Tests',
+            'services.mmm.punchout_url' => 'https://repro.mymarketingmatters.com/PunchoutSetup.asp',
+            'services.mmm.template_external_number' => null,
+            'services.mmm.deployment_mode' => 'test',
+            'services.mmm.start_point' => 'category',
+            'services.mmm.url_return' => 'https://app.test/api/integrations/mmm/return',
+        ]);
+
+        Http::fake([
+            'https://repro.mymarketingmatters.com/*' => Http::response(
+                $this->successfulPunchoutResponse('ProductCats.asp?cid=&amp;el=abc123'),
+                200,
+            ),
+        ]);
+
+        $result = app(MmmService::class)->sendPunchoutRequest([
+            'duns' => 'Wqsw5cPn3Neo9Blz',
+            'shared_secret' => 'XxdU9n5pP8bWb4DG',
+            'user_agent' => 'REPro Photos Tests',
+            'buyer_cookie' => '00000000-0000-0000-0000-000000000001',
+            'cost_center_number' => 'Repro',
+            'employee_email' => 'print-admin@example.com',
+            'username' => 'print-admin@example.com',
+            'first_name' => 'Print',
+            'last_name' => 'Admin',
+            'start_point' => 'category',
+            'template_external_number' => null,
+            'deployment_mode' => 'test',
+            'url_return' => 'https://app.test/api/integrations/mmm/return',
+        ]);
+
+        $this->assertTrue($result['success']);
+        $this->assertSame(
+            'https://repro.mymarketingmatters.com/ProductCats.asp?cid=&el=abc123',
+            $result['redirect_url'],
+        );
+    }
+
     private function successfulPunchoutResponse(string $redirectUrl): string
     {
         return <<<XML
