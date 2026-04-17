@@ -33,18 +33,18 @@ class MmmService
     ) {
         $settings = $this->loadSettings('integrations.mmm');
 
-        $this->enabled = (bool) ($settings['enabled'] ?? config('services.mmm.enabled', true));
-        $this->duns = $settings['duns'] ?? config('services.mmm.duns');
-        $this->sharedSecret = $settings['sharedSecret'] ?? config('services.mmm.shared_secret');
-        $this->userAgent = $settings['userAgent'] ?? config('services.mmm.user_agent', 'REPro Photos');
-        $this->punchoutUrl = $settings['punchoutUrl'] ?? config('services.mmm.punchout_url');
-        $this->templateExternalNumber = $settings['templateExternalNumber'] ?? config('services.mmm.template_external_number');
-        $this->deploymentMode = $settings['deploymentMode'] ?? config('services.mmm.deployment_mode', 'test');
-        $this->startPoint = $settings['startPoint'] ?? config('services.mmm.start_point', 'category');
-        $this->toIdentity = $settings['toIdentity'] ?? config('services.mmm.to_identity', '');
-        $this->senderIdentity = $settings['senderIdentity'] ?? config('services.mmm.sender_identity', '');
-        $this->urlReturn = $settings['urlReturn'] ?? config('services.mmm.url_return');
-        $this->timeout = (int) ($settings['timeout'] ?? config('services.mmm.timeout', 20));
+        $this->enabled = (bool) $this->resolveSettingValue($settings, 'enabled', config('services.mmm.enabled', true));
+        $this->duns = $this->resolveSettingValue($settings, 'duns', config('services.mmm.duns'));
+        $this->sharedSecret = $this->resolveSettingValue($settings, 'sharedSecret', config('services.mmm.shared_secret'));
+        $this->userAgent = (string) $this->resolveSettingValue($settings, 'userAgent', config('services.mmm.user_agent', 'REPro Photos'));
+        $this->punchoutUrl = $this->resolveSettingValue($settings, 'punchoutUrl', config('services.mmm.punchout_url'));
+        $this->templateExternalNumber = $this->resolveSettingValue($settings, 'templateExternalNumber', config('services.mmm.template_external_number'));
+        $this->deploymentMode = (string) $this->resolveSettingValue($settings, 'deploymentMode', config('services.mmm.deployment_mode', 'test'));
+        $this->startPoint = (string) $this->resolveSettingValue($settings, 'startPoint', config('services.mmm.start_point', 'category'));
+        $this->toIdentity = (string) $this->resolveSettingValue($settings, 'toIdentity', config('services.mmm.to_identity', ''));
+        $this->senderIdentity = (string) $this->resolveSettingValue($settings, 'senderIdentity', config('services.mmm.sender_identity', ''));
+        $this->urlReturn = (string) $this->resolveSettingValue($settings, 'urlReturn', config('services.mmm.url_return'));
+        $this->timeout = (int) $this->resolveSettingValue($settings, 'timeout', config('services.mmm.timeout', 20));
     }
 
     public function parsePunchoutOrderMessage(string $xml): array
@@ -249,6 +249,25 @@ class MmmService
         }
 
         return [];
+    }
+
+    private function resolveSettingValue(array $settings, string $key, mixed $fallback): mixed
+    {
+        if (!array_key_exists($key, $settings)) {
+            return $fallback;
+        }
+
+        $value = $settings[$key];
+
+        if ($value === null) {
+            return $fallback;
+        }
+
+        if (is_string($value) && trim($value) === '') {
+            return $fallback;
+        }
+
+        return $value;
     }
 
     private function splitName(?User $user): array
