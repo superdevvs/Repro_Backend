@@ -62,19 +62,15 @@ class MmmXmlBuilder
         $punchout->appendChild($dom->createElement('BuyerCookie', $payload['buyer_cookie'] ?? ''));
 
         $extrinsics = [
-            'CostCenter' => $payload['cost_center_number'] ?? null,
-            'UserEmail' => $payload['employee_email'] ?? null,
-            'UniqueName' => $payload['username'] ?? null,
-            'FirstName' => $payload['first_name'] ?? null,
-            'LastName' => $payload['last_name'] ?? null,
-            'StartPoint' => $payload['start_point'] ?? null,
-            'ArtworkURL' => $payload['artwork_url'] ?? null,
+            'CostCenter' => $payload['cost_center_number'] ?? '',
+            'UserFirstName' => $payload['first_name'] ?? '',
+            'UserLastName' => $payload['last_name'] ?? '',
+            'UserEmail' => $payload['employee_email'] ?? '',
+            'UniqueName' => $payload['username'] ?? '',
+            'StartPoint' => $payload['start_point'] ?? '',
         ];
 
         foreach ($extrinsics as $name => $value) {
-            if ($value === null) {
-                continue;
-            }
             $extrinsic = $dom->createElement('Extrinsic', $value);
             $extrinsic->setAttribute('name', $name);
             $punchout->appendChild($extrinsic);
@@ -89,58 +85,6 @@ class MmmXmlBuilder
         $itemId->appendChild($dom->createElement('SupplierPartID', $payload['template_external_number'] ?? ''));
         $selectedItem->appendChild($itemId);
         $punchout->appendChild($selectedItem);
-
-        $properties = $dom->createElement('Properties');
-        $propertiesAdded = false;
-        foreach ($payload['properties'] ?? [] as $property) {
-            $propertyNode = $dom->createElement('Property');
-            if (!empty($property['mls_id'])) {
-                $propertyNode->appendChild($dom->createElement('ID', $property['mls_id']));
-            }
-            if (!empty($property['price'])) {
-                $propertyNode->appendChild($dom->createElement('Price', $property['price']));
-            }
-            if (!empty($property['address'])) {
-                $propertyNode->appendChild($dom->createElement('Address', $property['address']));
-            }
-            if (!empty($property['description'])) {
-                $propertyNode->appendChild($dom->createElement('Description', $property['description']));
-            }
-
-            $pictures = $dom->createElement('Pictures');
-            $pictureCount = 0;
-            foreach ($property['pictures'] ?? [] as $picture) {
-                $pictureNode = $dom->createElement('Picture');
-                if (!empty($picture['id'])) {
-                    $pictureNode->appendChild($dom->createElement('ID', $picture['id']));
-                }
-                if (!empty($picture['caption'])) {
-                    $pictureNode->appendChild($dom->createElement('Caption', $picture['caption']));
-                }
-                if (!empty($picture['filename'])) {
-                    $pictureNode->appendChild($dom->createElement('FileName', $picture['filename']));
-                }
-                if (!empty($picture['url'])) {
-                    $pictureNode->appendChild($dom->createElement('URL', $picture['url']));
-                }
-
-                $pictures->appendChild($pictureNode);
-                $pictureCount++;
-            }
-
-            if ($pictureCount > 0) {
-                $propertyNode->appendChild($pictures);
-            }
-
-            if ($propertyNode->hasChildNodes()) {
-                $properties->appendChild($propertyNode);
-                $propertiesAdded = true;
-            }
-        }
-
-        if ($propertiesAdded) {
-            $punchout->appendChild($properties);
-        }
 
         $doctype = '<!DOCTYPE cXML SYSTEM "http://xml.cXML.org/schemas/cXML/1.2.007/cXML.dtd">';
         $body = $dom->saveXML($dom->documentElement, LIBXML_NOEMPTYTAG);

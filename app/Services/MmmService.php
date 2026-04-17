@@ -39,7 +39,7 @@ class MmmService
         $this->punchoutUrl = $settings['punchoutUrl'] ?? config('services.mmm.punchout_url');
         $this->templateExternalNumber = $settings['templateExternalNumber'] ?? config('services.mmm.template_external_number');
         $this->deploymentMode = $settings['deploymentMode'] ?? config('services.mmm.deployment_mode', 'test');
-        $this->startPoint = $settings['startPoint'] ?? config('services.mmm.start_point', 'Category');
+        $this->startPoint = $settings['startPoint'] ?? config('services.mmm.start_point', 'category');
         $this->toIdentity = $settings['toIdentity'] ?? config('services.mmm.to_identity', '');
         $this->senderIdentity = $settings['senderIdentity'] ?? config('services.mmm.sender_identity', '');
         $this->urlReturn = $settings['urlReturn'] ?? config('services.mmm.url_return');
@@ -91,7 +91,6 @@ class MmmService
             'MMM_DUNS' => $this->duns,
             'MMM_SHARED_SECRET' => $this->sharedSecret,
             'MMM_PUNCHOUT_URL' => $this->punchoutUrl,
-            'MMM_TEMPLATE_EXTERNAL_NUMBER' => $this->templateExternalNumber,
         ] as $label => $value) {
             if (empty($value)) {
                 $missing[] = $label;
@@ -115,39 +114,22 @@ class MmmService
         $user = $params['user'] ?? null;
         $nameParts = $this->splitName($user);
 
-        $propertyDetails = $shoot->property_details ?? [];
-        $address = $this->formatAddress($shoot, $propertyDetails);
-        $price = $propertyDetails['price'] ?? $propertyDetails['price_high'] ?? $propertyDetails['price_low'] ?? null;
-        $mlsId = $shoot->mls_id ?? $propertyDetails['mls_id'] ?? null;
-
-        $pictures = $this->buildPictures($shoot, $params['file_ids'] ?? []);
-
         return [
             'duns' => $this->duns,
             'shared_secret' => $this->sharedSecret,
             'user_agent' => $this->userAgent,
             'buyer_cookie' => $params['buyer_cookie'] ?? Str::uuid()->toString(),
-            'cost_center_number' => $params['cost_center_number'] ?? null,
+            'cost_center_number' => $params['cost_center_number'] ?? 'Repro',
             'employee_email' => $params['employee_email'] ?? $user?->email,
             'username' => $params['username'] ?? $user?->username ?? $user?->email,
             'first_name' => $params['first_name'] ?? $nameParts['first'],
             'last_name' => $params['last_name'] ?? $nameParts['last'],
             'start_point' => $params['start_point'] ?? $this->startPoint,
-            'artwork_url' => $this->resolveArtworkUrl($shoot, $params),
             'template_external_number' => $params['template_external_number'] ?? $this->templateExternalNumber,
             'deployment_mode' => $params['deployment_mode'] ?? $this->deploymentMode,
             'url_return' => $params['url_return'] ?? $this->urlReturn,
             'to_identity' => $params['to_identity'] ?? $this->toIdentity,
             'sender_identity' => $params['sender_identity'] ?? $this->senderIdentity,
-            'properties' => [
-                [
-                    'mls_id' => $params['mls_id'] ?? $mlsId,
-                    'price' => $params['price'] ?? $price,
-                    'address' => $params['address'] ?? $address,
-                    'description' => $params['description'] ?? $shoot->address,
-                    'pictures' => $pictures,
-                ],
-            ],
         ];
     }
 

@@ -178,7 +178,7 @@ return [
         'punchout_url' => env('MMM_PUNCHOUT_URL'),
         'template_external_number' => env('MMM_TEMPLATE_EXTERNAL_NUMBER'),
         'deployment_mode' => env('MMM_DEPLOYMENT_MODE', 'test'),
-        'start_point' => env('MMM_START_POINT', 'Category'),
+        'start_point' => env('MMM_START_POINT', 'category'),
         'to_identity' => env('MMM_TO_IDENTITY', ''),
         'sender_identity' => env('MMM_SENDER_IDENTITY', ''),
         'url_return' => env('MMM_URL_RETURN', env('APP_URL') . '/api/integrations/mmm/return'),
