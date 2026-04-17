@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -145,21 +146,20 @@ class MmmService
         }
 
         try {
-            $response = Http::asForm()
-                ->timeout($this->timeout)
-                ->post($this->punchoutUrl, [
-                    'xml' => $xml,
+            $response = $this->sendRawPunchoutRequest($xml);
+            $responseBody = $response->body();
+
+            if (!$response->successful()) {
+                Log::warning('MMM raw XML punchout request failed, retrying as form payload', [
+                    'http_status' => $response->status(),
                 ]);
 
-            $responseBody = $response->body();
-            if (!$response->successful()) {
-                return [
-                    'success' => false,
-                    'status' => 'http_error',
-                    'error' => 'MMM punchout request failed',
-                    'http_status' => $response->status(),
-                    'response' => $responseBody,
-                ];
+                $response = $this->sendFormPunchoutRequest($xml);
+                $responseBody = $response->body();
+
+                if (!$response->successful()) {
+                    return $this->buildHttpErrorResult($response, $responseBody);
+                }
             }
 
             $parsed = $this->xmlBuilder->parsePunchoutSetupResponse($responseBody);
@@ -182,6 +182,53 @@ class MmmService
                 'error' => $e->getMessage(),
             ];
         }
+    }
+
+    private function sendRawPunchoutRequest(string $xml): Response
+    {
+        return Http::timeout($this->timeout)
+            ->withHeaders([
+                'Accept' => 'text/xml, application/xml, text/plain, */*',
+                'Content-Type' => 'text/xml; charset=UTF-8',
+            ])
+            ->send('POST', $this->punchoutUrl, [
+                'body' => $xml,
+            ]);
+    }
+
+    private function sendFormPunchoutRequest(string $xml): Response
+    {
+        return Http::asForm()
+            ->timeout($this->timeout)
+            ->post($this->punchoutUrl, [
+                'xml' => $xml,
+            ]);
+    }
+
+    private function buildHttpErrorResult(Response $response, string $responseBody): array
+    {
+        $parsed = $this->xmlBuilder->parsePunchoutSetupResponse($responseBody);
+        $errorMessage =
+            $parsed['status_text']
+            ?? $this->extractResponseErrorMessage($responseBody)
+            ?? 'MMM punchout request failed';
+
+        return [
+            'success' => false,
+            'status' => 'http_error',
+            'error' => $errorMessage,
+            'http_status' => $response->status(),
+            'status_code' => $parsed['status_code'] ?? null,
+            'status_text' => $parsed['status_text'] ?? null,
+            'response' => $responseBody,
+        ];
+    }
+
+    private function extractResponseErrorMessage(string $responseBody): ?string
+    {
+        $message = trim(preg_replace('/\s+/', ' ', strip_tags($responseBody)) ?? '');
+
+        return $message !== '' ? Str::limit($message, 300) : null;
     }
 
     private function loadSettings(string $key): array

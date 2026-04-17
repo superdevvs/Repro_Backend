@@ -127,7 +127,7 @@ class MmmPunchoutTest extends TestCase
         $this->assertNotNull($shoot->mmm_last_punchout_at);
 
         Http::assertSent(function (ClientRequest $request) {
-            $xml = (string) $request['xml'];
+            $xml = (string) $request->body();
             $document = new \DOMDocument();
             $document->loadXML($xml);
 
