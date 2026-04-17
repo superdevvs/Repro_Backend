@@ -61,7 +61,9 @@ class SettingsController extends Controller
     {
         $request->validate([
             'key' => 'required|string|max:255',
-            'value' => 'required',
+            // Settings may intentionally store empty strings/arrays/objects, so
+            // only require that the field is present in the request payload.
+            'value' => 'present',
             'type' => 'nullable|string|in:string,json,boolean,integer',
             'description' => 'nullable|string',
         ]);
