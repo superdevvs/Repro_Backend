@@ -52,12 +52,21 @@ class MmmService
         $result = [
             'buyer_cookie' => null,
             'order_number' => null,
+            'items' => [],
+            'subtotal' => null,
+            'tax' => null,
+            'shipping' => null,
+            'total' => null,
+            'currency' => null,
             'raw' => $xml,
         ];
 
         try {
             $dom = new \DOMDocument();
+            $previous = libxml_use_internal_errors(true);
             $dom->loadXML($xml);
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
 
             $buyerCookieNode = $dom->getElementsByTagName('BuyerCookie')->item(0);
             if ($buyerCookieNode) {
@@ -68,12 +77,145 @@ class MmmService
             if ($supplierPartIdNode) {
                 $result['order_number'] = trim($supplierPartIdNode->textContent);
             }
+
+            $itemInNodes = $dom->getElementsByTagName('ItemIn');
+            $sumExtended = 0.0;
+            $itemCurrency = null;
+            foreach ($itemInNodes as $index => $itemNode) {
+                try {
+                    $item = $this->parseItemInNode($itemNode, $index + 1);
+                    if ($item === null) {
+                        continue;
+                    }
+                    if (is_numeric($item['extended_price'] ?? null)) {
+                        $sumExtended += (float) $item['extended_price'];
+                    }
+                    if (!$itemCurrency && !empty($item['currency'])) {
+                        $itemCurrency = $item['currency'];
+                    }
+                    $result['items'][] = $item;
+                } catch (\Exception $itemError) {
+                    Log::warning('MMM order item parse error', [
+                        'index' => $index,
+                        'error' => $itemError->getMessage(),
+                    ]);
+                }
+            }
+
+            if ($itemCurrency) {
+                $result['currency'] = $itemCurrency;
+            }
+
+            $totalNode = $this->findMoneyChild($dom, 'Total');
+            if ($totalNode) {
+                $result['total'] = $this->toFloat($totalNode->textContent);
+                $currencyAttr = $totalNode->getAttribute('currency');
+                if ($currencyAttr) {
+                    $result['currency'] = $currencyAttr;
+                }
+            } elseif ($sumExtended > 0) {
+                $result['total'] = round($sumExtended, 2);
+            }
+
+            $subtotalNode = $this->findMoneyChild($dom, 'Subtotal');
+            if ($subtotalNode) {
+                $result['subtotal'] = $this->toFloat($subtotalNode->textContent);
+            } elseif ($sumExtended > 0) {
+                $result['subtotal'] = round($sumExtended, 2);
+            }
+
+            $taxNode = $this->findMoneyChild($dom, 'Tax');
+            if ($taxNode) {
+                $result['tax'] = $this->toFloat($taxNode->textContent);
+            }
+
+            $shippingNode = $this->findMoneyChild($dom, 'Shipping');
+            if ($shippingNode) {
+                $result['shipping'] = $this->toFloat($shippingNode->textContent);
+            }
         } catch (\Exception $e) {
             Log::warning('MMM order message parse error', ['error' => $e->getMessage()]);
             $result['error'] = $e->getMessage();
         }
 
         return $result;
+    }
+
+    private function parseItemInNode(\DOMNode $itemNode, int $lineNumber): ?array
+    {
+        if (!$itemNode instanceof \DOMElement) {
+            return null;
+        }
+
+        $quantity = $this->toFloat($itemNode->getAttribute('quantity'));
+        $supplierPartId = $this->firstChildText($itemNode, 'SupplierPartID');
+        $description = $this->firstChildText($itemNode, 'Description');
+        $unitOfMeasure = $this->firstChildText($itemNode, 'UnitOfMeasure');
+
+        $unitPrice = null;
+        $currency = null;
+        $moneyNodes = $itemNode->getElementsByTagName('Money');
+        if ($moneyNodes->length > 0) {
+            $firstMoney = $moneyNodes->item(0);
+            if ($firstMoney instanceof \DOMElement) {
+                $unitPrice = $this->toFloat($firstMoney->textContent);
+                $currency = $firstMoney->getAttribute('currency') ?: null;
+            }
+        }
+
+        $extended = null;
+        if ($unitPrice !== null && $quantity !== null) {
+            $extended = round($unitPrice * $quantity, 2);
+        }
+
+        return [
+            'line_number' => $lineNumber,
+            'supplier_part_id' => $supplierPartId,
+            'description' => $description,
+            'quantity' => $quantity,
+            'unit_of_measure' => $unitOfMeasure,
+            'unit_price' => $unitPrice,
+            'currency' => $currency,
+            'extended_price' => $extended,
+        ];
+    }
+
+    private function firstChildText(\DOMElement $parent, string $tag): ?string
+    {
+        $nodes = $parent->getElementsByTagName($tag);
+        if ($nodes->length === 0) {
+            return null;
+        }
+        $value = trim($nodes->item(0)->textContent ?? '');
+        return $value !== '' ? $value : null;
+    }
+
+    private function findMoneyChild(\DOMDocument $dom, string $parentTag): ?\DOMElement
+    {
+        $parents = $dom->getElementsByTagName($parentTag);
+        if ($parents->length === 0) {
+            return null;
+        }
+        $parent = $parents->item(0);
+        if (!$parent instanceof \DOMElement) {
+            return null;
+        }
+        $moneyNodes = $parent->getElementsByTagName('Money');
+        return $moneyNodes->length > 0 && $moneyNodes->item(0) instanceof \DOMElement
+            ? $moneyNodes->item(0)
+            : null;
+    }
+
+    private function toFloat(mixed $value): ?float
+    {
+        if ($value === null) {
+            return null;
+        }
+        $trimmed = trim((string) $value);
+        if ($trimmed === '' || !is_numeric($trimmed)) {
+            return null;
+        }
+        return (float) $trimmed;
     }
 
     public function isEnabled(): bool

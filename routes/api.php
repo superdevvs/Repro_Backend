@@ -676,6 +676,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide']);
             Route::post('/bright-mls/publish', [IntegrationController::class, 'publishToBrightMls']);
             Route::post('/mmm/punchout', [IntegrationController::class, 'mmmPunchout']);
+            Route::get('/mmm/sessions', [IntegrationController::class, 'mmmSessions']);
         });
 
         // MLS Publishing Queue & redirect

@@ -213,6 +213,81 @@ class IntegrationController extends Controller
     }
 
     /**
+     * List recent MMM punchout sessions for a shoot with shoot-level summary.
+     */
+    public function mmmSessions(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+        }
+
+        if ($user->role === 'client' && $shoot->client_id !== $user->id) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        if ($user->role === 'salesRep' && $shoot->rep_id !== $user->id) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        if (!in_array($user->role, ['admin', 'superadmin', 'client', 'salesRep'], true)) {
+            return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
+        }
+
+        $rows = $shoot->mmmPunchoutSessions()
+            ->orderByDesc('id')
+            ->limit(25)
+            ->get();
+
+        $sessions = $rows->map(function (MmmPunchoutSession $session) {
+            $requestPayload = is_array($session->request_payload) ? $session->request_payload : [];
+            $responsePayload = is_array($session->response_payload) ? $session->response_payload : [];
+
+            $innerPayload = $requestPayload['payload'] ?? [];
+            $deploymentMode = is_array($innerPayload) ? ($innerPayload['deployment_mode'] ?? null) : null;
+
+            $order = $responsePayload['order'] ?? null;
+            if (!is_array($order)) {
+                $order = null;
+            }
+
+            return [
+                'id' => $session->id,
+                'shoot_id' => $session->shoot_id,
+                'user_id' => $session->user_id,
+                'status' => $session->status,
+                'order_number' => $session->order_number,
+                'buyer_cookie' => $session->buyer_cookie,
+                'redirect_url' => $session->redirect_url,
+                'redirected_at' => optional($session->redirected_at)->toIso8601String(),
+                'returned_at' => optional($session->returned_at)->toIso8601String(),
+                'last_error' => $session->last_error,
+                'employee_email' => $session->employee_email,
+                'username' => $session->username,
+                'first_name' => $session->first_name,
+                'last_name' => $session->last_name,
+                'created_at' => optional($session->created_at)->toIso8601String(),
+                'deployment_mode' => $deploymentMode,
+                'order' => $order,
+            ];
+        })->values();
+
+        return response()->json([
+            'success' => true,
+            'sessions' => $sessions,
+            'summary' => [
+                'mmm_status' => $shoot->mmm_status,
+                'mmm_order_number' => $shoot->mmm_order_number,
+                'mmm_buyer_cookie' => $shoot->mmm_buyer_cookie,
+                'mmm_redirect_url' => $shoot->mmm_redirect_url,
+                'mmm_last_punchout_at' => optional($shoot->mmm_last_punchout_at)->toIso8601String(),
+                'mmm_last_order_at' => optional($shoot->mmm_last_order_at)->toIso8601String(),
+                'mmm_last_error' => $shoot->mmm_last_error,
+            ],
+        ]);
+    }
+
+    /**
      * MMM punchout order return callback (BrowserFormPost)
      */
     public function mmmReturn(Request $request)
@@ -237,12 +312,22 @@ class IntegrationController extends Controller
         $shoot = $session?->shoot;
 
         if ($session) {
+            $orderSummary = [
+                'items' => $parsed['items'] ?? [],
+                'subtotal' => $parsed['subtotal'] ?? null,
+                'tax' => $parsed['tax'] ?? null,
+                'shipping' => $parsed['shipping'] ?? null,
+                'total' => $parsed['total'] ?? null,
+                'currency' => $parsed['currency'] ?? null,
+            ];
+
             $session->update([
                 'order_number' => $orderNumber ?? $session->order_number,
                 'status' => 'returned',
                 'returned_at' => now(),
                 'response_payload' => array_merge($session->response_payload ?? [], [
                     'order_xml' => $xml,
+                    'order' => $orderSummary,
                 ]),
             ]);
         }
