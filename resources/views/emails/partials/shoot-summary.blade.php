@@ -2,12 +2,24 @@
     $showFinancials = $showFinancials ?? true;
     $showNotes = $showNotes ?? true;
     $isPhotographer = $isPhotographer ?? false;
+    $summaryNotice = $summaryNotice ?? null;
 @endphp
 
 {{-- Shoot Overview Section Card --}}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
     <tr>
         <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
+            @if(is_array($summaryNotice) && !empty($summaryNotice['value']))
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;">
+                <tr>
+                    <td class="callout-danger-bg" style="padding:16px 18px; border-radius:14px; border:1px solid #ffc8cf; background-color:#fff0f1;">
+                        <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#a63a4a; font-weight:800;">{{ $summaryNotice['label'] ?? 'Notice' }}</p>
+                        <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">{{ $summaryNotice['value'] }}</p>
+                    </td>
+                </tr>
+            </table>
+            @endif
+
             <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Shoot Overview</p>
             <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">{{ $shoot->location }}</p>
             <p class="dark-body" style="margin:12px 0 0; font-size:15px; line-height:1.75; color:#4f6886;">Everything currently scheduled for this property is organized below, including the service lineup and assigned team.</p>

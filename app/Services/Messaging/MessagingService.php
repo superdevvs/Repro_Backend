@@ -47,23 +47,29 @@ class MessagingService
 
         $message = $this->storeMessageRecord($payload, $channel, 'EMAIL');
 
-        $provider = $this->getEmailProvider($channel);
-        $providerMessageId = $provider->send($channel, [
-            'to' => $payload['to'],
-            'cc' => $cc,
-            'bcc' => $bcc,
-            'subject' => $payload['subject'] ?? $message->subject,
-            'html' => $payload['body_html'] ?? $message->body_html,
-            'text' => $payload['body_text'] ?? $message->body_text,
-            'reply_to' => $payload['reply_to'] ?? null,
-            'attachments' => $payload['attachments'] ?? [],
-        ]);
+        try {
+            $provider = $this->getEmailProvider($channel);
+            $providerMessageId = $provider->send($channel, [
+                'to' => $payload['to'],
+                'cc' => $cc,
+                'bcc' => $bcc,
+                'subject' => $payload['subject'] ?? $message->subject,
+                'html' => $payload['body_html'] ?? $message->body_html,
+                'text' => $payload['body_text'] ?? $message->body_text,
+                'reply_to' => $payload['reply_to'] ?? null,
+                'attachments' => $payload['attachments'] ?? [],
+            ]);
 
-        $message->update([
-            'status' => 'SENT',
-            'sent_at' => now(),
-            'provider_message_id' => $providerMessageId,
-        ]);
+            $message->update([
+                'status' => 'SENT',
+                'sent_at' => now(),
+                'provider_message_id' => $providerMessageId,
+            ]);
+        } catch (\Throwable $exception) {
+            $this->markMessageFailed($message, $exception, 'Email send failed');
+
+            throw $exception;
+        }
 
         return $message->fresh();
     }
@@ -713,6 +719,11 @@ class MessagingService
 
     public function dispatchScheduledMessage(Message $message): Message
     {
+        return $this->dispatchStoredEmailMessage($message);
+    }
+
+    public function dispatchStoredEmailMessage(Message $message): Message
+    {
         if ($message->channel !== 'EMAIL') {
             return $message;
         }
@@ -722,27 +733,50 @@ class MessagingService
             'user_id' => $message->created_by,
         ]);
 
-        $provider = $this->getEmailProvider($channel);
+        try {
+            $provider = $this->getEmailProvider($channel);
 
-        $providerMessageId = $provider->send($channel, [
-            'to' => $message->to_address,
-            'cc' => $this->normalizeEmailAddresses($message->cc_addresses_json ?? []),
-            'bcc' => $this->normalizeEmailAddresses($message->bcc_addresses_json ?? []),
-            'subject' => $message->subject ?? '',
-            'html' => $message->body_html ?? '',
-            'text' => $message->body_text ?? '',
-            'reply_to' => $message->reply_to_email,
-            'attachments' => $this->resolveScheduledAttachments($message),
-        ]);
+            $providerMessageId = $provider->send($channel, [
+                'to' => $message->to_address,
+                'cc' => $this->normalizeEmailAddresses($message->cc_addresses_json ?? []),
+                'bcc' => $this->normalizeEmailAddresses($message->bcc_addresses_json ?? []),
+                'subject' => $message->subject ?? '',
+                'html' => $message->body_html ?? '',
+                'text' => $message->body_text ?? '',
+                'reply_to' => $message->reply_to_email,
+                'attachments' => $this->resolveScheduledAttachments($message),
+            ]);
 
-        $message->update([
-            'status' => 'SENT',
-            'sent_at' => now(),
-            'provider_message_id' => $providerMessageId,
-            'message_channel_id' => $channel->id,
-        ]);
+            $message->update([
+                'status' => 'SENT',
+                'sent_at' => now(),
+                'provider_message_id' => $providerMessageId,
+                'message_channel_id' => $channel->id,
+            ]);
+        } catch (\Throwable $exception) {
+            $this->markMessageFailed($message, $exception, 'Scheduled email dispatch failed');
+
+            throw $exception;
+        }
 
         return $message->refresh();
+    }
+
+    protected function markMessageFailed(Message $message, \Throwable $exception, string $operation): void
+    {
+        $message->update([
+            'status' => 'FAILED',
+            'failed_at' => now(),
+            'error_message' => $exception->getMessage(),
+        ]);
+
+        Log::error($operation, [
+            'message_id' => $message->id,
+            'to_address' => $message->to_address,
+            'message_channel_id' => $message->message_channel_id,
+            'send_source' => $message->send_source,
+            'error' => $exception->getMessage(),
+        ]);
     }
 
     /**

@@ -6,10 +6,13 @@ use App\Models\Message;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Services\MailService;
+use App\Services\Users\ClientEmailVerificationLinkService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\Sanctum;
+use Mockery\MockInterface;
 use Tests\TestCase;
 
 class UserEmailHealthTest extends TestCase
@@ -220,15 +223,121 @@ class UserEmailHealthTest extends TestCase
         ]);
 
         $link = app(MailService::class)->generateClientEmailVerificationLink($client);
+        parse_str((string) parse_url($link, PHP_URL_QUERY), $query);
 
         config(['app.url' => 'https://different-public-host.example']);
 
         $uri = parse_url($link, PHP_URL_PATH) . '?' . parse_url($link, PHP_URL_QUERY);
 
-        $this->get($uri)
+        $this->withServerVariables([
+            'HTTP_HOST' => 'proxy.example',
+            'HTTP_X_FORWARDED_HOST' => 'api.reprodashboard.com',
+            'HTTP_X_FORWARDED_PROTO' => 'https',
+            'HTTP_X_FORWARDED_PREFIX' => '/api',
+        ])->get($uri)
             ->assertOk()
             ->assertSee('Email verified')
             ->assertSee('Open dashboard');
+
+        $this->assertSame(ClientEmailVerificationLinkService::SIGNATURE_VERSION, $query['signature_v'] ?? null);
+        $this->assertDatabaseHas('users', [
+            'id' => $client->id,
+            'email_status' => 'verified',
+        ]);
+    }
+
+    public function test_registration_flow_generates_a_v2_verification_link_that_can_be_opened(): void
+    {
+        $capturedLink = null;
+
+        $verificationLinkService = app(ClientEmailVerificationLinkService::class);
+
+        $this->partialMock(MailService::class, function (MockInterface $mock) use (&$capturedLink, $verificationLinkService) {
+            $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnUsing(function (User $user) use (&$capturedLink, $verificationLinkService) {
+                $capturedLink = $verificationLinkService->buildUrl($user);
+
+                return true;
+            });
+        });
+
+        $response = $this->postJson('/api/register', [
+            'name' => 'Public Client',
+            'email' => 'fresh-client@gmail.com',
+            'password' => 'secret123',
+            'password_confirmation' => 'secret123',
+        ]);
+
+        $response->assertCreated();
+        $userId = (int) $response->json('user.id');
+
+        $this->assertNotNull($capturedLink);
+
+        parse_str((string) parse_url((string) $capturedLink, PHP_URL_QUERY), $query);
+
+        $this->assertSame(ClientEmailVerificationLinkService::SIGNATURE_VERSION, $query['signature_v'] ?? null);
+
+        $this->get($this->pathWithQuery((string) $capturedLink))
+            ->assertOk()
+            ->assertSee('Email verified');
+
+        $this->assertDatabaseHas('users', [
+            'id' => $userId,
+            'email_status' => 'verified',
+        ]);
+    }
+
+    public function test_resend_flow_generates_a_v2_verification_link_that_can_be_opened(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'resend-client@gmail.com',
+            'email_status' => 'unverified',
+        ]);
+        $capturedLink = null;
+
+        $verificationLinkService = app(ClientEmailVerificationLinkService::class);
+
+        $this->partialMock(MailService::class, function (MockInterface $mock) use (&$capturedLink, $verificationLinkService) {
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnUsing(function (User $user) use (&$capturedLink, $verificationLinkService) {
+                $capturedLink = $verificationLinkService->buildUrl($user);
+
+                return true;
+            });
+        });
+
+        Sanctum::actingAs($client);
+
+        $this->postJson('/api/profile/email-verification/resend')
+            ->assertOk()
+            ->assertJsonPath('message', 'Verification email sent. Check your inbox to verify your address.');
+
+        $this->assertNotNull($capturedLink);
+
+        parse_str((string) parse_url((string) $capturedLink, PHP_URL_QUERY), $query);
+        $this->assertSame(ClientEmailVerificationLinkService::SIGNATURE_VERSION, $query['signature_v'] ?? null);
+
+        $this->get($this->pathWithQuery((string) $capturedLink))
+            ->assertOk()
+            ->assertSee('Email verified');
+
+        $this->assertDatabaseHas('users', [
+            'id' => $client->id,
+            'email_status' => 'verified',
+        ]);
+    }
+
+    public function test_legacy_client_email_verification_links_still_validate_after_the_hmac_rollout(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'legacy-client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $this->get($this->pathWithQuery($this->buildLegacyVerificationLink($client)))
+            ->assertOk()
+            ->assertSee('Email verified');
 
         $this->assertDatabaseHas('users', [
             'id' => $client->id,
@@ -245,16 +354,35 @@ class UserEmailHealthTest extends TestCase
         ]);
 
         $link = app(MailService::class)->generateClientEmailVerificationLink($client);
-        $path = (string) parse_url($link, PHP_URL_PATH);
-
         parse_str((string) parse_url($link, PHP_URL_QUERY), $query);
         $query['signature'] = 'tampered-signature';
 
-        $this->get($path . '?' . http_build_query($query))
+        $this->get($this->pathWithQuery((string) parse_url($link, PHP_URL_PATH) . '?' . http_build_query($query)))
             ->assertStatus(403)
             ->assertSee('Verification link invalid')
             ->assertSee('Open dashboard')
             ->assertDontSee('"message":"Invalid signature."', false);
+    }
+
+    public function test_expired_client_email_verification_signature_renders_a_branded_html_page(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'expired-client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $link = app(ClientEmailVerificationLinkService::class)->buildUrl($client, now()->subMinute());
+
+        $this->get($this->pathWithQuery($link))
+            ->assertStatus(403)
+            ->assertSee('Verification link invalid')
+            ->assertSee('Open dashboard');
+
+        $this->assertDatabaseHas('users', [
+            'id' => $client->id,
+            'email_status' => 'unverified',
+        ]);
     }
 
     public function test_sales_rep_can_list_all_client_accounts_company_wide(): void
@@ -286,5 +414,28 @@ class UserEmailHealthTest extends TestCase
         $this->assertTrue($clientIds->contains($firstClient->id));
         $this->assertTrue($clientIds->contains($secondClient->id));
         $this->assertCount(2, $clientIds);
+    }
+
+    protected function buildLegacyVerificationLink(User $user): string
+    {
+        $relativeSignedUrl = URL::temporarySignedRoute(
+            'api.email-verification.verify',
+            now()->addDays(7),
+            [
+                'user' => $user->id,
+                'hash' => sha1(strtolower((string) $user->email)),
+            ],
+            absolute: false,
+        );
+
+        return 'https://api.reprodashboard.com/' . ltrim($relativeSignedUrl, '/');
+    }
+
+    protected function pathWithQuery(string $link): string
+    {
+        $path = (string) parse_url($link, PHP_URL_PATH);
+        $query = parse_url($link, PHP_URL_QUERY);
+
+        return $query ? $path . '?' . $query : $path;
     }
 }

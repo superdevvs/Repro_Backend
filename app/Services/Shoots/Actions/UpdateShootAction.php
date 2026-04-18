@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots\Actions;
 
+use App\Jobs\ProcessUpdatedShootSideEffectsJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
@@ -396,9 +397,6 @@ class UpdateShootAction
                 $notifyClient,
                 $notifyPhotographer,
                 $originalPhotographerId,
-                $originalScheduledAt,
-                $originalScheduledDate,
-                $originalTime,
                 $originalStatus,
                 $originalWorkflow,
                 $photographerChanged,
@@ -418,191 +416,23 @@ class UpdateShootAction
         ?bool $notifyClient,
         ?bool $notifyPhotographer,
         ?int $originalPhotographerId,
-        ?string $originalScheduledAt,
-        ?string $originalScheduledDate,
-        ?string $originalTime,
         ?string $originalStatus,
         ?string $originalWorkflow,
         bool $photographerChanged,
         bool $photographerNewlyAssigned
     ): void {
-        $mailService = $this->mailService;
-        $automationService = $this->automationService;
-
-        app()->terminating(function () use (
+        ProcessUpdatedShootSideEffectsJob::dispatch(
             $shootId,
-            $mailService,
-            $automationService,
             $changesSummary,
             $changesHtml,
             $notifyClient,
             $notifyPhotographer,
             $originalPhotographerId,
-            $originalScheduledAt,
-            $originalScheduledDate,
-            $originalTime,
             $originalStatus,
             $originalWorkflow,
             $photographerChanged,
             $photographerNewlyAssigned
-        ) {
-            $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-            if (!$shoot) {
-                return;
-            }
-
-            $client = $shoot->client;
-            $previousPhotographer = $originalPhotographerId ? User::find($originalPhotographerId) : null;
-            $affectedPhotographers = collect([$previousPhotographer])
-                ->merge(collect($automationService->buildShootContext($shoot)['photographers'] ?? []))
-                ->filter()
-                ->unique('id')
-                ->values();
-
-            if (
-                $photographerNewlyAssigned
-                && $shoot->photographer
-                && !$automationService->hasActiveTrigger('SHOOT_SCHEDULED')
-                && !$automationService->hasActiveTrigger('PHOTOGRAPHER_ASSIGNED')
-            ) {
-                try {
-                    $paymentLink = $mailService->generatePaymentLink($shoot);
-                    if ($client) {
-                        $mailService->sendShootScheduledEmail($client, $shoot, $paymentLink ?? '');
-                    }
-                } catch (\Exception $e) {
-                    Log::error('Failed to send booking email to newly assigned photographer', [
-                        'shoot_id' => $shoot->id,
-                        'photographer_id' => $shoot->photographer_id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            $systemEmailAlreadySent = false;
-            if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
-                if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
-                    || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
-                    try {
-                        $removedRecipient = $client ?? User::find($shoot->client_id);
-                        if ($removedRecipient) {
-                            $mailService->sendShootRemovedEmail($removedRecipient, $shoot);
-                            $systemEmailAlreadySent = true;
-                        }
-                    } catch (\Exception $e) {
-                        Log::error('Failed to send shoot removed email', [
-                            'shoot_id' => $shoot->id,
-                            'error' => $e->getMessage(),
-                        ]);
-                    }
-                }
-
-                if ($shoot->status === Shoot::STATUS_DELIVERED || $shoot->workflow_status === Shoot::STATUS_DELIVERED) {
-                    try {
-                        $deliveredRecipient = $client ?? User::find($shoot->client_id);
-                        if ($deliveredRecipient) {
-                            $mailService->sendShootReadyEmail($deliveredRecipient, $shoot);
-                            $systemEmailAlreadySent = true;
-                        }
-                    } catch (\Exception $e) {
-                        Log::error('Failed to send shoot ready email', [
-                            'shoot_id' => $shoot->id,
-                            'error' => $e->getMessage(),
-                        ]);
-                    }
-                }
-            }
-
-            $shootUpdatedDispatch = null;
-            try {
-                $context = $automationService->buildShootContext($shoot);
-                if ($shoot->rep) {
-                    $context['rep'] = $shoot->rep;
-                }
-                $context['shoot_changes'] = $changesSummary;
-                $context['shoot_changes_html'] = $changesHtml;
-                $context['notify_client'] = $notifyClient;
-                $context['notify_photographer'] = $notifyPhotographer;
-                $context['photographer_changed'] = $photographerChanged;
-                $context['system_email_already_sent'] = $systemEmailAlreadySent;
-
-                $shootUpdatedDispatch = $automationService->handleEvent('SHOOT_UPDATED', $context);
-
-                if ($photographerChanged) {
-                    $context['previous_photographer_id'] = $originalPhotographerId;
-                    $context['previous_photographer'] = $previousPhotographer;
-                    $context['new_photographer_id'] = $shoot->photographer_id;
-                    $context['new_photographer'] = $shoot->photographer;
-                    $context['affected_photographers'] = $affectedPhotographers->all();
-                    $context['photographer_change_summary'] = $changesSummary;
-                    $automationService->handleEvent('PHOTOGRAPHER_CHANGED', $context);
-                } elseif ($originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id) {
-                    $context['previous_photographer_id'] = $originalPhotographerId;
-                    $automationService->handleEvent('PHOTOGRAPHER_ASSIGNED', $context);
-                }
-
-                if ($originalStatus !== $shoot->status || $originalWorkflow !== $shoot->workflow_status) {
-                    if (in_array($shoot->status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)
-                        || in_array($shoot->workflow_status, [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED], true)) {
-                        $automationService->handleEvent('SHOOT_CANCELED', $context);
-                    }
-
-                    if ($shoot->status === Shoot::STATUS_DELIVERED || $shoot->workflow_status === Shoot::STATUS_DELIVERED) {
-                        $automationService->handleEvent('SHOOT_COMPLETED', $context);
-                    }
-
-                    if ($shoot->status === Shoot::STATUS_UPLOADED || $shoot->workflow_status === Shoot::STATUS_UPLOADED) {
-                        $automationService->handleEvent('PHOTO_UPLOADED', $context);
-                        $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
-                    }
-                }
-            } catch (\Exception $e) {
-                Log::error('Failed to trigger automation events after shoot update', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-
-            if ($client && $automationService->shouldUseFallback('SHOOT_UPDATED', $shootUpdatedDispatch) !== false) {
-                try {
-                    $mailService->sendShootUpdatedEmail(
-                        $client,
-                        $shoot,
-                        $changesSummary,
-                        $notifyClient,
-                        $photographerChanged ? false : $notifyPhotographer
-                    );
-                } catch (\Exception $e) {
-                    Log::error('Failed to send shoot updated email', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            if (
-                $photographerChanged
-                && $notifyPhotographer !== false
-                && !$automationService->hasActiveTrigger('PHOTOGRAPHER_CHANGED')
-            ) {
-                foreach ($affectedPhotographers as $photographer) {
-                    try {
-                        $mailService->sendPhotographerChangedEmail(
-                            $photographer,
-                            $shoot,
-                            $previousPhotographer,
-                            $changesSummary
-                        );
-                    } catch (\Exception $e) {
-                        Log::error('Failed to send photographer changed email', [
-                            'shoot_id' => $shoot->id,
-                            'photographer_id' => $photographer->id ?? null,
-                            'error' => $e->getMessage(),
-                        ]);
-                    }
-                }
-            }
-        });
+        )->afterCommit();
     }
 
     protected function abortJson(string $message, int $status): never

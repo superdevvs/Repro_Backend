@@ -50,8 +50,7 @@ class ShootWorkflowTransitionSupportServiceTest extends TestCase
                 'client' => $client,
             ]);
         $automationService->shouldReceive('hasActiveTrigger')
-            ->once()
-            ->with('SHOOT_REQUEST_DECLINED')
+            ->zeroOrMoreTimes()
             ->andReturnTrue();
         $automationService->shouldReceive('handleEvent')
             ->once()
@@ -61,7 +60,20 @@ class ShootWorkflowTransitionSupportServiceTest extends TestCase
                     && ($context['decline_reason'] ?? null) === 'Outside service area'
                     && ($context['user'] ?? null) === $admin;
             })
-            ->andReturnNull();
+            ->andReturn([
+                'trigger_type' => 'SHOOT_REQUEST_DECLINED',
+                'active_rule_count' => 0,
+                'run_count' => 0,
+                'completed_run_count' => 0,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 0,
+                'handled' => false,
+                'errors' => [],
+                'email_sent_to' => [],
+                'client_email_sent' => false,
+                'photographer_email_sent' => false,
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')->zeroOrMoreTimes()->andReturnFalse();
 
         $service = new ShootWorkflowTransitionSupportService($mailService, $automationService);
         $service->sendDeclineSideEffects($shoot, $admin);

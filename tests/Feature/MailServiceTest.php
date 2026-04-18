@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Message;
+use App\Models\MessageChannel;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
@@ -95,5 +96,233 @@ class MailServiceTest extends TestCase
             $primaryPhotographer->email,
             $secondaryPhotographer->email,
         ], array_column($deliveries, 'to'));
+    }
+
+    /** @test */
+    public function scheduled_email_skips_blank_client_address_and_still_notifies_assigned_photographers(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Blank Scheduled Client',
+            'email' => ' ',
+        ]);
+        $photographer = User::factory()->photographer()->create([
+            'name' => 'Scheduled Photographer',
+            'email' => 'scheduled-photographer@test.com',
+        ]);
+        $service = Service::factory()->create([
+            'name' => 'HDR Photos',
+            'price' => 150.00,
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'photographer_id' => $photographer->id,
+            'service_id' => $service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDays(2)->setTime(11, 0),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'time' => '11:00',
+        ]);
+
+        $shoot->services()->attach($service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $photographer->id,
+        ]);
+
+        $deliveries = [];
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')
+            ->once()
+            ->andReturnUsing(function (array $payload) use (&$deliveries) {
+                $deliveries[] = $payload;
+
+                return new Message();
+            });
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendShootScheduledEmail(
+            $client,
+            $shoot,
+            'https://example.test/payment',
+            true
+        );
+
+        $this->assertTrue($result);
+        $this->assertSame([$photographer->email], array_column($deliveries, 'to'));
+    }
+
+    /** @test */
+    public function updated_email_skips_blank_client_address_and_still_notifies_assigned_photographers(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Blank Updated Client',
+            'email' => '  ',
+        ]);
+        $photographer = User::factory()->photographer()->create([
+            'name' => 'Updated Photographer',
+            'email' => 'updated-photographer@test.com',
+        ]);
+        $service = Service::factory()->create([
+            'name' => 'HDR Photos',
+            'price' => 150.00,
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'photographer_id' => $photographer->id,
+            'service_id' => $service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDays(2)->setTime(11, 0),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'time' => '11:00',
+        ]);
+
+        $shoot->services()->attach($service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_pay' => 45,
+            'photographer_id' => $photographer->id,
+        ]);
+
+        $deliveries = [];
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')
+            ->once()
+            ->andReturnUsing(function (array $payload) use (&$deliveries) {
+                $deliveries[] = $payload;
+
+                return new Message();
+            });
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendShootUpdatedEmail(
+            $client,
+            $shoot,
+            'Shoot details updated',
+            true,
+            true
+        );
+
+        $this->assertTrue($result);
+        $this->assertSame([$photographer->email], array_column($deliveries, 'to'));
+    }
+
+    /** @test */
+    public function shoot_requested_email_respects_client_email_health_gating(): void
+    {
+        $this->createDefaultEmailChannel();
+
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Requested Client',
+            'email' => 'requested-client@test.com',
+            'email_status' => 'unverified',
+        ]);
+        $service = Service::factory()->create([
+            'name' => 'Request Service',
+            'price' => 150.00,
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'service_id' => $service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'scheduled_at' => now()->addDays(2)->setTime(11, 0),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'time' => '11:00',
+        ]);
+
+        $shoot->services()->attach($service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')->never();
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendShootRequestedEmail($client, $shoot);
+
+        $this->assertFalse($result);
+        $this->assertDatabaseCount('messages', 0);
+    }
+
+    /** @test */
+    public function terms_accepted_email_persists_client_account_context_without_blocking_unverified_clients(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Terms Client',
+            'email' => 'terms-client@test.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $payloads = [];
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')
+            ->once()
+            ->andReturnUsing(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return new Message();
+            });
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendTermsAcceptedEmail($client);
+
+        $this->assertTrue($result);
+        $this->assertCount(1, $payloads);
+        $this->assertSame($client->id, $payloads[0]['related_account_id'] ?? null);
+        $this->assertSame('TERMS_ACCEPTED', $payloads[0]['send_source'] ?? null);
+    }
+
+    /** @test */
+    public function password_reset_email_persists_client_account_context_without_blocking_unverified_clients(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Reset Client',
+            'email' => 'reset-client@test.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $payloads = [];
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')
+            ->once()
+            ->andReturnUsing(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return new Message();
+            });
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendPasswordResetEmail($client, 'https://example.test/reset');
+
+        $this->assertTrue($result);
+        $this->assertCount(1, $payloads);
+        $this->assertSame($client->id, $payloads[0]['related_account_id'] ?? null);
+        $this->assertSame('PASSWORD_RESET', $payloads[0]['send_source'] ?? null);
+    }
+
+    private function createDefaultEmailChannel(): MessageChannel
+    {
+        return MessageChannel::create([
+            'type' => 'EMAIL',
+            'provider' => 'LOCAL_SMTP',
+            'display_name' => 'Default',
+            'from_email' => 'contact@reprophotos.com',
+            'is_default' => true,
+            'owner_scope' => 'GLOBAL',
+        ]);
     }
 }

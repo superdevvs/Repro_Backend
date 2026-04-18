@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\API;
 
+use App\Jobs\ProcessExternalShootRequestedJob;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\ExternalBookingRequest;
 use App\Http\Resources\ShootResource;
@@ -18,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class ExternalBookingController extends Controller
@@ -148,27 +150,7 @@ class ExternalBookingController extends Controller
 
             $shoot = $result['shoot'];
 
-            // Post-transaction: trigger automations (non-blocking)
-            $shootId = $shoot->id;
-            $automationService = $this->automationService;
-
-            app()->terminating(function () use ($shootId, $automationService) {
-                $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-                if (!$shoot) return;
-
-                try {
-                    $context = $automationService->buildShootContext($shoot);
-                    if ($shoot->rep) {
-                        $context['rep'] = $shoot->rep;
-                    }
-                    $automationService->handleEvent('SHOOT_REQUESTED', $context);
-                } catch (\Exception $e) {
-                    Log::error('Failed to trigger SHOOT_REQUESTED automation for external booking', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            });
+            ProcessExternalShootRequestedJob::dispatch($shoot->id)->afterCommit();
 
             return response()->json([
                 'message' => 'Shoot request submitted successfully. It will be reviewed by our team.',
@@ -290,6 +272,10 @@ class ExternalBookingController extends Controller
                 $client->company_notes = $data['client_company'];
                 $updated = true;
             }
+            if ($this->usersTableHasUsernameColumn() && empty($client->username)) {
+                $client->username = $this->generateUniqueUsername($data['client_name'], $email);
+                $updated = true;
+            }
             if ($updated) {
                 $client->save();
             }
@@ -299,12 +285,51 @@ class ExternalBookingController extends Controller
         // Create new client account with a random password (they'll reset it)
         return User::create([
             'name' => $data['client_name'],
+            'username' => $this->generateUniqueUsername($data['client_name'], $email),
             'email' => $email,
             'phone' => $data['client_phone'] ?? null,
             'company_notes' => $data['client_company'] ?? null,
             'role' => 'client',
             'password' => Hash::make(Str::random(32)),
         ]);
+    }
+
+    protected function generateUniqueUsername(string $name, string $email): string
+    {
+        $base = Str::of($name)
+            ->lower()
+            ->replaceMatches('/[^a-z0-9]+/', '.')
+            ->trim('.')
+            ->value();
+
+        if ($base === '') {
+            $base = Str::before($email, '@');
+        }
+
+        $base = trim(preg_replace('/[^a-z0-9._-]/', '', strtolower($base)) ?? '', '.');
+
+        if ($base === '') {
+            $base = 'client';
+        }
+
+        $candidate = $base;
+        $suffix = 1;
+
+        while (User::query()->where('username', $candidate)->exists()) {
+            $candidate = $base . '.' . $suffix;
+            $suffix++;
+        }
+
+        return $candidate;
+    }
+
+    protected function usersTableHasUsernameColumn(): bool
+    {
+        try {
+            return Schema::hasColumn('users', 'username');
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**

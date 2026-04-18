@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Events\ShootActivityBroadcast;
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootEmailDelivery;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\InvoiceService;
@@ -109,6 +110,70 @@ class ShootMutationActionsTest extends TestCase
     }
 
     /** @test */
+    public function admin_booking_is_rejected_when_selected_client_has_no_primary_email(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $clientWithoutEmail = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Client Without Email',
+            'email' => ' ',
+        ]);
+
+        $response = $this->postJson('/api/shoots', [
+            'client_id' => $clientWithoutEmail->id,
+            'address' => '400 Missing Email Blvd',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1],
+            ],
+            'scheduled_at' => now()->addDays(3)->setTime(11, 0)->format('Y-m-d H:i:s'),
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors('client_id');
+
+        $this->assertSame(
+            'Selected client must have a primary email before booking a shoot.',
+            $response->json('errors.client_id.0')
+        );
+        $this->assertDatabaseCount('shoots', 0);
+    }
+
+    /** @test */
+    public function client_self_booking_is_rejected_when_primary_email_is_missing(): void
+    {
+        $clientWithoutEmail = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Self Booking Missing Email',
+            'email' => '  ',
+        ]);
+
+        Sanctum::actingAs($clientWithoutEmail);
+
+        $response = $this->postJson('/api/shoots', [
+            'address' => '401 Missing Email Blvd',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1],
+            ],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors('client_id');
+
+        $this->assertSame(
+            'Selected client must have a primary email before booking a shoot.',
+            $response->json('errors.client_id.0')
+        );
+        $this->assertDatabaseCount('shoots', 0);
+    }
+
+    /** @test */
     public function admin_can_schedule_a_hold_shoot_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -148,6 +213,219 @@ class ShootMutationActionsTest extends TestCase
             'shoot_id' => $shoot->id,
             'action' => 'shoot_resumed_from_hold',
             'user_id' => $this->admin->id,
+        ]);
+    }
+
+    /** @test */
+    public function scheduling_falls_back_when_scheduled_automation_did_not_send_client_email(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => 'hold_on',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+            'address' => '12 Hold Lane',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_SCHEDULED')
+            ->andReturn([
+                'trigger_type' => 'SHOOT_SCHEDULED',
+                'active_rule_count' => 1,
+                'run_count' => 1,
+                'completed_run_count' => 1,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 0,
+                'handled' => true,
+                'errors' => [],
+                'email_sent_to' => ['ops@test.com'],
+                'client_email_sent' => false,
+                'photographer_email_sent' => false,
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_SCHEDULED', Mockery::type('array'))
+            ->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) use ($shoot) {
+            $mailService->shouldReceive('sendShootScheduledEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $scheduledShoot, string $paymentLink, ?bool $notifyPhotographer = null) use ($shoot) {
+                    return $recipient->is($this->client)
+                        && $scheduledShoot->id === $shoot->id
+                        && $paymentLink === 'https://example.test/payment'
+                        && $notifyPhotographer === false;
+                })
+                ->andReturnTrue();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
+        });
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => now()->addDays(3)->setTime(10, 30)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $response->assertOk();
+
+        $this->assertDatabaseHas('shoot_email_deliveries', [
+            'shoot_id' => $shoot->id,
+            'recipient_user_id' => $this->client->id,
+            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
+            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
+            'status' => ShootEmailDelivery::STATUS_SENT,
+            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
+        ]);
+    }
+
+    /** @test */
+    public function scheduling_records_automation_client_confirmation_delivery_when_automation_sent_the_client_email(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => 'hold_on',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_SCHEDULED')
+            ->andReturn([
+                'trigger_type' => 'SHOOT_SCHEDULED',
+                'active_rule_count' => 1,
+                'run_count' => 1,
+                'completed_run_count' => 1,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 0,
+                'handled' => true,
+                'errors' => [],
+                'email_sent_to' => [$this->client->email, $this->photographer->email],
+                'client_email_sent' => true,
+                'photographer_email_sent' => true,
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_SCHEDULED', Mockery::type('array'))
+            ->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootScheduledEmail')->never();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->never();
+        });
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => now()->addDays(3)->setTime(10, 30)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $response->assertOk();
+
+        $this->assertDatabaseHas('shoot_email_deliveries', [
+            'shoot_id' => $shoot->id,
+            'recipient_user_id' => $this->client->id,
+            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
+            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
+            'status' => ShootEmailDelivery::STATUS_SENT,
+            'source' => ShootEmailDelivery::SOURCE_AUTOMATION,
+        ]);
+    }
+
+    /** @test */
+    public function scheduling_records_skipped_client_confirmation_delivery_when_client_email_is_missing(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $clientWithoutEmail = User::factory()->create([
+            'role' => 'client',
+            'email' => '  ',
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $clientWithoutEmail->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => 'hold_on',
+            'workflow_status' => Shoot::STATUS_ON_HOLD,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_SCHEDULED')
+            ->andReturn($this->emptyAutomationDispatchSummary('SHOOT_SCHEDULED'));
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_SCHEDULED', Mockery::type('array'))
+            ->andReturnTrue();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) {
+            $mailService->shouldReceive('sendShootScheduledEmail')->never();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
+        });
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/schedule", [
+            'scheduled_at' => now()->addDays(3)->setTime(10, 30)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+        ]);
+
+        $response->assertOk();
+
+        $this->assertDatabaseHas('shoot_email_deliveries', [
+            'shoot_id' => $shoot->id,
+            'recipient_user_id' => $clientWithoutEmail->id,
+            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
+            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
+            'status' => ShootEmailDelivery::STATUS_SKIPPED,
+            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
+            'reason_code' => ShootEmailDelivery::REASON_MISSING_EMAIL,
         ]);
     }
 
@@ -394,9 +672,10 @@ class ShootMutationActionsTest extends TestCase
                     return $recipient->is($this->client)
                         && $approvedShoot->id === $shoot->id
                         && $paymentLink === 'https://example.test/payment'
-                        && $notifyPhotographer === true;
+                        && $notifyPhotographer === false;
                 })
                 ->andReturnTrue();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
         });
 
         $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
@@ -411,6 +690,163 @@ class ShootMutationActionsTest extends TestCase
 
         $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
         $this->assertSame($this->photographer->id, $shoot->photographer_id);
+    }
+
+    /** @test */
+    public function approval_falls_back_when_scheduled_automation_is_handled_but_client_email_was_not_sent(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_REQUEST_APPROVED')
+            ->andReturnUsing(fn (string $triggerType) => $this->emptyAutomationDispatchSummary($triggerType));
+        // SHOOT_BOOKED is no longer fired on approval — only SHOOT_SCHEDULED is.
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_SCHEDULED')
+            ->andReturn([
+                'trigger_type' => 'SHOOT_SCHEDULED',
+                'active_rule_count' => 1,
+                'run_count' => 1,
+                'completed_run_count' => 1,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 0,
+                'handled' => true,
+                'errors' => [],
+                'email_sent_to' => ['ops@test.com'],
+                'client_email_sent' => false,
+                'photographer_email_sent' => false,
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_SCHEDULED', Mockery::type('array'))
+            ->andReturnFalse();
+        $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) use ($shoot) {
+            $mailService->shouldReceive('sendShootScheduledEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $approvedShoot, string $paymentLink, ?bool $notifyPhotographer = null) use ($shoot) {
+                    return $recipient->is($this->client)
+                        && $approvedShoot->id === $shoot->id
+                        && $paymentLink === 'https://example.test/payment'
+                        && $notifyPhotographer === false;
+                })
+                ->andReturnTrue();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
+        });
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'scheduled_at' => now()->addDays(4)->setTime(9, 30)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+            'notify_client' => true,
+            'notify_photographer' => true,
+        ]);
+
+        $response->assertOk();
+
+        $this->assertDatabaseHas('shoot_email_deliveries', [
+            'shoot_id' => $shoot->id,
+            'recipient_user_id' => $this->client->id,
+            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
+            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
+            'status' => ShootEmailDelivery::STATUS_SENT,
+            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
+        ]);
+    }
+
+    /** @test */
+    public function approval_records_failed_client_confirmation_delivery_when_fallback_send_fails(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_REQUEST_APPROVED')
+            ->andReturnUsing(fn (string $triggerType) => $this->emptyAutomationDispatchSummary($triggerType));
+        // SHOOT_BOOKED is no longer fired on approval — only SHOOT_SCHEDULED is.
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_SCHEDULED')
+            ->andReturn($this->emptyAutomationDispatchSummary('SHOOT_SCHEDULED'));
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_SCHEDULED', Mockery::type('array'))
+            ->andReturnFalse();
+        $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) use ($shoot) {
+            $mailService->shouldReceive('sendShootScheduledEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $approvedShoot, string $paymentLink, ?bool $notifyPhotographer = null) use ($shoot) {
+                    return $recipient->is($this->client)
+                        && $approvedShoot->id === $shoot->id
+                        && $paymentLink === 'https://example.test/payment'
+                        && $notifyPhotographer === false;
+                })
+                ->andReturnFalse();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
+        });
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'scheduled_at' => now()->addDays(4)->setTime(9, 30)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+            'notify_client' => true,
+            'notify_photographer' => true,
+        ]);
+
+        $response->assertOk();
+
+        $this->assertDatabaseHas('shoot_email_deliveries', [
+            'shoot_id' => $shoot->id,
+            'recipient_user_id' => $this->client->id,
+            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
+            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
+            'status' => ShootEmailDelivery::STATUS_FAILED,
+            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
+            'reason_code' => ShootEmailDelivery::REASON_PROVIDER_ERROR,
+        ]);
     }
 
     /** @test */
@@ -459,9 +895,10 @@ class ShootMutationActionsTest extends TestCase
                         && $shoot->client_id === $this->client->id
                         && $shoot->photographer_id === $this->photographer->id
                         && $paymentLink === 'https://example.test/payment'
-                        && $notifyPhotographer === true;
+                        && $notifyPhotographer === false;
                 })
                 ->andReturnTrue();
+            $mailService->shouldReceive('sendAssignedPhotographerShootScheduledEmails')->once()->andReturnTrue();
         });
 
         $response = $this->postJson('/api/shoots', [
@@ -478,6 +915,17 @@ class ShootMutationActionsTest extends TestCase
         ]);
 
         $response->assertCreated();
+
+        $shoot = Shoot::query()->latest('id')->firstOrFail();
+
+        $this->assertDatabaseHas('shoot_email_deliveries', [
+            'shoot_id' => $shoot->id,
+            'recipient_user_id' => $this->client->id,
+            'event_type' => ShootEmailDelivery::EVENT_SHOOT_SCHEDULED_CONFIRMATION,
+            'recipient_type' => ShootEmailDelivery::RECIPIENT_CLIENT,
+            'status' => ShootEmailDelivery::STATUS_SENT,
+            'source' => ShootEmailDelivery::SOURCE_FALLBACK,
+        ]);
     }
 
     /** @test */
@@ -545,6 +993,80 @@ class ShootMutationActionsTest extends TestCase
         $shoot->refresh();
 
         $this->assertSame($replacementPhotographer->id, $shoot->photographer_id);
+    }
+
+    /** @test */
+    public function shoot_update_falls_back_when_update_automation_did_not_send_client_email(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => now()->addDays(2)->setTime(9, 0),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'time' => '09:00',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('buildShootContext')->zeroOrMoreTimes()->andReturnUsing(
+            fn (Shoot $targetShoot) => [
+                'shoot' => $targetShoot,
+                'shoot_id' => $targetShoot->id,
+                'client' => $targetShoot->client,
+                'photographer' => $targetShoot->photographer,
+                'photographers' => $targetShoot->photographer ? [$targetShoot->photographer] : [],
+            ]
+        );
+        $automationService->shouldReceive('handleEvent')
+            ->once()
+            ->withArgs(fn (string $triggerType) => $triggerType === 'SHOOT_UPDATED')
+            ->andReturn([
+                'trigger_type' => 'SHOOT_UPDATED',
+                'active_rule_count' => 1,
+                'run_count' => 1,
+                'completed_run_count' => 1,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 0,
+                'handled' => true,
+                'errors' => [],
+                'email_sent_to' => ['ops@test.com'],
+                'client_email_sent' => false,
+                'photographer_email_sent' => false,
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')
+            ->once()
+            ->with('SHOOT_UPDATED', Mockery::type('array'))
+            ->andReturnFalse();
+        $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $this->rebindMailService(function ($mailService) use ($shoot) {
+            $mailService->shouldReceive('sendShootUpdatedEmail')
+                ->once()
+                ->withArgs(function (User $recipient, Shoot $updatedShoot, ?string $summary, ?bool $notifyClient, ?bool $notifyPhotographer) use ($shoot) {
+                    return $recipient->is($this->client)
+                        && $updatedShoot->id === $shoot->id
+                        && $summary === 'Shoot details updated'
+                        && $notifyClient === true
+                        && $notifyPhotographer === true;
+                })
+                ->andReturnTrue();
+        });
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'address' => '510 Updated Ave',
+            'notify_client' => true,
+            'notify_photographer' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Shoot updated');
     }
 
     /** @test */
@@ -917,6 +1439,9 @@ class ShootMutationActionsTest extends TestCase
             'failed_run_count' => 0,
             'handled' => false,
             'errors' => [],
+            'email_sent_to' => [],
+            'client_email_sent' => false,
+            'photographer_email_sent' => false,
         ];
     }
 }

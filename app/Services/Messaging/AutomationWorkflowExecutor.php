@@ -793,8 +793,9 @@ class AutomationWorkflowExecutor
             ->filter(fn ($run) => !($run instanceof AutomationRun) || $run->status === 'failed')
             ->count() + count($errors);
         $activeRuleCount = $rules->count();
+        $emailDeliverySummary = $this->summarizeEmailDeliveryByRole($runs);
 
-        return [
+        return array_merge([
             'trigger_type' => $triggerType,
             'active_rule_count' => $activeRuleCount,
             'run_count' => count($runs),
@@ -805,6 +806,93 @@ class AutomationWorkflowExecutor
                 && $failedRunCount === 0
                 && ($completedRunCount + $waitingRunCount) === $activeRuleCount,
             'errors' => $errors,
+        ], $emailDeliverySummary);
+    }
+
+    private function summarizeEmailDeliveryByRole(array $runs): array
+    {
+        $sentEmails = [];
+        $clientEmails = [];
+        $photographerEmails = [];
+
+        foreach ($runs as $run) {
+            if (!$run instanceof AutomationRun) {
+                continue;
+            }
+
+            $context = is_array($run->context_json) ? $run->context_json : [];
+            $clientEmails = array_merge($clientEmails, $this->extractContextEmails($context['client'] ?? null));
+            $photographerEmails = array_merge(
+                $photographerEmails,
+                $this->extractContextEmails($context['photographer'] ?? null),
+                $this->extractContextEmails($context['photographers'] ?? null)
+            );
+
+            foreach ($run->steps ?? [] as $step) {
+                $output = is_array($step->output_json ?? null) ? $step->output_json : [];
+                if (($output['channel'] ?? null) !== 'email') {
+                    continue;
+                }
+
+                foreach (Arr::wrap($output['sent_to'] ?? []) as $email) {
+                    $normalizedEmail = $this->normalizeEmailAddress($email);
+                    if ($normalizedEmail !== null) {
+                        $sentEmails[] = $normalizedEmail;
+                    }
+                }
+            }
+        }
+
+        $sentEmails = array_values(array_unique($sentEmails));
+        $clientEmails = array_values(array_unique($clientEmails));
+        $photographerEmails = array_values(array_unique($photographerEmails));
+
+        return [
+            'email_sent_to' => $sentEmails,
+            'client_email_sent' => $this->emailListsIntersect($sentEmails, $clientEmails),
+            'photographer_email_sent' => $this->emailListsIntersect($sentEmails, $photographerEmails),
         ];
+    }
+
+    private function extractContextEmails(mixed $value): array
+    {
+        if ($value === null) {
+            return [];
+        }
+
+        if (is_array($value) && array_is_list($value)) {
+            return collect($value)
+                ->flatMap(fn ($item) => $this->extractContextEmails($item))
+                ->values()
+                ->all();
+        }
+
+        $email = $this->normalizeEmailAddress(data_get($value, 'email'));
+
+        return $email !== null ? [$email] : [];
+    }
+
+    private function normalizeEmailAddress(mixed $email): ?string
+    {
+        if (!is_string($email)) {
+            return null;
+        }
+
+        $normalizedEmail = strtolower(trim($email));
+
+        if ($normalizedEmail === '' || filter_var($normalizedEmail, FILTER_VALIDATE_EMAIL) === false) {
+            return null;
+        }
+
+        return $normalizedEmail;
+    }
+
+    private function emailListsIntersect(array $left, array $right): bool
+    {
+        if ($left === [] || $right === []) {
+            return false;
+        }
+
+        return array_intersect($left, $right) !== [];
     }
 }

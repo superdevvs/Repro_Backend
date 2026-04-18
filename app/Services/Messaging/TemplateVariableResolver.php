@@ -332,7 +332,9 @@ class TemplateVariableResolver
             'pay_link' => $paymentLink,
             'payment_link' => $paymentLink,
             'cancellation_reason' => $shoot->cancellation_reason ?? null,
-            'decline_reason' => $shoot->declined_reason ?? null,
+            'decline_reason' => filled(trim((string) ($shoot->declined_reason ?? '')))
+                ? trim((string) $shoot->declined_reason)
+                : 'No reason was provided.',
         ];
     }
 

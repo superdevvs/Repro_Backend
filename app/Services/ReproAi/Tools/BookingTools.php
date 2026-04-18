@@ -8,20 +8,24 @@ use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\ShootMutationSupportService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class BookingTools
 {
     private DropboxWorkflowService $dropboxService;
     private MailService $mailService;
     private AutomationService $automationService;
+    private ShootMutationSupportService $support;
 
     public function __construct()
     {
         $this->dropboxService = app(DropboxWorkflowService::class);
         $this->mailService = app(MailService::class);
         $this->automationService = app(AutomationService::class);
+        $this->support = app(ShootMutationSupportService::class);
     }
 
     /**
@@ -53,6 +57,8 @@ class BookingTools
                     ];
                 }
             }
+
+            $client = $this->support->ensureClientHasDeliverableEmail((int) $userId);
 
             // Get or default services
             $serviceIds = is_array($params['services']) ? $params['services'] : [$params['services']];
@@ -127,7 +133,6 @@ class BookingTools
                 }
 
                 if ($shoot->status === 'scheduled') {
-                    $client = User::find($userId);
                     $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false;
                     Log::info('AI shoot booking fallback decision evaluated', [
                         'shoot_id' => $shoot->id,
@@ -136,9 +141,16 @@ class BookingTools
                         'dispatch' => $this->formatDispatchSummaryForLog($shootBookedDispatch),
                     ]);
 
-                    if ($client && $shouldUseFallback) {
+                    $clientEmailSent = (bool) ($shootBookedDispatch['client_email_sent'] ?? false);
+                    $photographerEmailSent = (bool) ($shootBookedDispatch['photographer_email_sent'] ?? false);
+
+                    if ($client && ($shouldUseFallback || !$clientEmailSent) && !$clientEmailSent) {
                         $paymentLink = $this->mailService->generatePaymentLink($shoot);
-                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, true);
+                        $this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, false);
+                    }
+
+                    if ($shouldUseFallback || !$photographerEmailSent) {
+                        $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
                     }
                 }
 
@@ -156,6 +168,20 @@ class BookingTools
                         ? "Shoot booked successfully for {$shoot->scheduled_date?->format('M d, Y')} at {$shoot->time}"
                         : "Shoot created. Please schedule a date and time to complete booking.",
                 ];
+            } catch (ValidationException $e) {
+                DB::rollBack();
+                Log::warning('AI booking rejected during shoot creation.', [
+                    'user_id' => $userId,
+                    'errors' => $e->errors(),
+                    'params' => $params,
+                ]);
+
+                return [
+                    'success' => false,
+                    'error' => $e->errors()['client_id'][0] ?? 'Selected client must have a primary email before booking a shoot.',
+                    'errors' => $e->errors(),
+                    'status_code' => 422,
+                ];
             } catch (\Exception $e) {
                 DB::rollBack();
                 Log::error('Failed to create shoot via AI', [
@@ -168,6 +194,19 @@ class BookingTools
                     'error' => 'Failed to create shoot: ' . $e->getMessage(),
                 ];
             }
+        } catch (ValidationException $e) {
+            Log::warning('BookingTools rejected request.', [
+                'user_id' => $context['user_id'] ?? auth()->id(),
+                'errors' => $e->errors(),
+                'params' => $params,
+            ]);
+
+            return [
+                'success' => false,
+                'error' => $e->errors()['client_id'][0] ?? 'Selected client must have a primary email before booking a shoot.',
+                'errors' => $e->errors(),
+                'status_code' => 422,
+            ];
         } catch (\Exception $e) {
             Log::error('BookingTools error', [
                 'error' => $e->getMessage(),
@@ -195,6 +234,8 @@ class BookingTools
             'handled' => $dispatch['handled'] ?? null,
             'failed_run_count' => $dispatch['failed_run_count'] ?? null,
             'error_count' => count($dispatch['errors'] ?? []),
+            'client_email_sent' => $dispatch['client_email_sent'] ?? null,
+            'photographer_email_sent' => $dispatch['photographer_email_sent'] ?? null,
         ];
     }
 }

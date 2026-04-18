@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots\Actions;
 
+use App\Jobs\ProcessCreatedShootSideEffectsJob;
 use App\Http\Requests\StoreShootRequest;
 use App\Models\Shoot;
 use App\Models\User;
@@ -10,6 +11,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\ClientConfirmationRecoveryService;
 use App\Services\ShootActivityLogger;
 use App\Services\ShootWorkflowService;
 use App\Services\Shoots\CreateShootResult;
@@ -25,6 +27,7 @@ class CreateShootAction
         protected ShootActivityLogger $activityLogger,
         protected InvoiceService $invoiceService,
         protected AutomationService $automationService,
+        protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
         protected DropboxWorkflowService $dropboxService,
         protected MailService $mailService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
@@ -35,9 +38,9 @@ class CreateShootAction
     {
         $validated = $request->validated();
         $this->support->ensureClientCanBookServices((int) $validated['client_id'], $validated['services']);
+        $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
-        $result = DB::transaction(function () use ($validated, $user, $request) {
-            $client = User::findOrFail((int) $validated['client_id']);
+        $result = DB::transaction(function () use ($validated, $user, $request, $client) {
             $pricingCalculation = $this->support->buildPricingCalculation(
                 $validated['services'],
                 $client,
@@ -207,108 +210,10 @@ class CreateShootAction
 
     protected function registerDeferredSideEffects(CreateShootResult $result): void
     {
-        $shootId = $result->shoot->id;
-        $treatAsClientRequest = $result->treatAsClientRequest;
-        $scheduledAt = $result->scheduledAt;
-        $automationService = $this->automationService;
-        $dropboxService = $this->dropboxService;
-        $mailService = $this->mailService;
-
-        app()->terminating(function () use (
-            $shootId,
-            $treatAsClientRequest,
-            $scheduledAt,
-            $automationService,
-            $dropboxService,
-            $mailService
-        ) {
-            $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-            if (!$shoot) {
-                return;
-            }
-
-            if ($treatAsClientRequest) {
-                try {
-                    $context = $automationService->buildShootContext($shoot);
-                    if ($shoot->rep) {
-                        $context['rep'] = $shoot->rep;
-                    }
-                    $automationService->handleEvent('SHOOT_REQUESTED', $context);
-                } catch (\Exception $e) {
-                    Log::error('Failed to trigger SHOOT_REQUESTED automation', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            if (!$treatAsClientRequest && $scheduledAt) {
-                try {
-                    $dropboxService->createShootFolders($shoot);
-                } catch (\Exception $e) {
-                    Log::error('Failed to create Dropbox folders for shoot', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            $shootBookedDispatch = null;
-            if (!$treatAsClientRequest) {
-                try {
-                    $context = $automationService->buildShootContext($shoot);
-                    if ($shoot->rep) {
-                        $context['rep'] = $shoot->rep;
-                    }
-                    $shootBookedDispatch = $automationService->handleEvent('SHOOT_BOOKED', $context);
-                } catch (\Exception $e) {
-                    Log::error('Failed to trigger SHOOT_BOOKED automation', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-
-            if (!$treatAsClientRequest && $scheduledAt) {
-                try {
-                    $shoot->loadMissing(['client', 'photographer', 'services']);
-                    $client = $shoot->client;
-                    $shouldUseFallback = $automationService->shouldUseFallback('SHOOT_BOOKED', $shootBookedDispatch) !== false;
-                    Log::info('Shoot booking fallback decision evaluated', [
-                        'shoot_id' => $shoot->id,
-                        'trigger_type' => 'SHOOT_BOOKED',
-                        'fallback_used' => $shouldUseFallback,
-                        'dispatch' => $this->formatDispatchSummaryForLog($shootBookedDispatch),
-                    ]);
-
-                    if ($client && $shouldUseFallback) {
-                        $paymentLink = $mailService->generatePaymentLink($shoot);
-                        $mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, true);
-                    }
-                } catch (\Exception $e) {
-                    Log::error('Failed to send shoot scheduled email during creation', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
-        });
-    }
-
-    private function formatDispatchSummaryForLog(?array $dispatch): array
-    {
-        if (!is_array($dispatch)) {
-            return [
-                'present' => false,
-            ];
-        }
-
-        return [
-            'present' => true,
-            'active_rule_count' => $dispatch['active_rule_count'] ?? null,
-            'handled' => $dispatch['handled'] ?? null,
-            'failed_run_count' => $dispatch['failed_run_count'] ?? null,
-            'error_count' => count($dispatch['errors'] ?? []),
-        ];
+        ProcessCreatedShootSideEffectsJob::dispatch(
+            $result->shoot->id,
+            $result->treatAsClientRequest,
+            $result->scheduledAt !== null
+        )->afterCommit();
     }
 }

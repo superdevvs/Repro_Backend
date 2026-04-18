@@ -206,6 +206,26 @@ class ShootMutationSupportService
         }
     }
 
+    public function ensureClientHasDeliverableEmail(int $clientId): User
+    {
+        $client = User::findOrFail($clientId);
+
+        if ($this->hasDeliverableEmail($client)) {
+            return $client;
+        }
+
+        throw ValidationException::withMessages([
+            'client_id' => ['Selected client must have a primary email before booking a shoot.'],
+        ]);
+    }
+
+    public function hasDeliverableEmail(?User $user): bool
+    {
+        $email = is_string($user?->email) ? trim($user->email) : '';
+
+        return $email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL) !== false;
+    }
+
     public function createNotes(Shoot $shoot, array $validated, User $user): void
     {
         $notesToCreate = [];

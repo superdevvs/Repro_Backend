@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
 use App\Http\Controllers\API\ShootWorkflowController;
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
@@ -14,6 +15,7 @@ use App\Services\Shoots\Actions\ApproveCancellationAction;
 use App\Services\Shoots\Actions\RequestCancellationAction;
 use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Laravel\Sanctum\Sanctum;
@@ -36,6 +38,8 @@ class ShootWorkflowActionsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        Bus::fake([GenerateShootMediaArchiveJob::class]);
 
         $this->bindWorkflowSideEffectFakes();
 
@@ -598,7 +602,22 @@ class ShootWorkflowActionsTest extends TestCase
                 'photographer' => $shoot->photographer,
             ]
         );
-        $automationService->shouldReceive('handleEvent')->zeroOrMoreTimes()->andReturnNull();
+        $automationService->shouldReceive('handleEvent')
+            ->zeroOrMoreTimes()
+            ->andReturnUsing(fn (string $triggerType) => [
+                'trigger_type' => $triggerType,
+                'active_rule_count' => 0,
+                'run_count' => 0,
+                'completed_run_count' => 0,
+                'waiting_run_count' => 0,
+                'failed_run_count' => 0,
+                'handled' => false,
+                'errors' => [],
+                'email_sent_to' => [],
+                'client_email_sent' => false,
+                'photographer_email_sent' => false,
+            ]);
+        $automationService->shouldReceive('shouldUseFallback')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 
         $brightMlsService = Mockery::mock(BrightMlsService::class);

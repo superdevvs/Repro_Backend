@@ -34,6 +34,13 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(0, '05:00');
         $schedule->command('system-overview:prune')->hourly();
+        $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')
+            ->everyFiveMinutes()
+            ->withoutOverlapping()
+            ->onOneServer();
+        $schedule->command('messaging:audit-transactional-email --hours=168 --limit=50')
+            ->dailyAt('08:00')
+            ->onOneServer();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);

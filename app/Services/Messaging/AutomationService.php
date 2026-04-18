@@ -396,26 +396,28 @@ class AutomationService
             $context = $this->buildShootContext($shoot);
             $context['shoot_datetime'] = $scheduledAt;
             $context['tags_json'] = [$tag];
+            $shouldUseFallback = true;
+            $clientEmailSent = false;
+            $photographerEmailSent = false;
 
             if ($this->hasActiveTrigger('SHOOT_REMINDER')) {
                 $dispatchResult = $this->handleEvent('SHOOT_REMINDER', $context);
-                if ($this->shouldUseFallback('SHOOT_REMINDER', $dispatchResult) === false) {
-                    continue;
-                }
+                $shouldUseFallback = $this->shouldUseFallback('SHOOT_REMINDER', $dispatchResult) !== false;
+                $clientEmailSent = (bool) ($dispatchResult['client_email_sent'] ?? false);
+                $photographerEmailSent = (bool) ($dispatchResult['photographer_email_sent'] ?? false);
             }
 
-            if ($this->mailService && !empty($context['client'])) {
+            if ($this->mailService && !empty($context['client']) && ($shouldUseFallback || !$clientEmailSent)) {
                 $this->mailService->sendShootReminderEmail(
                     $context['client'],
                     $shoot,
                     $scheduledAt,
-                    [$tag]
+                    [$tag],
+                    false
                 );
-
-                continue;
             }
 
-            if ($this->mailService && !empty($context['photographers'])) {
+            if ($this->mailService && !empty($context['photographers']) && ($shouldUseFallback || !$photographerEmailSent)) {
                 foreach ($context['photographers'] as $photographer) {
                     $this->mailService->sendShootReminderEmail(
                         $photographer,
@@ -762,6 +764,9 @@ class AutomationService
             'failed_run_count' => $errorMessage ? 1 : 0,
             'handled' => false,
             'errors' => $errorMessage ? [['automation_id' => 0, 'message' => $errorMessage]] : [],
+            'email_sent_to' => [],
+            'client_email_sent' => false,
+            'photographer_email_sent' => false,
         ];
     }
 }

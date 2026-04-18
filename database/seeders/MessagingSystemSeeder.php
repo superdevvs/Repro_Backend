@@ -243,7 +243,7 @@ class MessagingSystemSeeder extends Seeder
                 'subject' => 'New Shoot Request (DECLINED) - [shoot_location]',
                 'body_html' => $this->getShootRequestDeclinedTemplate(),
                 'body_text' => $this->getShootRequestDeclinedPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'company_email'],
+                'variables_json' => ['greeting', 'realtor_first', 'decline_reason', 'shoot_location', 'shoot_date', 'shoot_time', 'photographer_first', 'photographer_last', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'company_email'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -520,7 +520,7 @@ class MessagingSystemSeeder extends Seeder
                 'trigger_type' => 'SHOOT_BOOKED',
                 'is_active' => true,
                 'scope' => 'SYSTEM',
-                'recipients_json' => ['client', 'photographer'],
+                'recipients_json' => ['photographer'],
             ],
             [
                 'name' => 'Shoot Reminder',
@@ -1004,6 +1004,9 @@ class MessagingSystemSeeder extends Seeder
             
             <div class="info-box">
                 <p style="margin-top: 0;"><strong>Here is a summary of the shoot that was declined:</strong></p>
+                <div class="info-row">
+                    <span class="info-label">Decline Reason:</span> [decline_reason]
+                </div>
                 <div class="info-row">
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
@@ -1566,6 +1569,7 @@ Thanks for scheduling, your business is appreciated!';
 
 Unfortunately one of your requested shoots has been declined.
 
+Decline Reason: [decline_reason]
 Location: [shoot_location]
 Requested Shoot Date: [shoot_date]
 Requested Shoot Time: [shoot_time]

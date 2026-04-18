@@ -2,6 +2,8 @@
 
 namespace Tests\Unit\Messaging;
 
+use App\Models\AutomationRun;
+use App\Models\AutomationRunStep;
 use App\Models\AutomationRule;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use App\Services\Messaging\AutomationWorkflowExecutor;
@@ -48,6 +50,53 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
         ]);
 
         $this->assertSame(['client@example.com'], array_values(array_column($recipients, 'email')));
+    }
+
+    public function test_dispatch_summary_tracks_when_client_and_photographer_emails_were_actually_sent(): void
+    {
+        $executor = $this->makeExecutor();
+        $method = new ReflectionMethod($executor, 'summarizeEmailDeliveryByRole');
+        $method->setAccessible(true);
+
+        $run = new AutomationRun([
+            'status' => 'completed',
+            'context_json' => [
+                'client' => ['email' => 'client@example.com'],
+                'photographer' => ['email' => 'lead@example.com'],
+                'photographers' => [
+                    ['email' => 'lead@example.com'],
+                    ['email' => 'second@example.com'],
+                ],
+            ],
+        ]);
+        $run->setRelation('steps', collect([
+            new AutomationRunStep([
+                'output_json' => [
+                    'channel' => 'email',
+                    'sent_to' => [
+                        'CLIENT@example.com',
+                        'second@example.com',
+                        'ops@example.com',
+                    ],
+                ],
+            ]),
+            new AutomationRunStep([
+                'output_json' => [
+                    'channel' => 'internal',
+                    'sent_to' => ['lead@example.com'],
+                ],
+            ]),
+        ]));
+
+        $summary = $method->invoke($executor, [$run]);
+
+        $this->assertSame([
+            'client@example.com',
+            'second@example.com',
+            'ops@example.com',
+        ], $summary['email_sent_to']);
+        $this->assertTrue($summary['client_email_sent']);
+        $this->assertTrue($summary['photographer_email_sent']);
     }
 
     private function makeExecutor(): AutomationWorkflowExecutor

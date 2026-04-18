@@ -9,6 +9,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\ClientConfirmationRecoveryService;
 use App\Services\ShootWorkflowService;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\Shoots\ShootMutationSupportService;
@@ -34,6 +35,7 @@ class ApproveShootAction
         protected DropboxWorkflowService $dropboxService,
         protected InvoiceService $invoiceService,
         protected AutomationService $automationService,
+        protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
         protected MailService $mailService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {
@@ -87,7 +89,8 @@ class ApproveShootAction
             }
         }
 
-        $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'services']);
+        $shoot->refresh();
+        $shoot->load(['client', 'photographer', 'rep', 'service', 'services']);
         $context = $this->automationService->buildShootContext($shoot);
         if ($shoot->rep) {
             $context['rep'] = $shoot->rep;
@@ -114,7 +117,11 @@ class ApproveShootAction
                 'dispatch' => $this->formatDispatchSummaryForLog($requestApprovalDispatch),
             ]);
         }
-        $this->automationService->handleEvent('SHOOT_BOOKED', $context);
+        // Approval implies the shoot is scheduled — only fire SHOOT_SCHEDULED here.
+        // SHOOT_BOOKED is reserved for the initial booking moment (CreateShootAction / BookingTools)
+        // and firing it again on approval can cause duplicate emails to the photographer when the
+        // SHOOT_BOOKED rule and the SHOOT_SCHEDULED fallback both target the photographer.
+        $shootScheduledAttemptedAt = now();
         $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
         $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false;
         Log::info('Shoot approval fallback decision evaluated', [
@@ -126,18 +133,53 @@ class ApproveShootAction
             'notify_photographer' => $notifyPhotographer,
         ]);
 
-        if ($shouldUseFallback) {
-            $paymentLink = $shoot->client ? $this->mailService->generatePaymentLink($shoot) : '';
+        $clientEmailSent = (bool) ($shootScheduledDispatch['client_email_sent'] ?? false);
+        $photographerEmailSent = (bool) ($shootScheduledDispatch['photographer_email_sent'] ?? false);
 
-            if ($shoot->client && $notifyClient !== false) {
-                $this->mailService->sendShootScheduledEmail(
-                    $shoot->client,
-                    $shoot,
-                    $paymentLink,
-                    $notifyPhotographer
-                );
-            } elseif ($shoot->photographer && $notifyPhotographer !== false) {
-                $this->mailService->sendShootScheduledEmail($shoot->photographer, $shoot, '');
+        if ($notifyClient !== false && $shoot->client && $clientEmailSent) {
+            $this->clientConfirmationRecoveryService->recordAutomationSent(
+                $shoot,
+                $shoot->client,
+                $shootScheduledAttemptedAt
+            );
+        }
+
+        if ($shouldUseFallback || !$clientEmailSent || !$photographerEmailSent) {
+            if ($notifyClient !== false && !$clientEmailSent) {
+                if (!$shoot->client) {
+                    $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_SCHEDULED');
+                } elseif (!$this->clientConfirmationRecoveryService->hasDeliverableEmail($shoot->client)) {
+                    $this->clientConfirmationRecoveryService->recordSkippedMissingEmail($shoot, $shoot->client, 'SHOOT_SCHEDULED');
+                } else {
+                    $paymentLink = $this->mailService->generatePaymentLink($shoot);
+                    $clientFallbackAttemptedAt = now();
+                    $sentClientFallback = $this->mailService->sendShootScheduledEmail(
+                        $shoot->client,
+                        $shoot,
+                        $paymentLink,
+                        false
+                    );
+
+                    if ($sentClientFallback) {
+                        $this->clientConfirmationRecoveryService->recordFallbackSent(
+                            $shoot,
+                            $shoot->client,
+                            $clientFallbackAttemptedAt
+                        );
+                    } else {
+                        $this->clientConfirmationRecoveryService->recordProviderFailure(
+                            $shoot,
+                            $shoot->client,
+                            'fallback',
+                            $clientFallbackAttemptedAt,
+                            'Fallback client confirmation send failed.'
+                        );
+                    }
+                }
+            }
+
+            if ($notifyPhotographer !== false && !$photographerEmailSent) {
+                $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
             }
         }
 
@@ -174,6 +216,8 @@ class ApproveShootAction
             'handled' => $dispatch['handled'] ?? null,
             'failed_run_count' => $dispatch['failed_run_count'] ?? null,
             'error_count' => count($dispatch['errors'] ?? []),
+            'client_email_sent' => $dispatch['client_email_sent'] ?? null,
+            'photographer_email_sent' => $dispatch['photographer_email_sent'] ?? null,
         ];
     }
 }

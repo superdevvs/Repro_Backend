@@ -23,6 +23,8 @@ use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\DropboxAuthController;
 use App\Http\Controllers\InvoiceReportController;
 use App\Http\Controllers\API\Messaging\AutomationController;
+use App\Http\Controllers\API\Messaging\ClientConfirmationRecoveryController;
+use App\Http\Controllers\API\Messaging\EmailOpsSummaryController;
 use App\Http\Controllers\API\Messaging\EmailMessagingController;
 use App\Http\Controllers\API\Messaging\MessagingOverviewController;
 use App\Http\Controllers\API\Messaging\MessageTemplateController;
@@ -49,6 +51,7 @@ use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
+use App\Http\Controllers\API\SystemEmailHealthController;
 use App\Http\Controllers\API\ClientEmailVerificationController;
 use App\Http\Controllers\API\Admin\SystemOverviewController;
 use App\Http\Controllers\Admin\AccountLinkController;
@@ -304,6 +307,7 @@ Route::post('/password/reset', [AuthController::class, 'resetPasswordWithToken']
 
 Route::middleware('auth:sanctum')->post('/logout', [AuthController::class, 'logout']);
 Route::middleware('auth:sanctum')->post('/system-telemetry/events', [SystemTelemetryController::class, 'store']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/system/email-health', SystemEmailHealthController::class);
 
 // Self profile update (authenticated user updates their own profile)
 Route::middleware('auth:sanctum')->put('/profile', [AuthController::class, 'updateProfile']);
@@ -820,6 +824,9 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
 
     Route::middleware('role:superadmin,admin')->group(function () {
         Route::get('/overview', MessagingOverviewController::class);
+        Route::get('/email/ops-summary', EmailOpsSummaryController::class);
+        Route::get('/email/recovery/client-confirmations', [ClientConfirmationRecoveryController::class, 'index']);
+        Route::post('/email/recovery/client-confirmations/replay', [ClientConfirmationRecoveryController::class, 'replay']);
 
         // Templates
         Route::get('/templates', [MessageTemplateController::class, 'index']);

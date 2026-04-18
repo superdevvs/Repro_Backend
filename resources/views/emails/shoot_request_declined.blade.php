@@ -12,17 +12,6 @@
 @section('content')
 <p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">This request was not approved.</strong></p>
 
-    @if(!empty($declineReason))
-        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
-            <tr>
-                <td class="callout-danger-bg" style="padding:18px 20px; border-radius:14px; border:1px solid #ffc8cf; background-color:#fff0f1;">
-                    <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#071223; font-weight:800;">Reason provided</p>
-                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">{{ $declineReason }}</p>
-                </td>
-            </tr>
-        </table>
-    @endif
-
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>
             <td style="border-radius:999px;">
@@ -31,7 +20,13 @@
         </tr>
     </table>
 
-    @include('emails.partials.shoot-summary', ['shoot' => $shoot])
+    @include('emails.partials.shoot-summary', [
+        'shoot' => $shoot,
+        'summaryNotice' => [
+            'label' => 'Decline reason',
+            'value' => $declineReason,
+        ],
+    ])
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px;">
         <tr>
