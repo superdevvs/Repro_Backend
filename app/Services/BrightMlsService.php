@@ -1092,31 +1092,45 @@ class BrightMlsService
         return ucwords(str_replace(['_', '-'], ' ', trim($key)));
     }
 
-    private function extractAdditionalEmbedTourUrls(array $tourLinks, array $handledKeys): array
+    /**
+     * Tour link keys that should be forwarded to Bright MLS with explicit,
+     * human-friendly labels. The corresponding `video_link` (the in-page video
+     * embed) and the `embeds` iframe array are intentionally excluded per
+     * product requirements.
+     */
+    private const BRIGHT_MLS_BROADCAST_TOUR_KEYS = [
+        'branded' => 'Branded Tour',
+        'mls' => 'MLS Tour',
+        'generic_mls' => 'MLS Tour',
+        'genericMls' => 'MLS Tour',
+        'zillow_3d' => 'Zillow 3D Home Tour',
+        'matterport_branded' => 'Matterport 3D Tour (Branded)',
+        'matterport_mls' => 'Matterport 3D Tour (MLS)',
+        'iguide_branded' => 'iGUIDE 3D Tour (Branded)',
+        'iguide_mls' => 'iGUIDE 3D Tour (MLS)',
+        'video_branded' => 'Branded Video',
+        'video_mls' => 'MLS Video',
+        'video_generic' => 'Property Video',
+    ];
+
+    private function extractAdditionalEmbedTourUrls(array $tourLinks, array $handledKeys, array $dedupeUrls = []): array
     {
         $additionalTourUrls = [];
+        $seenUrls = array_flip(array_filter($dedupeUrls));
+
+        foreach (self::BRIGHT_MLS_BROADCAST_TOUR_KEYS as $key => $label) {
+            $candidate = $this->firstValidUrl($tourLinks[$key] ?? null);
+            if (!$candidate || isset($seenUrls[$candidate]) || isset($additionalTourUrls[$label])) {
+                continue;
+            }
+
+            $additionalTourUrls[$label] = $candidate;
+            $seenUrls[$candidate] = true;
+        }
 
         foreach ($tourLinks as $key => $value) {
-            if ($key === 'embeds' && is_array($value)) {
-                foreach ($value as $index => $embed) {
-                    if (!is_array($embed)) {
-                        continue;
-                    }
-
-                    $embedUrl = $this->firstValidUrl(
-                        $embed['mls'] ?? null,
-                        $embed['mls_embed'] ?? null,
-                        $embed['url'] ?? null,
-                        $embed['branded'] ?? null,
-                        $embed['branded_embed'] ?? null,
-                    );
-
-                    if ($embedUrl) {
-                        $title = $this->normalizeTextValue($embed['title'] ?? null);
-                        $additionalTourUrls[$title !== '' ? $title : 'Embed ' . ($index + 1)] = $embedUrl;
-                    }
-                }
-
+            // Skip the `embeds` iframe array entirely.
+            if ($key === 'embeds') {
                 continue;
             }
 
@@ -1125,8 +1139,14 @@ class BrightMlsService
             }
 
             $candidate = trim($value);
-            if ($candidate !== '' && filter_var($candidate, FILTER_VALIDATE_URL)) {
-                $additionalTourUrls[$this->formatTourLabel((string) $key)] = $candidate;
+            if ($candidate === '' || !filter_var($candidate, FILTER_VALIDATE_URL) || isset($seenUrls[$candidate])) {
+                continue;
+            }
+
+            $label = $this->formatTourLabel((string) $key);
+            if (!isset($additionalTourUrls[$label])) {
+                $additionalTourUrls[$label] = $candidate;
+                $seenUrls[$candidate] = true;
             }
         }
 
@@ -1139,47 +1159,52 @@ class BrightMlsService
         $tourLinks = $this->normalizeShootTourLinks($shootData['tour_links'] ?? ($shoot->tour_links ?? []));
 
         $handledKeys = [
+            // Dedicated payload slots
             'iguide_mls', 'iguide_branded', 'iguide', 'iGuide',
             'cubicasa', 'cubicasa_url',
             'matterport_mls', 'matterport_branded', 'matterport',
             'slideshow', 'slideshow_url', 'neo_tour', 'neotour',
-            'video_mls', 'video_generic', 'video_link', 'video_branded',
-            'mls', 'generic_mls', 'genericMls',
-            'embeds', 'tour_style', 'featured_embed_id', 'featured_embed',
+            // Broadcast keys emitted explicitly by extractAdditionalEmbedTourUrls()
+            'branded', 'mls', 'generic_mls', 'genericMls', 'zillow_3d',
+            'video_branded', 'video_mls', 'video_generic',
+            // Intentionally excluded from Bright MLS sync
+            'video_link', 'embeds', 'tour_style', 'featured_embed_id', 'featured_embed',
+            'realtor_client', 'realtor_client_id', 'realtorClient', 'realtorClientId',
         ];
 
+        $iguideTourUrl = $this->firstValidUrl(
+            $shootData['iguide_tour_url'] ?? ($shoot->iguide_tour_url ?? null),
+            $tourLinks['iguide_branded'] ?? null,
+            $tourLinks['iguide_mls'] ?? null,
+            $tourLinks['iguide'] ?? null,
+            $tourLinks['iGuide'] ?? null,
+        );
+        $slideshowUrl = $this->firstValidUrl(
+            $tourLinks['slideshow'] ?? null,
+            $tourLinks['slideshow_url'] ?? null,
+            $tourLinks['neo_tour'] ?? null,
+            $tourLinks['neotour'] ?? null,
+        );
+        $matterportUrl = $this->firstValidUrl(
+            $tourLinks['matterport_branded'] ?? null,
+            $tourLinks['matterport'] ?? null,
+            $tourLinks['matterport_mls'] ?? null,
+        );
+        $cubicasaUrl = $this->firstValidUrl(
+            $tourLinks['cubicasa_url'] ?? null,
+            $tourLinks['cubicasa'] ?? null,
+        );
+
         return [
-            'iguide_tour_url' => $this->firstValidUrl(
-                $shootData['iguide_tour_url'] ?? ($shoot->iguide_tour_url ?? null),
-                $tourLinks['iguide_mls'] ?? null,
-                $tourLinks['iguide'] ?? null,
-                $tourLinks['iGuide'] ?? null,
-                $tourLinks['iguide_branded'] ?? null,
+            'iguide_tour_url' => $iguideTourUrl,
+            'slideshow_url' => $slideshowUrl,
+            'matterport_url' => $matterportUrl,
+            'cubicasa_url' => $cubicasaUrl,
+            'additional_tour_urls' => $this->extractAdditionalEmbedTourUrls(
+                $tourLinks,
+                $handledKeys,
+                [$iguideTourUrl, $slideshowUrl, $matterportUrl, $cubicasaUrl],
             ),
-            'slideshow_url' => $this->firstValidUrl(
-                $tourLinks['slideshow'] ?? null,
-                $tourLinks['slideshow_url'] ?? null,
-                $tourLinks['neo_tour'] ?? null,
-                $tourLinks['neotour'] ?? null,
-                $tourLinks['video_mls'] ?? null,
-                $tourLinks['video_generic'] ?? null,
-                $tourLinks['video_link'] ?? null,
-                $tourLinks['video_branded'] ?? null,
-                $tourLinks['mls'] ?? null,
-                $tourLinks['generic_mls'] ?? null,
-                $tourLinks['genericMls'] ?? null,
-                $shootData['mls_compliant_link'] ?? ($shoot->mls_compliant_link ?? null),
-            ),
-            'matterport_url' => $this->firstValidUrl(
-                $tourLinks['matterport_mls'] ?? null,
-                $tourLinks['matterport'] ?? null,
-                $tourLinks['matterport_branded'] ?? null,
-            ),
-            'cubicasa_url' => $this->firstValidUrl(
-                $tourLinks['cubicasa_url'] ?? null,
-                $tourLinks['cubicasa'] ?? null,
-            ),
-            'additional_tour_urls' => $this->extractAdditionalEmbedTourUrls($tourLinks, $handledKeys),
         ];
     }
 
