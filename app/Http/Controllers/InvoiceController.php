@@ -295,7 +295,7 @@ class InvoiceController extends Controller
         $invoice->save();
         $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
 
-        $invoice->loadMissing(['client', 'photographer']);
+        $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
         if ($isPaid) {
             $context = [
                 'invoice' => $invoice,
@@ -309,6 +309,23 @@ class InvoiceController extends Controller
                 $context['account_id'] = $invoice->photographer_id;
             }
             app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
+        }
+
+        // Send shoot paid email to client for shoot-linked invoices (parity with ShootPaymentsController::markAsPaid)
+        if ($paymentAmount > 0) {
+            $shootForEmail = $invoice->shoot;
+            $clientForEmail = $shootForEmail?->client ?? $invoice->client;
+            if ($shootForEmail && $clientForEmail) {
+                try {
+                    app(MailService::class)->sendShootPaidEmail($clientForEmail, $shootForEmail, $paymentAmount);
+                } catch (\Throwable $emailError) {
+                    Log::warning('Failed to send shoot paid email from invoice mark-paid', [
+                        'invoice_id' => $invoice->id,
+                        'shoot_id' => $shootForEmail->id,
+                        'error' => $emailError->getMessage(),
+                    ]);
+                }
+            }
         }
 
         return response()->json([

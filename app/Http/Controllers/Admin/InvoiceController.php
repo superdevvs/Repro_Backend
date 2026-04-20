@@ -9,6 +9,7 @@ use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
+use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -216,7 +217,7 @@ class InvoiceController extends Controller
         $invoice->save();
         $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
 
-        $invoice->loadMissing(['client', 'photographer']);
+        $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
         $context = [
             'invoice' => $invoice,
             'invoice_id' => $invoice->id,
@@ -229,6 +230,23 @@ class InvoiceController extends Controller
             $context['account_id'] = $invoice->photographer_id;
         }
         app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
+
+        // Send shoot paid email to the client for shoot-linked invoices (parity with ShootPaymentsController::markAsPaid)
+        if ($paymentAmount > 0) {
+            $shootForEmail = $invoice->shoot;
+            $clientForEmail = $shootForEmail?->client ?? $invoice->client;
+            if ($shootForEmail && $clientForEmail) {
+                try {
+                    app(MailService::class)->sendShootPaidEmail($clientForEmail, $shootForEmail, $paymentAmount);
+                } catch (\Throwable $emailError) {
+                    Log::warning('Failed to send shoot paid email from admin invoice mark-paid', [
+                        'invoice_id' => $invoice->id,
+                        'shoot_id' => $shootForEmail->id,
+                        'error' => $emailError->getMessage(),
+                    ]);
+                }
+            }
+        }
 
         return response()->json([
             'message' => 'Invoice marked as paid.',

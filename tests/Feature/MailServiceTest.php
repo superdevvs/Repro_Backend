@@ -214,7 +214,7 @@ class MailServiceTest extends TestCase
     }
 
     /** @test */
-    public function shoot_requested_email_respects_client_email_health_gating(): void
+    public function shoot_requested_email_is_delivered_to_unverified_clients_as_a_transactional_message(): void
     {
         $this->createDefaultEmailChannel();
 
@@ -246,14 +246,77 @@ class MailServiceTest extends TestCase
             'updated_at' => now(),
         ]);
 
+        $payloads = [];
         $messagingService = Mockery::mock(MessagingService::class);
-        $messagingService->shouldReceive('sendEmail')->never();
+        $messagingService->shouldReceive('sendEmail')
+            ->atLeast()->once()
+            ->andReturnUsing(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return new Message();
+            });
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendShootRequestedEmail($client, $shoot);
+
+        $this->assertTrue($result);
+
+        $clientPayload = collect($payloads)->firstWhere('to', $client->email);
+        $this->assertNotNull($clientPayload, 'Expected shoot request confirmation to be sent to the client.');
+        $this->assertSame('SHOOT_REQUESTED', $clientPayload['send_source'] ?? null);
+        $this->assertSame($client->id, $clientPayload['related_account_id'] ?? null);
+    }
+
+    /** @test */
+    public function shoot_requested_email_is_blocked_for_bounced_clients(): void
+    {
+        $this->createDefaultEmailChannel();
+
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Bounced Client',
+            'email' => 'bounced-client@test.com',
+            'email_status' => 'bounced',
+        ]);
+        $service = Service::factory()->create([
+            'name' => 'Request Service',
+            'price' => 150.00,
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'service_id' => $service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'scheduled_at' => now()->addDays(2)->setTime(11, 0),
+            'scheduled_date' => now()->addDays(2)->toDateString(),
+            'time' => '11:00',
+        ]);
+
+        $shoot->services()->attach($service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $payloads = [];
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')
+            ->andReturnUsing(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return new Message();
+            });
         $this->app->instance(MessagingService::class, $messagingService);
 
         $result = app(MailService::class)->sendShootRequestedEmail($client, $shoot);
 
         $this->assertFalse($result);
-        $this->assertDatabaseCount('messages', 0);
+        $this->assertNull(
+            collect($payloads)->firstWhere('to', $client->email),
+            'Bounced client emails must not be sent.'
+        );
     }
 
     /** @test */

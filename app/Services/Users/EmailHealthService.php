@@ -71,11 +71,51 @@ class EmailHealthService
     ];
 
     /**
+     * Send sources that must always be deliverable for account access/recovery
+     * even when an address is hard-failing (invalid/bounced).
+     *
      * @var array<int, string>
      */
     protected const ALLOWLISTED_SEND_SOURCES = [
         'ACCOUNT_CREATED',
         'CLIENT_EMAIL_VERIFICATION',
+        'PASSWORD_RESET',
+    ];
+
+    /**
+     * Client-facing transactional send sources that should still be delivered
+     * when an address is soft-flagged (unverified/risky). These are service
+     * notifications tied to a real business event (a shoot, invoice, payment,
+     * etc.) so suppressing them would confuse clients who are mid-transaction.
+     *
+     * @var array<int, string>
+     */
+    protected const TRANSACTIONAL_SEND_SOURCES = [
+        'ACCOUNT_CREATED',
+        'CLIENT_EMAIL_VERIFICATION',
+        'PASSWORD_RESET',
+        'TERMS_ACCEPTED',
+        'SHOOT_SCHEDULED',
+        'SHOOT_UPDATED',
+        'SHOOT_REMINDER',
+        'SHOOT_READY',
+        'SHOOT_DELIVERED',
+        'SHOOT_REMOVED',
+        'SHOOT_CANCELLED',
+        'SHOOT_CANCELED',
+        'SHOOT_REQUESTED',
+        'SHOOT_REQUEST_DECLINED',
+        'SHOOT_CANCELLATION_REQUESTED',
+        'SHOOT_PAID',
+        'PAYMENT_CONFIRMATION',
+        'INVOICE_GENERATED',
+        'INVOICE_APPROVED',
+        'INVOICE_PENDING_APPROVAL',
+        'INVOICE_REJECTED',
+        'CANCELLATION_FEE_INVOICE',
+        'EDITING_REQUEST',
+        'CONTACT_CONFIRMATION',
+        'CONTACT_NOTIFICATION',
     ];
 
     /**
@@ -260,20 +300,32 @@ class EmailHealthService
             return null;
         }
 
-        if (in_array($sendSource, self::ALLOWLISTED_SEND_SOURCES, true)) {
-            return null;
-        }
-
         $status = strtolower((string) ($recipient->email_status ?? ''));
         if ($status === '') {
             return null;
         }
 
-        return match ($status) {
-            self::STATUS_INVALID, self::STATUS_BOUNCED => 'This client email is blocked because it is invalid or has bounced.',
-            self::STATUS_UNVERIFIED, self::STATUS_RISKY => 'This client email is not verified yet and automated sending is currently suppressed.',
-            default => null,
-        };
+        // Hard delivery failures: block everything except explicit account recovery emails.
+        if (in_array($status, [self::STATUS_INVALID, self::STATUS_BOUNCED], true)) {
+            if (in_array($sendSource, self::ALLOWLISTED_SEND_SOURCES, true)) {
+                return null;
+            }
+
+            return 'This client email is blocked because it is invalid or has bounced.';
+        }
+
+        // Soft delivery concerns: still allow critical transactional emails through,
+        // only suppress non-transactional automation so clients mid-shoot/mid-payment
+        // keep receiving service notifications even before verifying their address.
+        if (in_array($status, [self::STATUS_UNVERIFIED, self::STATUS_RISKY], true)) {
+            if (in_array($sendSource, self::TRANSACTIONAL_SEND_SOURCES, true)) {
+                return null;
+            }
+
+            return 'This client email is not verified yet and automated sending is currently suppressed.';
+        }
+
+        return null;
     }
 
     protected function detectSuggestedCorrection(string $email): ?string
