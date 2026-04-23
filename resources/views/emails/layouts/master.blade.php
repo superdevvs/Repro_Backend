@@ -14,21 +14,48 @@
     $dashboardUrl = data_get($brand, 'dashboard_url', 'https://reprodashboard.com');
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $emailLogoGreyUrl = data_get($brand, 'email_logo_grey_url', data_get($brand, 'logo_url', 'https://api.reprodashboard.com/images/repro-email-logo-grey.png'));
-    $emailOuterBackground = data_get($brand, 'email_outer_background', data_get($brand, 'outer_background', '#ffffff'));
-    $emailOuterBackgroundDark = data_get($brand, 'email_outer_background_dark', data_get($brand, 'shell_background', '#00141d'));
-    $shellBackground = data_get($brand, 'shell_background', '#00141d');
-    $heroSurface = data_get($brand, 'hero_surface', '#111c2e');
-    $contentSurface = data_get($brand, 'content_surface', '#111c2e');
-    $sectionSurface = data_get($brand, 'section_surface', '#16233a');
-    $footerSurface = data_get($brand, 'footer_surface', '#00141d');
-    $metaSurface = data_get($brand, 'meta_surface', '#142237');
-    $borderColor = data_get($brand, 'border_color', '#24344d');
-    $metaBorderColor = data_get($brand, 'meta_border_color', '#2d4263');
-    $headingColor = data_get($brand, 'heading_color', '#e8edf5');
-    $bodyColor = data_get($brand, 'body_color', '#a9b8cb');
-    $mutedColor = data_get($brand, 'muted_color', '#8298b4');
-    $linkColor = data_get($brand, 'link_color', '#7eb3ff');
-    $legalCopyColor = data_get($brand, 'legal_copy_color', '#8da2be');
+    $emailCanvasBackgroundLight = data_get($brand, 'email_canvas_background_light', data_get($brand, 'email_outer_background', '#ffffff'));
+    $emailCanvasBackgroundDark = data_get($brand, 'email_canvas_background_dark', data_get($brand, 'email_outer_background_dark', data_get($brand, 'outer_background', '#00141d')));
+    $heroSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'hero_surface', '#ffffff'));
+    $heroSurfaceDark = data_get($brand, 'card_surface_dark', '#111c2e');
+    $contentSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'content_surface', '#ffffff'));
+    $contentSurfaceDark = data_get($brand, 'card_surface_dark', '#111c2e');
+    $sectionSurfaceLight = data_get($brand, 'section_surface_light', data_get($brand, 'section_surface', '#f7fbff'));
+    $sectionSurfaceDark = data_get($brand, 'section_surface_dark', '#16233a');
+    $statSurfaceLight = data_get($brand, 'stat_surface_light', $sectionSurfaceLight);
+    $statSurfaceDark = data_get($brand, 'stat_surface_dark', $sectionSurfaceDark);
+    $noteSurfaceLight = data_get($brand, 'note_surface_light', $sectionSurfaceLight);
+    $noteSurfaceDark = data_get($brand, 'note_surface_dark', $sectionSurfaceDark);
+    $calloutSurfaceLight = data_get($brand, 'callout_surface_light', $sectionSurfaceLight);
+    $calloutSurfaceDark = data_get($brand, 'callout_surface_dark', $sectionSurfaceDark);
+    $calloutSuccessSurfaceLight = data_get($brand, 'callout_success_surface_light', '#eff6ff');
+    $calloutSuccessSurfaceDark = data_get($brand, 'callout_success_surface_dark', '#18304f');
+    $calloutWarningSurfaceLight = data_get($brand, 'callout_warning_surface_light', '#fff3e3');
+    $calloutWarningSurfaceDark = data_get($brand, 'callout_warning_surface_dark', '#382714');
+    $calloutDangerSurfaceLight = data_get($brand, 'callout_danger_surface_light', '#fff0f1');
+    $calloutDangerSurfaceDark = data_get($brand, 'callout_danger_surface_dark', '#351b22');
+    $footerSurfaceLight = data_get($brand, 'footer_surface_light', data_get($brand, 'footer_surface', '#f7fbff'));
+    $footerSurfaceDark = data_get($brand, 'footer_surface_dark', '#00141d');
+    $metaSurfaceLight = data_get($brand, 'meta_surface_light', data_get($brand, 'meta_surface', '#edf3fb'));
+    $metaSurfaceDark = data_get($brand, 'meta_surface_dark', '#142237');
+    $borderColorLight = data_get($brand, 'border_color_light', data_get($brand, 'border_color', 'transparent'));
+    $borderColorDark = data_get($brand, 'border_color_dark', 'transparent');
+    $metaBorderColorLight = data_get($brand, 'meta_border_color_light', data_get($brand, 'meta_border_color', 'transparent'));
+    $metaBorderColorDark = data_get($brand, 'meta_border_color_dark', 'transparent');
+    $headingColorLight = data_get($brand, 'heading_color_light', data_get($brand, 'heading_color', '#071223'));
+    $headingColorDark = data_get($brand, 'heading_color_dark', '#e8edf5');
+    $bodyColorLight = data_get($brand, 'body_color_light', data_get($brand, 'body_color', '#47627f'));
+    $bodyColorDark = data_get($brand, 'body_color_dark', '#a9b8cb');
+    $mutedColorLight = data_get($brand, 'muted_color_light', data_get($brand, 'muted_color', '#6c84a2'));
+    $mutedColorDark = data_get($brand, 'muted_color_dark', '#8298b4');
+    $linkColorLight = data_get($brand, 'link_color_light', data_get($brand, 'link_color', '#1463ff'));
+    $linkColorDark = data_get($brand, 'link_color_dark', '#7eb3ff');
+    $buttonSecondarySurfaceLight = data_get($brand, 'button_secondary_surface_light', '#edf4ff');
+    $buttonSecondarySurfaceDark = data_get($brand, 'button_secondary_surface_dark', '#16233a');
+    $buttonSecondaryTextLight = data_get($brand, 'button_secondary_text_light', '#173963');
+    $buttonSecondaryTextDark = data_get($brand, 'button_secondary_text_dark', '#e8edf5');
+    $legalCopyColorLight = data_get($brand, 'legal_copy_color_light', data_get($brand, 'legal_copy_color', '#5f6b7a'));
+    $legalCopyColorDark = data_get($brand, 'legal_copy_color_dark', '#8da2be');
 @endphp
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
@@ -36,8 +63,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="color-scheme" content="light">
-    <meta name="supported-color-schemes" content="light">
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
     <title>@yield('title', $productName)</title>
     <!--[if mso]>
     <noscript>
@@ -49,36 +76,37 @@
     </noscript>
     <![endif]-->
     <style>
-        :root { color-scheme: light; supported-color-schemes: light; }
+        :root { color-scheme: light dark; supported-color-schemes: light dark; }
         * { -ms-text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }
         html, body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
         #outlook a { padding: 0; }
         table { border-collapse: collapse !important; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
         img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
-        a { text-decoration: none; color: {{ $linkColor }}; }
+        a { text-decoration: none; color: {{ $linkColorLight }}; }
+        .body-bg { background-color: {{ $emailCanvasBackgroundLight }} !important; }
 
-        .hero-card-bg { background-color: {{ $heroSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .content-card-bg { background-color: {{ $contentSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .section-card-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .stat-card-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .note-card-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .callout-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .callout-warning-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .callout-danger-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .callout-success-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; }
-        .dark-title { color: {{ $headingColor }} !important; }
-        .dark-heading { color: {{ $headingColor }} !important; }
-        .dark-body { color: {{ $bodyColor }} !important; }
-        .dark-muted { color: {{ $mutedColor }} !important; }
-        .dark-strong { color: {{ $headingColor }} !important; }
-        .detail-border { border-color: {{ $borderColor }} !important; }
-        .pill-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; color: {{ $linkColor }} !important; }
-        .btn-secondary-bg { background-color: {{ $sectionSurface }} !important; border-color: {{ $borderColor }} !important; color: {{ $headingColor }} !important; }
-        .divider-bg { background-color: {{ $borderColor }} !important; }
-        .footer-card-bg { background-color: {{ $footerSurface }} !important; }
-        .footer-meta-bg { background-color: {{ $metaSurface }} !important; border-color: {{ $metaBorderColor }} !important; }
-        .footer-link-dark { color: {{ $headingColor }} !important; }
-        .legal-copy-dark { color: {{ $legalCopyColor }} !important; }
+        .hero-card-bg { background-color: {{ $heroSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .content-card-bg { background-color: {{ $contentSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .section-card-bg { background-color: {{ $sectionSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .stat-card-bg { background-color: {{ $statSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .note-card-bg { background-color: {{ $noteSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-bg { background-color: {{ $calloutSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-warning-bg { background-color: {{ $calloutWarningSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-danger-bg { background-color: {{ $calloutDangerSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-success-bg { background-color: {{ $calloutSuccessSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .dark-title { color: {{ $headingColorLight }} !important; }
+        .dark-heading { color: {{ $headingColorLight }} !important; }
+        .dark-body { color: {{ $bodyColorLight }} !important; }
+        .dark-muted { color: {{ $mutedColorLight }} !important; }
+        .dark-strong { color: {{ $headingColorLight }} !important; }
+        .detail-border { border-color: transparent !important; }
+        .pill-bg { border: 0 !important; border-color: transparent !important; }
+        .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; color: {{ $buttonSecondaryTextLight }} !important; }
+        .divider-bg { background-color: transparent !important; }
+        .footer-card-bg { background-color: {{ $footerSurfaceLight }} !important; }
+        .footer-meta-bg { background-color: {{ $metaSurfaceLight }} !important; border: 0 !important; border-color: {{ $metaBorderColorLight }} !important; }
+        .footer-link-dark { color: {{ $headingColorLight }} !important; }
+        .legal-copy-dark { color: {{ $legalCopyColorLight }} !important; }
 
         @media only screen and (max-width: 640px) {
             .email-container { width: 100% !important; max-width: 100% !important; }
@@ -95,20 +123,67 @@
             .footer-meta-td { display: block !important; width: 100% !important; padding: 0 0 10px 0 !important; }
             .mob-full { width: 100% !important; }
         }
+
+        @media (prefers-color-scheme: dark) {
+            body, .body-bg { background-color: {{ $emailCanvasBackgroundDark }} !important; }
+            a { color: {{ $linkColorDark }} !important; }
+            .hero-card-bg { background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .content-card-bg { background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .section-card-bg { background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .stat-card-bg { background-color: {{ $statSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .note-card-bg { background-color: {{ $noteSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-bg { background-color: {{ $calloutSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-warning-bg { background-color: {{ $calloutWarningSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-danger-bg { background-color: {{ $calloutDangerSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-success-bg { background-color: {{ $calloutSuccessSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .dark-title,
+            .dark-heading,
+            .dark-strong { color: {{ $headingColorDark }} !important; }
+            .dark-body { color: {{ $bodyColorDark }} !important; }
+            .dark-muted { color: {{ $mutedColorDark }} !important; }
+            .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; color: {{ $buttonSecondaryTextDark }} !important; }
+            .footer-card-bg { background-color: {{ $footerSurfaceDark }} !important; }
+            .footer-meta-bg { background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
+            .footer-link-dark { color: {{ $headingColorDark }} !important; }
+            .legal-copy-dark { color: {{ $legalCopyColorDark }} !important; }
+        }
+
+        [data-ogsc] body,
+        [data-ogsc] .body-bg { background-color: {{ $emailCanvasBackgroundDark }} !important; }
+        [data-ogsc] a { color: {{ $linkColorDark }} !important; }
+        [data-ogsc] .hero-card-bg { background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .content-card-bg { background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .section-card-bg { background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .stat-card-bg { background-color: {{ $statSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .note-card-bg { background-color: {{ $noteSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-bg { background-color: {{ $calloutSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-warning-bg { background-color: {{ $calloutWarningSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-danger-bg { background-color: {{ $calloutDangerSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-success-bg { background-color: {{ $calloutSuccessSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .dark-title,
+        [data-ogsc] .dark-heading,
+        [data-ogsc] .dark-strong { color: {{ $headingColorDark }} !important; }
+        [data-ogsc] .dark-body { color: {{ $bodyColorDark }} !important; }
+        [data-ogsc] .dark-muted { color: {{ $mutedColorDark }} !important; }
+        [data-ogsc] .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; color: {{ $buttonSecondaryTextDark }} !important; }
+        [data-ogsc] .footer-card-bg { background-color: {{ $footerSurfaceDark }} !important; }
+        [data-ogsc] .footer-meta-bg { background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
+        [data-ogsc] .footer-link-dark { color: {{ $headingColorDark }} !important; }
+        [data-ogsc] .legal-copy-dark { color: {{ $legalCopyColorDark }} !important; }
     </style>
     @yield('extra-styles')
 </head>
-<body bgcolor="{{ $emailOuterBackground }}" style="margin:0; padding:0; background-color:{{ $emailOuterBackground }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; color:{{ $bodyColor }}; -webkit-text-size-adjust:100%; word-break:break-word;" class="body-bg">
+<body bgcolor="{{ $emailCanvasBackgroundLight }}" style="margin:0; padding:0; background-color:{{ $emailCanvasBackgroundLight }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; color:{{ $bodyColorLight }}; -webkit-text-size-adjust:100%; word-break:break-word;" class="body-bg">
     <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all; font-size:0; line-height:0;">@yield('preheader', 'Updates from ' . $productName)&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ $emailOuterBackground }}" style="background-color:{{ $emailOuterBackground }};" class="body-bg">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ $emailCanvasBackgroundLight }}" style="background-color:{{ $emailCanvasBackgroundLight }};" class="body-bg">
         <tr>
-            <td align="center" bgcolor="{{ $emailOuterBackground }}" style="padding:30px 12px;">
+            <td align="center" bgcolor="{{ $emailCanvasBackgroundLight }}" style="padding:30px 12px;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="720" style="max-width:720px; width:100%;" class="email-container">
 
                     @hasSection('hero')
                     <tr>
-                        <td class="hero-card-bg hero-pad" style="background-color:{{ $heroSurface }}; border:1px solid {{ $borderColor }}; border-radius:24px 24px 0 0; padding:34px 38px 28px 38px;">
+                        <td class="hero-card-bg hero-pad" style="background-color:{{ $heroSurfaceLight }}; border:0; border-radius:24px 24px 0 0; padding:34px 38px 28px 38px;">
                             <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                 <tr>
                                     <td style="padding-bottom:24px;">
@@ -125,11 +200,10 @@
                             </table>
                         </td>
                     </tr>
-                    <tr><td style="height:2px; font-size:0; line-height:0;" class="body-bg">&nbsp;</td></tr>
                     @endif
 
                     <tr>
-                        <td class="content-card-bg" style="background-color:{{ $contentSurface }}; border:1px solid {{ $borderColor }}; @hasSection('hero') border-radius:0 0 24px 24px; @else border-radius:24px; @endif">
+                        <td class="content-card-bg" style="background-color:{{ $contentSurfaceLight }}; border:0; @hasSection('hero') border-radius:0 0 24px 24px; @else border-radius:24px; @endif">
                             <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                 <tr>
                                     <td class="content-pad" style="padding:30px 32px;">
@@ -143,17 +217,17 @@
                                     <td style="padding:0 16px 16px 16px;">
                                         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                             <tr>
-                                                <td class="footer-card-bg footer-inner" style="background-color:{{ $footerSurface }}; border-radius:20px; padding:24px 26px;">
-                                                    <p style="margin:0 0 8px; font-size:18px; line-height:1.5; color:{{ $headingColor }}; font-weight:800;">Need help with a shoot, invoice, or account question?</p>
-                                                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.8; color:{{ $bodyColor }};">
+                                                <td class="footer-card-bg footer-inner" style="background-color:{{ $footerSurfaceLight }}; border-radius:20px; padding:24px 26px;">
+                                                    <p style="margin:0 0 8px; font-size:18px; line-height:1.5; color:{{ $headingColorLight }}; font-weight:800;">Need help with a shoot, invoice, or account question?</p>
+                                                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.8; color:{{ $bodyColorLight }};">
                                                         Our team is here to help keep your marketing workflow moving.
-                                                        Reach us at <a href="mailto:{{ $supportEmail }}" class="footer-link-dark" style="color:{{ $headingColor }}; text-decoration:underline;">{{ $supportEmail }}</a> or call {{ $supportPhone }}.
+                                                        Reach us at <a href="mailto:{{ $supportEmail }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; text-decoration:underline;">{{ $supportEmail }}</a> or call {{ $supportPhone }}.
                                                     </p>
                                                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
                                                         <tr>
-                                                            <td style="padding-right:14px;"><a href="{{ $dashboardUrl }}" class="footer-link-dark" style="color:{{ $headingColor }}; font-weight:700; font-size:14px; text-decoration:none;">Dashboard</a></td>
-                                                            <td style="padding-right:14px;"><a href="{{ $websiteUrl }}" class="footer-link-dark" style="color:{{ $headingColor }}; font-weight:700; font-size:14px; text-decoration:none;">Website</a></td>
-                                                            <td><a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="footer-link-dark" style="color:{{ $headingColor }}; font-weight:700; font-size:14px; text-decoration:none;">Leave a Review</a></td>
+                                                            <td style="padding-right:14px;"><a href="{{ $dashboardUrl }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; font-weight:700; font-size:14px; text-decoration:none;">Dashboard</a></td>
+                                                            <td style="padding-right:14px;"><a href="{{ $websiteUrl }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; font-weight:700; font-size:14px; text-decoration:none;">Website</a></td>
+                                                            <td><a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="footer-link-dark" style="color:{{ $headingColorLight }}; font-weight:700; font-size:14px; text-decoration:none;">Leave a Review</a></td>
                                                         </tr>
                                                     </table>
 
@@ -162,9 +236,9 @@
                                                             <td class="footer-meta-td" width="50%" style="padding-right:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
-                                                                        <td class="footer-meta-bg" style="background-color:{{ $metaSurface }}; border:1px solid {{ $metaBorderColor }}; border-radius:14px; padding:14px 16px;">
-                                                                            <span style="display:block; margin-bottom:4px; color:{{ $mutedColor }}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
-                                                                            <span style="color:{{ $headingColor }}; font-size:13px; line-height:1.6; font-weight:700;">{{ $supportEmail }}<br>{{ $supportPhone }}</span>
+                                                                        <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
+                                                                            <span style="display:block; margin-bottom:4px; color:{{ $mutedColorLight }}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
+                                                                            <span style="color:{{ $headingColorLight }}; font-size:13px; line-height:1.6; font-weight:700;">{{ $supportEmail }}<br>{{ $supportPhone }}</span>
                                                                         </td>
                                                                     </tr>
                                                                 </table>
@@ -172,9 +246,9 @@
                                                             <td class="footer-meta-td" width="50%" style="padding-left:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
-                                                                        <td class="footer-meta-bg" style="background-color:{{ $metaSurface }}; border:1px solid {{ $metaBorderColor }}; border-radius:14px; padding:14px 16px;">
-                                                                            <span style="display:block; margin-bottom:4px; color:{{ $mutedColor }}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
-                                                                            <span style="color:{{ $headingColor }}; font-size:13px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
+                                                                        <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
+                                                                            <span style="display:block; margin-bottom:4px; color:{{ $mutedColorLight }}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
+                                                                            <span style="color:{{ $headingColorLight }}; font-size:13px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
                                                                         </td>
                                                                     </tr>
                                                                 </table>
@@ -183,7 +257,7 @@
                                                     </table>
 
                                                     @hasSection('footer_note')
-                                                    <p style="margin:16px 0 0; color:{{ $mutedColor }}; font-size:12px; line-height:1.7;">@yield('footer_note')</p>
+                                                    <p style="margin:16px 0 0; color:{{ $mutedColorLight }}; font-size:12px; line-height:1.7;">@yield('footer_note')</p>
                                                     @endif
                                                 </td>
                                             </tr>
@@ -195,7 +269,7 @@
                     </tr>
 
                     <tr>
-                        <td class="legal-copy-dark" style="padding:14px 8px 0; text-align:center; color:{{ $legalCopyColor }}; font-size:11px; line-height:1.7;">
+                        <td class="legal-copy-dark" style="padding:14px 8px 0; text-align:center; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.7;">
                             This email was sent by {{ $productName }}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
                         </td>
                     </tr>

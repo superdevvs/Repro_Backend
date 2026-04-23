@@ -8,7 +8,7 @@ use Tests\TestCase;
 
 class TemplateRendererTest extends TestCase
 {
-    public function test_booking_email_wrapper_is_dark_mode_safe_and_strips_legacy_greeting_and_camera_art(): void
+    public function test_booking_email_wrapper_is_theme_adaptive_and_strips_legacy_greeting_and_camera_art(): void
     {
         $template = new MessageTemplate([
             'channel' => 'EMAIL',
@@ -30,6 +30,8 @@ class TemplateRendererTest extends TestCase
         $this->assertStringNotContainsString('Hi Priyanshu!', $html);
         $this->assertStringNotContainsString('#22c55e', $html);
         $this->assertStringContainsString('#1463ff', $html);
+        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
+        $this->assertStringContainsString('[data-ogsc] body', $html);
         $this->assertStringNotContainsString('Hi Priyanshu!', $rendered['text']);
     }
 
@@ -58,7 +60,7 @@ class TemplateRendererTest extends TestCase
         $this->assertStringContainsString('Updated', $html);
     }
 
-    public function test_renderer_inlines_dark_safe_surfaces_and_mobile_footer_stacking(): void
+    public function test_renderer_inlines_light_defaults_with_dark_overrides_and_mobile_footer_stacking(): void
     {
         $template = new MessageTemplate([
             'channel' => 'EMAIL',
@@ -83,18 +85,22 @@ HTML,
         $rendered = (new TemplateRenderer())->render($template, []);
         $html = $rendered['html'];
 
+        $normalizedHtml = str_replace(' ', '', strtolower($html));
+
         $this->assertStringContainsString('class="body-card body-surface"', $html);
         $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
-        $this->assertStringContainsString('background-color:#111c2e;border:1pxsolid#24344d;color:#a9b8cb;', str_replace(' ', '', $html));
+        $this->assertStringContainsString('background-color:#ffffff;border:0;color:#47627f;', $normalizedHtml);
         $this->assertStringContainsString('class="info-box"', $html);
-        $this->assertStringContainsString('background-color:#16233a', str_replace(' ', '', $html));
+        $this->assertStringContainsString('background-color:#f7fbff', $normalizedHtml);
         $this->assertStringContainsString('class="change-card"', $html);
-        $this->assertStringContainsString('color:#e8edf5', str_replace(' ', '', $html));
+        $this->assertStringContainsString('color:#071223', $normalizedHtml);
         $this->assertStringContainsString('.footer-meta-cell {', $html);
         $this->assertStringContainsString('display: block !important;', $html);
         $this->assertStringContainsString('class="footer-meta-cell footer-meta-cell-last"', $html);
-        $this->assertStringContainsString('background-color:#142237;border:1pxsolid#2d4263;', str_replace(' ', '', $html));
+        $this->assertStringContainsString('background-color:#edf3fb;border:0;', $normalizedHtml);
         $this->assertStringContainsString('.dark-panel-surface {', $html);
-        $this->assertStringContainsString('[data-ogsc] .dark-meta-surface {', $html);
+        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
+        $this->assertStringContainsString('[data-ogsc] .dark-meta-surface,', $html);
+        $this->assertStringContainsString('#111c2e', $html);
     }
 }

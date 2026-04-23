@@ -109,18 +109,38 @@ class TemplateRenderer
         $supportPhone = $branding['support_phone'];
         $dashboardUrl = $branding['dashboard_url'];
         $websiteUrl = $branding['website_url'];
-        $outerBackground = $branding['email_outer_background'] ?? $branding['outer_background'];
-        $contentSurface = $branding['content_surface'];
-        $sectionSurface = $branding['section_surface'] ?? $contentSurface;
-        $footerSurface = $branding['footer_surface'] ?? $outerBackground;
-        $metaSurface = $branding['meta_surface'] ?? '#142237';
-        $borderColor = $branding['border_color'] ?? '#24344d';
-        $metaBorderColor = $branding['meta_border_color'] ?? '#2d4263';
-        $headingColor = $branding['heading_color'];
-        $bodyColor = $branding['body_color'];
-        $mutedColor = $branding['muted_color'];
-        $linkColor = $branding['link_color'];
-        $legalCopyColor = $branding['legal_copy_color'] ?? '#5f6b7a';
+        $canvasBackgroundLight = $branding['email_canvas_background_light'] ?? ($branding['email_outer_background'] ?? '#ffffff');
+        $canvasBackgroundDark = $branding['email_canvas_background_dark'] ?? ($branding['email_outer_background_dark'] ?? ($branding['outer_background'] ?? '#00141d'));
+        $contentSurfaceLight = $branding['card_surface_light'] ?? ($branding['content_surface'] ?? '#ffffff');
+        $contentSurfaceDark = $branding['card_surface_dark'] ?? '#111c2e';
+        $sectionSurfaceLight = $branding['section_surface_light'] ?? ($branding['section_surface'] ?? '#f7fbff');
+        $sectionSurfaceDark = $branding['section_surface_dark'] ?? '#16233a';
+        $statSurfaceLight = $branding['stat_surface_light'] ?? '#f5f9ff';
+        $statSurfaceDark = $branding['stat_surface_dark'] ?? $sectionSurfaceDark;
+        $noteSurfaceLight = $branding['note_surface_light'] ?? '#f8fbff';
+        $noteSurfaceDark = $branding['note_surface_dark'] ?? $sectionSurfaceDark;
+        $footerSurfaceLight = $branding['footer_surface_light'] ?? ($branding['footer_surface'] ?? '#f7fbff');
+        $footerSurfaceDark = $branding['footer_surface_dark'] ?? '#00141d';
+        $metaSurfaceLight = $branding['meta_surface_light'] ?? ($branding['meta_surface'] ?? '#edf3fb');
+        $metaSurfaceDark = $branding['meta_surface_dark'] ?? '#142237';
+        $borderColorLight = $branding['border_color_light'] ?? ($branding['border_color'] ?? 'transparent');
+        $borderColorDark = $branding['border_color_dark'] ?? 'transparent';
+        $metaBorderColorLight = $branding['meta_border_color_light'] ?? ($branding['meta_border_color'] ?? 'transparent');
+        $metaBorderColorDark = $branding['meta_border_color_dark'] ?? 'transparent';
+        $headingColorLight = $branding['heading_color_light'] ?? ($branding['heading_color'] ?? '#071223');
+        $headingColorDark = $branding['heading_color_dark'] ?? '#e8edf5';
+        $bodyColorLight = $branding['body_color_light'] ?? ($branding['body_color'] ?? '#47627f');
+        $bodyColorDark = $branding['body_color_dark'] ?? '#a9b8cb';
+        $mutedColorLight = $branding['muted_color_light'] ?? ($branding['muted_color'] ?? '#6c84a2');
+        $mutedColorDark = $branding['muted_color_dark'] ?? '#8298b4';
+        $linkColorLight = $branding['link_color_light'] ?? ($branding['link_color'] ?? '#1463ff');
+        $linkColorDark = $branding['link_color_dark'] ?? '#7eb3ff';
+        $buttonSecondarySurfaceLight = $branding['button_secondary_surface_light'] ?? '#edf4ff';
+        $buttonSecondarySurfaceDark = $branding['button_secondary_surface_dark'] ?? '#16233a';
+        $buttonSecondaryTextLight = $branding['button_secondary_text_light'] ?? '#173963';
+        $buttonSecondaryTextDark = $branding['button_secondary_text_dark'] ?? '#e8edf5';
+        $legalCopyColorLight = $branding['legal_copy_color_light'] ?? ($branding['legal_copy_color'] ?? '#5f6b7a');
+        $legalCopyColorDark = $branding['legal_copy_color_dark'] ?? '#8da2be';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
         $journeyHtml = $this->buildJourneyRail($template);
@@ -131,70 +151,70 @@ class TemplateRenderer
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="light">
-<meta name="supported-color-schemes" content="light">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
 <style>
 :root {
-  color-scheme: light;
-  supported-color-schemes: light;
+  color-scheme: light dark;
+  supported-color-schemes: light dark;
 }
 body {
   margin: 0;
   padding: 0;
-  background: {$outerBackground};
+  background: {$canvasBackgroundLight};
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  color: {$bodyColor};
+  color: {$bodyColorLight};
   -webkit-text-size-adjust: 100%;
   word-break: break-word;
 }
 table { border-collapse: collapse; width: 100%; }
 img { border: 0; display: block; max-width: 100%; }
-a { color: {$linkColor}; text-decoration: none; }
+a { color: {$linkColorLight}; text-decoration: none; }
 .page { padding: 30px 12px; }
 .shell { max-width: 720px; margin: 0 auto; }
 .body-surface {
-  background-color: {$contentSurface};
-  color: {$bodyColor};
+  background-color: {$contentSurfaceLight};
+  color: {$bodyColorLight};
 }
 .body-heading {
-  color: {$headingColor};
+  color: {$headingColorLight};
 }
 .body-link {
-  color: {$linkColor};
+  color: {$linkColorLight};
 }
 .body-divider {
-  border-color: {$borderColor};
+  border-color: transparent;
 }
 .dark-panel-surface {
-  background-color: {$footerSurface};
-  color: {$bodyColor};
+  background-color: {$footerSurfaceLight};
+  color: {$bodyColorLight};
 }
 .dark-panel-copy {
-  color: {$bodyColor};
+  color: {$bodyColorLight};
 }
 .dark-panel-link {
-  color: {$headingColor};
+  color: {$headingColorLight};
 }
 .dark-meta-surface {
-  background-color: {$metaSurface};
-  border-color: {$metaBorderColor};
+  background-color: {$metaSurfaceLight};
+  border-color: transparent;
 }
 .dark-meta-label {
-  color: {$mutedColor};
+  color: {$mutedColorLight};
 }
 .dark-meta-value {
-  color: {$headingColor};
+  color: {$headingColorLight};
 }
 .dark-legal-copy {
-  color: {$legalCopyColor};
+  color: {$legalCopyColorLight};
 }
 .hero-card,
 .body-card {
-  background-color: {$contentSurface};
+  background-color: {$contentSurfaceLight};
   border-radius: 34px;
   overflow: hidden;
   box-shadow: 0 24px 70px rgba(22, 34, 60, 0.09);
-  border: 1px solid {$borderColor};
+  border: 0;
 }
 .hero-card {
   position: relative;
@@ -219,14 +239,14 @@ a { color: {$linkColor}; text-decoration: none; }
 }
 .brand-copy {
   text-align: right;
-  color: {$headingColor};
+  color: {$headingColorLight};
   font-size: 16px;
   line-height: 1.4;
   font-weight: 800;
 }
 .brand-copy span {
   display: block;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-size: 11px;
   letter-spacing: 1.4px;
   text-transform: uppercase;
@@ -235,7 +255,7 @@ a { color: {$linkColor}; text-decoration: none; }
 .hero-overline {
   display: block;
   margin-bottom: 14px;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-size: 16px;
   line-height: 1.5;
   letter-spacing: 0.2px;
@@ -250,12 +270,12 @@ a { color: {$linkColor}; text-decoration: none; }
   line-height: 0.96;
   font-weight: 300;
   letter-spacing: -2.4px;
-  color: {$headingColor};
+  color: {$headingColorLight};
 }
 .hero-title-lead {
   display: block;
   margin-bottom: 14px;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-size: 16px;
   line-height: 1.5;
   letter-spacing: 0.2px;
@@ -263,13 +283,13 @@ a { color: {$linkColor}; text-decoration: none; }
 }
 .hero-title-location {
   display: block;
-  color: {$headingColor};
+  color: {$headingColorLight};
   font-weight: 200;
 }
 .hero-title-status {
   display: block;
   margin-top: 12px;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-size: 22px;
   line-height: 1.25;
   letter-spacing: -0.6px;
@@ -277,11 +297,11 @@ a { color: {$linkColor}; text-decoration: none; }
 }
 .hero-title-primary {
   display: inline;
-  color: {$headingColor};
+  color: {$headingColorLight};
 }
 .hero-title-accent {
   display: inline;
-  color: {$linkColor};
+  color: {$linkColorLight};
   font-weight: 400;
 }
 .hero-copy {
@@ -289,7 +309,7 @@ a { color: {$linkColor}; text-decoration: none; }
   z-index: 2;
   max-width: 540px;
   margin: 20px 0 0;
-  color: {$bodyColor};
+  color: {$bodyColorLight};
   font-size: 15px;
   line-height: 1.8;
 }
@@ -309,7 +329,7 @@ a { color: {$linkColor}; text-decoration: none; }
   height: 7px;
   margin-right: 12px;
   border-radius: 999px;
-  background: {$borderColor};
+  background: {$borderColorLight};
 }
 .journey-bar:last-child {
   margin-right: 0;
@@ -318,7 +338,7 @@ a { color: {$linkColor}; text-decoration: none; }
   background: #1463ff;
 }
 .journey-bar-next {
-  background: {$linkColor};
+  background: {$linkColorLight};
 }
 .journey-labels {
   width: 100%;
@@ -331,14 +351,14 @@ a { color: {$linkColor}; text-decoration: none; }
   line-height: 1.4;
   letter-spacing: 1.2px;
   text-transform: uppercase;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-weight: 800;
 }
 .journey-label-complete {
   color: #1463ff;
 }
 .journey-label-next {
-  color: {$bodyColor};
+  color: {$bodyColorLight};
 }
 .body-card {
   margin-top: 18px;
@@ -351,7 +371,7 @@ a { color: {$linkColor}; text-decoration: none; }
 .body-inner div,
 .body-inner td,
 .body-inner span {
-  color: {$bodyColor};
+  color: {$bodyColorLight};
   font-size: 15px;
   line-height: 1.8;
 }
@@ -366,18 +386,18 @@ a { color: {$linkColor}; text-decoration: none; }
 .body-inner h3,
 .body-inner h4 {
   margin: 0 0 14px;
-  color: {$headingColor};
+  color: {$headingColorLight};
   line-height: 1.15;
 }
 .body-inner h1 { font-size: 42px; font-weight: 300; letter-spacing: -1.6px; }
 .body-inner h2 { font-size: 28px; font-weight: 800; }
 .body-inner h3 { font-size: 22px; font-weight: 800; }
 .body-inner h4 { font-size: 16px; font-weight: 800; }
-.body-inner strong { color: {$headingColor}; }
+.body-inner strong { color: {$headingColorLight}; }
 .body-inner center { display: block; text-align: left; }
 .body-inner hr {
   border: 0;
-  border-top: 1px solid {$borderColor};
+  border-top: 0;
   margin: 20px 0;
 }
 .button {
@@ -403,19 +423,19 @@ a { color: {$linkColor}; text-decoration: none; }
   margin: 20px 0;
   padding: 18px 20px;
   border-radius: 22px;
-  border: 1px solid {$borderColor};
-  background: {$sectionSurface};
+  border: 0;
+  background: {$sectionSurfaceLight};
   box-shadow: none;
 }
 .info-row {
   padding: 10px 0;
-  border-bottom: 1px solid {$borderColor};
+  border-bottom: 0;
 }
 .info-row:last-child { border-bottom: 0; }
 .info-label {
   display: inline-block;
   min-width: 150px;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-weight: 800;
   font-size: 12px;
   line-height: 1.5;
@@ -426,20 +446,20 @@ a { color: {$linkColor}; text-decoration: none; }
   margin: 20px 0;
   padding: 16px 18px;
   border-radius: 18px;
-  border: 1px solid {$borderColor};
-  background: {$sectionSurface};
-  color: {$bodyColor} !important;
+  border: 0;
+  background: {$noteSurfaceLight};
+  color: {$bodyColorLight} !important;
 }
 .change-card {
   margin: 22px 0;
   padding: 20px 22px;
   border-radius: 24px;
-  border: 1px solid {$borderColor};
-  background: {$sectionSurface};
+  border: 0;
+  background: {$sectionSurfaceLight};
 }
 .change-card-title {
   margin: 0 0 12px;
-  color: {$headingColor};
+  color: {$headingColorLight};
   font-size: 18px;
   line-height: 1.4;
   font-weight: 800;
@@ -448,7 +468,7 @@ a { color: {$linkColor}; text-decoration: none; }
 .change-card li,
 .change-card div,
 .change-card span {
-  color: {$bodyColor} !important;
+  color: {$bodyColorLight} !important;
 }
 .change-card ul,
 .change-card ol {
@@ -461,25 +481,25 @@ a { color: {$linkColor}; text-decoration: none; }
 .footer-wrap { padding: 18px 0 0; }
 .footer-card {
   border-radius: 26px;
-  background: {$footerSurface};
+  background: {$footerSurfaceLight};
   padding: 24px 26px;
-  color: {$bodyColor};
+  color: {$bodyColorLight};
   box-shadow: 0 20px 40px rgba(16, 40, 71, 0.18);
 }
 .footer-title {
   margin: 0 0 8px;
   font-size: 18px;
   line-height: 1.5;
-  color: {$headingColor};
+  color: {$headingColorLight};
   font-weight: 800;
 }
 .footer-copy {
   margin: 0;
-  color: {$bodyColor};
+  color: {$bodyColorLight};
   font-size: 14px;
   line-height: 1.8;
 }
-.footer-copy a { color: {$headingColor} !important; text-decoration: underline; }
+.footer-copy a { color: {$headingColorLight} !important; text-decoration: underline; }
 .footer-links a { margin-right: 14px; white-space: nowrap; }
 .footer-meta {
   width: 100%;
@@ -493,13 +513,13 @@ a { color: {$linkColor}; text-decoration: none; }
 .footer-meta-card {
   border-radius: 18px;
   padding: 14px 16px;
-  background: {$metaSurface};
-  border: 1px solid {$metaBorderColor};
+  background: {$metaSurfaceLight};
+  border: 0;
 }
 .footer-meta-label {
   display: block;
   margin-bottom: 4px;
-  color: {$mutedColor};
+  color: {$mutedColorLight};
   font-size: 11px;
   line-height: 1.4;
   letter-spacing: 1.2px;
@@ -507,7 +527,7 @@ a { color: {$linkColor}; text-decoration: none; }
   font-weight: 800;
 }
 .footer-meta-value {
-  color: {$headingColor};
+  color: {$headingColorLight};
   font-size: 14px;
   line-height: 1.6;
   font-weight: 700;
@@ -515,7 +535,7 @@ a { color: {$linkColor}; text-decoration: none; }
 .footer-note {
   padding: 14px 8px 0;
   text-align: center;
-  color: {$legalCopyColor};
+  color: {$legalCopyColorLight};
   font-size: 11px;
   line-height: 1.7;
 }
@@ -573,13 +593,143 @@ a { color: {$linkColor}; text-decoration: none; }
     display: block !important;
   }
 }
+@media (prefers-color-scheme: dark) {
+  body {
+    background: {$canvasBackgroundDark} !important;
+    color: {$bodyColorDark} !important;
+  }
+  a { color: {$linkColorDark} !important; }
+  .body-surface,
+  .hero-card,
+  .body-card {
+    background-color: {$contentSurfaceDark} !important;
+    color: {$bodyColorDark} !important;
+  }
+  .dark-panel-surface,
+  .footer-card {
+    background-color: {$footerSurfaceDark} !important;
+    color: {$bodyColorDark} !important;
+  }
+  .dark-meta-surface,
+  .footer-meta-card {
+    background-color: {$metaSurfaceDark} !important;
+    border-color: {$metaBorderColorDark} !important;
+  }
+  .info-box { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+  .note { background: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
+  .change-card { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+  .body-heading,
+  .dark-panel-link,
+  .dark-meta-value,
+  .hero-title,
+  .hero-title-location,
+  .body-inner h1,
+  .body-inner h2,
+  .body-inner h3,
+  .body-inner h4,
+  .body-inner strong,
+  .change-card-title {
+    color: {$headingColorDark} !important;
+  }
+  .body-link,
+  .hero-title-accent { color: {$linkColorDark} !important; }
+  .hero-copy,
+  .body-inner p,
+  .body-inner li,
+  .body-inner div,
+  .body-inner td,
+  .body-inner span,
+  .dark-panel-copy {
+    color: {$bodyColorDark} !important;
+  }
+  .dark-meta-label,
+  .hero-overline,
+  .hero-title-lead,
+  .hero-title-status,
+  .info-label,
+  .journey-label {
+    color: {$mutedColorDark} !important;
+  }
+  .journey-bar { background: {$borderColorDark} !important; }
+  .journey-bar-next { background: {$linkColorDark} !important; }
+  .journey-label-next { color: {$bodyColorDark} !important; }
+  .button,
+  .button-large {
+    background-image: linear-gradient(135deg, #1463ff 0%, #0b83ff 100%) !important;
+    color: #ffffff !important;
+  }
+  .footer-note,
+  .dark-legal-copy { color: {$legalCopyColorDark} !important; }
+}
+[data-ogsc] body,
+[data-ogsc] .page {
+  background: {$canvasBackgroundDark} !important;
+  color: {$bodyColorDark} !important;
+}
+[data-ogsc] a { color: {$linkColorDark} !important; }
+[data-ogsc] .body-surface,
+[data-ogsc] .hero-card,
+[data-ogsc] .body-card {
+  background-color: {$contentSurfaceDark} !important;
+  color: {$bodyColorDark} !important;
+}
+[data-ogsc] .dark-panel-surface,
+[data-ogsc] .footer-card {
+  background-color: {$footerSurfaceDark} !important;
+  color: {$bodyColorDark} !important;
+}
+[data-ogsc] .dark-meta-surface,
+[data-ogsc] .footer-meta-card {
+  background-color: {$metaSurfaceDark} !important;
+  border-color: {$metaBorderColorDark} !important;
+}
+[data-ogsc] .info-box { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .note { background: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .change-card { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .body-heading,
+[data-ogsc] .dark-panel-link,
+[data-ogsc] .dark-meta-value,
+[data-ogsc] .hero-title,
+[data-ogsc] .hero-title-location,
+[data-ogsc] .body-inner h1,
+[data-ogsc] .body-inner h2,
+[data-ogsc] .body-inner h3,
+[data-ogsc] .body-inner h4,
+[data-ogsc] .body-inner strong,
+[data-ogsc] .change-card-title {
+  color: {$headingColorDark} !important;
+}
+[data-ogsc] .body-link,
+[data-ogsc] .hero-title-accent { color: {$linkColorDark} !important; }
+[data-ogsc] .hero-copy,
+[data-ogsc] .body-inner p,
+[data-ogsc] .body-inner li,
+[data-ogsc] .body-inner div,
+[data-ogsc] .body-inner td,
+[data-ogsc] .body-inner span,
+[data-ogsc] .dark-panel-copy {
+  color: {$bodyColorDark} !important;
+}
+[data-ogsc] .dark-meta-label,
+[data-ogsc] .hero-overline,
+[data-ogsc] .hero-title-lead,
+[data-ogsc] .hero-title-status,
+[data-ogsc] .info-label,
+[data-ogsc] .journey-label {
+  color: {$mutedColorDark} !important;
+}
+[data-ogsc] .journey-bar { background: {$borderColorDark} !important; }
+[data-ogsc] .journey-bar-next { background: {$linkColorDark} !important; }
+[data-ogsc] .journey-label-next { color: {$bodyColorDark} !important; }
+[data-ogsc] .footer-note,
+[data-ogsc] .dark-legal-copy { color: {$legalCopyColorDark} !important; }
 </style>
 </head>
-<body bgcolor="{$outerBackground}">
+<body bgcolor="{$canvasBackgroundLight}">
 <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all;">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 <div class="page">
   <div class="shell">
-    <div class="hero-card" style="background-color:{$contentSurface}; border:1px solid {$borderColor};">
+    <div class="hero-card" style="background-color:{$contentSurfaceLight}; border:0;">
       <div class="brand-row">
         <div class="brand-logo">
           <img src="{$logoUrl}" alt="{$productName}" role="presentation">
@@ -589,30 +739,30 @@ a { color: {$linkColor}; text-decoration: none; }
       <p class="hero-copy">{$heroCopy}</p>
 {$journeyHtml}
     </div>
-    <div class="body-card body-surface" style="background-color:{$contentSurface}; border:1px solid {$borderColor}; color:{$bodyColor};">
-      <div class="body-inner body-surface" style="background-color:{$contentSurface}; color:{$bodyColor};">
+    <div class="body-card body-surface" style="background-color:{$contentSurfaceLight}; border:0; color:{$bodyColorLight};">
+      <div class="body-inner body-surface" style="background-color:{$contentSurfaceLight}; color:{$bodyColorLight};">
 {$bodyHtml}
       </div>
       <div class="footer-wrap">
-        <div class="footer-card dark-panel-surface" style="background-color:{$footerSurface}; color:{$bodyColor};">
-          <div class="footer-title dark-panel-copy" style="color:{$headingColor};">Need help with a shoot, invoice, or account question?</div>
-          <p class="footer-copy dark-panel-copy" style="color:{$bodyColor};">
+        <div class="footer-card dark-panel-surface" style="background-color:{$footerSurfaceLight}; color:{$bodyColorLight};">
+          <div class="footer-title dark-panel-copy" style="color:{$headingColorLight};">Need help with a shoot, invoice, or account question?</div>
+          <p class="footer-copy dark-panel-copy" style="color:{$bodyColorLight};">
             Our team is here to help keep your marketing workflow moving.
-            Reach us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">{$supportEmail}</a> or call {$supportPhone}.
+            Reach us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">{$supportEmail}</a> or call {$supportPhone}.
           </p>
-          <p class="footer-copy footer-links dark-panel-copy" style="margin-top:14px; color:{$bodyColor};">
-            <a href="{$dashboardUrl}" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">Dashboard</a>
-            <a href="{$websiteUrl}" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">Website</a>
-            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">Leave a Review</a>
+          <p class="footer-copy footer-links dark-panel-copy" style="margin-top:14px; color:{$bodyColorLight};">
+            <a href="{$dashboardUrl}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">Dashboard</a>
+            <a href="{$websiteUrl}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">Website</a>
+            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">Leave a Review</a>
           </p>
           <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
               <td class="footer-meta-cell" width="50%" style="width:50%; padding-right:12px; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurface}; border:1px solid {$metaBorderColor}; border-radius:18px; padding:14px 16px;">
-                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColor}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
-                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColor}; font-size:14px; line-height:1.6; font-weight:700;">{$supportEmail}<br>{$supportPhone}</span>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
+                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColorLight}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColorLight}; font-size:14px; line-height:1.6; font-weight:700;">{$supportEmail}<br>{$supportPhone}</span>
                     </td>
                   </tr>
                 </table>
@@ -620,9 +770,9 @@ a { color: {$linkColor}; text-decoration: none; }
               <td class="footer-meta-cell footer-meta-cell-last" width="50%" style="width:50%; padding-right:0; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurface}; border:1px solid {$metaBorderColor}; border-radius:18px; padding:14px 16px;">
-                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColor}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
-                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColor}; font-size:14px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
+                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColorLight}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColorLight}; font-size:14px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
                     </td>
                   </tr>
                 </table>
@@ -630,7 +780,7 @@ a { color: {$linkColor}; text-decoration: none; }
             </tr>
           </table>
         </div>
-        <div class="footer-note dark-legal-copy" style="color:{$legalCopyColor};">
+        <div class="footer-note dark-legal-copy" style="color:{$legalCopyColorLight};">
           This email was sent by {$productName}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
         </div>
       </div>
@@ -650,12 +800,13 @@ HTML;
     protected function stabilizeEmailBodyHtml(string $bodyHtml): string
     {
         $branding = $this->branding();
-        $headingColor = (string) ($branding['heading_color'] ?? '#e8edf5');
-        $bodyColor = (string) ($branding['body_color'] ?? '#a9b8cb');
-        $mutedColor = (string) ($branding['muted_color'] ?? '#8298b4');
-        $linkColor = (string) ($branding['link_color'] ?? '#7eb3ff');
-        $sectionSurface = (string) ($branding['section_surface'] ?? '#16233a');
-        $borderColor = (string) ($branding['border_color'] ?? '#24344d');
+        $headingColor = (string) ($branding['heading_color_light'] ?? $branding['heading_color'] ?? '#071223');
+        $bodyColor = (string) ($branding['body_color_light'] ?? $branding['body_color'] ?? '#47627f');
+        $mutedColor = (string) ($branding['muted_color_light'] ?? $branding['muted_color'] ?? '#6c84a2');
+        $linkColor = (string) ($branding['link_color_light'] ?? $branding['link_color'] ?? '#1463ff');
+        $sectionSurface = (string) ($branding['section_surface_light'] ?? $branding['section_surface'] ?? '#f7fbff');
+        $noteSurface = (string) ($branding['note_surface_light'] ?? '#f8fbff');
+        $borderColor = (string) ($branding['border_color_light'] ?? $branding['border_color'] ?? 'transparent');
 
         $tagStyles = [
             'p' => "margin:0 0 14px; color:{$bodyColor}; font-size:15px; line-height:1.8;",
@@ -672,7 +823,7 @@ HTML;
             'strong' => "color:{$headingColor};",
             'center' => 'display:block; text-align:left;',
             'a' => "color:{$linkColor}; text-decoration:none;",
-            'hr' => "border:0; border-top:1px solid {$borderColor}; margin:20px 0;",
+            'hr' => "border:0; border-top:0; margin:20px 0;",
         ];
 
         foreach ($tagStyles as $tag => $style) {
@@ -680,11 +831,11 @@ HTML;
         }
 
         $classStyles = [
-            'info-box' => "margin:20px 0; padding:18px 20px; border-radius:22px; border:1px solid {$borderColor}; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
-            'info-row' => "padding:10px 0; border-bottom:1px solid {$borderColor};",
+            'info-box' => "margin:20px 0; padding:18px 20px; border-radius:22px; border:0; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
+            'info-row' => "padding:10px 0; border-bottom:0;",
             'info-label' => "display:inline-block; min-width:150px; color:{$mutedColor}; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;",
-            'note' => "margin:20px 0; padding:16px 18px; border-radius:18px; border:1px solid {$borderColor}; background-color:{$sectionSurface}; color:{$bodyColor} !important;",
-            'change-card' => "margin:22px 0; padding:20px 22px; border-radius:24px; border:1px solid {$borderColor}; background-color:{$sectionSurface};",
+            'note' => "margin:20px 0; padding:16px 18px; border-radius:18px; border:0; background-color:{$noteSurface}; color:{$bodyColor} !important;",
+            'change-card' => "margin:22px 0; padding:20px 22px; border-radius:24px; border:0; background-color:{$sectionSurface};",
             'change-card-title' => "margin:0 0 12px; color:{$headingColor}; font-size:18px; line-height:1.4; font-weight:800;",
             'button' => 'display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; background-image:linear-gradient(135deg, #1463ff 0%, #0b83ff 100%); color:#ffffff !important; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; margin:6px 10px 10px 0;',
             'button-large' => 'padding:18px 30px; font-size:16px; letter-spacing:0.2px;',
