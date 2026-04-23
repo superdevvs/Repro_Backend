@@ -4,6 +4,8 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\UserActivityLog;
+use App\Services\MailService;
 use App\Services\SystemEmails\EmailBrandingConfig;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
@@ -18,11 +20,13 @@ class ClientEmailVerificationController extends Controller
         private readonly EmailHealthService $emailHealthService,
         private readonly ClientEmailVerificationLinkService $clientEmailVerificationLinkService,
         private readonly EmailBrandingConfig $emailBrandingConfig,
+        private readonly MailService $mailService,
     ) {
     }
 
     public function __invoke(Request $request, User $user, string $hash): Response
     {
+        $verificationResult = null;
         $token = $request->query('token');
         $expires = $this->clientEmailVerificationLinkService->resolveExpiryTimestamp($request->query('expires'));
         $signature = $request->query('signature');
@@ -91,6 +95,21 @@ class ClientEmailVerificationController extends Controller
         }
 
         $this->emailHealthService->markVerified($user);
+        UserActivityLog::record(
+            $user,
+            'email_verified',
+            'Email verified',
+            'The client confirmed their email address and can now receive normal dashboard notifications.'
+        );
+
+        if (!$this->mailService->sendClientEmailVerifiedEmail($user, [
+            'verification_token_id' => $verificationResult?->token?->id ?? null,
+        ])) {
+            Log::warning('Failed to send post-verification confirmation email', [
+                'user_id' => $user->id,
+                'verification_token_id' => $verificationResult?->token?->id ?? null,
+            ]);
+        }
 
         return response()->view('email_verification_result', $this->pageData(
             'Email verified',
