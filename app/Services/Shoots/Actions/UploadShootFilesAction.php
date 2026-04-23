@@ -147,11 +147,24 @@ class UploadShootFilesAction
             ];
         }
 
-        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
+        $allowedEditedUploadStatuses = [
             Shoot::STATUS_UPLOADED,
             Shoot::STATUS_EDITING,
             Shoot::STATUS_READY,
-        ], true)) {
+        ];
+
+        if ($isAdmin) {
+            $allowedEditedUploadStatuses = array_merge($allowedEditedUploadStatuses, [
+                Shoot::STATUS_DELIVERED,
+                'admin_verified',
+                'ready_for_client',
+                'workflow_completed',
+                'client_delivered',
+                'finalized',
+            ]);
+        }
+
+        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, $allowedEditedUploadStatuses, true)) {
             return [
                 'status' => 400,
                 'payload' => [
