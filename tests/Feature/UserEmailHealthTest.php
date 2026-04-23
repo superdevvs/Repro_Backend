@@ -385,6 +385,39 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
+    public function test_client_email_verification_accepts_links_signed_with_a_previous_app_key(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'rotated-key-client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $originalKey = 'base64:' . base64_encode(random_bytes(32));
+        $newKey = 'base64:' . base64_encode(random_bytes(32));
+
+        config([
+            'app.key' => $originalKey,
+            'app.previous_keys' => [],
+        ]);
+
+        $link = app(ClientEmailVerificationLinkService::class)->buildUrl($client);
+
+        config([
+            'app.key' => $newKey,
+            'app.previous_keys' => [$originalKey],
+        ]);
+
+        $this->get($this->pathWithQuery($link))
+            ->assertOk()
+            ->assertSee('Email verified');
+
+        $this->assertDatabaseHas('users', [
+            'id' => $client->id,
+            'email_status' => 'verified',
+        ]);
+    }
+
     public function test_sales_rep_can_list_all_client_accounts_company_wide(): void
     {
         $salesRep = User::factory()->create(['role' => 'salesRep']);

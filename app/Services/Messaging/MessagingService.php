@@ -49,6 +49,7 @@ class MessagingService
 
         try {
             $provider = $this->getEmailProvider($channel);
+            $providerName = strtoupper((string) $channel->provider);
             $providerMessageId = $provider->send($channel, [
                 'to' => $payload['to'],
                 'cc' => $cc,
@@ -64,9 +65,20 @@ class MessagingService
                 'status' => 'SENT',
                 'sent_at' => now(),
                 'provider_message_id' => $providerMessageId,
+                'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                    'provider' => $providerName,
+                    'provider_message_id' => $providerMessageId,
+                    'status' => 'SENT',
+                    'sent_at' => now()->toIso8601String(),
+                ]),
             ]);
         } catch (\Throwable $exception) {
-            $this->markMessageFailed($message, $exception, 'Email send failed');
+            $this->markMessageFailed(
+                $message,
+                $exception,
+                'Email send failed',
+                strtoupper((string) $channel->provider)
+            );
 
             throw $exception;
         }
@@ -218,6 +230,7 @@ class MessagingService
             'status' => $status,
             'send_source' => $payload['send_source'] ?? 'MANUAL',
             'tags_json' => $payload['tags_json'] ?? null,
+            'metadata' => $payload['metadata'] ?? null,
             'scheduled_at' => $payload['scheduled_at'] ?? null,
             'created_by' => $payload['user_id'] ?? null,
             'sender_user_id' => $payload['sender_user_id'] ?? null,
@@ -735,6 +748,7 @@ class MessagingService
 
         try {
             $provider = $this->getEmailProvider($channel);
+            $providerName = strtoupper((string) $channel->provider);
 
             $providerMessageId = $provider->send($channel, [
                 'to' => $message->to_address,
@@ -752,9 +766,20 @@ class MessagingService
                 'sent_at' => now(),
                 'provider_message_id' => $providerMessageId,
                 'message_channel_id' => $channel->id,
+                'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                    'provider' => $providerName,
+                    'provider_message_id' => $providerMessageId,
+                    'status' => 'SENT',
+                    'sent_at' => now()->toIso8601String(),
+                ]),
             ]);
         } catch (\Throwable $exception) {
-            $this->markMessageFailed($message, $exception, 'Scheduled email dispatch failed');
+            $this->markMessageFailed(
+                $message,
+                $exception,
+                'Scheduled email dispatch failed',
+                strtoupper((string) $channel->provider)
+            );
 
             throw $exception;
         }
@@ -762,12 +787,23 @@ class MessagingService
         return $message->refresh();
     }
 
-    protected function markMessageFailed(Message $message, \Throwable $exception, string $operation): void
+    protected function markMessageFailed(
+        Message $message,
+        \Throwable $exception,
+        string $operation,
+        ?string $provider = null
+    ): void
     {
         $message->update([
             'status' => 'FAILED',
             'failed_at' => now(),
             'error_message' => $exception->getMessage(),
+            'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                'provider' => $provider ?? $message->provider,
+                'status' => 'FAILED',
+                'failed_at' => now()->toIso8601String(),
+                'error' => $exception->getMessage(),
+            ]),
         ]);
 
         Log::error($operation, [
@@ -777,6 +813,20 @@ class MessagingService
             'send_source' => $message->send_source,
             'error' => $exception->getMessage(),
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $metadata
+     * @param  array<string, mixed>  $delivery
+     * @return array<string, mixed>
+     */
+    protected function mergeDeliveryMetadata(?array $metadata, array $delivery): array
+    {
+        $base = is_array($metadata) ? $metadata : [];
+        $existingDelivery = is_array($base['delivery'] ?? null) ? $base['delivery'] : [];
+        $base['delivery'] = array_merge($existingDelivery, $delivery);
+
+        return $base;
     }
 
     /**

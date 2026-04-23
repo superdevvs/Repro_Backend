@@ -2,11 +2,15 @@
 
 namespace App\Services\Messaging;
 
+use App\Models\Payment;
 use App\Models\AutomationRule;
 use App\Models\AutomationRun;
 use App\Models\AutomationRunStep;
 use App\Models\MessageTemplate;
+use App\Models\Shoot;
 use App\Models\User;
+use App\Services\MailService;
+use App\Services\SystemEmails\ProtectedAutomationEmailMap;
 use Carbon\Carbon;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
@@ -25,6 +29,8 @@ class AutomationWorkflowExecutor
         private readonly TemplateVariableResolver $variableResolver,
         private readonly AutomationWorkflowConverter $workflowConverter,
         private readonly AutomationWorkflowValidator $workflowValidator,
+        private readonly MailService $mailService,
+        private readonly ProtectedAutomationEmailMap $protectedAutomationEmailMap,
     ) {
     }
 
@@ -418,6 +424,12 @@ class AutomationWorkflowExecutor
             ? MessageTemplate::find($config['templateId'])
             : null;
 
+        $protectedResult = $this->executeProtectedEmailAction($automation, $config, $context, $template);
+
+        if ($protectedResult !== null) {
+            return $protectedResult;
+        }
+
         if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
             return [
                 'channel' => 'email',
@@ -463,6 +475,322 @@ class AutomationWorkflowExecutor
             'channel' => 'email',
             'sent_to' => $sentTo,
         ];
+    }
+
+    private function executeProtectedEmailAction(
+        AutomationRule $automation,
+        array $config,
+        array $context,
+        ?MessageTemplate $template
+    ): ?array {
+        $triggerType = strtoupper((string) $automation->trigger_type);
+
+        if (!$this->protectedAutomationEmailMap->isProtectedTrigger($triggerType)) {
+            return null;
+        }
+
+        if ($this->shouldSkipCoreSystemEmailAutomation($automation, $context)) {
+            return [
+                'channel' => 'email',
+                'sent_to' => [],
+                'skipped' => true,
+                'protected' => true,
+            ];
+        }
+
+        if ($template !== null || !empty($config['bodyHtml']) || !empty($config['bodyText']) || !empty($config['subject'])) {
+            Log::warning('Ignoring legacy automation email HTML for protected trigger.', [
+                'automation_id' => $automation->id,
+                'trigger_type' => $automation->trigger_type,
+                'template_id' => $template?->id,
+            ]);
+        }
+
+        $recipientTypes = collect($this->resolveActionRecipients($automation, $config, $context, 'email'))
+            ->pluck('type')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        $sentTo = $this->dispatchProtectedTrigger($triggerType, $recipientTypes, $context);
+
+        return [
+            'channel' => 'email',
+            'sent_to' => $sentTo,
+            'protected' => true,
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $recipientTypes
+     * @return array<int, string>
+     */
+    private function dispatchProtectedTrigger(string $triggerType, array $recipientTypes, array $context): array
+    {
+        $shoot = $this->contextShoot($context);
+        $client = $this->contextUser($context, 'client');
+        $rep = $this->contextUser($context, 'rep');
+        $payment = $this->contextPayment($context);
+        $sentTo = [];
+
+        switch ($triggerType) {
+            case 'ACCOUNT_CREATED':
+                $user = $client ?? $rep ?? $this->contextUser($context, 'photographer');
+                $resetLink = (string) ($context['password_reset_link'] ?? '');
+                if ($user && $resetLink !== '' && $this->mailService->sendAccountCreatedEmail($user, $resetLink)) {
+                    $sentTo[] = $user->email;
+                }
+                break;
+
+            case 'PASSWORD_RESET':
+                $user = $client ?? $rep ?? $this->contextUser($context, 'photographer');
+                $resetLink = (string) ($context['password_reset_link'] ?? '');
+                if ($user && $resetLink !== '' && $this->mailService->sendPasswordResetEmail($user, $resetLink)) {
+                    $sentTo[] = $user->email;
+                }
+                break;
+
+            case 'SHOOT_BOOKED':
+            case 'PHOTOGRAPHER_ASSIGNED':
+                if ($shoot && in_array('photographer', $recipientTypes, true) && $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot)) {
+                    $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                }
+                break;
+
+            case 'SHOOT_SCHEDULED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true)) {
+                    $paymentLink = (string) ($context['payment_link'] ?? ($context['paymentLink'] ?? $this->mailService->generatePaymentLink($shoot)));
+                    if ($this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, in_array('photographer', $recipientTypes, true))) {
+                        $sentTo[] = $client->email;
+                        if (in_array('photographer', $recipientTypes, true)) {
+                            $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                        }
+                    }
+                } elseif ($shoot && in_array('photographer', $recipientTypes, true) && $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot)) {
+                    $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                }
+                break;
+
+            case 'SHOOT_REMINDER':
+                if ($shoot && $client && in_array('client', $recipientTypes, true)) {
+                    $scheduledAt = $this->contextSchedule($context);
+                    if ($this->mailService->sendShootReminderEmail($client, $shoot, $scheduledAt, (array) ($context['tags_json'] ?? []), in_array('photographer', $recipientTypes, true))) {
+                        $sentTo[] = $client->email;
+                        if (in_array('photographer', $recipientTypes, true)) {
+                            $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                        }
+                    }
+                }
+                break;
+
+            case 'SHOOT_UPDATED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true)) {
+                    $changesSummary = (string) ($context['changes_summary'] ?? $context['changesSummary'] ?? '');
+                    if ($this->mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary, true, in_array('photographer', $recipientTypes, true))) {
+                        $sentTo[] = $client->email;
+                        if (in_array('photographer', $recipientTypes, true)) {
+                            $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                        }
+                    }
+                }
+                break;
+
+            case 'SHOOT_REQUESTED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootRequestedEmail($client, $shoot)) {
+                    $sentTo[] = $client->email;
+                }
+                if ($shoot && in_array('admin', $recipientTypes, true) && $this->mailService->sendShootRequestedAdminNotificationEmails($shoot)) {
+                    $sentTo = array_merge($sentTo, $this->recipientEmails($this->adminRecipients()));
+                }
+                break;
+
+            case 'SHOOT_REQUEST_DECLINED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootRequestDeclinedEmail($client, $shoot)) {
+                    $sentTo[] = $client->email;
+                }
+                break;
+
+            case 'SHOOT_COMPLETED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootReadyEmail($client, $shoot)) {
+                    $sentTo[] = $client->email;
+                }
+                break;
+
+            case 'SHOOT_CANCELED':
+            case 'SHOOT_CANCELLED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootCancelledEmail($client, $shoot)) {
+                    $sentTo[] = $client->email;
+                    if (in_array('photographer', $recipientTypes, true)) {
+                        $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                    }
+                }
+                break;
+
+            case 'SHOOT_REMOVED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootRemovedEmail($client, $shoot)) {
+                    $sentTo[] = $client->email;
+                    if (in_array('photographer', $recipientTypes, true)) {
+                        $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                    }
+                }
+                break;
+
+            case 'PAYMENT_COMPLETED':
+                if ($shoot && $client && $payment && in_array('client', $recipientTypes, true) && $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment)) {
+                    $sentTo[] = $client->email;
+                }
+                break;
+
+            case 'PHOTOGRAPHER_CHANGED':
+                if ($shoot && in_array('photographer', $recipientTypes, true)) {
+                    $changesSummary = (string) ($context['changes_summary'] ?? $context['changesSummary'] ?? '');
+                    $previousPhotographer = $this->contextUser($context, 'previous_photographer');
+                    foreach ($this->affectedPhotographers($context, $shoot) as $photographer) {
+                        if ($this->mailService->sendPhotographerChangedEmail($photographer, $shoot, $previousPhotographer, $changesSummary)) {
+                            $sentTo[] = $photographer->email;
+                        }
+                    }
+                }
+                break;
+        }
+
+        return collect($sentTo)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    private function contextUser(array $context, string $key): ?User
+    {
+        $candidate = data_get($context, $key);
+
+        if ($candidate instanceof User) {
+            return $candidate;
+        }
+
+        $id = $candidate['id'] ?? $candidate->id ?? null;
+
+        return is_numeric($id) ? User::query()->find((int) $id) : null;
+    }
+
+    private function contextShoot(array $context): ?Shoot
+    {
+        $candidate = $context['shoot'] ?? null;
+
+        if ($candidate instanceof Shoot) {
+            return $candidate;
+        }
+
+        $shootId = $context['shoot_id'] ?? ($candidate['id'] ?? $candidate->id ?? null);
+
+        return is_numeric($shootId)
+            ? Shoot::query()->with(['client', 'photographer', 'rep', 'services.category', 'payments'])->find((int) $shootId)
+            : null;
+    }
+
+    private function contextPayment(array $context): ?Payment
+    {
+        $candidate = $context['payment'] ?? null;
+
+        if ($candidate instanceof Payment) {
+            return $candidate;
+        }
+
+        $paymentId = $context['payment_id'] ?? ($candidate['id'] ?? $candidate->id ?? null);
+
+        return is_numeric($paymentId) ? Payment::query()->find((int) $paymentId) : null;
+    }
+
+    private function contextSchedule(array $context): ?Carbon
+    {
+        $value = $context['shoot_datetime'] ?? $context['scheduled_at'] ?? null;
+
+        if (!$value) {
+            return null;
+        }
+
+        return $value instanceof Carbon ? $value : Carbon::parse($value);
+    }
+
+    /**
+     * @return Collection<int, User>
+     */
+    private function assignedPhotographers(Shoot $shoot): Collection
+    {
+        $shoot->loadMissing(['photographer', 'services']);
+
+        $ids = collect([$shoot->photographer_id, $shoot->photographer?->id])
+            ->merge(collect($shoot->services ?? [])->pluck('pivot.photographer_id'))
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if ($ids->isEmpty()) {
+            return collect();
+        }
+
+        return User::query()
+            ->whereIn('id', $ids->all())
+            ->whereNotNull('email')
+            ->get()
+            ->unique('id')
+            ->values();
+    }
+
+    /**
+     * @return Collection<int, User>
+     */
+    private function affectedPhotographers(array $context, Shoot $shoot): Collection
+    {
+        $affected = collect($context['affected_photographers'] ?? [])
+            ->map(function ($candidate) {
+                if ($candidate instanceof User) {
+                    return $candidate;
+                }
+
+                $id = $candidate['id'] ?? $candidate->id ?? null;
+
+                return is_numeric($id) ? User::query()->find((int) $id) : null;
+            })
+            ->filter(fn ($user) => $user instanceof User)
+            ->values();
+
+        return $affected->isNotEmpty() ? $affected : $this->assignedPhotographers($shoot);
+    }
+
+    /**
+     * @return Collection<int, User>
+     */
+    private function adminRecipients(): Collection
+    {
+        return User::query()
+            ->where(function ($query): void {
+                $query->whereIn('role', self::ADMIN_ROLES);
+                foreach (self::ADMIN_ROLES as $adminRole) {
+                    $query->orWhereJsonContains('secondary_roles', $adminRole);
+                }
+            })
+            ->whereNotNull('email')
+            ->get()
+            ->unique('id')
+            ->values();
+    }
+
+    /**
+     * @param  iterable<int, User>  $users
+     * @return array<int, string>
+     */
+    private function recipientEmails(iterable $users): array
+    {
+        return collect($users)
+            ->map(fn (User $user) => $user->email)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
     }
 
     private function executeSmsAction(AutomationRule $automation, array $node, array $context): array

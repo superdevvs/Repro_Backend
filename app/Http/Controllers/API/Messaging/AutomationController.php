@@ -11,6 +11,7 @@ use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\AutomationWorkflowValidator;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
+use App\Services\SystemEmails\ProtectedAutomationEmailMap;
 use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -42,6 +43,7 @@ class AutomationController extends Controller
         private readonly AutomationWorkflowConverter $workflowConverter,
         private readonly AutomationWorkflowValidator $workflowValidator,
         private readonly AutomationWorkflowExecutor $workflowExecutor,
+        private readonly ProtectedAutomationEmailMap $protectedAutomationEmailMap,
     ) {
     }
 
@@ -294,6 +296,10 @@ class AutomationController extends Controller
             }
         }
 
+        if ($this->protectedAutomationEmailMap->isProtectedTrigger((string) ($data['trigger_type'] ?? $automation?->trigger_type ?? ''))) {
+            $data['template_id'] = null;
+        }
+
         return $data;
     }
 
@@ -434,6 +440,9 @@ class AutomationController extends Controller
             ->when($includeRuns, fn ($query) => $query->with('steps'))
             ->limit($includeRuns ? 20 : 3)
             ->get();
+        $templateSourceOfTruth = $this->protectedAutomationEmailMap->isProtectedTrigger((string) $automation->trigger_type)
+            ? 'code'
+            : 'database';
 
         return array_merge($automation->toArray(), [
             'editor_mode' => $automation->editor_mode ?: 'visual',
@@ -442,6 +451,8 @@ class AutomationController extends Controller
             'entry_trigger_json' => $automation->entry_trigger_json ?: $this->workflowConverter->getEntryTrigger($automation),
             'is_system_locked' => (bool) $automation->is_system_locked,
             'legacy_status' => is_array($automation->workflow_definition_json) ? 'migrated' : 'converted_from_legacy',
+            'template_source_of_truth' => $templateSourceOfTruth,
+            'template_override_ignored' => $templateSourceOfTruth === 'code',
             'validation_state' => $validation,
             'recent_runs' => $recentRuns->toArray(),
         ]);

@@ -9,12 +9,15 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Carbon\CarbonInterface;
 use App\Models\MessageTemplate;
+use App\Models\Invoice;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\ShootEmailMatrix;
 use App\Services\Messaging\TemplateRenderer;
+use App\Services\SystemEmails\EmailContextBuilder;
+use App\Services\SystemEmails\SystemEmailOrchestrator;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 
@@ -31,6 +34,8 @@ class MailService
 
     public function __construct(
         private readonly ClientEmailVerificationLinkService $clientEmailVerificationLinkService,
+        private readonly SystemEmailOrchestrator $systemEmailOrchestrator,
+        private readonly EmailContextBuilder $emailContextBuilder,
     ) {
     }
 
@@ -40,13 +45,22 @@ class MailService
     public function sendAccountCreatedEmail(User $user, string $resetLink): bool
     {
         try {
-            $html = view('emails.account_created', [
-                'user' => $user,
-                'resetLink' => $resetLink,
-            ])->render();
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($user),
+                'links' => [
+                    'reset_password' => $resetLink,
+                    'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
+                ],
+                'meta' => [
+                    'recipient_type' => $user->role === 'client' ? 'client' : 'other',
+                    'event_version' => sha1($resetLink),
+                ],
+            ]);
 
-            $this->sendViaCakemail($user->email, 'New Account Information', $html, 'ACCOUNT_CREATED', [], [], [
+            $this->dispatchProtectedEmail('ACCOUNT_CREATED', $payload, $user->email, [], [], [
                 'related_account_id' => $user->id,
+                'enforce_email_health_gate' => false,
             ]);
 
             Log::info('Account created email sent', [
@@ -75,23 +89,22 @@ class MailService
     {
         try {
             $verificationLink = $this->generateClientEmailVerificationLink($user);
-            $html = view('emails.client_email_verification', [
-                'user' => $user,
-                'verificationLink' => $verificationLink,
-                'dashboardUrl' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
-            ])->render();
-
-            $this->sendViaCakemail(
-                $user->email,
-                'Verify Your Email Address',
-                $html,
-                'CLIENT_EMAIL_VERIFICATION',
-                [],
-                [],
-                [
-                    'related_account_id' => $user->id,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($user),
+                'links' => [
+                    'verification' => $verificationLink,
+                    'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
-            );
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => sha1($verificationLink),
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('CLIENT_EMAIL_VERIFICATION', $payload, $user->email, [], [], [
+                'related_account_id' => $user->id,
+            ]);
 
             Log::info('Client email verification email sent', [
                 'user_id' => $user->id,
@@ -214,16 +227,31 @@ class MailService
                 return false;
             }
 
-            $html = view('emails.shoot_scheduled', [
-                'user' => $recipient,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($recipient),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'paymentLink' => $paymentLink,
-                'isPhotographer' => $isPhotographer,
-            ])->render();
+                'links' => [
+                    'payment' => $paymentLink,
+                    'dashboard' => $shootData->dashboard_url ?? null,
+                ],
+                'meta' => [
+                    'recipient_type' => $isPhotographer ? 'photographer' : 'client',
+                    'is_photographer' => $isPhotographer,
+                    'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
+                ],
+            ]);
 
-            $this->sendViaCakemail($normalizedEmail, 'New Shoot Scheduled', $html, 'SHOOT_SCHEDULED', $cc, [], [
+            $this->dispatchProtectedEmail('SHOOT_SCHEDULED', $payload, $normalizedEmail, $cc, [], [
                 'related_shoot_id' => $shoot->id,
                 'related_account_id' => $isPhotographer ? null : $recipient->id,
+            ], [
+                'idempotency_key' => sprintf(
+                    'SHOOT_SCHEDULED:%d:%d:%s',
+                    $shoot->id,
+                    $recipient->id,
+                    $isPhotographer ? 'photographer' : 'client'
+                ),
             ]);
 
             if ($isPhotographer) {
@@ -283,23 +311,22 @@ class MailService
                 if ($normalizedEmail === null) {
                     $this->logSkippedShootEmailDelivery('SHOOT_UPDATED', $shoot, $user, 'client');
                 } else {
-                    $html = view('emails.shoot_updated', [
-                        'user' => $user,
+                    $payload = $this->buildProtectedEmailPayload([
+                        'recipient' => $this->formatUserData($user),
+                        'account' => $this->formatUserData($shoot->client),
                         'shoot' => $shootData,
-                        'changesSummary' => $normalizedChangesSummary,
-                        'isPhotographer' => $isPrimaryRecipientPhotographer,
-                    ])->render();
-                    $this->sendViaCakemail(
-                        $normalizedEmail,
-                        'Scheduled Photo Shoot Updated',
-                        $html,
-                        'SHOOT_UPDATED',
-                        $clientCcEmails,
-                        [],
-                        $this->automatedClientPayload($user, [
-                            'related_shoot_id' => $shoot->id,
-                        ])
-                    );
+                        'meta' => [
+                            'recipient_type' => $isPrimaryRecipientPhotographer ? 'photographer' : 'client',
+                            'is_photographer' => $isPrimaryRecipientPhotographer,
+                            'changes_summary' => $normalizedChangesSummary,
+                            'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                        ],
+                    ]);
+                    $this->dispatchProtectedEmail('SHOOT_UPDATED', $payload, $normalizedEmail, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                        'related_shoot_id' => $shoot->id,
+                    ]), [
+                        'idempotency_key' => sprintf('SHOOT_UPDATED:%d:%d:client:%s', $shoot->id, $user->id, sha1($normalizedChangesSummary)),
+                    ]);
                     $sentClient = true;
                     
                     Log::info('Shoot updated email sent', [
@@ -329,13 +356,22 @@ class MailService
                         continue;
                     }
 
-                    $htmlPhoto = view('emails.shoot_updated', [
-                        'user' => $photographer,
+                    $payload = $this->buildProtectedEmailPayload([
+                        'recipient' => $this->formatUserData($photographer),
+                        'account' => $this->formatUserData($shoot->client),
                         'shoot' => $shootData,
-                        'changesSummary' => $normalizedChangesSummary,
-                        'isPhotographer' => true,
-                    ])->render();
-                    $this->sendViaCakemail($normalizedEmail, 'Scheduled Photo Shoot Updated', $htmlPhoto, 'SHOOT_UPDATED');
+                        'meta' => [
+                            'recipient_type' => 'photographer',
+                            'is_photographer' => true,
+                            'changes_summary' => $normalizedChangesSummary,
+                            'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                        ],
+                    ]);
+                    $this->dispatchProtectedEmail('SHOOT_UPDATED', $payload, $normalizedEmail, [], [], [
+                        'related_shoot_id' => $shoot->id,
+                    ], [
+                        'idempotency_key' => sprintf('SHOOT_UPDATED:%d:%d:photographer:%s', $shoot->id, $photographer->id, sha1($normalizedChangesSummary)),
+                    ]);
                     $sentPhotographer = true;
                     Log::info('Shoot updated email sent to photographer', [
                         'photographer_id' => $photographer->id,
@@ -412,46 +448,46 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $isDirectPhotographer = $this->isPhotographerRecipient($user, $shoot);
-
-            $html = view('emails.shoot_reminder', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'scheduledAt' => $scheduledAt,
-                'isPhotographer' => $isDirectPhotographer,
-            ])->render();
+                'meta' => [
+                    'recipient_type' => $isDirectPhotographer ? 'photographer' : 'client',
+                    'is_photographer' => $isDirectPhotographer,
+                    'scheduled_at' => $scheduledAt?->toIso8601String(),
+                    'event_version' => $scheduledAt?->toIso8601String() ?? $shoot->scheduled_at?->toIso8601String() ?? $shoot->id,
+                ],
+            ]);
 
-            $this->sendViaCakemail(
-                $user->email,
-                self::SHOOT_REMINDER_SUBJECT,
-                $html,
-                'SHOOT_REMINDER',
-                $clientCcEmails,
-                $tags,
-                $this->automatedClientPayload($isDirectPhotographer ? null : $user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+            $this->dispatchProtectedEmail('SHOOT_REMINDER', $payload, $user->email, $clientCcEmails, $tags, $this->automatedClientPayload($isDirectPhotographer ? null : $user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_REMINDER:%d:%d:%s', $shoot->id, $user->id, $scheduledAt?->toIso8601String() ?? 'default'),
+            ]);
 
             if (
                 $shouldNotifyPhotographer !== false
                 && $this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMINDER)
             ) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
-                    $htmlPhoto = view('emails.shoot_reminder', [
-                        'user' => $photographer,
+                    $payload = $this->buildProtectedEmailPayload([
+                        'recipient' => $this->formatUserData($photographer),
+                        'account' => $this->formatUserData($shoot->client),
                         'shoot' => $shootData,
-                        'scheduledAt' => $scheduledAt,
-                        'isPhotographer' => true,
-                    ])->render();
+                        'meta' => [
+                            'recipient_type' => 'photographer',
+                            'is_photographer' => true,
+                            'scheduled_at' => $scheduledAt?->toIso8601String(),
+                            'event_version' => $scheduledAt?->toIso8601String() ?? $shoot->scheduled_at?->toIso8601String() ?? $shoot->id,
+                        ],
+                    ]);
 
-                    $this->sendViaCakemail(
-                        $photographer->email,
-                        self::SHOOT_REMINDER_SUBJECT,
-                        $htmlPhoto,
-                        'SHOOT_REMINDER',
-                        [],
-                        $tags
-                    );
+                    $this->dispatchProtectedEmail('SHOOT_REMINDER', $payload, $photographer->email, [], $tags, [
+                        'related_shoot_id' => $shoot->id,
+                    ], [
+                        'idempotency_key' => sprintf('SHOOT_REMINDER:%d:%d:%s', $shoot->id, $photographer->id, $scheduledAt?->toIso8601String() ?? 'default'),
+                    ]);
                 }
             }
 
@@ -477,23 +513,20 @@ class MailService
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
-            
-            // Send to client
-            $html = view('emails.shoot_removed', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-            ])->render();
-            $this->sendViaCakemail(
-                $user->email,
-                self::SHOOT_REMOVED_SUBJECT,
-                $html,
-                'SHOOT_REMOVED',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('SHOOT_REMOVED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_REMOVED:%d:%d:client', $shoot->id, $user->id),
+            ]);
             
             Log::info('Shoot removed email sent', [
                 'user_id' => $user->id,
@@ -503,11 +536,20 @@ class MailService
 
             if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMOVED)) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
-                    $htmlPhoto = view('emails.shoot_removed', [
-                        'user' => $photographer,
+                    $payload = $this->buildProtectedEmailPayload([
+                        'recipient' => $this->formatUserData($photographer),
+                        'account' => $this->formatUserData($shoot->client),
                         'shoot' => $shootData,
-                    ])->render();
-                    $this->sendViaCakemail($photographer->email, self::SHOOT_REMOVED_SUBJECT, $htmlPhoto, 'SHOOT_REMOVED');
+                        'meta' => [
+                            'recipient_type' => 'photographer',
+                            'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
+                        ],
+                    ]);
+                    $this->dispatchProtectedEmail('SHOOT_REMOVED', $payload, $photographer->email, [], [], [
+                        'related_shoot_id' => $shoot->id,
+                    ], [
+                        'idempotency_key' => sprintf('SHOOT_REMOVED:%d:%d:photographer', $shoot->id, $photographer->id),
+                    ]);
                     Log::info('Shoot removed email sent to photographer', [
                         'photographer_id' => $photographer->id,
                         'shoot_id' => $shoot->id,
@@ -539,23 +581,22 @@ class MailService
                 $declineReason = 'No reason was provided.';
             }
 
-            $html = view('emails.shoot_request_declined', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'declineReason' => $declineReason,
-            ])->render();
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'decline_reason' => $declineReason,
+                    'event_version' => sha1($declineReason),
+                ],
+            ]);
 
-            $this->sendViaCakemail(
-                $user->email,
-                self::SHOOT_REQUEST_DECLINED_SUBJECT,
-                $html,
-                'SHOOT_REQUEST_DECLINED',
-                [],
-                [],
-                $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+            $this->dispatchProtectedEmail('SHOOT_REQUEST_DECLINED', $payload, $user->email, [], [], $this->automatedClientPayload($user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_REQUEST_DECLINED:%d:%d:%s', $shoot->id, $user->id, sha1($declineReason)),
+            ]);
 
             Log::info('Shoot request declined email sent', [
                 'user_id' => $user->id,
@@ -583,23 +624,22 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
 
-            $html = view('emails.shoot_requested', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'isAdmin' => false,
-            ])->render();
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'is_admin' => false,
+                    'event_version' => $shoot->created_at?->toIso8601String() ?? $shoot->id,
+                ],
+            ]);
 
-            $this->sendViaCakemail(
-                $user->email,
-                'We Received Your Shoot Request',
-                $html,
-                'SHOOT_REQUESTED',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+            $this->dispatchProtectedEmail('SHOOT_REQUESTED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_REQUESTED:%d:%d:client', $shoot->id, $user->id),
+            ]);
 
             Log::info('Shoot requested email sent to client', [
                 'user_id' => $user->id,
@@ -640,23 +680,22 @@ class MailService
             $sent = false;
 
             foreach ($admins as $admin) {
-                $html = view('emails.shoot_requested', [
-                    'user' => $admin,
+                $payload = $this->buildProtectedEmailPayload([
+                    'recipient' => $this->formatUserData($admin),
+                    'account' => $this->formatUserData($shoot->client),
                     'shoot' => $shootData,
-                    'isAdmin' => true,
-                ])->render();
+                    'meta' => [
+                        'recipient_type' => 'admin',
+                        'is_admin' => true,
+                        'event_version' => $shoot->created_at?->toIso8601String() ?? $shoot->id,
+                    ],
+                ]);
 
-                $this->sendViaCakemail(
-                    $admin->email,
-                    'New Shoot Request Needs Review',
-                    $html,
-                    'SHOOT_REQUESTED',
-                    [],
-                    [],
-                    [
-                        'related_shoot_id' => $shoot->id,
-                    ]
-                );
+                $this->dispatchProtectedEmail('SHOOT_REQUESTED', $payload, $admin->email, [], [], [
+                    'related_shoot_id' => $shoot->id,
+                ], [
+                    'idempotency_key' => sprintf('SHOOT_REQUESTED:%d:%d:admin', $shoot->id, $admin->id),
+                ]);
 
                 $sent = true;
             }
@@ -688,23 +727,22 @@ class MailService
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $isPhotographer = $this->isPhotographerRecipient($user, $shoot);
 
-            $html = view('emails.shoot_cancellation_requested', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'isPhotographer' => $isPhotographer,
-                'cancellationReason' => $shoot->cancellation_reason,
-            ])->render();
-            $this->sendViaCakemail(
-                $user->email,
-                self::SHOOT_CANCELLATION_REQUESTED_SUBJECT,
-                $html,
-                'SHOOT_CANCELLATION_REQUESTED',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($isPhotographer ? null : $user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+                'meta' => [
+                    'recipient_type' => $isPhotographer ? 'photographer' : 'client',
+                    'is_photographer' => $isPhotographer,
+                    'cancellation_reason' => $shoot->cancellation_reason,
+                    'event_version' => sha1((string) $shoot->cancellation_reason),
+                ],
+            ]);
+            $this->dispatchProtectedEmail('SHOOT_CANCELLATION_REQUESTED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($isPhotographer ? null : $user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_CANCELLATION_REQUESTED:%d:%d:%s', $shoot->id, $user->id, sha1((string) $shoot->cancellation_reason)),
+            ]);
 
             Log::info('Shoot cancellation requested email sent', [
                 'user_id' => $user->id,
@@ -738,24 +776,23 @@ class MailService
             $paymentLink = $this->shouldShowShootReadyPaymentLink($shoot)
                 ? $this->generatePaymentLink($shoot)
                 : null;
-            
-            // Send to client
-            $html = view('emails.shoot_delivered', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'paymentLink' => $paymentLink,
-            ])->render();
-            $this->sendViaCakemail(
-                $user->email,
-                self::SHOOT_DELIVERED_SUBJECT,
-                $html,
-                'SHOOT_DELIVERED',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+                'links' => [
+                    'payment' => $paymentLink,
+                ],
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('SHOOT_DELIVERED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_DELIVERED:%d:%d', $shoot->id, $user->id),
+            ]);
             
             Log::info('Shoot ready email sent', [
                 'user_id' => $user->id,
@@ -785,24 +822,21 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $paymentData = $this->formatPaymentData($payment);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
-            
-            // Send to client
-            $html = view('emails.payment_confirmation', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
                 'payment' => $paymentData,
-            ])->render();
-            $this->sendViaCakemail(
-                $user->email,
-                'Thank You for Your Payment!',
-                $html,
-                'PAYMENT_CONFIRMATION',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => $payment->transaction_id ?: $payment->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('PAYMENT_CONFIRMATION', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('PAYMENT_CONFIRMATION:%d:%d:%s', $shoot->id, $user->id, $payment->transaction_id ?: $payment->id),
+            ]);
             
             Log::info('Payment confirmation email sent', [
                 'user_id' => $user->id,
@@ -1227,6 +1261,38 @@ class MailService
         ];
     }
 
+    private function formatInvoiceData(Invoice $invoice): object
+    {
+        $invoice->loadMissing(['items', 'shoot', 'photographer', 'salesRep']);
+
+        return (object) [
+            'id' => $invoice->id,
+            'invoice_number' => $invoice->invoice_number,
+            'status' => $invoice->status,
+            'total' => $invoice->total,
+            'total_amount' => $invoice->total_amount ?? $invoice->total,
+            'amount_paid' => $invoice->amount_paid,
+            'issue_date' => $invoice->issue_date,
+            'due_date' => $invoice->due_date,
+            'approved_at' => $invoice->approved_at,
+            'rejected_at' => $invoice->rejected_at,
+            'modified_at' => $invoice->modified_at,
+            'modification_notes' => $invoice->modification_notes,
+            'rejection_reason' => $invoice->rejection_reason,
+            'billing_period_start' => $invoice->billing_period_start,
+            'billing_period_end' => $invoice->billing_period_end,
+            'shoot_id' => $invoice->shoot_id,
+            'items' => $invoice->items
+                ? $invoice->items->map(fn ($item) => (object) [
+                    'id' => $item->id,
+                    'description' => $item->description,
+                    'type' => $item->type,
+                    'total_amount' => $item->total_amount,
+                ])->all()
+                : [],
+        ];
+    }
+
     /**
      * Format packages for email display
      */
@@ -1558,22 +1624,30 @@ class MailService
     public function sendPasswordResetEmail(User $user, string $resetLink): bool
     {
         try {
-            $html = view('emails.password_reset', [
-                'user' => $user,
-                'resetLink' => $resetLink,
-            ])->render();
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($user),
+                'links' => [
+                    'reset_password' => $resetLink,
+                    'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
+                ],
+                'meta' => [
+                    'recipient_type' => match (strtolower((string) $user->role)) {
+                        'client' => 'client',
+                        'photographer' => 'photographer',
+                        'salesrep', 'sales_rep' => 'rep',
+                        'admin', 'superadmin' => 'admin',
+                        default => 'other',
+                    },
+                    'token_hash' => sha1($resetLink),
+                ],
+            ]);
 
-            $this->sendViaCakemail(
-                $user->email,
-                'Reset Your Password - R/E Pro Photos',
-                $html,
-                'PASSWORD_RESET',
-                [],
-                [],
-                $this->automatedClientPayload($user, [
-                    'enforce_email_health_gate' => false,
-                ])
-            );
+            $this->dispatchProtectedEmail('PASSWORD_RESET', $payload, $user->email, [], [], $this->automatedClientPayload($user, [
+                'enforce_email_health_gate' => false,
+            ]), [
+                'idempotency_key' => sprintf('PASSWORD_RESET:%d:%s', $user->id, sha1($resetLink)),
+            ]);
             
             Log::info('Password reset email sent', [
                 'user_id' => $user->id,
@@ -1652,30 +1726,23 @@ class MailService
 
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
             $recipientRole = $invoice->photographer ? 'photographer' : 'sales rep';
-            $rendered = $this->renderWeeklyInvoiceGeneratedTemplate($invoice, $recipient, $recipientRole, $period);
-
-            if ($rendered) {
-                $this->sendViaCakemail(
-                    $recipient->email,
-                    $rendered['subject'] ?: "Weekly Invoice - {$period}",
-                    $rendered['html'],
-                    'INVOICE_GENERATED'
-                );
-            } else {
-                Log::warning('Weekly invoice template not found in messaging templates, using Blade fallback', [
-                    'invoice_id' => $invoice->id,
-                ]);
-
-                $html = view('emails.invoice_generated', [
-                    'invoice' => $invoice,
-                    'photographer' => $recipient,
-                    'recipient' => $recipient,
-                    'recipientRole' => $recipientRole,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($recipient),
+                'invoice' => $this->formatInvoiceData($invoice),
+                'meta' => [
+                    'recipient_type' => $recipientRole === 'photographer' ? 'photographer' : 'rep',
+                    'recipient_role' => $recipientRole,
                     'period' => $period,
-                ])->render();
+                    'event_version' => $invoice->updated_at?->toIso8601String() ?? $invoice->id,
+                ],
+            ]);
 
-                $this->sendViaCakemail($recipient->email, "Weekly Invoice - {$period}", $html, 'INVOICE_GENERATED');
-            }
+            $this->dispatchProtectedEmail('INVOICE_GENERATED', $payload, $recipient->email, [], [], [
+                'related_invoice_id' => $invoice->id,
+                'related_account_id' => $recipient->id,
+            ], [
+                'idempotency_key' => sprintf('INVOICE_GENERATED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period)),
+            ]);
             
             Log::info('Invoice generated email sent', [
                 'invoice_id' => $invoice->id,
@@ -1714,18 +1781,27 @@ class MailService
             $roleLabel = $this->resolveInvoicePayeeLabel($invoice);
             $roleHeading = $this->resolveInvoicePayeeHeading($invoice);
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
-            $subject = "Invoice Requires Approval - " . ($recipient ? $recipient->name : 'Unknown') . " - {$period}";
 
             foreach ($admins as $admin) {
-                $html = view('emails.invoice_pending_approval', [
-                    'invoice' => $invoice,
-                    'recipient' => $recipient,
-                    'admin' => $admin,
-                    'period' => $period,
-                    'roleLabel' => $roleLabel,
-                    'roleHeading' => $roleHeading,
-                ])->render();
-                $this->sendViaCakemail($admin->email, $subject, $html, 'INVOICE_PENDING_APPROVAL');
+                $payload = $this->buildProtectedEmailPayload([
+                    'recipient' => $this->formatUserData($admin),
+                    'invoice' => $this->formatInvoiceData($invoice),
+                    'meta' => [
+                        'recipient_type' => 'admin',
+                        'period' => $period,
+                        'role_label' => $roleLabel,
+                        'role_heading' => $roleHeading,
+                        'payee_name' => $recipient?->name,
+                        'event_version' => $invoice->modified_at?->toIso8601String() ?? $invoice->updated_at?->toIso8601String() ?? $invoice->id,
+                    ],
+                ]);
+
+                $this->dispatchProtectedEmail('INVOICE_PENDING_APPROVAL', $payload, $admin->email, [], [], [
+                    'related_invoice_id' => $invoice->id,
+                    'related_account_id' => $admin->id,
+                ], [
+                    'idempotency_key' => sprintf('INVOICE_PENDING_APPROVAL:%d:%d:%s', $invoice->id, $admin->id, sha1($period)),
+                ]);
             }
             
             Log::info('Invoice pending approval emails sent', [
@@ -1760,13 +1836,22 @@ class MailService
             }
 
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
-
-            $html = view('emails.invoice_approved', [
-                'invoice' => $invoice,
-                'period' => $period,
-                'roleLabel' => $roleLabel,
-            ])->render();
-            $this->sendViaCakemail($recipient->email, "Invoice Approved - {$period}", $html, 'INVOICE_APPROVED');
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($recipient),
+                'invoice' => $this->formatInvoiceData($invoice),
+                'meta' => [
+                    'recipient_type' => $invoice->sales_rep_id ? 'rep' : 'photographer',
+                    'period' => $period,
+                    'role_label' => $roleLabel,
+                    'event_version' => $invoice->approved_at?->toIso8601String() ?? $invoice->updated_at?->toIso8601String() ?? $invoice->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('INVOICE_APPROVED', $payload, $recipient->email, [], [], [
+                'related_invoice_id' => $invoice->id,
+                'related_account_id' => $recipient->id,
+            ], [
+                'idempotency_key' => sprintf('INVOICE_APPROVED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period)),
+            ]);
             
             Log::info('Invoice approved email sent', [
                 'invoice_id' => $invoice->id,
@@ -1801,13 +1886,22 @@ class MailService
             }
 
             $period = "{$invoice->billing_period_start->format('M j')} - {$invoice->billing_period_end->format('M j, Y')}";
-
-            $html = view('emails.invoice_rejected', [
-                'invoice' => $invoice,
-                'period' => $period,
-                'roleLabel' => $roleLabel,
-            ])->render();
-            $this->sendViaCakemail($recipient->email, "Invoice Rejected - {$period}", $html, 'INVOICE_REJECTED');
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($recipient),
+                'invoice' => $this->formatInvoiceData($invoice),
+                'meta' => [
+                    'recipient_type' => $invoice->sales_rep_id ? 'rep' : 'photographer',
+                    'period' => $period,
+                    'role_label' => $roleLabel,
+                    'event_version' => $invoice->rejected_at?->toIso8601String() ?? $invoice->updated_at?->toIso8601String() ?? $invoice->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('INVOICE_REJECTED', $payload, $recipient->email, [], [], [
+                'related_invoice_id' => $invoice->id,
+                'related_account_id' => $recipient->id,
+            ], [
+                'idempotency_key' => sprintf('INVOICE_REJECTED:%d:%d:%s', $invoice->id, $recipient->id, sha1($period)),
+            ]);
             
             Log::info('Invoice rejected email sent', [
                 'invoice_id' => $invoice->id,
@@ -1852,22 +1946,21 @@ class MailService
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             
             if (!empty($user->email)) {
-                $html = view('emails.shoot_paid', [
-                    'user' => $user,
+                $payload = $this->buildProtectedEmailPayload([
+                    'recipient' => $this->formatUserData($user),
+                    'account' => $this->formatUserData($shoot->client),
                     'shoot' => $shootData,
-                    'amount' => $amount,
-                ])->render();
-                $this->sendViaCakemail(
-                    $user->email,
-                    self::SHOOT_PAID_SUBJECT,
-                    $html,
-                    'SHOOT_PAID',
-                    $clientCcEmails,
-                    [],
-                    $this->automatedClientPayload($user, [
-                        'related_shoot_id' => $shoot->id,
-                    ])
-                );
+                    'meta' => [
+                        'recipient_type' => 'client',
+                        'amount' => $amount,
+                        'event_version' => sha1((string) $amount),
+                    ],
+                ]);
+                $this->dispatchProtectedEmail('SHOOT_PAID', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                    'related_shoot_id' => $shoot->id,
+                ]), [
+                    'idempotency_key' => sprintf('SHOOT_PAID:%d:%d:%s', $shoot->id, $user->id, sha1((string) $amount)),
+                ]);
                 
                 Log::info('Shoot paid email sent', [
                     'user_id' => $user->id,
@@ -1906,21 +1999,20 @@ class MailService
             $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
 
-            $html = view('emails.shoot_removed', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-            ])->render();
-            $this->sendViaCakemail(
-                $user->email,
-                self::SHOOT_CANCELLED_SUBJECT,
-                $html,
-                'SHOOT_CANCELLED',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ])
-            );
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('SHOOT_CANCELLED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('SHOOT_CANCELLED:%d:%d:client', $shoot->id, $user->id),
+            ]);
 
             Log::info('Shoot cancelled email sent', [
                 'user_id' => $user->id,
@@ -1930,11 +2022,20 @@ class MailService
 
             if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_CANCELLED)) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
-                    $htmlPhoto = view('emails.shoot_removed', [
-                        'user' => $photographer,
+                    $payload = $this->buildProtectedEmailPayload([
+                        'recipient' => $this->formatUserData($photographer),
+                        'account' => $this->formatUserData($shoot->client),
                         'shoot' => $shootData,
-                    ])->render();
-                    $this->sendViaCakemail($photographer->email, self::SHOOT_CANCELLED_SUBJECT, $htmlPhoto, 'SHOOT_CANCELLED');
+                        'meta' => [
+                            'recipient_type' => 'photographer',
+                            'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
+                        ],
+                    ]);
+                    $this->dispatchProtectedEmail('SHOOT_CANCELLED', $payload, $photographer->email, [], [], [
+                        'related_shoot_id' => $shoot->id,
+                    ], [
+                        'idempotency_key' => sprintf('SHOOT_CANCELLED:%d:%d:photographer', $shoot->id, $photographer->id),
+                    ]);
                     Log::info('Shoot cancelled email sent to photographer', [
                         'photographer_id' => $photographer->id,
                         'shoot_id' => $shoot->id,
@@ -1971,15 +2072,24 @@ class MailService
                 ->map(fn ($id) => (int) $id)
                 ->contains((int) $user->id);
 
-            $html = view('emails.photographer_changed', [
-                'user' => $user,
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
-                'changesSummary' => $normalizedChangesSummary,
-                'previousPhotographer' => $previousPhotographer,
-                'isAssignedAfterChange' => $isAssignedAfterChange,
-            ])->render();
+                'meta' => [
+                    'recipient_type' => 'photographer',
+                    'changes_summary' => $normalizedChangesSummary,
+                    'previous_photographer' => $this->formatUserData($previousPhotographer),
+                    'is_assigned_after_change' => $isAssignedAfterChange,
+                    'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                ],
+            ]);
 
-            $this->sendViaCakemail($user->email, self::PHOTOGRAPHER_CHANGED_SUBJECT, $html, 'PHOTOGRAPHER_CHANGED');
+            $this->dispatchProtectedEmail('PHOTOGRAPHER_CHANGED', $payload, $user->email, [], [], [
+                'related_shoot_id' => $shoot->id,
+            ], [
+                'idempotency_key' => sprintf('PHOTOGRAPHER_CHANGED:%d:%d:%s', $shoot->id, $user->id, sha1($normalizedChangesSummary)),
+            ]);
 
             Log::info('Photographer changed email sent', [
                 'user_id' => $user->id,
@@ -2011,24 +2121,23 @@ class MailService
             $address = $shoot ? ($this->formatFullAddress($shoot) ?: ($shoot->address ?? 'Property')) : 'Property';
             $clientCcEmails = $shoot ? $this->resolveShootCcEmailsForRecipient($shoot, $client) : $this->sanitizeEmailAddresses($client->shoot_cc_emails ?? [], $client->email);
 
-            $html = view('emails.cancellation_fee_invoice', [
-                'invoice' => $invoice,
-                'client' => $client,
-                'shoot' => $shoot,
-                'address' => $address,
-            ])->render();
-            $this->sendViaCakemail(
-                $client->email,
-                "Cancellation Fee Invoice - {$address}",
-                $html,
-                'CANCELLATION_FEE_INVOICE',
-                $clientCcEmails,
-                [],
-                $this->automatedClientPayload($client, [
-                    'related_invoice_id' => $invoice->id,
-                    'related_shoot_id' => $shoot?->id,
-                ])
-            );
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($client),
+                'account' => $this->formatUserData($client),
+                'invoice' => $this->formatInvoiceData($invoice),
+                'shoot' => $shoot ? $this->formatShootData($shoot) : [],
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'address' => $address,
+                    'event_version' => $invoice->updated_at?->toIso8601String() ?? $invoice->id,
+                ],
+            ]);
+            $this->dispatchProtectedEmail('CANCELLATION_FEE_INVOICE', $payload, $client->email, $clientCcEmails, [], $this->automatedClientPayload($client, [
+                'related_invoice_id' => $invoice->id,
+                'related_shoot_id' => $shoot?->id,
+            ]), [
+                'idempotency_key' => sprintf('CANCELLATION_FEE_INVOICE:%d:%d', $invoice->id, $client->id),
+            ]);
             
             Log::info('Cancellation fee invoice email sent', [
                 'client_id' => $client->id,
@@ -2047,6 +2156,67 @@ class MailService
             
             return false;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $sections
+     * @return array<string, mixed>
+     */
+    private function buildProtectedEmailPayload(array $sections): array
+    {
+        return $this->emailContextBuilder->build($sections);
+    }
+
+    private function formatUserData(?User $user): array
+    {
+        if (!$user) {
+            return [];
+        }
+
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'company_name' => $user->company_name,
+            'phonenumber' => $user->phonenumber,
+            'role' => $user->role,
+            'timezone' => $user->timezone,
+        ];
+    }
+
+    /**
+     * @param  array<int, string>  $cc
+     * @param  array<int, string>  $tags
+     * @param  array<string, mixed>  $extraPayload
+     * @param  array<string, mixed>  $options
+     */
+    private function dispatchProtectedEmail(
+        string $emailAlias,
+        array $payload,
+        string $to,
+        array $cc = [],
+        array $tags = [],
+        array $extraPayload = [],
+        array $options = []
+    ): bool {
+        $result = $this->systemEmailOrchestrator->send($emailAlias, $payload, [
+            'to' => $to,
+            'cc' => $this->sanitizeEmailAddresses($cc, $to),
+            'related_account_id' => $extraPayload['related_account_id'] ?? null,
+            'related_shoot_id' => $extraPayload['related_shoot_id'] ?? null,
+            'related_invoice_id' => $extraPayload['related_invoice_id'] ?? null,
+            'send_source' => $emailAlias,
+            'contact_email' => $to,
+            'contact_name' => $payload['recipient']['name'] ?? 'Recipient',
+            'contact_type' => $payload['meta']['recipient_type'] ?? 'other',
+            'tags_json' => $tags !== [] ? array_values($tags) : null,
+        ], [
+            'enforce_email_health_gate' => $extraPayload['enforce_email_health_gate'] ?? true,
+            'idempotency_key' => $options['idempotency_key'] ?? null,
+            'force' => $options['force'] ?? false,
+        ]);
+
+        return $result['sent'] || $result['duplicate'];
     }
 
     /**

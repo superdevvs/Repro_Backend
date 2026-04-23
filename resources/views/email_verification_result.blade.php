@@ -19,14 +19,14 @@
             margin: 0;
             padding: 0;
             min-height: 100vh;
-            background-color: #030619;
+            background-color: {{ $branding['outer_background'] ?? '#030619' }};
         }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             background:
                 radial-gradient(1000px 600px at 50% -10%, rgba(59, 130, 246, 0.14), transparent 60%),
-                #030619;
+                {{ $branding['outer_background'] ?? '#030619' }};
             color: #e6eef8;
             -webkit-font-smoothing: antialiased;
         }
@@ -149,7 +149,7 @@
 <body>
     <main>
         <div class="logo">
-            <img src="https://api.reprodashboard.com/images/Repro%20HQ%20dark.png" alt="R/E Pro Photos">
+            <img src="{{ $branding['verification_logo_light_url'] ?? $branding['verification_logo_url'] ?? 'https://api.reprodashboard.com/images/repro-email-logo-light.png' }}" alt="{{ $branding['product_name'] ?? 'R/E Pro Photos' }}">
         </div>
         <section class="card">
             <div class="icon" aria-hidden="true">
@@ -163,7 +163,7 @@
             <p class="message">{{ $message }}</p>
             <a class="button-primary" href="{{ $dashboardUrl }}">Open dashboard</a>
             <p class="support">
-                Need help? <a href="mailto:contact@reprophotos.com">contact@reprophotos.com</a> &middot; 202-868-1663
+                Need help? <a href="mailto:{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}">{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}</a> &middot; {{ $branding['support_phone'] ?? '202-868-1663' }}
             </p>
         </section>
     </main>

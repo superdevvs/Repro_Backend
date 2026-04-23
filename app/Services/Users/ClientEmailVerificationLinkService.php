@@ -57,9 +57,15 @@ class ClientEmailVerificationLinkService
             return false;
         }
 
-        $expectedSignature = $this->generateSignature((string) $user->getKey(), $hash, $expires);
+        foreach ($this->signingKeys() as $key) {
+            $expectedSignature = $this->generateSignature((string) $user->getKey(), $hash, $expires, $key);
 
-        return hash_equals($expectedSignature, $signature);
+            if (hash_equals($expectedSignature, $signature)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function normalizeExpiryTimestamp(DateTimeInterface|int|null $expiresAt = null): int
@@ -75,7 +81,7 @@ class ClientEmailVerificationLinkService
         return now()->addDays(7)->timestamp;
     }
 
-    protected function generateSignature(string $userId, string $hash, int $expires): string
+    protected function generateSignature(string $userId, string $hash, int $expires, ?string $signingKey = null): string
     {
         $payload = implode('|', [
             $userId,
@@ -83,12 +89,33 @@ class ClientEmailVerificationLinkService
             $expires,
         ]);
 
-        return hash_hmac('sha256', $payload, $this->signingKey());
+        return hash_hmac('sha256', $payload, $signingKey ?? $this->signingKey());
     }
 
     protected function signingKey(): string
     {
-        $configuredKey = (string) Config::get('app.key', '');
+        return $this->normalizeConfiguredKey(Config::get('app.key'));
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function signingKeys(): array
+    {
+        $configuredKeys = array_filter([
+            Config::get('app.key'),
+            ...((array) Config::get('app.previous_keys', [])),
+        ], static fn (mixed $key): bool => is_string($key) && $key !== '');
+
+        return array_values(array_unique(array_map(
+            fn (mixed $key): string => $this->normalizeConfiguredKey($key),
+            $configuredKeys,
+        )));
+    }
+
+    protected function normalizeConfiguredKey(mixed $configuredKey): string
+    {
+        $configuredKey = is_string($configuredKey) ? $configuredKey : '';
 
         if (Str::startsWith($configuredKey, 'base64:')) {
             $decodedKey = base64_decode(Str::after($configuredKey, 'base64:'), true);

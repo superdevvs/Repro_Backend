@@ -3,6 +3,7 @@
 namespace App\Services\Messaging;
 
 use App\Models\MessageTemplate;
+use App\Services\SystemEmails\EmailBrandingConfig;
 use Illuminate\Support\Arr;
 
 class TemplateRenderer
@@ -74,6 +75,14 @@ class TemplateRenderer
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    protected function branding(): array
+    {
+        return app(EmailBrandingConfig::class)->defaults();
+    }
+
+    /**
      * @param  array<string, string>  $values
      */
     protected function replacePlaceholders(string $content, array $values): string
@@ -93,9 +102,27 @@ class TemplateRenderer
         $bodyHtml = $this->stripLegacyWrapper($bodyHtml);
         $bodyHtml = $this->stabilizeEmailBodyHtml($bodyHtml);
 
-        $logoUrl = 'https://api.reprodashboard.com/images/repro-logo.png';
+        $branding = $this->branding();
+        $logoUrl = $branding['email_logo_grey_url'];
+        $productName = $branding['product_name'];
+        $supportEmail = $branding['support_email'];
+        $supportPhone = $branding['support_phone'];
+        $dashboardUrl = $branding['dashboard_url'];
+        $websiteUrl = $branding['website_url'];
+        $outerBackground = $branding['outer_background'];
+        $contentSurface = $branding['content_surface'];
+        $sectionSurface = $branding['section_surface'] ?? $contentSurface;
+        $footerSurface = $branding['footer_surface'] ?? $outerBackground;
+        $metaSurface = $branding['meta_surface'] ?? '#142237';
+        $borderColor = $branding['border_color'] ?? '#24344d';
+        $metaBorderColor = $branding['meta_border_color'] ?? '#2d4263';
+        $headingColor = $branding['heading_color'];
+        $bodyColor = $branding['body_color'];
+        $mutedColor = $branding['muted_color'];
+        $linkColor = $branding['link_color'];
+        $legalCopyColor = $branding['legal_copy_color'] ?? '#8da2be';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
-        $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? 'R/E Pro Photos Update'));
+        $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
         $journeyHtml = $this->buildJourneyRail($template);
 
         return <<<HTML
@@ -114,60 +141,60 @@ class TemplateRenderer
 body {
   margin: 0;
   padding: 0;
-  background: #00141d;
+  background: {$outerBackground};
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  color: #10233b;
+  color: {$bodyColor};
   -webkit-text-size-adjust: 100%;
   word-break: break-word;
 }
 table { border-collapse: collapse; width: 100%; }
 img { border: 0; display: block; max-width: 100%; }
-a { color: #1463ff; text-decoration: none; }
+a { color: {$linkColor}; text-decoration: none; }
 .page { padding: 30px 12px; }
 .shell { max-width: 720px; margin: 0 auto; }
 .body-surface {
-  background-color: #ffffff;
-  color: #405875;
+  background-color: {$contentSurface};
+  color: {$bodyColor};
 }
 .body-heading {
-  color: #0f1930;
+  color: {$headingColor};
 }
 .body-link {
-  color: #1463ff;
+  color: {$linkColor};
 }
 .body-divider {
-  border-color: #edf2f7;
+  border-color: {$borderColor};
 }
 .dark-panel-surface {
-  background-color: #00141d;
-  color: #dce8ff;
+  background-color: {$footerSurface};
+  color: {$bodyColor};
 }
 .dark-panel-copy {
-  color: #dce8ff;
+  color: {$bodyColor};
 }
 .dark-panel-link {
-  color: #ffffff;
+  color: {$headingColor};
 }
 .dark-meta-surface {
-  background-color: #142237;
-  border-color: #2d4263;
+  background-color: {$metaSurface};
+  border-color: {$metaBorderColor};
 }
 .dark-meta-label {
-  color: #a9bfdc;
+  color: {$mutedColor};
 }
 .dark-meta-value {
-  color: #ffffff;
+  color: {$headingColor};
 }
 .dark-legal-copy {
-  color: #7d90ab;
+  color: {$legalCopyColor};
 }
 .hero-card,
 .body-card {
-  background-color: #ffffff;
+  background-color: {$contentSurface};
   border-radius: 34px;
   overflow: hidden;
   box-shadow: 0 24px 70px rgba(22, 34, 60, 0.09);
-  border: 1px solid rgba(222, 230, 241, 0.7);
+  border: 1px solid {$borderColor};
 }
 .hero-card {
   position: relative;
@@ -192,14 +219,14 @@ a { color: #1463ff; text-decoration: none; }
 }
 .brand-copy {
   text-align: right;
-  color: #1d2940;
+  color: {$headingColor};
   font-size: 16px;
   line-height: 1.4;
   font-weight: 800;
 }
 .brand-copy span {
   display: block;
-  color: #7f90a7;
+  color: {$mutedColor};
   font-size: 11px;
   letter-spacing: 1.4px;
   text-transform: uppercase;
@@ -208,7 +235,7 @@ a { color: #1463ff; text-decoration: none; }
 .hero-overline {
   display: block;
   margin-bottom: 14px;
-  color: #6c82a3;
+  color: {$mutedColor};
   font-size: 16px;
   line-height: 1.5;
   letter-spacing: 0.2px;
@@ -223,12 +250,12 @@ a { color: #1463ff; text-decoration: none; }
   line-height: 0.96;
   font-weight: 300;
   letter-spacing: -2.4px;
-  color: #10192f;
+  color: {$headingColor};
 }
 .hero-title-lead {
   display: block;
   margin-bottom: 14px;
-  color: #6c82a3;
+  color: {$mutedColor};
   font-size: 16px;
   line-height: 1.5;
   letter-spacing: 0.2px;
@@ -236,13 +263,13 @@ a { color: #1463ff; text-decoration: none; }
 }
 .hero-title-location {
   display: block;
-  color: #10192f;
+  color: {$headingColor};
   font-weight: 200;
 }
 .hero-title-status {
   display: block;
   margin-top: 12px;
-  color: #5c7191;
+  color: {$mutedColor};
   font-size: 22px;
   line-height: 1.25;
   letter-spacing: -0.6px;
@@ -250,11 +277,11 @@ a { color: #1463ff; text-decoration: none; }
 }
 .hero-title-primary {
   display: inline;
-  color: #10192f;
+  color: {$headingColor};
 }
 .hero-title-accent {
   display: inline;
-  color: #3164ea;
+  color: {$linkColor};
   font-weight: 400;
 }
 .hero-copy {
@@ -262,7 +289,7 @@ a { color: #1463ff; text-decoration: none; }
   z-index: 2;
   max-width: 540px;
   margin: 20px 0 0;
-  color: #667a96;
+  color: {$bodyColor};
   font-size: 15px;
   line-height: 1.8;
 }
@@ -282,16 +309,16 @@ a { color: #1463ff; text-decoration: none; }
   height: 7px;
   margin-right: 12px;
   border-radius: 999px;
-  background: #dce5f3;
+  background: {$borderColor};
 }
 .journey-bar:last-child {
   margin-right: 0;
 }
 .journey-bar-complete {
-  background: #3164ea;
+  background: #1463ff;
 }
 .journey-bar-next {
-  background: #7e9ff1;
+  background: {$linkColor};
 }
 .journey-labels {
   width: 100%;
@@ -304,14 +331,14 @@ a { color: #1463ff; text-decoration: none; }
   line-height: 1.4;
   letter-spacing: 1.2px;
   text-transform: uppercase;
-  color: #94a4bc;
+  color: {$mutedColor};
   font-weight: 800;
 }
 .journey-label-complete {
-  color: #3164ea;
+  color: #1463ff;
 }
 .journey-label-next {
-  color: #4d5f7c;
+  color: {$bodyColor};
 }
 .body-card {
   margin-top: 18px;
@@ -324,7 +351,7 @@ a { color: #1463ff; text-decoration: none; }
 .body-inner div,
 .body-inner td,
 .body-inner span {
-  color: #405875;
+  color: {$bodyColor};
   font-size: 15px;
   line-height: 1.8;
 }
@@ -339,18 +366,18 @@ a { color: #1463ff; text-decoration: none; }
 .body-inner h3,
 .body-inner h4 {
   margin: 0 0 14px;
-  color: #0f1930;
+  color: {$headingColor};
   line-height: 1.15;
 }
 .body-inner h1 { font-size: 42px; font-weight: 300; letter-spacing: -1.6px; }
 .body-inner h2 { font-size: 28px; font-weight: 800; }
 .body-inner h3 { font-size: 22px; font-weight: 800; }
 .body-inner h4 { font-size: 16px; font-weight: 800; }
-.body-inner strong { color: #0f1930; }
+.body-inner strong { color: {$headingColor}; }
 .body-inner center { display: block; text-align: left; }
 .body-inner hr {
   border: 0;
-  border-top: 1px solid #edf2f7;
+  border-top: 1px solid {$borderColor};
   margin: 20px 0;
 }
 .button {
@@ -376,19 +403,19 @@ a { color: #1463ff; text-decoration: none; }
   margin: 20px 0;
   padding: 18px 20px;
   border-radius: 22px;
-  border: 1px solid #dfe7f2;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  border: 1px solid {$borderColor};
+  background: {$sectionSurface};
+  box-shadow: none;
 }
 .info-row {
   padding: 10px 0;
-  border-bottom: 1px solid #e4edf8;
+  border-bottom: 1px solid {$borderColor};
 }
 .info-row:last-child { border-bottom: 0; }
 .info-label {
   display: inline-block;
   min-width: 150px;
-  color: #93a4bd;
+  color: {$mutedColor};
   font-weight: 800;
   font-size: 12px;
   line-height: 1.5;
@@ -399,20 +426,20 @@ a { color: #1463ff; text-decoration: none; }
   margin: 20px 0;
   padding: 16px 18px;
   border-radius: 18px;
-  border: 1px solid #f0d7a8;
-  background: linear-gradient(180deg, #fff9ee 0%, #fff3df 100%);
-  color: #8b5b14 !important;
+  border: 1px solid {$borderColor};
+  background: {$sectionSurface};
+  color: {$bodyColor} !important;
 }
 .change-card {
   margin: 22px 0;
   padding: 20px 22px;
   border-radius: 24px;
-  border: 1px solid #d9e7ff;
-  background: linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%);
+  border: 1px solid {$borderColor};
+  background: {$sectionSurface};
 }
 .change-card-title {
   margin: 0 0 12px;
-  color: #10233b;
+  color: {$headingColor};
   font-size: 18px;
   line-height: 1.4;
   font-weight: 800;
@@ -421,7 +448,7 @@ a { color: #1463ff; text-decoration: none; }
 .change-card li,
 .change-card div,
 .change-card span {
-  color: #35506f !important;
+  color: {$bodyColor} !important;
 }
 .change-card ul,
 .change-card ol {
@@ -434,25 +461,25 @@ a { color: #1463ff; text-decoration: none; }
 .footer-wrap { padding: 18px 0 0; }
 .footer-card {
   border-radius: 26px;
-  background: linear-gradient(135deg, #00141d 0%, #0f2534 100%);
+  background: {$footerSurface};
   padding: 24px 26px;
-  color: #dce8ff;
+  color: {$bodyColor};
   box-shadow: 0 20px 40px rgba(16, 40, 71, 0.18);
 }
 .footer-title {
   margin: 0 0 8px;
   font-size: 18px;
   line-height: 1.5;
-  color: #ffffff;
+  color: {$headingColor};
   font-weight: 800;
 }
 .footer-copy {
   margin: 0;
-  color: #dce8ff;
+  color: {$bodyColor};
   font-size: 14px;
   line-height: 1.8;
 }
-.footer-copy a { color: #ffffff !important; text-decoration: underline; }
+.footer-copy a { color: {$headingColor} !important; text-decoration: underline; }
 .footer-links a { margin-right: 14px; white-space: nowrap; }
 .footer-meta {
   width: 100%;
@@ -466,13 +493,13 @@ a { color: #1463ff; text-decoration: none; }
 .footer-meta-card {
   border-radius: 18px;
   padding: 14px 16px;
-  background: #142237;
-  border: 1px solid #2d4263;
+  background: {$metaSurface};
+  border: 1px solid {$metaBorderColor};
 }
 .footer-meta-label {
   display: block;
   margin-bottom: 4px;
-  color: #a9bfdc;
+  color: {$mutedColor};
   font-size: 11px;
   line-height: 1.4;
   letter-spacing: 1.2px;
@@ -480,7 +507,7 @@ a { color: #1463ff; text-decoration: none; }
   font-weight: 800;
 }
 .footer-meta-value {
-  color: #ffffff;
+  color: {$headingColor};
   font-size: 14px;
   line-height: 1.6;
   font-weight: 700;
@@ -488,7 +515,7 @@ a { color: #1463ff; text-decoration: none; }
 .footer-note {
   padding: 14px 8px 0;
   text-align: center;
-  color: #7d90ab;
+  color: {$legalCopyColor};
   font-size: 11px;
   line-height: 1.7;
 }
@@ -548,16 +575,16 @@ a { color: #1463ff; text-decoration: none; }
 }
 @media (prefers-color-scheme: dark) {
   body {
-    background: #00141d !important;
-    color: #d7e2f0 !important;
+    background: {$outerBackground} !important;
+    color: {$bodyColor} !important;
   }
   .hero-card,
   .body-card,
   .info-box,
   .change-card,
   .note {
-    background: #111c2e !important;
-    border-color: #24344d !important;
+    background: {$contentSurface} !important;
+    border-color: {$borderColor} !important;
     box-shadow: none !important;
   }
   .hero-title,
@@ -568,7 +595,7 @@ a { color: #1463ff; text-decoration: none; }
   .body-inner h4,
   .body-inner strong,
   .change-card-title {
-    color: #f5f7fb !important;
+    color: {$headingColor} !important;
   }
   .hero-copy,
   .body-inner p,
@@ -581,24 +608,24 @@ a { color: #1463ff; text-decoration: none; }
   .hero-title-status,
   .info-label,
   .footer-note {
-    color: #a9b8cb !important;
+    color: {$bodyColor} !important;
   }
   .body-inner hr,
   .info-row {
-    border-color: #24344d !important;
+    border-color: {$borderColor} !important;
   }
   .body-surface {
-    background-color: #111c2e !important;
-    color: #a9b8cb !important;
+    background-color: {$contentSurface} !important;
+    color: {$bodyColor} !important;
   }
   .body-heading {
-    color: #f5f7fb !important;
+    color: {$headingColor} !important;
   }
   .body-link {
-    color: #7eb3ff !important;
+    color: {$linkColor} !important;
   }
   .body-divider {
-    border-color: #24344d !important;
+    border-color: {$borderColor} !important;
   }
   .button,
   .button-large {
@@ -609,45 +636,45 @@ a { color: #1463ff; text-decoration: none; }
     box-shadow: none !important;
   }
   .dark-panel-surface {
-    background-color: #00141d !important;
-    color: #dce8ff !important;
+    background-color: {$footerSurface} !important;
+    color: {$bodyColor} !important;
   }
   .dark-panel-copy {
-    color: #dce8ff !important;
+    color: {$bodyColor} !important;
   }
   .dark-panel-link {
-    color: #ffffff !important;
+    color: {$headingColor} !important;
   }
   .dark-meta-surface {
-    background-color: #142237 !important;
-    border-color: #2d4263 !important;
+    background-color: {$metaSurface} !important;
+    border-color: {$metaBorderColor} !important;
   }
   .dark-meta-label {
-    color: #a9bfdc !important;
+    color: {$mutedColor} !important;
   }
   .dark-meta-value {
-    color: #ffffff !important;
+    color: {$headingColor} !important;
   }
   .dark-legal-copy {
-    color: #8da2be !important;
+    color: {$legalCopyColor} !important;
   }
   .footer-meta-card {
-    background: #142237 !important;
-    border-color: #2d4263 !important;
+    background: {$metaSurface} !important;
+    border-color: {$metaBorderColor} !important;
   }
 }
 [data-ogsc] body,
 [data-ogsc] .page {
-  background: #00141d !important;
-  color: #d7e2f0 !important;
+  background: {$outerBackground} !important;
+  color: {$bodyColor} !important;
 }
 [data-ogsc] .hero-card,
 [data-ogsc] .body-card,
 [data-ogsc] .info-box,
 [data-ogsc] .change-card,
 [data-ogsc] .note {
-  background: #111c2e !important;
-  border-color: #24344d !important;
+  background: {$contentSurface} !important;
+  border-color: {$borderColor} !important;
   box-shadow: none !important;
 }
 [data-ogsc] .hero-title,
@@ -658,7 +685,7 @@ a { color: #1463ff; text-decoration: none; }
 [data-ogsc] .body-inner h4,
 [data-ogsc] .body-inner strong,
 [data-ogsc] .change-card-title {
-  color: #f5f7fb !important;
+  color: {$headingColor} !important;
 }
 [data-ogsc] .hero-copy,
 [data-ogsc] .body-inner p,
@@ -671,43 +698,43 @@ a { color: #1463ff; text-decoration: none; }
 [data-ogsc] .hero-title-status,
 [data-ogsc] .info-label,
 [data-ogsc] .footer-note {
-  color: #a9b8cb !important;
+  color: {$bodyColor} !important;
 }
 [data-ogsc] .body-surface {
-  background-color: #111c2e !important;
-  color: #a9b8cb !important;
+  background-color: {$contentSurface} !important;
+  color: {$bodyColor} !important;
 }
 [data-ogsc] .body-heading {
-  color: #f5f7fb !important;
+  color: {$headingColor} !important;
 }
 [data-ogsc] .body-link {
-  color: #7eb3ff !important;
+  color: {$linkColor} !important;
 }
 [data-ogsc] .body-divider {
-  border-color: #24344d !important;
+  border-color: {$borderColor} !important;
 }
 [data-ogsc] .dark-panel-surface {
-  background-color: #00141d !important;
-  color: #dce8ff !important;
+  background-color: {$footerSurface} !important;
+  color: {$bodyColor} !important;
 }
 [data-ogsc] .dark-panel-copy {
-  color: #dce8ff !important;
+  color: {$bodyColor} !important;
 }
 [data-ogsc] .dark-panel-link {
-  color: #ffffff !important;
+  color: {$headingColor} !important;
 }
 [data-ogsc] .dark-meta-surface {
-  background-color: #142237 !important;
-  border-color: #2d4263 !important;
+  background-color: {$metaSurface} !important;
+  border-color: {$metaBorderColor} !important;
 }
 [data-ogsc] .dark-meta-label {
-  color: #a9bfdc !important;
+  color: {$mutedColor} !important;
 }
 [data-ogsc] .dark-meta-value {
-  color: #ffffff !important;
+  color: {$headingColor} !important;
 }
 [data-ogsc] .dark-legal-copy {
-  color: #8da2be !important;
+  color: {$legalCopyColor} !important;
 }
 </style>
 </head>
@@ -715,40 +742,40 @@ a { color: #1463ff; text-decoration: none; }
 <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all;">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 <div class="page">
   <div class="shell">
-    <div class="hero-card" style="background-color:#ffffff; border:1px solid rgba(222, 230, 241, 0.7);">
+    <div class="hero-card" style="background-color:{$contentSurface}; border:1px solid {$borderColor};">
       <div class="brand-row">
         <div class="brand-logo">
-          <img src="{$logoUrl}" alt="" role="presentation">
+          <img src="{$logoUrl}" alt="{$productName}" role="presentation">
         </div>
       </div>
       <h1 class="hero-title">{$heroTitle}</h1>
       <p class="hero-copy">{$heroCopy}</p>
 {$journeyHtml}
     </div>
-    <div class="body-card body-surface" style="background-color:#ffffff; border:1px solid rgba(222, 230, 241, 0.7); color:#405875;">
-      <div class="body-inner body-surface" style="background-color:#ffffff; color:#405875;">
+    <div class="body-card body-surface" style="background-color:{$contentSurface}; border:1px solid {$borderColor}; color:{$bodyColor};">
+      <div class="body-inner body-surface" style="background-color:{$contentSurface}; color:{$bodyColor};">
 {$bodyHtml}
       </div>
       <div class="footer-wrap">
-        <div class="footer-card dark-panel-surface" style="background-color:#00141d; background-image:linear-gradient(135deg, #00141d 0%, #0f2534 100%); color:#dce8ff;">
-          <div class="footer-title dark-panel-copy" style="color:#ffffff;">Need help with a shoot, invoice, or account question?</div>
-          <p class="footer-copy dark-panel-copy" style="color:#dce8ff;">
+        <div class="footer-card dark-panel-surface" style="background-color:{$footerSurface}; color:{$bodyColor};">
+          <div class="footer-title dark-panel-copy" style="color:{$headingColor};">Need help with a shoot, invoice, or account question?</div>
+          <p class="footer-copy dark-panel-copy" style="color:{$bodyColor};">
             Our team is here to help keep your marketing workflow moving.
-            Reach us at <a href="mailto:contact@reprophotos.com" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">contact@reprophotos.com</a> or call 202-868-1663.
+            Reach us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">{$supportEmail}</a> or call {$supportPhone}.
           </p>
-          <p class="footer-copy footer-links dark-panel-copy" style="margin-top:14px; color:#dce8ff;">
-            <a href="https://reprodashboard.com" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">Dashboard</a>
-            <a href="https://reprophotos.com" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">Website</a>
-            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="dark-panel-link" style="color:#ffffff; text-decoration:underline;">Leave a Review</a>
+          <p class="footer-copy footer-links dark-panel-copy" style="margin-top:14px; color:{$bodyColor};">
+            <a href="{$dashboardUrl}" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">Dashboard</a>
+            <a href="{$websiteUrl}" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">Website</a>
+            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="dark-panel-link" style="color:{$headingColor}; text-decoration:underline;">Leave a Review</a>
           </p>
           <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
               <td class="footer-meta-cell" width="50%" style="width:50%; padding-right:12px; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td class="footer-meta-card dark-meta-surface" style="background-color:#142237; border:1px solid #2d4263; border-radius:18px; padding:14px 16px;">
-                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:#a9bfdc; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
-                      <span class="footer-meta-value dark-meta-value" style="color:#ffffff; font-size:14px; line-height:1.6; font-weight:700;">contact@reprophotos.com<br>202-868-1663</span>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurface}; border:1px solid {$metaBorderColor}; border-radius:18px; padding:14px 16px;">
+                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColor}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColor}; font-size:14px; line-height:1.6; font-weight:700;">{$supportEmail}<br>{$supportPhone}</span>
                     </td>
                   </tr>
                 </table>
@@ -756,9 +783,9 @@ a { color: #1463ff; text-decoration: none; }
               <td class="footer-meta-cell footer-meta-cell-last" width="50%" style="width:50%; padding-right:0; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td class="footer-meta-card dark-meta-surface" style="background-color:#142237; border:1px solid #2d4263; border-radius:18px; padding:14px 16px;">
-                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:#a9bfdc; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
-                      <span class="footer-meta-value dark-meta-value" style="color:#ffffff; font-size:14px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurface}; border:1px solid {$metaBorderColor}; border-radius:18px; padding:14px 16px;">
+                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColor}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColor}; font-size:14px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
                     </td>
                   </tr>
                 </table>
@@ -766,8 +793,8 @@ a { color: #1463ff; text-decoration: none; }
             </tr>
           </table>
         </div>
-        <div class="footer-note dark-legal-copy" style="color:#7d90ab;">
-          This email was sent by R/E Pro Photos. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
+        <div class="footer-note dark-legal-copy" style="color:{$legalCopyColor};">
+          This email was sent by {$productName}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
         </div>
       </div>
     </div>
@@ -785,22 +812,30 @@ HTML;
 
     protected function stabilizeEmailBodyHtml(string $bodyHtml): string
     {
+        $branding = $this->branding();
+        $headingColor = (string) ($branding['heading_color'] ?? '#e8edf5');
+        $bodyColor = (string) ($branding['body_color'] ?? '#a9b8cb');
+        $mutedColor = (string) ($branding['muted_color'] ?? '#8298b4');
+        $linkColor = (string) ($branding['link_color'] ?? '#7eb3ff');
+        $sectionSurface = (string) ($branding['section_surface'] ?? '#16233a');
+        $borderColor = (string) ($branding['border_color'] ?? '#24344d');
+
         $tagStyles = [
-            'p' => 'margin:0 0 14px; color:#405875; font-size:15px; line-height:1.8;',
-            'li' => 'color:#405875; font-size:15px; line-height:1.8;',
-            'div' => 'color:#405875; font-size:15px; line-height:1.8;',
-            'td' => 'color:#405875; font-size:15px; line-height:1.8;',
-            'span' => 'color:#405875; font-size:15px; line-height:1.8;',
+            'p' => "margin:0 0 14px; color:{$bodyColor}; font-size:15px; line-height:1.8;",
+            'li' => "color:{$bodyColor}; font-size:15px; line-height:1.8;",
+            'div' => "color:{$bodyColor}; font-size:15px; line-height:1.8;",
+            'td' => "color:{$bodyColor}; font-size:15px; line-height:1.8;",
+            'span' => "color:{$bodyColor}; font-size:15px; line-height:1.8;",
             'ul' => 'margin:0 0 16px; padding-left:20px;',
             'ol' => 'margin:0 0 16px; padding-left:20px;',
-            'h1' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:42px; font-weight:300; letter-spacing:-1.6px;',
-            'h2' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:28px; font-weight:800;',
-            'h3' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:22px; font-weight:800;',
-            'h4' => 'margin:0 0 14px; color:#0f1930; line-height:1.15; font-size:16px; font-weight:800;',
-            'strong' => 'color:#0f1930;',
+            'h1' => "margin:0 0 14px; color:{$headingColor}; line-height:1.15; font-size:42px; font-weight:300; letter-spacing:-1.6px;",
+            'h2' => "margin:0 0 14px; color:{$headingColor}; line-height:1.15; font-size:28px; font-weight:800;",
+            'h3' => "margin:0 0 14px; color:{$headingColor}; line-height:1.15; font-size:22px; font-weight:800;",
+            'h4' => "margin:0 0 14px; color:{$headingColor}; line-height:1.15; font-size:16px; font-weight:800;",
+            'strong' => "color:{$headingColor};",
             'center' => 'display:block; text-align:left;',
-            'a' => 'color:#1463ff; text-decoration:none;',
-            'hr' => 'border:0; border-top:1px solid #edf2f7; margin:20px 0;',
+            'a' => "color:{$linkColor}; text-decoration:none;",
+            'hr' => "border:0; border-top:1px solid {$borderColor}; margin:20px 0;",
         ];
 
         foreach ($tagStyles as $tag => $style) {
@@ -808,12 +843,12 @@ HTML;
         }
 
         $classStyles = [
-            'info-box' => 'margin:20px 0; padding:18px 20px; border-radius:22px; border:1px solid #dfe7f2; background-color:#f4f7fb; background-image:linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%); box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);',
-            'info-row' => 'padding:10px 0; border-bottom:1px solid #e4edf8;',
-            'info-label' => 'display:inline-block; min-width:150px; color:#93a4bd; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;',
-            'note' => 'margin:20px 0; padding:16px 18px; border-radius:18px; border:1px solid #f0d7a8; background-color:#fff3df; background-image:linear-gradient(180deg, #fff9ee 0%, #fff3df 100%); color:#8b5b14 !important;',
-            'change-card' => 'margin:22px 0; padding:20px 22px; border-radius:24px; border:1px solid #d9e7ff; background-color:#eff6ff; background-image:linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%);',
-            'change-card-title' => 'margin:0 0 12px; color:#10233b; font-size:18px; line-height:1.4; font-weight:800;',
+            'info-box' => "margin:20px 0; padding:18px 20px; border-radius:22px; border:1px solid {$borderColor}; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
+            'info-row' => "padding:10px 0; border-bottom:1px solid {$borderColor};",
+            'info-label' => "display:inline-block; min-width:150px; color:{$mutedColor}; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;",
+            'note' => "margin:20px 0; padding:16px 18px; border-radius:18px; border:1px solid {$borderColor}; background-color:{$sectionSurface}; color:{$bodyColor} !important;",
+            'change-card' => "margin:22px 0; padding:20px 22px; border-radius:24px; border:1px solid {$borderColor}; background-color:{$sectionSurface};",
+            'change-card-title' => "margin:0 0 12px; color:{$headingColor}; font-size:18px; line-height:1.4; font-weight:800;",
             'button' => 'display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; background-image:linear-gradient(135deg, #1463ff 0%, #0b83ff 100%); color:#ffffff !important; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; margin:6px 10px 10px 0;',
             'button-large' => 'padding:18px 30px; font-size:16px; letter-spacing:0.2px;',
         ];
