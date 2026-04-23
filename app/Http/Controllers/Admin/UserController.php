@@ -9,6 +9,7 @@ use App\Models\AccountLink;
 use App\Models\UserActivityLog;
 use App\Services\Messaging\AutomationService;
 use App\Services\MailService;
+use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -384,15 +385,28 @@ class UserController extends Controller
             $accountCreatedContext = $automationService->buildUserContext($user);
             $accountCreatedContext['client'] = $user;
             $accountCreatedContext['password_reset_link'] = $resetLink;
+            $verificationToken = null;
+            $verificationLink = null;
+
+            if ($user->role === 'client') {
+                $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
+                    'issued_context' => 'admin_resend',
+                    'issued_by' => $admin->id,
+                ]);
+                $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
+                $accountCreatedContext['verification_link'] = $verificationLink;
+            }
 
             $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
             if ($automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-                $mailService->sendAccountCreatedEmail($user, $resetLink);
+                $mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
             }
 
             if ($user->role === 'client' && $mailService->sendClientEmailVerificationEmail($user, [
                 'issued_context' => 'admin_resend',
                 'issued_by' => $admin->id,
+                'verification_token' => $verificationToken,
+                'verification_link' => $verificationLink,
             ])) {
                 $this->emailHealthService->markVerificationSent($user);
                 $this->logUserActivity(

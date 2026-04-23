@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Carbon\CarbonInterface;
+use App\Models\ClientEmailVerificationToken;
 use App\Models\MessageTemplate;
 use App\Models\Invoice;
 use App\Models\User;
@@ -42,7 +43,7 @@ class MailService
     /**
      * Send account created email
      */
-    public function sendAccountCreatedEmail(User $user, string $resetLink): bool
+    public function sendAccountCreatedEmail(User $user, string $resetLink, ?string $verificationLink = null): bool
     {
         try {
             $payload = $this->buildProtectedEmailPayload([
@@ -50,11 +51,12 @@ class MailService
                 'account' => $this->formatUserData($user),
                 'links' => [
                     'reset_password' => $resetLink,
+                    'verification' => $verificationLink,
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
                 'meta' => [
                     'recipient_type' => $user->role === 'client' ? 'client' : 'other',
-                    'event_version' => sha1($resetLink),
+                    'event_version' => sha1($resetLink . '|' . ($verificationLink ?? '')),
                 ],
             ]);
 
@@ -88,8 +90,17 @@ class MailService
     public function sendClientEmailVerificationEmail(User $user, array $context = []): bool
     {
         try {
-            $verificationToken = $this->clientEmailVerificationLinkService->issueVerificationToken($user, $context);
-            $verificationLink = $this->clientEmailVerificationLinkService->buildUrlForIssuedToken($user, $verificationToken);
+            $verificationToken = $context['verification_token'] ?? null;
+            $verificationLink = $context['verification_link'] ?? null;
+
+            if (!$verificationToken instanceof ClientEmailVerificationToken) {
+                $verificationToken = $this->clientEmailVerificationLinkService->issueVerificationToken($user, $context);
+            }
+
+            if (!is_string($verificationLink) || trim($verificationLink) === '') {
+                $verificationLink = $this->clientEmailVerificationLinkService->buildUrlForIssuedToken($user, $verificationToken);
+            }
+
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($user),

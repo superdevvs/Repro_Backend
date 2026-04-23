@@ -538,7 +538,8 @@ class AutomationWorkflowExecutor
             case 'ACCOUNT_CREATED':
                 $user = $client ?? $rep ?? $this->contextUser($context, 'photographer');
                 $resetLink = (string) ($context['password_reset_link'] ?? '');
-                if ($user && $resetLink !== '' && $this->mailService->sendAccountCreatedEmail($user, $resetLink)) {
+                $verificationLink = isset($context['verification_link']) ? (string) $context['verification_link'] : null;
+                if ($user && $resetLink !== '' && $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink)) {
                     $sentTo[] = $user->email;
                 }
                 break;

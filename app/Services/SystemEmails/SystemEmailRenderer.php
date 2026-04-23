@@ -58,6 +58,7 @@ class SystemEmailRenderer
         return match ($definition->alias) {
             'ACCOUNT_CREATED' => $shared + [
                 'resetLink' => $links['reset_password'] ?? null,
+                'verificationLink' => $links['verification'] ?? null,
             ],
             'CLIENT_EMAIL_VERIFICATION' => $shared + [
                 'verificationLink' => $links['verification'] ?? null,

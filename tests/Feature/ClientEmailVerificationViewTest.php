@@ -25,13 +25,15 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('Verify Email', $html);
         $this->assertStringContainsString('Open Dashboard', $html);
         $this->assertStringContainsString('hero-card-bg', $html);
-        $this->assertStringContainsString('content="light dark"', $html);
+        $this->assertStringContainsString('content="light"', $html);
         $this->assertStringContainsString('max-width:720px', $html);
         $this->assertStringContainsString('https://reprodashboard.com', $html);
         $this->assertStringContainsString('https://api.reprodashboard.com/api/email/verify/1/hash', $html);
         $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
         $this->assertStringNotContainsString('/images/Repro%20HQ%20dark.png', $html);
-        $this->assertStringContainsString('background-color:#00141d', str_replace(' ', '', $html));
+        $normalizedHtml = str_replace(' ', '', strtolower($html));
+        $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#111c2e', $normalizedHtml);
         $this->assertStringNotContainsString('@extends(', $html);
     }
 
@@ -47,6 +49,7 @@ class ClientEmailVerificationViewTest extends TestCase
         $html = view('emails.account_created', [
             'user' => $user,
             'resetLink' => 'https://reprodashboard.com/reset-password?token=test&email=shubham@example.com',
+            'verificationLink' => 'https://api.reprodashboard.com/api/email/verify/1/hash?token=verification-token',
         ])->render();
 
         $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
@@ -54,7 +57,12 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('color:#e8edf5', str_replace(' ', '', $html));
         $this->assertStringNotContainsString('/images/repro-logo.png', $html);
         $this->assertStringNotContainsString('Create Password', $html);
-        $this->assertStringContainsString('separate verification email', $html);
+        $this->assertStringContainsString('Verify Email', $html);
+        $this->assertStringContainsString('https://api.reprodashboard.com/api/email/verify/1/hash?token=verification-token', $html);
+        $this->assertTrue(
+            strpos($html, 'Verify Email') < strpos($html, 'Open Dashboard'),
+            'Verify Email CTA should appear before Open Dashboard.'
+        );
     }
 
     public function test_client_email_verified_confirmation_uses_dashboard_and_settings_actions(): void

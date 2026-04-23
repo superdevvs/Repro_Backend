@@ -14,6 +14,11 @@
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>
+            @if(!empty($verificationLink))
+            <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
+                <a href="{{ $verificationLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Verify Email</a>
+            </td>
+            @endif
             <td style="border-radius:999px;">
                 <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" class="btn-secondary-bg" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#16233a; color:#e8edf5; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; border:1px solid #24344d;">Open Dashboard</a>
             </td>
@@ -49,7 +54,7 @@
         <tr>
             <td class="callout-bg" style="padding:18px 20px; border-radius:14px; border:1px solid #24344d; background-color:#16233a;">
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#e8edf5; font-weight:800;">Your next step</p>
-                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Your account details are ready in the dashboard, and a separate verification email will confirm the best inbox for booking updates, delivery notifications, and account alerts.</p>
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Verify your email to make sure booking updates, delivery notifications, and account alerts reach the right inbox, then open the dashboard anytime to manage your account.</p>
             </td>
         </tr>
     </table>

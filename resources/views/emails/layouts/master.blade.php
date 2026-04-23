@@ -14,7 +14,8 @@
     $dashboardUrl = data_get($brand, 'dashboard_url', 'https://reprodashboard.com');
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $emailLogoGreyUrl = data_get($brand, 'email_logo_grey_url', data_get($brand, 'logo_url', 'https://api.reprodashboard.com/images/repro-email-logo-grey.png'));
-    $outerBackground = data_get($brand, 'outer_background', '#00141d');
+    $emailOuterBackground = data_get($brand, 'email_outer_background', data_get($brand, 'outer_background', '#ffffff'));
+    $emailOuterBackgroundDark = data_get($brand, 'email_outer_background_dark', data_get($brand, 'shell_background', '#00141d'));
     $shellBackground = data_get($brand, 'shell_background', '#00141d');
     $heroSurface = data_get($brand, 'hero_surface', '#111c2e');
     $contentSurface = data_get($brand, 'content_surface', '#111c2e');
@@ -35,8 +36,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="color-scheme" content="light dark">
-    <meta name="supported-color-schemes" content="light dark">
+    <meta name="color-scheme" content="light">
+    <meta name="supported-color-schemes" content="light">
     <title>@yield('title', $productName)</title>
     <!--[if mso]>
     <noscript>
@@ -48,7 +49,7 @@
     </noscript>
     <![endif]-->
     <style>
-        :root { color-scheme: light dark; supported-color-schemes: light dark; }
+        :root { color-scheme: light; supported-color-schemes: light; }
         * { -ms-text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }
         html, body { margin: 0 !important; padding: 0 !important; width: 100% !important; }
         #outlook a { padding: 0; }
@@ -94,22 +95,15 @@
             .footer-meta-td { display: block !important; width: 100% !important; padding: 0 0 10px 0 !important; }
             .mob-full { width: 100% !important; }
         }
-
-        @media (prefers-color-scheme: dark) {
-            body, .body-bg { background-color: {{ $outerBackground }} !important; }
-        }
-
-        [data-ogsc] .body-bg,
-        [data-ogsc] body { background-color: {{ $outerBackground }} !important; }
     </style>
     @yield('extra-styles')
 </head>
-<body style="margin:0; padding:0; background-color:{{ $outerBackground }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; color:{{ $bodyColor }}; -webkit-text-size-adjust:100%; word-break:break-word;" class="body-bg">
+<body bgcolor="{{ $emailOuterBackground }}" style="margin:0; padding:0; background-color:{{ $emailOuterBackground }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; color:{{ $bodyColor }}; -webkit-text-size-adjust:100%; word-break:break-word;" class="body-bg">
     <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all; font-size:0; line-height:0;">@yield('preheader', 'Updates from ' . $productName)&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:{{ $outerBackground }};" class="body-bg">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ $emailOuterBackground }}" style="background-color:{{ $emailOuterBackground }};" class="body-bg">
         <tr>
-            <td align="center" style="padding:30px 12px;">
+            <td align="center" bgcolor="{{ $emailOuterBackground }}" style="padding:30px 12px;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="720" style="max-width:720px; width:100%;" class="email-container">
 
                     @hasSection('hero')

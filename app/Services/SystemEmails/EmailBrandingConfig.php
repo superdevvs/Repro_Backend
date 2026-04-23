@@ -27,6 +27,8 @@ class EmailBrandingConfig
             // Temporary aliases for older callers during the branding refactor.
             'logo_url' => $emailLogoGreyUrl,
             'verification_logo_url' => $verificationLogoLightUrl,
+            'email_outer_background' => '#ffffff',
+            'email_outer_background_dark' => '#00141d',
             'outer_background' => '#00141d',
             'shell_background' => '#00141d',
             'hero_surface' => '#111c2e',
@@ -40,7 +42,7 @@ class EmailBrandingConfig
             'body_color' => '#a9b8cb',
             'muted_color' => '#8298b4',
             'link_color' => '#7eb3ff',
-            'legal_copy_color' => '#8da2be',
+            'legal_copy_color' => '#5f6b7a',
             'locale' => app()->getLocale(),
             'region' => (string) config('app.region', 'us'),
             'timezone' => (string) config('app.timezone', 'UTC'),
