@@ -543,7 +543,11 @@ class BrightMlsService
             foreach ($options['photos'] as $photo) {
                 if (!empty($photo['url']) && ($photo['selected'] ?? true)) {
                     $listItems[] = [
-                        'fileName' => $photo['filename'] ?? basename($photo['url']),
+                        'fileName' => $this->normalizeBrightMlsPhotoFilename(
+                            $photo['filename'] ?? null,
+                            $photo['url'],
+                            $itemId
+                        ),
                         'imageUrls' => [
                             'fullSize' => $photo['url'],
                         ],
@@ -891,7 +895,11 @@ class BrightMlsService
                     if ($val && str_starts_with($val, 'http')) {
                         return [
                             'url' => $val,
-                            'filename' => $file->filename ?? basename($val),
+                            'filename' => $this->normalizeBrightMlsPhotoFilename(
+                                $file->filename ?? null,
+                                $val,
+                                $file->id
+                            ),
                             'description' => $commentDescription,
                             'roomType' => '',
                             'selected' => true,
@@ -905,7 +913,11 @@ class BrightMlsService
                     if ($tempUrl) {
                         return [
                             'url' => $tempUrl,
-                            'filename' => $file->filename ?? basename($file->dropbox_path),
+                            'filename' => $this->normalizeBrightMlsPhotoFilename(
+                                $file->filename ?? null,
+                                $tempUrl,
+                                $file->id
+                            ),
                             'description' => $commentDescription,
                             'roomType' => '',
                             'selected' => true,
@@ -920,7 +932,11 @@ class BrightMlsService
                 }
                 return [
                     'url' => $url,
-                    'filename' => $file->filename ?? basename($url ?? ''),
+                    'filename' => $this->normalizeBrightMlsPhotoFilename(
+                        $file->filename ?? null,
+                        $url,
+                        $file->id
+                    ),
                     'description' => $commentDescription,
                     'roomType' => '',
                     'selected' => true,
@@ -1000,11 +1016,43 @@ class BrightMlsService
             $item['fileName'] = $this->trimText($item['fileName'] ?? '', 25);
         }
 
+        if (($item['mediaType'] ?? null) === 'photo') {
+            $item['fileName'] = $this->normalizeBrightMlsPhotoFilename(
+                $item['fileName'] ?? null,
+                $item['imageUrls']['fullSize'] ?? null,
+                $item['id'] ?? $id
+            );
+        }
+
         if (in_array($item['mediaType'] ?? null, ['document', 'floor_plan'], true)) {
             $item['docVisibility'] = $item['docVisibility'] ?? $this->defaultDocVisibility;
         }
 
         return $item;
+    }
+
+    private function normalizeBrightMlsPhotoFilename(?string $preferredName, ?string $photoUrl, int|string|null $fallbackId = null): string
+    {
+        $preferredName = is_string($preferredName) ? trim($preferredName) : '';
+        $urlPath = is_string($photoUrl) ? (parse_url($photoUrl, PHP_URL_PATH) ?: $photoUrl) : '';
+        $urlFilename = $urlPath !== '' ? trim(basename($urlPath)) : '';
+
+        if (preg_match('/\.jpe?g$/i', $preferredName)) {
+            return $preferredName;
+        }
+
+        if (preg_match('/\.jpe?g$/i', $urlFilename)) {
+            return $urlFilename;
+        }
+
+        $candidate = $preferredName !== '' ? $preferredName : $urlFilename;
+        $baseName = trim((string) pathinfo($candidate, PATHINFO_FILENAME));
+
+        if ($baseName === '' || $baseName === '.' || $baseName === '..') {
+            $baseName = 'photo' . ($fallbackId !== null ? '-' . $fallbackId : '');
+        }
+
+        return $baseName . '.jpg';
     }
 
     private function buildPropertyAddressFromShoot(array $shoot): string
