@@ -14,6 +14,7 @@ use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 
 class AuthController extends Controller
@@ -113,15 +114,28 @@ class AuthController extends Controller
         $accountCreatedContext = $this->buildUserContext($user);
         $accountCreatedContext['client'] = $user;
         $accountCreatedContext['password_reset_link'] = $resetLink;
+        $verificationToken = null;
+        $verificationLink = null;
+
+        if ($user->role === 'client') {
+            $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
+                'issued_context' => 'registration',
+                'issued_by' => $user->id,
+            ]);
+            $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
+            $accountCreatedContext['verification_link'] = $verificationLink;
+        }
 
         $accountCreatedDispatch = $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
         if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-            $this->mailService->sendAccountCreatedEmail($user, $resetLink);
+            $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
         }
 
         if ($user->role === 'client' && $this->mailService->sendClientEmailVerificationEmail($user, [
             'issued_context' => 'registration',
             'issued_by' => $user->id,
+            'verification_token' => $verificationToken,
+            'verification_link' => $verificationLink,
         ])) {
             $this->emailHealthService->markVerificationSent($user);
             $this->recordUserActivity(
