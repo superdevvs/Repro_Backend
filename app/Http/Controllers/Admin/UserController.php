@@ -1018,6 +1018,71 @@ class UserController extends Controller
         ]);
     }
 
+    public function resendVerificationEmail(Request $request, $id)
+    {
+        $admin = $request->user();
+        if (!$this->userHasAnyRole($admin, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $user = User::findOrFail($id);
+
+        if ($this->isSalesRepUser($admin) && !$this->salesRepCanAccessAccount($admin, $user)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        if ($user->role !== 'client') {
+            return response()->json([
+                'message' => 'Verification emails can only be sent to client accounts.',
+            ], 422);
+        }
+
+        if (blank($user->email)) {
+            return response()->json([
+                'message' => 'This client does not have an email address on file.',
+            ], 422);
+        }
+
+        if (strtolower((string) $user->email_status) === EmailHealthService::STATUS_VERIFIED) {
+            return response()->json([
+                'message' => 'This email address is already verified.',
+            ], 422);
+        }
+
+        $mailService = app(MailService::class);
+        $sent = $mailService->sendClientEmailVerificationEmail($user, [
+            'issued_context' => 'admin_profile_resend',
+            'issued_by' => $admin->id,
+        ]);
+
+        if (!$sent) {
+            return response()->json([
+                'message' => 'Failed to send verification email. Please try again.',
+            ], 500);
+        }
+
+        $this->emailHealthService->markVerificationSent($user);
+
+        $this->logUserActivity(
+            $user,
+            'email_verification_requested',
+            'Email verification resent',
+            sprintf('A verification email was resent by %s.', $admin->name),
+            $admin,
+            [
+                'email' => $user->email,
+                'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+            ]
+        );
+
+        $user->refresh();
+
+        return response()->json([
+            'message' => 'Verification email sent successfully.',
+            'user' => $this->presentUserForViewer($user, $admin),
+        ]);
+    }
+
     protected function salesRepCreatableRoles(): array
     {
         return ['client'];
