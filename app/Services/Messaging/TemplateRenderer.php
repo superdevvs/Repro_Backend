@@ -113,16 +113,22 @@ class TemplateRenderer
         $canvasBackgroundDark = $branding['email_canvas_background_dark'] ?? ($branding['email_outer_background_dark'] ?? ($branding['outer_background'] ?? '#00141d'));
         $contentSurfaceLight = $branding['card_surface_light'] ?? ($branding['content_surface'] ?? '#ffffff');
         $contentSurfaceDark = $branding['card_surface_dark'] ?? '#111c2e';
+        $contentSurfaceDarkGradient = $branding['card_surface_dark_gradient'] ?? "linear-gradient(180deg, {$contentSurfaceDark} 0%, {$contentSurfaceDark} 100%)";
         $sectionSurfaceLight = $branding['section_surface_light'] ?? ($branding['section_surface'] ?? '#f7fbff');
         $sectionSurfaceDark = $branding['section_surface_dark'] ?? '#16233a';
+        $sectionSurfaceDarkGradient = $branding['section_surface_dark_gradient'] ?? "linear-gradient(180deg, {$sectionSurfaceDark} 0%, {$sectionSurfaceDark} 100%)";
         $statSurfaceLight = $branding['stat_surface_light'] ?? '#f5f9ff';
         $statSurfaceDark = $branding['stat_surface_dark'] ?? $sectionSurfaceDark;
+        $statSurfaceDarkGradient = $branding['stat_surface_dark_gradient'] ?? "linear-gradient(180deg, {$statSurfaceDark} 0%, {$statSurfaceDark} 100%)";
         $noteSurfaceLight = $branding['note_surface_light'] ?? '#f8fbff';
         $noteSurfaceDark = $branding['note_surface_dark'] ?? $sectionSurfaceDark;
+        $noteSurfaceDarkGradient = $branding['note_surface_dark_gradient'] ?? "linear-gradient(180deg, {$noteSurfaceDark} 0%, {$noteSurfaceDark} 100%)";
         $footerSurfaceLight = $branding['footer_surface_light'] ?? ($branding['footer_surface'] ?? '#f7fbff');
         $footerSurfaceDark = $branding['footer_surface_dark'] ?? '#00141d';
+        $footerSurfaceDarkGradient = $branding['footer_surface_dark_gradient'] ?? "linear-gradient(180deg, {$footerSurfaceDark} 0%, {$footerSurfaceDark} 100%)";
         $metaSurfaceLight = $branding['meta_surface_light'] ?? ($branding['meta_surface'] ?? '#edf3fb');
         $metaSurfaceDark = $branding['meta_surface_dark'] ?? '#142237';
+        $metaSurfaceDarkGradient = $branding['meta_surface_dark_gradient'] ?? "linear-gradient(180deg, {$metaSurfaceDark} 0%, {$metaSurfaceDark} 100%)";
         $borderColorLight = $branding['border_color_light'] ?? ($branding['border_color'] ?? 'transparent');
         $borderColorDark = $branding['border_color_dark'] ?? 'transparent';
         $metaBorderColorLight = $branding['meta_border_color_light'] ?? ($branding['meta_border_color'] ?? 'transparent');
@@ -137,6 +143,7 @@ class TemplateRenderer
         $linkColorDark = $branding['link_color_dark'] ?? '#7eb3ff';
         $buttonSecondarySurfaceLight = $branding['button_secondary_surface_light'] ?? '#edf4ff';
         $buttonSecondarySurfaceDark = $branding['button_secondary_surface_dark'] ?? '#16233a';
+        $buttonSecondarySurfaceDarkGradient = $branding['button_secondary_surface_dark_gradient'] ?? "linear-gradient(180deg, {$buttonSecondarySurfaceDark} 0%, {$buttonSecondarySurfaceDark} 100%)";
         $buttonSecondaryTextLight = $branding['button_secondary_text_light'] ?? '#173963';
         $buttonSecondaryTextDark = $branding['button_secondary_text_dark'] ?? '#e8edf5';
         $legalCopyColorLight = $branding['legal_copy_color_light'] ?? ($branding['legal_copy_color'] ?? '#5f6b7a');
@@ -174,6 +181,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
 .shell { max-width: 720px; margin: 0 auto; }
 .body-surface {
   background-color: {$contentSurfaceLight};
+  background-image: none;
   color: {$bodyColorLight};
 }
 .body-heading {
@@ -187,6 +195,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
 }
 .dark-panel-surface {
   background-color: {$footerSurfaceLight};
+  background-image: none;
   color: {$bodyColorLight};
 }
 .dark-panel-copy {
@@ -197,6 +206,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
 }
 .dark-meta-surface {
   background-color: {$metaSurfaceLight};
+  background-image: none;
   border-color: transparent;
 }
 .dark-meta-label {
@@ -211,6 +221,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
 .hero-card,
 .body-card {
   background-color: {$contentSurfaceLight};
+  background-image: none;
   border-radius: 34px;
   overflow: hidden;
   box-shadow: 0 24px 70px rgba(22, 34, 60, 0.09);
@@ -602,22 +613,25 @@ a { color: {$linkColorLight}; text-decoration: none; }
   .body-surface,
   .hero-card,
   .body-card {
+    background: {$contentSurfaceDarkGradient} !important;
     background-color: {$contentSurfaceDark} !important;
     color: {$bodyColorDark} !important;
   }
   .dark-panel-surface,
   .footer-card {
+    background: {$footerSurfaceDarkGradient} !important;
     background-color: {$footerSurfaceDark} !important;
     color: {$bodyColorDark} !important;
   }
   .dark-meta-surface,
   .footer-meta-card {
+    background: {$metaSurfaceDarkGradient} !important;
     background-color: {$metaSurfaceDark} !important;
     border-color: {$metaBorderColorDark} !important;
   }
-  .info-box { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
-  .note { background: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
-  .change-card { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+  .info-box { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+  .note { background: {$noteSurfaceDarkGradient} !important; background-color: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
+  .change-card { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
   .body-heading,
   .dark-panel-link,
   .dark-meta-value,
@@ -670,22 +684,25 @@ a { color: {$linkColorLight}; text-decoration: none; }
 [data-ogsc] .body-surface,
 [data-ogsc] .hero-card,
 [data-ogsc] .body-card {
+  background: {$contentSurfaceDarkGradient} !important;
   background-color: {$contentSurfaceDark} !important;
   color: {$bodyColorDark} !important;
 }
 [data-ogsc] .dark-panel-surface,
 [data-ogsc] .footer-card {
+  background: {$footerSurfaceDarkGradient} !important;
   background-color: {$footerSurfaceDark} !important;
   color: {$bodyColorDark} !important;
 }
 [data-ogsc] .dark-meta-surface,
 [data-ogsc] .footer-meta-card {
+  background: {$metaSurfaceDarkGradient} !important;
   background-color: {$metaSurfaceDark} !important;
   border-color: {$metaBorderColorDark} !important;
 }
-[data-ogsc] .info-box { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
-[data-ogsc] .note { background: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
-[data-ogsc] .change-card { background: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .info-box { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .note { background: {$noteSurfaceDarkGradient} !important; background-color: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .change-card { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
 [data-ogsc] .body-heading,
 [data-ogsc] .dark-panel-link,
 [data-ogsc] .dark-meta-value,

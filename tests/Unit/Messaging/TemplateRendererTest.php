@@ -102,5 +102,6 @@ HTML,
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringContainsString('[data-ogsc] .dark-meta-surface,', $html);
         $this->assertStringContainsString('#111c2e', $html);
+        $this->assertStringContainsString('linear-gradient(180deg, #17365c 0%, #111c2e 100%)', $html);
     }
 }

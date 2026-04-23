@@ -20,14 +20,15 @@ class ClientEmailVerificationViewTest extends TestCase
             'dashboardUrl' => 'https://reprodashboard.com',
         ])->render();
 
-        $this->assertStringContainsString('Verify your email to unlock normal updates.', $html);
+        $this->assertStringContainsString('Confirm your email', $html);
         $this->assertStringContainsString('shubham@example.com', $html);
-        $this->assertStringContainsString('Verify Email', $html);
-        $this->assertStringContainsString('Open Dashboard', $html);
+        $this->assertStringContainsString('Hi Shubham Prasad!', $html);
+        $this->assertStringContainsString('Thanks for joining R/E Pro Photos.', $html);
+        $this->assertStringContainsString('Confirm email address', $html);
+        $this->assertStringNotContainsString('Open Dashboard', $html);
         $this->assertStringContainsString('hero-card-bg', $html);
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('max-width:720px', $html);
-        $this->assertStringContainsString('https://reprodashboard.com', $html);
         $this->assertStringContainsString('https://api.reprodashboard.com/api/email/verify/1/hash', $html);
         $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
         $this->assertStringNotContainsString('/images/Repro%20HQ%20dark.png', $html);
@@ -36,6 +37,7 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('background-color:#ffffff;border:0;border-radius:24px24px00', $normalizedHtml);
         $this->assertStringContainsString('@media(prefers-color-scheme:dark)', $normalizedHtml);
         $this->assertStringContainsString('background-color:#111c2e!important', $normalizedHtml);
+        $this->assertStringContainsString('linear-gradient(180deg,#17365c0%,#111c2e100%)', $normalizedHtml);
         $this->assertStringContainsString('color:#071223!important', $normalizedHtml);
         $this->assertStringContainsString('color:#e8edf5!important', $normalizedHtml);
         $this->assertStringNotContainsString('@extends(', $html);

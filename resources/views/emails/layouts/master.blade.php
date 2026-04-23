@@ -18,26 +18,37 @@
     $emailCanvasBackgroundDark = data_get($brand, 'email_canvas_background_dark', data_get($brand, 'email_outer_background_dark', data_get($brand, 'outer_background', '#00141d')));
     $heroSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'hero_surface', '#ffffff'));
     $heroSurfaceDark = data_get($brand, 'card_surface_dark', '#111c2e');
+    $heroSurfaceDarkGradient = data_get($brand, 'card_surface_dark_gradient', "linear-gradient(180deg, {$heroSurfaceDark} 0%, {$heroSurfaceDark} 100%)");
     $contentSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'content_surface', '#ffffff'));
     $contentSurfaceDark = data_get($brand, 'card_surface_dark', '#111c2e');
+    $contentSurfaceDarkGradient = data_get($brand, 'card_surface_dark_gradient', "linear-gradient(180deg, {$contentSurfaceDark} 0%, {$contentSurfaceDark} 100%)");
     $sectionSurfaceLight = data_get($brand, 'section_surface_light', data_get($brand, 'section_surface', '#f7fbff'));
     $sectionSurfaceDark = data_get($brand, 'section_surface_dark', '#16233a');
+    $sectionSurfaceDarkGradient = data_get($brand, 'section_surface_dark_gradient', "linear-gradient(180deg, {$sectionSurfaceDark} 0%, {$sectionSurfaceDark} 100%)");
     $statSurfaceLight = data_get($brand, 'stat_surface_light', $sectionSurfaceLight);
     $statSurfaceDark = data_get($brand, 'stat_surface_dark', $sectionSurfaceDark);
+    $statSurfaceDarkGradient = data_get($brand, 'stat_surface_dark_gradient', "linear-gradient(180deg, {$statSurfaceDark} 0%, {$statSurfaceDark} 100%)");
     $noteSurfaceLight = data_get($brand, 'note_surface_light', $sectionSurfaceLight);
     $noteSurfaceDark = data_get($brand, 'note_surface_dark', $sectionSurfaceDark);
+    $noteSurfaceDarkGradient = data_get($brand, 'note_surface_dark_gradient', "linear-gradient(180deg, {$noteSurfaceDark} 0%, {$noteSurfaceDark} 100%)");
     $calloutSurfaceLight = data_get($brand, 'callout_surface_light', $sectionSurfaceLight);
     $calloutSurfaceDark = data_get($brand, 'callout_surface_dark', $sectionSurfaceDark);
+    $calloutSurfaceDarkGradient = data_get($brand, 'callout_surface_dark_gradient', "linear-gradient(180deg, {$calloutSurfaceDark} 0%, {$calloutSurfaceDark} 100%)");
     $calloutSuccessSurfaceLight = data_get($brand, 'callout_success_surface_light', '#eff6ff');
     $calloutSuccessSurfaceDark = data_get($brand, 'callout_success_surface_dark', '#18304f');
+    $calloutSuccessSurfaceDarkGradient = data_get($brand, 'callout_success_surface_dark_gradient', "linear-gradient(180deg, {$calloutSuccessSurfaceDark} 0%, {$calloutSuccessSurfaceDark} 100%)");
     $calloutWarningSurfaceLight = data_get($brand, 'callout_warning_surface_light', '#fff3e3');
     $calloutWarningSurfaceDark = data_get($brand, 'callout_warning_surface_dark', '#382714');
+    $calloutWarningSurfaceDarkGradient = data_get($brand, 'callout_warning_surface_dark_gradient', "linear-gradient(180deg, {$calloutWarningSurfaceDark} 0%, {$calloutWarningSurfaceDark} 100%)");
     $calloutDangerSurfaceLight = data_get($brand, 'callout_danger_surface_light', '#fff0f1');
     $calloutDangerSurfaceDark = data_get($brand, 'callout_danger_surface_dark', '#351b22');
+    $calloutDangerSurfaceDarkGradient = data_get($brand, 'callout_danger_surface_dark_gradient', "linear-gradient(180deg, {$calloutDangerSurfaceDark} 0%, {$calloutDangerSurfaceDark} 100%)");
     $footerSurfaceLight = data_get($brand, 'footer_surface_light', data_get($brand, 'footer_surface', '#f7fbff'));
     $footerSurfaceDark = data_get($brand, 'footer_surface_dark', '#00141d');
+    $footerSurfaceDarkGradient = data_get($brand, 'footer_surface_dark_gradient', "linear-gradient(180deg, {$footerSurfaceDark} 0%, {$footerSurfaceDark} 100%)");
     $metaSurfaceLight = data_get($brand, 'meta_surface_light', data_get($brand, 'meta_surface', '#edf3fb'));
     $metaSurfaceDark = data_get($brand, 'meta_surface_dark', '#142237');
+    $metaSurfaceDarkGradient = data_get($brand, 'meta_surface_dark_gradient', "linear-gradient(180deg, {$metaSurfaceDark} 0%, {$metaSurfaceDark} 100%)");
     $borderColorLight = data_get($brand, 'border_color_light', data_get($brand, 'border_color', 'transparent'));
     $borderColorDark = data_get($brand, 'border_color_dark', 'transparent');
     $metaBorderColorLight = data_get($brand, 'meta_border_color_light', data_get($brand, 'meta_border_color', 'transparent'));
@@ -52,6 +63,7 @@
     $linkColorDark = data_get($brand, 'link_color_dark', '#7eb3ff');
     $buttonSecondarySurfaceLight = data_get($brand, 'button_secondary_surface_light', '#edf4ff');
     $buttonSecondarySurfaceDark = data_get($brand, 'button_secondary_surface_dark', '#16233a');
+    $buttonSecondarySurfaceDarkGradient = data_get($brand, 'button_secondary_surface_dark_gradient', "linear-gradient(180deg, {$buttonSecondarySurfaceDark} 0%, {$buttonSecondarySurfaceDark} 100%)");
     $buttonSecondaryTextLight = data_get($brand, 'button_secondary_text_light', '#173963');
     $buttonSecondaryTextDark = data_get($brand, 'button_secondary_text_dark', '#e8edf5');
     $legalCopyColorLight = data_get($brand, 'legal_copy_color_light', data_get($brand, 'legal_copy_color', '#5f6b7a'));
@@ -85,15 +97,15 @@
         a { text-decoration: none; color: {{ $linkColorLight }}; }
         .body-bg { background-color: {{ $emailCanvasBackgroundLight }} !important; }
 
-        .hero-card-bg { background-color: {{ $heroSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .content-card-bg { background-color: {{ $contentSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .section-card-bg { background-color: {{ $sectionSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .stat-card-bg { background-color: {{ $statSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .note-card-bg { background-color: {{ $noteSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .callout-bg { background-color: {{ $calloutSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .callout-warning-bg { background-color: {{ $calloutWarningSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .callout-danger-bg { background-color: {{ $calloutDangerSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
-        .callout-success-bg { background-color: {{ $calloutSuccessSurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .hero-card-bg { background-color: {{ $heroSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .content-card-bg { background-color: {{ $contentSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .section-card-bg { background-color: {{ $sectionSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .stat-card-bg { background-color: {{ $statSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .note-card-bg { background-color: {{ $noteSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-bg { background-color: {{ $calloutSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-warning-bg { background-color: {{ $calloutWarningSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-danger-bg { background-color: {{ $calloutDangerSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
+        .callout-success-bg { background-color: {{ $calloutSuccessSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; }
         .dark-title { color: {{ $headingColorLight }} !important; }
         .dark-heading { color: {{ $headingColorLight }} !important; }
         .dark-body { color: {{ $bodyColorLight }} !important; }
@@ -101,10 +113,10 @@
         .dark-strong { color: {{ $headingColorLight }} !important; }
         .detail-border { border-color: transparent !important; }
         .pill-bg { border: 0 !important; border-color: transparent !important; }
-        .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceLight }} !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; color: {{ $buttonSecondaryTextLight }} !important; }
+        .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $borderColorLight }} !important; color: {{ $buttonSecondaryTextLight }} !important; }
         .divider-bg { background-color: transparent !important; }
-        .footer-card-bg { background-color: {{ $footerSurfaceLight }} !important; }
-        .footer-meta-bg { background-color: {{ $metaSurfaceLight }} !important; border: 0 !important; border-color: {{ $metaBorderColorLight }} !important; }
+        .footer-card-bg { background-color: {{ $footerSurfaceLight }} !important; background-image: none !important; }
+        .footer-meta-bg { background-color: {{ $metaSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $metaBorderColorLight }} !important; }
         .footer-link-dark { color: {{ $headingColorLight }} !important; }
         .legal-copy-dark { color: {{ $legalCopyColorLight }} !important; }
 
@@ -127,23 +139,23 @@
         @media (prefers-color-scheme: dark) {
             body, .body-bg { background-color: {{ $emailCanvasBackgroundDark }} !important; }
             a { color: {{ $linkColorDark }} !important; }
-            .hero-card-bg { background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .content-card-bg { background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .section-card-bg { background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .stat-card-bg { background-color: {{ $statSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .note-card-bg { background-color: {{ $noteSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .callout-bg { background-color: {{ $calloutSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .callout-warning-bg { background-color: {{ $calloutWarningSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .callout-danger-bg { background-color: {{ $calloutDangerSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-            .callout-success-bg { background-color: {{ $calloutSuccessSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .hero-card-bg { background: {{ $heroSurfaceDarkGradient }} !important; background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .content-card-bg { background: {{ $contentSurfaceDarkGradient }} !important; background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .section-card-bg { background: {{ $sectionSurfaceDarkGradient }} !important; background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .stat-card-bg { background: {{ $statSurfaceDarkGradient }} !important; background-color: {{ $statSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .note-card-bg { background: {{ $noteSurfaceDarkGradient }} !important; background-color: {{ $noteSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-bg { background: {{ $calloutSurfaceDarkGradient }} !important; background-color: {{ $calloutSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-warning-bg { background: {{ $calloutWarningSurfaceDarkGradient }} !important; background-color: {{ $calloutWarningSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-danger-bg { background: {{ $calloutDangerSurfaceDarkGradient }} !important; background-color: {{ $calloutDangerSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+            .callout-success-bg { background: {{ $calloutSuccessSurfaceDarkGradient }} !important; background-color: {{ $calloutSuccessSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
             .dark-title,
             .dark-heading,
             .dark-strong { color: {{ $headingColorDark }} !important; }
             .dark-body { color: {{ $bodyColorDark }} !important; }
             .dark-muted { color: {{ $mutedColorDark }} !important; }
-            .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; color: {{ $buttonSecondaryTextDark }} !important; }
-            .footer-card-bg { background-color: {{ $footerSurfaceDark }} !important; }
-            .footer-meta-bg { background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
+            .btn-secondary-bg { background: {{ $buttonSecondarySurfaceDarkGradient }} !important; background-color: {{ $buttonSecondarySurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; color: {{ $buttonSecondaryTextDark }} !important; }
+            .footer-card-bg { background: {{ $footerSurfaceDarkGradient }} !important; background-color: {{ $footerSurfaceDark }} !important; }
+            .footer-meta-bg { background: {{ $metaSurfaceDarkGradient }} !important; background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
             .footer-link-dark { color: {{ $headingColorDark }} !important; }
             .legal-copy-dark { color: {{ $legalCopyColorDark }} !important; }
         }
@@ -151,23 +163,23 @@
         [data-ogsc] body,
         [data-ogsc] .body-bg { background-color: {{ $emailCanvasBackgroundDark }} !important; }
         [data-ogsc] a { color: {{ $linkColorDark }} !important; }
-        [data-ogsc] .hero-card-bg { background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .content-card-bg { background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .section-card-bg { background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .stat-card-bg { background-color: {{ $statSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .note-card-bg { background-color: {{ $noteSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .callout-bg { background-color: {{ $calloutSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .callout-warning-bg { background-color: {{ $calloutWarningSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .callout-danger-bg { background-color: {{ $calloutDangerSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
-        [data-ogsc] .callout-success-bg { background-color: {{ $calloutSuccessSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .hero-card-bg { background: {{ $heroSurfaceDarkGradient }} !important; background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .content-card-bg { background: {{ $contentSurfaceDarkGradient }} !important; background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .section-card-bg { background: {{ $sectionSurfaceDarkGradient }} !important; background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .stat-card-bg { background: {{ $statSurfaceDarkGradient }} !important; background-color: {{ $statSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .note-card-bg { background: {{ $noteSurfaceDarkGradient }} !important; background-color: {{ $noteSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-bg { background: {{ $calloutSurfaceDarkGradient }} !important; background-color: {{ $calloutSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-warning-bg { background: {{ $calloutWarningSurfaceDarkGradient }} !important; background-color: {{ $calloutWarningSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-danger-bg { background: {{ $calloutDangerSurfaceDarkGradient }} !important; background-color: {{ $calloutDangerSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
+        [data-ogsc] .callout-success-bg { background: {{ $calloutSuccessSurfaceDarkGradient }} !important; background-color: {{ $calloutSuccessSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
         [data-ogsc] .dark-title,
         [data-ogsc] .dark-heading,
         [data-ogsc] .dark-strong { color: {{ $headingColorDark }} !important; }
         [data-ogsc] .dark-body { color: {{ $bodyColorDark }} !important; }
         [data-ogsc] .dark-muted { color: {{ $mutedColorDark }} !important; }
-        [data-ogsc] .btn-secondary-bg { background-color: {{ $buttonSecondarySurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; color: {{ $buttonSecondaryTextDark }} !important; }
-        [data-ogsc] .footer-card-bg { background-color: {{ $footerSurfaceDark }} !important; }
-        [data-ogsc] .footer-meta-bg { background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
+        [data-ogsc] .btn-secondary-bg { background: {{ $buttonSecondarySurfaceDarkGradient }} !important; background-color: {{ $buttonSecondarySurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; color: {{ $buttonSecondaryTextDark }} !important; }
+        [data-ogsc] .footer-card-bg { background: {{ $footerSurfaceDarkGradient }} !important; background-color: {{ $footerSurfaceDark }} !important; }
+        [data-ogsc] .footer-meta-bg { background: {{ $metaSurfaceDarkGradient }} !important; background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
         [data-ogsc] .footer-link-dark { color: {{ $headingColorDark }} !important; }
         [data-ogsc] .legal-copy-dark { color: {{ $legalCopyColorDark }} !important; }
     </style>
