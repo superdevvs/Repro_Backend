@@ -84,15 +84,16 @@ HTML,
         $html = $rendered['html'];
 
         $this->assertStringContainsString('class="body-card body-surface"', $html);
-        $this->assertStringContainsString('background-color:#ffffff; border:1px solid rgba(222, 230, 241, 0.7); color:#405875;', $html);
+        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringContainsString('background-color:#111c2e;border:1pxsolid#24344d;color:#a9b8cb;', str_replace(' ', '', $html));
         $this->assertStringContainsString('class="info-box"', $html);
-        $this->assertStringContainsString('background-color:#f4f7fb; background-image:linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%)', $html);
+        $this->assertStringContainsString('background-color:#16233a', str_replace(' ', '', $html));
         $this->assertStringContainsString('class="change-card"', $html);
-        $this->assertStringContainsString('background-color:#eff6ff; background-image:linear-gradient(180deg, #f7fbff 0%, #eff6ff 100%)', $html);
+        $this->assertStringContainsString('color:#e8edf5', str_replace(' ', '', $html));
         $this->assertStringContainsString('.footer-meta-cell {', $html);
         $this->assertStringContainsString('display: block !important;', $html);
         $this->assertStringContainsString('class="footer-meta-cell footer-meta-cell-last"', $html);
-        $this->assertStringContainsString('background-color:#142237; border:1px solid #2d4263;', $html);
+        $this->assertStringContainsString('background-color:#142237;border:1pxsolid#2d4263;', str_replace(' ', '', $html));
         $this->assertStringContainsString('.dark-panel-surface {', $html);
         $this->assertStringContainsString('[data-ogsc] .dark-meta-surface {', $html);
     }

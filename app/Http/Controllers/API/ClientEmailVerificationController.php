@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\SystemEmails\EmailBrandingConfig;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Http\Request;
@@ -16,6 +17,7 @@ class ClientEmailVerificationController extends Controller
     public function __construct(
         private readonly EmailHealthService $emailHealthService,
         private readonly ClientEmailVerificationLinkService $clientEmailVerificationLinkService,
+        private readonly EmailBrandingConfig $emailBrandingConfig,
     ) {
     }
 
@@ -124,11 +126,14 @@ class ClientEmailVerificationController extends Controller
      */
     protected function pageData(string $title, string $message, bool $success): array
     {
+        $branding = $this->emailBrandingConfig->defaults();
+
         return [
             'title' => $title,
             'message' => $message,
             'success' => $success,
             'dashboardUrl' => rtrim((string) Config::get('app.frontend_url', 'https://reprodashboard.com'), '/'),
+            'branding' => $branding,
         ];
     }
 }
