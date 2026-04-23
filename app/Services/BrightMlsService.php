@@ -1221,13 +1221,16 @@ class BrightMlsService
         ];
 
         $iguideTourUrl = $this->firstValidUrl(
+            $tourLinks['iguide_mls'] ?? null,
             $shootData['iguide_tour_url'] ?? ($shoot->iguide_tour_url ?? null),
             $tourLinks['iguide_branded'] ?? null,
-            $tourLinks['iguide_mls'] ?? null,
             $tourLinks['iguide'] ?? null,
             $tourLinks['iGuide'] ?? null,
         );
         $slideshowUrl = $this->firstValidUrl(
+            $tourLinks['mls'] ?? null,
+            $tourLinks['generic_mls'] ?? null,
+            $tourLinks['genericMls'] ?? null,
             $tourLinks['slideshow'] ?? null,
             $tourLinks['slideshow_url'] ?? null,
             $tourLinks['neo_tour'] ?? null,
