@@ -136,6 +136,61 @@ class MailService
         }
     }
 
+    public function sendClientEmailVerifiedEmail(User $user, array $context = []): bool
+    {
+        try {
+            $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
+            $verificationTokenId = $context['verification_token_id'] ?? null;
+            $eventVersion = $verificationTokenId !== null
+                ? 'verification_confirmed_' . $verificationTokenId
+                : 'verification_confirmed_' . sha1(strtolower((string) $user->email));
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($user),
+                'links' => [
+                    'dashboard' => $dashboardUrl,
+                    'settings' => $dashboardUrl . '/settings',
+                ],
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => $eventVersion,
+                    'verification_token_id' => $verificationTokenId,
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('CLIENT_EMAIL_VERIFIED', $payload, $user->email, [], [], [
+                'related_account_id' => $user->id,
+            ], [
+                'idempotency_key' => sprintf(
+                    'CLIENT_EMAIL_VERIFIED:%d:%s',
+                    $user->id,
+                    $verificationTokenId !== null ? (string) $verificationTokenId : sha1(strtolower((string) $user->email))
+                ),
+                'canonical_metadata' => [
+                    'verification_token_id' => $verificationTokenId,
+                ],
+            ]);
+
+            Log::info('Client email verified confirmation email sent', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'verification_token_id' => $verificationTokenId,
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send client email verified confirmation email', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'verification_token_id' => $context['verification_token_id'] ?? null,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
     /**
      * Send shoot scheduled email
      */

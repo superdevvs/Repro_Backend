@@ -334,6 +334,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permis
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->post('/admin/users/{id}/resend-verification', [UserController::class, 'resendVerificationEmail']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->put('/admin/users/{id}', [UserController::class, 'update']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,salesRep'])->post('/admin/users', [UserController::class, 'store']);

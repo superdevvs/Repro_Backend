@@ -53,6 +53,27 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('Your dashboard access is ready.', $html);
         $this->assertStringContainsString('color:#e8edf5', str_replace(' ', '', $html));
         $this->assertStringNotContainsString('/images/repro-logo.png', $html);
+        $this->assertStringNotContainsString('Create Password', $html);
+        $this->assertStringContainsString('separate verification email', $html);
+    }
+
+    public function test_client_email_verified_confirmation_uses_dashboard_and_settings_actions(): void
+    {
+        $user = (object) [
+            'name' => 'Shubham Prasad',
+            'email' => 'shubham@example.com',
+        ];
+
+        $html = view('emails.client_email_verified', [
+            'user' => $user,
+            'dashboardUrl' => 'https://reprodashboard.com',
+            'settingsUrl' => 'https://reprodashboard.com/settings',
+        ])->render();
+
+        $this->assertStringContainsString('You are all set for updates.', $html);
+        $this->assertStringContainsString('Notification Settings', $html);
+        $this->assertStringContainsString('https://reprodashboard.com/settings', $html);
+        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
     }
 
     public function test_verification_result_page_uses_the_light_logo_branding_token(): void

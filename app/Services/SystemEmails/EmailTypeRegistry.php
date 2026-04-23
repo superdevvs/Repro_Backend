@@ -56,6 +56,7 @@ class EmailTypeRegistry
         return $this->definitions = [
             'ACCOUNT_CREATED' => new EmailTypeDefinition('ACCOUNT_CREATED', 1, 'account', 'emails.account_created', 'v1', $account, ['client']),
             'CLIENT_EMAIL_VERIFICATION' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFICATION', 1, 'account', 'emails.client_email_verification', 'v1', $account, ['client']),
+            'CLIENT_EMAIL_VERIFIED' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFIED', 1, 'account', 'emails.client_email_verified', 'v1', $account, ['client']),
             'PASSWORD_RESET' => new EmailTypeDefinition('PASSWORD_RESET', 1, 'security', 'emails.password_reset', 'v1', $account, ['client', 'photographer', 'rep', 'admin']),
             'SHOOT_SCHEDULED' => new EmailTypeDefinition('SHOOT_SCHEDULED', 1, 'booking', 'emails.shoot_scheduled', 'v1', $shoot, ['client', 'photographer']),
             'SHOOT_UPDATED' => new EmailTypeDefinition('SHOOT_UPDATED', 1, 'booking', 'emails.shoot_updated', 'v1', $shoot, ['client', 'photographer']),

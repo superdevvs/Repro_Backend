@@ -277,6 +277,40 @@ class SystemEmailPlatformTest extends TestCase
         );
     }
 
+    public function test_client_email_verified_confirmation_is_dispatched_through_the_canonical_pipeline(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $user = User::factory()->create([
+            'role' => 'client',
+            'email' => 'verified-confirmation@example.com',
+            'name' => 'Verified Confirmation',
+            'email_status' => 'verified',
+        ]);
+
+        $service = $this->app->make(MailService::class);
+
+        $this->assertTrue($service->sendClientEmailVerifiedEmail($user, [
+            'verification_token_id' => 42,
+        ]));
+
+        $message = Message::query()
+            ->where('related_account_id', $user->id)
+            ->where('send_source', 'CLIENT_EMAIL_VERIFIED')
+            ->first();
+
+        $dispatch = SystemEmailDispatch::query()
+            ->where('email_alias', 'CLIENT_EMAIL_VERIFIED')
+            ->first();
+
+        $this->assertNotNull($message);
+        $this->assertNotNull($dispatch);
+        $this->assertSame('CLIENT_EMAIL_VERIFIED_V1', $message->metadata['canonical_email']['email_type'] ?? null);
+        $this->assertSame(42, $message->metadata['canonical_email']['verification_token_id'] ?? null);
+        $this->assertSame('CLIENT_EMAIL_VERIFIED_V1', $dispatch->email_type);
+    }
+
     private function createDefaultEmailChannel(): MessageChannel
     {
         return MessageChannel::create([

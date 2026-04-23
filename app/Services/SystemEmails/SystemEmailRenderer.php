@@ -63,6 +63,10 @@ class SystemEmailRenderer
                 'verificationLink' => $links['verification'] ?? null,
                 'dashboardUrl' => $links['dashboard'] ?? $branding->dashboard_url ?? null,
             ],
+            'CLIENT_EMAIL_VERIFIED' => $shared + [
+                'dashboardUrl' => $links['dashboard'] ?? $branding->dashboard_url ?? null,
+                'settingsUrl' => $links['settings'] ?? null,
+            ],
             'PASSWORD_RESET' => $shared + [
                 'resetLink' => $links['reset_password'] ?? null,
             ],

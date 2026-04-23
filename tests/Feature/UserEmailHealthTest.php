@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\ClientEmailVerificationToken;
 use App\Models\Message;
+use App\Models\MessageChannel;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Services\MailService;
@@ -194,6 +195,64 @@ class UserEmailHealthTest extends TestCase
         $this->assertTrue($actions->contains('email_verification_requested'));
     }
 
+    public function test_admin_can_resend_client_email_verification_from_admin_tools(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'needs-verification@example.com',
+            'email_status' => 'unverified',
+            'verification_sent_at' => null,
+        ]);
+
+        $this->partialMock(MailService::class, function (MockInterface $mock) use ($client) {
+            $mock->shouldReceive('sendClientEmailVerificationEmail')
+                ->once()
+                ->withArgs(function (User $user, array $context) use ($client): bool {
+                    return (int) $user->id === (int) $client->id
+                        && ($context['issued_context'] ?? null) === 'admin_profile_resend'
+                        && array_key_exists('issued_by', $context);
+                })
+                ->andReturnTrue();
+        });
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson("/api/admin/users/{$client->id}/resend-verification");
+
+        $response->assertOk();
+        $response->assertJsonPath('message', 'Verification email sent successfully.');
+        $response->assertJsonPath('user.id', $client->id);
+        $response->assertJsonPath('user.email_health.status', 'unverified');
+        $this->assertNotNull($response->json('user.email_health.verification_sent_at'));
+
+        $this->assertDatabaseHas('user_activity_logs', [
+            'user_id' => $client->id,
+            'event_type' => 'email_verification_requested',
+            'title' => 'Email verification resent',
+        ]);
+    }
+
+    public function test_admin_cannot_resend_verification_for_already_verified_client(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'verified@example.com',
+            'email_status' => 'verified',
+            'email_verified_at' => now(),
+        ]);
+
+        $mailService = $this->mock(MailService::class);
+        $mailService->shouldNotReceive('sendClientEmailVerificationEmail');
+
+        Sanctum::actingAs($admin);
+
+        $this->postJson("/api/admin/users/{$client->id}/resend-verification")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'This email address is already verified.');
+    }
+
     public function test_client_profile_email_update_with_common_typo_requires_confirmation(): void
     {
         $client = User::factory()->create([
@@ -217,6 +276,15 @@ class UserEmailHealthTest extends TestCase
 
     public function test_client_email_verification_link_validates_successfully_even_if_the_app_url_changes(): void
     {
+        MessageChannel::create([
+            'type' => 'EMAIL',
+            'provider' => 'LOCAL_SMTP',
+            'display_name' => 'Default',
+            'from_email' => 'contact@reprophotos.com',
+            'is_default' => true,
+            'owner_scope' => 'GLOBAL',
+        ]);
+
         $client = User::factory()->create([
             'role' => 'client',
             'email' => 'client@example.com',
@@ -246,6 +314,14 @@ class UserEmailHealthTest extends TestCase
         $this->assertDatabaseHas('users', [
             'id' => $client->id,
             'email_status' => 'verified',
+        ]);
+        $this->assertDatabaseHas('messages', [
+            'related_account_id' => $client->id,
+            'send_source' => 'CLIENT_EMAIL_VERIFIED',
+        ]);
+        $this->assertDatabaseHas('user_activity_logs', [
+            'user_id' => $client->id,
+            'event_type' => 'email_verified',
         ]);
     }
 

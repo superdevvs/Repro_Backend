@@ -53,6 +53,7 @@ class SystemEmailBuilder
         return match ($definition->alias) {
             'ACCOUNT_CREATED' => 'New Account Information',
             'CLIENT_EMAIL_VERIFICATION' => 'Verify Your Email Address',
+            'CLIENT_EMAIL_VERIFIED' => 'Your Email Is Verified',
             'PASSWORD_RESET' => 'Reset Your Password - R/E Pro Photos',
             'SHOOT_SCHEDULED' => 'New Shoot Scheduled',
             'SHOOT_UPDATED' => 'Scheduled Photo Shoot Updated',
