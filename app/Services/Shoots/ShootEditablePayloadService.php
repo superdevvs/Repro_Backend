@@ -42,6 +42,7 @@ class ShootEditablePayloadService
             'bathrooms' => 'nullable|numeric|min:0',
             'sqft' => 'nullable|integer|min:0',
             'tour_links' => 'nullable|array',
+            'tour_links.*' => 'nullable',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,sold,rented',
             'is_featured' => 'nullable|boolean',
