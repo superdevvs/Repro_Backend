@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\ClientEmailVerificationToken;
 use App\Models\Message;
 use App\Models\User;
 use App\Models\UserActivityLog;
@@ -239,7 +240,9 @@ class UserEmailHealthTest extends TestCase
             ->assertSee('Email verified')
             ->assertSee('Open dashboard');
 
-        $this->assertSame(ClientEmailVerificationLinkService::SIGNATURE_VERSION, $query['signature_v'] ?? null);
+        $this->assertArrayHasKey('token', $query);
+        $this->assertArrayNotHasKey('signature', $query);
+        $this->assertArrayNotHasKey('signature_v', $query);
         $this->assertDatabaseHas('users', [
             'id' => $client->id,
             'email_status' => 'verified',
@@ -275,7 +278,9 @@ class UserEmailHealthTest extends TestCase
 
         parse_str((string) parse_url((string) $capturedLink, PHP_URL_QUERY), $query);
 
-        $this->assertSame(ClientEmailVerificationLinkService::SIGNATURE_VERSION, $query['signature_v'] ?? null);
+        $this->assertArrayHasKey('token', $query);
+        $this->assertArrayNotHasKey('signature', $query);
+        $this->assertArrayNotHasKey('signature_v', $query);
 
         $this->get($this->pathWithQuery((string) $capturedLink))
             ->assertOk()
@@ -315,7 +320,9 @@ class UserEmailHealthTest extends TestCase
         $this->assertNotNull($capturedLink);
 
         parse_str((string) parse_url((string) $capturedLink, PHP_URL_QUERY), $query);
-        $this->assertSame(ClientEmailVerificationLinkService::SIGNATURE_VERSION, $query['signature_v'] ?? null);
+        $this->assertArrayHasKey('token', $query);
+        $this->assertArrayNotHasKey('signature', $query);
+        $this->assertArrayNotHasKey('signature_v', $query);
 
         $this->get($this->pathWithQuery((string) $capturedLink))
             ->assertOk()
@@ -345,7 +352,7 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
-    public function test_invalid_client_email_verification_signature_renders_a_branded_html_page(): void
+    public function test_invalid_client_email_verification_token_renders_a_branded_html_page(): void
     {
         $client = User::factory()->create([
             'role' => 'client',
@@ -355,7 +362,7 @@ class UserEmailHealthTest extends TestCase
 
         $link = app(MailService::class)->generateClientEmailVerificationLink($client);
         parse_str((string) parse_url($link, PHP_URL_QUERY), $query);
-        $query['signature'] = 'tampered-signature';
+        $query['token'] = 'tampered-token';
 
         $this->get($this->pathWithQuery((string) parse_url($link, PHP_URL_PATH) . '?' . http_build_query($query)))
             ->assertStatus(403)
@@ -385,7 +392,7 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
-    public function test_client_email_verification_accepts_links_signed_with_a_previous_app_key(): void
+    public function test_client_email_verification_token_links_validate_even_if_the_app_key_changes(): void
     {
         $client = User::factory()->create([
             'role' => 'client',
@@ -416,6 +423,61 @@ class UserEmailHealthTest extends TestCase
             'id' => $client->id,
             'email_status' => 'verified',
         ]);
+    }
+
+    public function test_resend_supersedes_the_previous_active_verification_token(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'superseded-client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $service = app(ClientEmailVerificationLinkService::class);
+        $firstLink = $service->buildUrl($client);
+        $secondLink = $service->buildUrl($client);
+
+        $this->get($this->pathWithQuery($firstLink))
+            ->assertStatus(403)
+            ->assertSee('Verification link invalid');
+
+        $this->get($this->pathWithQuery($secondLink))
+            ->assertOk()
+            ->assertSee('Email verified');
+
+        $this->assertDatabaseCount('client_email_verification_tokens', 2);
+
+        $supersededToken = ClientEmailVerificationToken::query()->oldest('id')->first();
+        $activeToken = ClientEmailVerificationToken::query()->latest('id')->first();
+
+        $this->assertNotNull($supersededToken);
+        $this->assertNotNull($activeToken);
+        $this->assertNotNull($supersededToken->superseded_at);
+        $this->assertNotNull($activeToken->used_at);
+    }
+
+    public function test_used_verification_token_cannot_be_reused(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'used-token-client@example.com',
+            'email_status' => 'unverified',
+        ]);
+
+        $link = app(ClientEmailVerificationLinkService::class)->buildUrl($client);
+
+        $this->get($this->pathWithQuery($link))
+            ->assertOk()
+            ->assertSee('Email verified');
+
+        $client->forceFill([
+            'email_status' => 'unverified',
+            'email_verified_at' => null,
+        ])->save();
+
+        $this->get($this->pathWithQuery($link))
+            ->assertStatus(403)
+            ->assertSee('Verification link invalid');
     }
 
     public function test_sales_rep_can_list_all_client_accounts_company_wide(): void

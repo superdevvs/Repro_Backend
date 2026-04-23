@@ -23,31 +23,55 @@ class ClientEmailVerificationController extends Controller
 
     public function __invoke(Request $request, User $user, string $hash): Response
     {
+        $token = $request->query('token');
         $expires = $this->clientEmailVerificationLinkService->resolveExpiryTimestamp($request->query('expires'));
         $signature = $request->query('signature');
         $signatureVersion = $request->query('signature_v');
-        $legacySignatureValid = $request->hasValidRelativeSignature() || $request->hasValidSignature();
-        $hmacSignatureValid = $this->clientEmailVerificationLinkService->hasValidSignature(
-            $user,
-            $hash,
-            $expires,
-            is_string($signature) ? $signature : null,
-        );
+        if (is_string($token) && trim($token) !== '') {
+            $verificationResult = $this->clientEmailVerificationLinkService->consumeVerificationToken($user, $hash, $token);
 
-        if (!$legacySignatureValid && !$hmacSignatureValid) {
-            $this->logVerificationFailure(
-                $request,
+            if (!$verificationResult->success) {
+                $this->logVerificationFailure(
+                    $request,
+                    $user,
+                    $verificationResult->reason,
+                    null,
+                    null,
+                    $verificationResult->token?->id,
+                );
+
+                return response()->view('email_verification_result', $this->pageData(
+                    'Verification link invalid',
+                    $verificationResult->reason === 'hash_mismatch'
+                        ? 'The verification link does not match the current client email. Please request a new verification email from the dashboard.'
+                        : 'This verification link is invalid or has expired. Please request a new verification email from your dashboard.',
+                    false,
+                ), $verificationResult->reason === 'hash_mismatch' ? 422 : 403);
+            }
+        } else {
+            $legacySignatureValid = $request->hasValidRelativeSignature() || $request->hasValidSignature();
+            $hmacSignatureValid = $this->clientEmailVerificationLinkService->hasValidSignature(
                 $user,
-                $this->resolveFailureReason($request, $expires, $signatureVersion),
+                $hash,
                 $expires,
-                $signatureVersion,
+                is_string($signature) ? $signature : null,
             );
 
-            return response()->view('email_verification_result', $this->pageData(
-                'Verification link invalid',
-                'This verification link is invalid or has expired. Please request a new verification email from your dashboard.',
-                false,
-            ), 403);
+            if (!$legacySignatureValid && !$hmacSignatureValid) {
+                $this->logVerificationFailure(
+                    $request,
+                    $user,
+                    $this->resolveFailureReason($request, $expires, $signatureVersion),
+                    $expires,
+                    $signatureVersion,
+                );
+
+                return response()->view('email_verification_result', $this->pageData(
+                    'Verification link invalid',
+                    'This verification link is invalid or has expired. Please request a new verification email from your dashboard.',
+                    false,
+                ), 403);
+            }
         }
 
         if (!$this->clientEmailVerificationLinkService->hasExpectedHash($user, $hash)) {
@@ -94,10 +118,10 @@ class ClientEmailVerificationController extends Controller
         }
 
         if (!$request->query->has('signature')) {
-            return 'missing_signature';
+            return 'legacy_signature_missing';
         }
 
-        return 'invalid_signature';
+        return 'legacy_signature_invalid';
     }
 
     protected function logVerificationFailure(
@@ -106,10 +130,12 @@ class ClientEmailVerificationController extends Controller
         string $reason,
         ?int $expires,
         mixed $signatureVersion,
+        ?int $tokenId = null,
     ): void {
         Log::warning('Client email verification failed', [
             'user_id' => $user->id,
             'failure_reason' => $reason,
+            'verification_token_id' => $tokenId,
             'signature_version' => is_scalar($signatureVersion) ? (string) $signatureVersion : null,
             'expires' => $expires,
             'request_host' => $request->getHost(),

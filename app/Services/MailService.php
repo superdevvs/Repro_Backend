@@ -80,15 +80,16 @@ class MailService
         }
     }
 
-    public function generateClientEmailVerificationLink(User $user): string
+    public function generateClientEmailVerificationLink(User $user, array $context = []): string
     {
-        return $this->clientEmailVerificationLinkService->buildUrl($user);
+        return $this->clientEmailVerificationLinkService->buildUrl($user, null, $context);
     }
 
-    public function sendClientEmailVerificationEmail(User $user): bool
+    public function sendClientEmailVerificationEmail(User $user, array $context = []): bool
     {
         try {
-            $verificationLink = $this->generateClientEmailVerificationLink($user);
+            $verificationToken = $this->clientEmailVerificationLinkService->issueVerificationToken($user, $context);
+            $verificationLink = $this->clientEmailVerificationLinkService->buildUrlForIssuedToken($user, $verificationToken);
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($user),
@@ -98,17 +99,29 @@ class MailService
                 ],
                 'meta' => [
                     'recipient_type' => 'client',
-                    'event_version' => sha1($verificationLink),
+                    'event_version' => 'verification_token_' . $verificationToken->id,
+                    'verification_token_id' => $verificationToken->id,
+                    'verification_expires_at' => $verificationToken->expires_at?->toIso8601String(),
+                    'verification_issued_context' => $verificationToken->issued_context,
                 ],
             ]);
 
             $this->dispatchProtectedEmail('CLIENT_EMAIL_VERIFICATION', $payload, $user->email, [], [], [
                 'related_account_id' => $user->id,
+            ], [
+                'idempotency_key' => sprintf('CLIENT_EMAIL_VERIFICATION:%d:%d', $user->id, $verificationToken->id),
+                'canonical_metadata' => [
+                    'verification_token_id' => $verificationToken->id,
+                    'verification_issued_context' => $verificationToken->issued_context,
+                    'verification_expires_at' => $verificationToken->expires_at?->toIso8601String(),
+                ],
             ]);
 
             Log::info('Client email verification email sent', [
                 'user_id' => $user->id,
                 'email' => $user->email,
+                'verification_token_id' => $verificationToken->id,
+                'issued_context' => $verificationToken->issued_context,
             ]);
 
             return true;
@@ -2214,6 +2227,7 @@ class MailService
             'enforce_email_health_gate' => $extraPayload['enforce_email_health_gate'] ?? true,
             'idempotency_key' => $options['idempotency_key'] ?? null,
             'force' => $options['force'] ?? false,
+            'canonical_metadata' => $options['canonical_metadata'] ?? [],
         ]);
 
         return $result['sent'] || $result['duplicate'];

@@ -390,7 +390,10 @@ class UserController extends Controller
                 $mailService->sendAccountCreatedEmail($user, $resetLink);
             }
 
-            if ($user->role === 'client' && $mailService->sendClientEmailVerificationEmail($user)) {
+            if ($user->role === 'client' && $mailService->sendClientEmailVerificationEmail($user, [
+                'issued_context' => 'admin_resend',
+                'issued_by' => $admin->id,
+            ])) {
                 $this->emailHealthService->markVerificationSent($user);
                 $this->logUserActivity(
                     $user,
@@ -803,7 +806,10 @@ class UserController extends Controller
         if ($emailHealthMutation['email_changed'] && $user->role === 'client') {
             try {
                 $mailService = app(MailService::class);
-                if ($mailService->sendClientEmailVerificationEmail($user)) {
+                if ($mailService->sendClientEmailVerificationEmail($user, [
+                    'issued_context' => 'admin_email_change',
+                    'issued_by' => $admin->id,
+                ])) {
                     $this->emailHealthService->markVerificationSent($user);
                 }
             } catch (\Throwable $exception) {

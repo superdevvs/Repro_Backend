@@ -16,7 +16,7 @@ class ClientEmailVerificationViewTest extends TestCase
 
         $html = view('emails.client_email_verification', [
             'user' => $user,
-            'verificationLink' => 'https://api.reprodashboard.com/api/email/verify/1/hash?expires=123&signature=abc',
+            'verificationLink' => 'https://api.reprodashboard.com/api/email/verify/1/hash?token=verification-token',
             'dashboardUrl' => 'https://reprodashboard.com',
         ])->render();
 

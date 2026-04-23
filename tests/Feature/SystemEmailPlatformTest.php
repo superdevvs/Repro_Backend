@@ -239,6 +239,44 @@ class SystemEmailPlatformTest extends TestCase
         $this->assertSame(1, SystemEmailDispatch::query()->where('email_alias', 'ACCOUNT_CREATED')->count());
     }
 
+    public function test_verification_email_dispatch_records_token_metadata(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $user = User::factory()->create([
+            'role' => 'client',
+            'email' => 'verification-metadata@example.com',
+            'name' => 'Verification Metadata',
+            'email_status' => 'unverified',
+        ]);
+
+        $service = $this->app->make(MailService::class);
+
+        $this->assertTrue($service->sendClientEmailVerificationEmail($user, [
+            'issued_context' => 'dashboard_resend',
+            'issued_by' => $user->id,
+        ]));
+
+        $message = Message::query()
+            ->where('related_account_id', $user->id)
+            ->where('send_source', 'CLIENT_EMAIL_VERIFICATION')
+            ->first();
+
+        $dispatch = SystemEmailDispatch::query()
+            ->where('email_alias', 'CLIENT_EMAIL_VERIFICATION')
+            ->first();
+
+        $this->assertNotNull($message);
+        $this->assertNotNull($dispatch);
+        $this->assertNotNull($message->metadata['canonical_email']['verification_token_id'] ?? null);
+        $this->assertSame('dashboard_resend', $message->metadata['canonical_email']['verification_issued_context'] ?? null);
+        $this->assertSame(
+            $message->metadata['canonical_email']['verification_token_id'] ?? null,
+            $dispatch->metadata['canonical_metadata']['verification_token_id'] ?? null
+        );
+    }
+
     private function createDefaultEmailChannel(): MessageChannel
     {
         return MessageChannel::create([

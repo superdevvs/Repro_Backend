@@ -55,6 +55,9 @@ class EmailAuditService
             'metadata' => [
                 'requested_idempotency_key' => $idempotencyKey,
                 'forced' => $force,
+                'canonical_metadata' => is_array($options['canonical_metadata'] ?? null)
+                    ? $options['canonical_metadata']
+                    : [],
             ],
         ]);
 

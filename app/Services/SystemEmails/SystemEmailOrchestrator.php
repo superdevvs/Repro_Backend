@@ -64,6 +64,13 @@ class SystemEmailOrchestrator
             ],
         ];
 
+        if (!empty($options['canonical_metadata']) && is_array($options['canonical_metadata'])) {
+            $metadata['canonical_email'] = array_merge(
+                $metadata['canonical_email'],
+                $options['canonical_metadata']
+            );
+        }
+
         try {
             $message = $this->dispatcher->dispatch($built, $transport, $metadata);
             $savedDispatch = $this->auditService->sent($dispatch, $message);

@@ -119,7 +119,10 @@ class AuthController extends Controller
             $this->mailService->sendAccountCreatedEmail($user, $resetLink);
         }
 
-        if ($user->role === 'client' && $this->mailService->sendClientEmailVerificationEmail($user)) {
+        if ($user->role === 'client' && $this->mailService->sendClientEmailVerificationEmail($user, [
+            'issued_context' => 'registration',
+            'issued_by' => $user->id,
+        ])) {
             $this->emailHealthService->markVerificationSent($user);
             $this->recordUserActivity(
                 $user,
@@ -326,7 +329,10 @@ class AuthController extends Controller
             $verificationSent = false;
 
             try {
-                if ($this->mailService->sendClientEmailVerificationEmail($user)) {
+                if ($this->mailService->sendClientEmailVerificationEmail($user, [
+                    'issued_context' => 'email_change',
+                    'issued_by' => $user->id,
+                ])) {
                     $this->emailHealthService->markVerificationSent($user);
                     $verificationSent = true;
                 }
@@ -417,7 +423,10 @@ class AuthController extends Controller
             ]);
         }
 
-        if (!$this->mailService->sendClientEmailVerificationEmail($user)) {
+        if (!$this->mailService->sendClientEmailVerificationEmail($user, [
+            'issued_context' => 'dashboard_resend',
+            'issued_by' => $user->id,
+        ])) {
             return response()->json([
                 'message' => 'Unable to send a verification email right now. Please try again.',
             ], 422);
