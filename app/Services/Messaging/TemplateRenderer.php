@@ -93,7 +93,7 @@ class TemplateRenderer
         $bodyHtml = $this->stripLegacyWrapper($bodyHtml);
         $bodyHtml = $this->stabilizeEmailBodyHtml($bodyHtml);
 
-        $logoUrl = 'https://api.reprodashboard.com/images/Repro%20HQ%20dark.png';
+        $logoUrl = 'https://api.reprodashboard.com/images/repro-logo.png';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? 'R/E Pro Photos Update'));
         $journeyHtml = $this->buildJourneyRail($template);
@@ -114,7 +114,7 @@ class TemplateRenderer
 body {
   margin: 0;
   padding: 0;
-  background: #eef3f8;
+  background: #00141d;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   color: #10233b;
   -webkit-text-size-adjust: 100%;
@@ -139,7 +139,7 @@ a { color: #1463ff; text-decoration: none; }
   border-color: #edf2f7;
 }
 .dark-panel-surface {
-  background-color: #0b1b30;
+  background-color: #00141d;
   color: #dce8ff;
 }
 .dark-panel-copy {
@@ -434,7 +434,7 @@ a { color: #1463ff; text-decoration: none; }
 .footer-wrap { padding: 18px 0 0; }
 .footer-card {
   border-radius: 26px;
-  background: linear-gradient(135deg, #0b1b30 0%, #102847 100%);
+  background: linear-gradient(135deg, #00141d 0%, #0f2534 100%);
   padding: 24px 26px;
   color: #dce8ff;
   box-shadow: 0 20px 40px rgba(16, 40, 71, 0.18);
@@ -548,7 +548,7 @@ a { color: #1463ff; text-decoration: none; }
 }
 @media (prefers-color-scheme: dark) {
   body {
-    background: #0b1220 !important;
+    background: #00141d !important;
     color: #d7e2f0 !important;
   }
   .hero-card,
@@ -609,7 +609,7 @@ a { color: #1463ff; text-decoration: none; }
     box-shadow: none !important;
   }
   .dark-panel-surface {
-    background-color: #0a1525 !important;
+    background-color: #00141d !important;
     color: #dce8ff !important;
   }
   .dark-panel-copy {
@@ -638,7 +638,7 @@ a { color: #1463ff; text-decoration: none; }
 }
 [data-ogsc] body,
 [data-ogsc] .page {
-  background: #0b1220 !important;
+  background: #00141d !important;
   color: #d7e2f0 !important;
 }
 [data-ogsc] .hero-card,
@@ -687,7 +687,7 @@ a { color: #1463ff; text-decoration: none; }
   border-color: #24344d !important;
 }
 [data-ogsc] .dark-panel-surface {
-  background-color: #0a1525 !important;
+  background-color: #00141d !important;
   color: #dce8ff !important;
 }
 [data-ogsc] .dark-panel-copy {
@@ -730,7 +730,7 @@ a { color: #1463ff; text-decoration: none; }
 {$bodyHtml}
       </div>
       <div class="footer-wrap">
-        <div class="footer-card dark-panel-surface" style="background-color:#0b1b30; background-image:linear-gradient(135deg, #0b1b30 0%, #102847 100%); color:#dce8ff;">
+        <div class="footer-card dark-panel-surface" style="background-color:#00141d; background-image:linear-gradient(135deg, #00141d 0%, #0f2534 100%); color:#dce8ff;">
           <div class="footer-title dark-panel-copy" style="color:#ffffff;">Need help with a shoot, invoice, or account question?</div>
           <p class="footer-copy dark-panel-copy" style="color:#dce8ff;">
             Our team is here to help keep your marketing workflow moving.
