@@ -68,6 +68,7 @@ class MmmXmlBuilder
             'UserEmail' => $payload['employee_email'] ?? '',
             'UniqueName' => $payload['username'] ?? '',
             'StartPoint' => $payload['start_point'] ?? '',
+            'ArtworkURL' => $payload['artwork_url'] ?? '',
         ];
 
         foreach ($extrinsics as $name => $value) {
@@ -85,6 +86,55 @@ class MmmXmlBuilder
         $itemId->appendChild($dom->createElement('SupplierPartID', $payload['template_external_number'] ?? ''));
         $selectedItem->appendChild($itemId);
         $punchout->appendChild($selectedItem);
+
+        $address = trim((string) ($payload['address'] ?? ''));
+        $pictures = is_array($payload['pictures'] ?? null) ? $payload['pictures'] : [];
+        if ($address !== '' || $pictures !== []) {
+            $properties = $dom->createElement('Properties');
+            $propertyNode = $dom->createElement('Property');
+
+            if ($address !== '') {
+                $propertyNode->appendChild($dom->createElement('Address', $address));
+            }
+
+            if ($pictures !== []) {
+                $picturesNode = $dom->createElement('Pictures');
+
+                foreach ($pictures as $picture) {
+                    if (!is_array($picture)) {
+                        continue;
+                    }
+
+                    $pictureNode = $dom->createElement('Picture');
+
+                    if (!empty($picture['id'])) {
+                        $pictureNode->appendChild($dom->createElement('ID', (string) $picture['id']));
+                    }
+                    if (!empty($picture['caption'])) {
+                        $pictureNode->appendChild($dom->createElement('Caption', (string) $picture['caption']));
+                    }
+                    if (!empty($picture['filename'])) {
+                        $pictureNode->appendChild($dom->createElement('FileName', (string) $picture['filename']));
+                    }
+                    if (!empty($picture['url'])) {
+                        $pictureNode->appendChild($dom->createElement('URL', (string) $picture['url']));
+                    }
+
+                    if ($pictureNode->hasChildNodes()) {
+                        $picturesNode->appendChild($pictureNode);
+                    }
+                }
+
+                if ($picturesNode->hasChildNodes()) {
+                    $propertyNode->appendChild($picturesNode);
+                }
+            }
+
+            if ($propertyNode->hasChildNodes()) {
+                $properties->appendChild($propertyNode);
+                $punchout->appendChild($properties);
+            }
+        }
 
         $doctype = '<!DOCTYPE cXML SYSTEM "http://xml.cXML.org/schemas/cXML/1.2.007/cXML.dtd">';
         $body = $dom->saveXML($dom->documentElement, LIBXML_NOEMPTYTAG);

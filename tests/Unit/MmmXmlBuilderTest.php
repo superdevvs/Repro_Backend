@@ -22,9 +22,25 @@ class MmmXmlBuilderTest extends TestCase
             'first_name' => 'Print',
             'last_name' => 'Admin',
             'start_point' => 'category',
+            'artwork_url' => 'https://cdn.example.test/artwork/property-flyer.pdf',
             'template_external_number' => null,
             'deployment_mode' => 'test',
             'url_return' => 'https://app.test/api/integrations/mmm/return',
+            'address' => '250 MMM Lane, Baltimore, MD 21201',
+            'pictures' => [
+                [
+                    'id' => '11',
+                    'caption' => 'Front Exterior',
+                    'filename' => 'front.jpg',
+                    'url' => 'https://cdn.example.test/images/front.jpg',
+                ],
+                [
+                    'id' => '12',
+                    'caption' => 'Kitchen',
+                    'filename' => 'kitchen.jpg',
+                    'url' => 'https://cdn.example.test/images/kitchen.jpg',
+                ],
+            ],
         ]);
 
         $document = new \DOMDocument();
@@ -41,13 +57,18 @@ class MmmXmlBuilderTest extends TestCase
         $this->assertSame('print-admin@example.com', $extrinsics['UserEmail'] ?? null);
         $this->assertSame('print-admin@example.com', $extrinsics['UniqueName'] ?? null);
         $this->assertSame('category', $extrinsics['StartPoint'] ?? null);
+        $this->assertSame('https://cdn.example.test/artwork/property-flyer.pdf', $extrinsics['ArtworkURL'] ?? null);
 
         $this->assertArrayNotHasKey('FirstName', $extrinsics);
         $this->assertArrayNotHasKey('LastName', $extrinsics);
-        $this->assertArrayNotHasKey('ArtworkURL', $extrinsics);
-        $this->assertSame(0, $document->getElementsByTagName('Properties')->length);
-        $this->assertSame(0, $document->getElementsByTagName('Property')->length);
-        $this->assertSame(0, $document->getElementsByTagName('Pictures')->length);
+
+        $this->assertSame(1, $document->getElementsByTagName('Properties')->length);
+        $this->assertSame(1, $document->getElementsByTagName('Property')->length);
+        $this->assertSame('250 MMM Lane, Baltimore, MD 21201', $document->getElementsByTagName('Address')->item(0)?->textContent);
+        $this->assertSame(1, $document->getElementsByTagName('Pictures')->length);
+        $this->assertSame(2, $document->getElementsByTagName('Picture')->length);
+        $this->assertSame('front.jpg', $document->getElementsByTagName('FileName')->item(0)?->textContent);
+        $this->assertSame('https://cdn.example.test/images/front.jpg', $document->getElementsByTagName('URL')->item(1)?->textContent);
 
         $supplierPartId = $document->getElementsByTagName('SupplierPartID')->item(0);
         $this->assertNotNull($supplierPartId);

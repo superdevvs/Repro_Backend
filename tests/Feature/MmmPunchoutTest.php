@@ -4,10 +4,12 @@ namespace Tests\Feature;
 
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
@@ -90,6 +92,7 @@ class MmmPunchoutTest extends TestCase
     public function admin_can_start_mmm_punchout_and_store_launch_metadata_without_a_template_number(): void
     {
         $redirectUrl = 'https://repro.mymarketingmatters.com/session/print-123';
+        Storage::fake('public');
         Http::fake([
             'https://repro.mymarketingmatters.com/*' => Http::response(
                 $this->successfulPunchoutResponse($redirectUrl),
@@ -99,6 +102,42 @@ class MmmPunchoutTest extends TestCase
 
         Sanctum::actingAs($this->admin);
         $shoot = $this->createShoot();
+        $this->attachShootFile($shoot, [
+            'filename' => 'front.jpg',
+            'stored_filename' => 'front.jpg',
+            'path' => 'shoots/' . $shoot->id . '/front.jpg',
+            'storage_path' => 'shoots/' . $shoot->id . '/front.jpg',
+            'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
+            'workflow_stage' => ShootFile::STAGE_VERIFIED,
+        ], 'front-image');
+        $this->attachShootFile($shoot, [
+            'filename' => 'kitchen.jpg',
+            'stored_filename' => 'kitchen.jpg',
+            'path' => 'shoots/' . $shoot->id . '/kitchen.jpg',
+            'storage_path' => 'shoots/' . $shoot->id . '/kitchen.jpg',
+            'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ], 'kitchen-image');
+        $this->attachShootFile($shoot, [
+            'filename' => 'raw-only.jpg',
+            'stored_filename' => 'raw-only.jpg',
+            'path' => 'shoots/' . $shoot->id . '/raw-only.jpg',
+            'storage_path' => 'shoots/' . $shoot->id . '/raw-only.jpg',
+            'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ], 'raw-image');
+        $this->attachShootFile($shoot, [
+            'filename' => 'flyer.pdf',
+            'stored_filename' => 'flyer.pdf',
+            'path' => 'shoots/' . $shoot->id . '/flyer.pdf',
+            'storage_path' => 'shoots/' . $shoot->id . '/flyer.pdf',
+            'file_type' => 'application/pdf',
+            'mime_type' => 'application/pdf',
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ], 'pdf-artwork');
 
         $response = $this->postJson("/api/integrations/shoots/{$shoot->id}/mmm/punchout");
 
@@ -119,6 +158,12 @@ class MmmPunchoutTest extends TestCase
         $this->assertNull($session->template_external_number);
         $this->assertSame($redirectUrl, $session->redirect_url);
         $this->assertSame('category', data_get($session->request_payload, 'payload.start_point'));
+        $this->assertSame('250 MMM Lane, Baltimore, MD 21201', data_get($session->request_payload, 'payload.address'));
+        $this->assertSame(
+            url('/storage/shoots/' . $shoot->id . '/flyer.pdf'),
+            data_get($session->request_payload, 'payload.artwork_url'),
+        );
+        $this->assertCount(2, data_get($session->request_payload, 'payload.pictures', []));
 
         $this->assertSame('punchout_ready', $shoot->mmm_status);
         $this->assertSame($redirectUrl, $shoot->mmm_redirect_url);
@@ -126,22 +171,33 @@ class MmmPunchoutTest extends TestCase
         $this->assertNotNull($shoot->mmm_buyer_cookie);
         $this->assertNotNull($shoot->mmm_last_punchout_at);
 
-        Http::assertSent(function (ClientRequest $request) {
+        Http::assertSent(function (ClientRequest $request) use ($shoot) {
             $xml = (string) $request->body();
             $document = new \DOMDocument();
             $document->loadXML($xml);
 
+            $extrinsics = [];
+            foreach ($document->getElementsByTagName('Extrinsic') as $node) {
+                $extrinsics[$node->getAttribute('name')] = $node->textContent;
+            }
             $supplierPartId = $document->getElementsByTagName('SupplierPartID')->item(0);
+            $pictureFileNames = [];
+            foreach ($document->getElementsByTagName('FileName') as $node) {
+                $pictureFileNames[] = $node->textContent;
+            }
 
             return $request->url() === 'https://repro.mymarketingmatters.com/PunchoutSetup.asp'
-                && str_contains($xml, 'name="UserFirstName"')
-                && str_contains($xml, 'name="UserLastName"')
-                && str_contains($xml, 'name="CostCenter">Repro</Extrinsic>')
+                && ($extrinsics['UserFirstName'] ?? null) === 'MMM'
+                && ($extrinsics['UserLastName'] ?? null) === 'Admin'
+                && ($extrinsics['CostCenter'] ?? null) === 'Repro'
+                && ($extrinsics['ArtworkURL'] ?? null) === url('/storage/shoots/' . $shoot->id . '/flyer.pdf')
+                && $document->getElementsByTagName('Address')->item(0)?->textContent === '250 MMM Lane, Baltimore, MD 21201'
+                && $document->getElementsByTagName('Picture')->length === 2
+                && $pictureFileNames === ['front.jpg', 'kitchen.jpg']
                 && $supplierPartId !== null
                 && $supplierPartId->textContent === ''
                 && !str_contains($xml, 'name="FirstName"')
-                && !str_contains($xml, 'ArtworkURL')
-                && !str_contains($xml, '<Properties>');
+                && !in_array('raw-only.jpg', $pictureFileNames, true);
         });
     }
 
@@ -316,5 +372,24 @@ XML;
   </Response>
 </cXML>
 XML;
+    }
+
+    protected function attachShootFile(Shoot $shoot, array $attributes, string $contents): ShootFile
+    {
+        $path = $attributes['storage_path'] ?? $attributes['path'];
+        Storage::disk('public')->put($path, $contents);
+
+        return ShootFile::create(array_merge([
+            'shoot_id' => $shoot->id,
+            'filename' => 'file.jpg',
+            'stored_filename' => 'file.jpg',
+            'path' => $path,
+            'storage_path' => $path,
+            'file_type' => 'image/jpeg',
+            'mime_type' => 'image/jpeg',
+            'file_size' => strlen($contents),
+            'uploaded_by' => $this->admin->id,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ], $attributes));
     }
 }

@@ -256,6 +256,10 @@ class MmmService
     {
         $user = $params['user'] ?? null;
         $nameParts = $this->splitName($user);
+        $propertyDetails = $shoot->property_details ?? [];
+        $address = $params['address'] ?? $this->formatAddress($shoot, $propertyDetails);
+        $artworkUrl = $this->resolveArtworkUrl($shoot, $params);
+        $pictures = $this->buildPictures($shoot, $params['file_ids'] ?? []);
 
         return [
             'duns' => $this->duns,
@@ -273,6 +277,9 @@ class MmmService
             'url_return' => $params['url_return'] ?? $this->urlReturn,
             'to_identity' => $params['to_identity'] ?? $this->toIdentity,
             'sender_identity' => $params['sender_identity'] ?? $this->senderIdentity,
+            'address' => $address !== '' ? $address : null,
+            'artwork_url' => $artworkUrl,
+            'pictures' => $pictures,
         ];
     }
 
@@ -478,11 +485,18 @@ class MmmService
             return $address;
         }
 
-        return trim(implode(', ', array_filter([
+        $lineOne = trim(implode(', ', array_filter([
             $shoot->address,
             $shoot->city,
+        ])));
+        $stateZip = trim(implode(' ', array_filter([
             $shoot->state,
             $shoot->zip,
+        ])));
+
+        return trim(implode(', ', array_filter([
+            $lineOne,
+            $stateZip,
         ])));
     }
 
@@ -512,11 +526,17 @@ class MmmService
     private function buildPictures(Shoot $shoot, array $fileIds = []): array
     {
         $files = $shoot->files;
+        $eligibleFiles = $files->whereIn('workflow_stage', [
+            ShootFile::STAGE_VERIFIED,
+            ShootFile::STAGE_COMPLETED,
+        ]);
+
         if (!empty($fileIds)) {
-            $ids = array_map('intval', $fileIds);
-            $files = $files->whereIn('id', $ids);
+            $ids = array_values(array_unique(array_map('intval', $fileIds)));
+            $selectedEligibleFiles = $eligibleFiles->whereIn('id', $ids);
+            $files = $selectedEligibleFiles->isNotEmpty() ? $selectedEligibleFiles : $eligibleFiles;
         } else {
-            $files = $files->whereIn('workflow_stage', [ShootFile::STAGE_VERIFIED, ShootFile::STAGE_COMPLETED]);
+            $files = $eligibleFiles;
         }
 
         return $files->filter(function (ShootFile $file) {
@@ -538,7 +558,7 @@ class MmmService
     private function resolveFileUrl(ShootFile $file): ?string
     {
         if ($file->url) {
-            return $file->url;
+            return $this->ensureAbsoluteUrl($file->url);
         }
 
         $path = $file->storage_path ?: $file->path;
@@ -547,11 +567,11 @@ class MmmService
         }
 
         if ($path && Storage::disk('public')->exists($path)) {
-            return Storage::disk('public')->url($path);
+            return $this->ensureAbsoluteUrl(Storage::disk('public')->url($path));
         }
 
         if ($path && !Str::startsWith($path, 'http') && !$file->dropbox_path) {
-            return Storage::disk('public')->url($path);
+            return $this->ensureAbsoluteUrl(Storage::disk('public')->url($path));
         }
 
         if ($file->dropbox_path) {
@@ -559,5 +579,19 @@ class MmmService
         }
 
         return null;
+    }
+
+    private function ensureAbsoluteUrl(?string $url): ?string
+    {
+        $candidate = trim((string) $url);
+        if ($candidate === '') {
+            return null;
+        }
+
+        if (preg_match('/^https?:\/\//i', $candidate)) {
+            return $candidate;
+        }
+
+        return url($candidate);
     }
 }
