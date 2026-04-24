@@ -8,7 +8,9 @@ use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -54,6 +56,8 @@ class ShootPublicAssetsService
     {
         $assets = $this->buildPublicAssets($shoot);
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+        $videoUrl = $this->resolveTypedVideoUrl($tourLinks, $type);
+        $videoThumbnailUrl = $this->resolveVideoThumbnailUrl($videoUrl);
 
         $iguideUrl = match ($type) {
             'branded' => $shoot->iguide_tour_url
@@ -77,6 +81,9 @@ class ShootPublicAssetsService
         $assets['matterport_url'] = $type === 'branded'
             ? ($tourLinks['matterport_branded'] ?? $tourLinks['matterport'] ?? null)
             : ($tourLinks['matterport_mls'] ?? $tourLinks['matterport'] ?? null);
+        $assets['video_link'] = $videoUrl;
+        $assets['video_thumbnail_url'] = $videoThumbnailUrl;
+        $assets['video_poster_url'] = $videoThumbnailUrl;
         $assets['embeds'] = $tourLinks['embeds'] ?? [];
         $assets['tour_links'] = $tourLinks;
         $assets['tour_style'] = $tourLinks['tour_style'] ?? 'default';
@@ -517,6 +524,94 @@ class ShootPublicAssetsService
         }
 
         return is_array($tourLinks) ? $tourLinks : [];
+    }
+
+    protected function resolveTypedVideoUrl(array $tourLinks, string $type): ?string
+    {
+        $videoKey = match ($type) {
+            'branded' => 'video_branded',
+            'mls' => 'video_mls',
+            'generic-mls' => 'video_generic',
+            default => 'video_link',
+        };
+
+        $value = $tourLinks[$videoKey] ?? null;
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    protected function resolveVideoThumbnailUrl(?string $videoUrl): ?string
+    {
+        if (!$videoUrl) {
+            return null;
+        }
+
+        $youtubeId = $this->extractYoutubeVideoId($videoUrl);
+        if ($youtubeId) {
+            return sprintf('https://i.ytimg.com/vi/%s/hqdefault.jpg', $youtubeId);
+        }
+
+        $vimeoId = $this->extractVimeoVideoId($videoUrl);
+        if (!$vimeoId) {
+            return null;
+        }
+
+        return Cache::remember(
+            "public_video_thumbnail:vimeo:{$vimeoId}",
+            now()->addHours(12),
+            function () use ($vimeoId) {
+                try {
+                    $response = Http::acceptJson()
+                        ->timeout(5)
+                        ->get('https://vimeo.com/api/oembed.json', [
+                            'url' => "https://vimeo.com/{$vimeoId}",
+                        ]);
+
+                    if (!$response->ok()) {
+                        return null;
+                    }
+
+                    $thumbnailUrl = trim((string) $response->json('thumbnail_url'));
+
+                    return $thumbnailUrl !== '' ? $thumbnailUrl : null;
+                } catch (\Throwable $exception) {
+                    Log::warning('Failed to resolve Vimeo thumbnail for public video page', [
+                        'video_url' => $videoUrl,
+                        'vimeo_id' => $vimeoId,
+                        'error' => $exception->getMessage(),
+                    ]);
+
+                    return null;
+                }
+            }
+        );
+    }
+
+    protected function extractYoutubeVideoId(string $videoUrl): ?string
+    {
+        if (!preg_match(
+            '/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i',
+            $videoUrl,
+            $matches
+        )) {
+            return null;
+        }
+
+        return $matches[1] ?? null;
+    }
+
+    protected function extractVimeoVideoId(string $videoUrl): ?string
+    {
+        if (!preg_match('/(?:player\.)?vimeo\.com\/(?:video\/)?(\d+)/i', $videoUrl, $matches)) {
+            return null;
+        }
+
+        return $matches[1] ?? null;
     }
 
     protected function resolveWatermarkedPath(?string $path): ?string
