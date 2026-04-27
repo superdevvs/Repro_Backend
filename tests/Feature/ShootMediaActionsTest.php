@@ -33,6 +33,7 @@ class ShootMediaActionsTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+    protected User $superadmin;
     protected User $editingManager;
     protected User $editor;
     protected User $client;
@@ -48,6 +49,11 @@ class ShootMediaActionsTest extends TestCase
         $this->admin = User::factory()->create([
             'role' => 'admin',
             'email' => 'media-admin@test.com',
+        ]);
+
+        $this->superadmin = User::factory()->create([
+            'role' => 'superadmin',
+            'email' => 'media-superadmin@test.com',
         ]);
 
         $this->editor = User::factory()->create([
@@ -155,6 +161,98 @@ class ShootMediaActionsTest extends TestCase
         Queue::assertPushed(SyncShootIguideJob::class, function (SyncShootIguideJob $job) use ($shoot) {
             return $job->shootId === $shoot->id;
         });
+    }
+
+    /** @test */
+    public function admin_can_upload_edited_files_while_a_shoot_is_still_scheduled(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('uploadToCompleted')
+            ->once()
+            ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
+                $path = 'shoots/' . $shoot->id . '/completed/' . $file->hashName();
+                Storage::disk('public')->put($path, 'edited-upload');
+
+                return ShootFile::create([
+                    'shoot_id' => $shoot->id,
+                    'filename' => $file->getClientOriginalName(),
+                    'stored_filename' => basename($path),
+                    'path' => $path,
+                    'storage_path' => $path,
+                    'file_type' => $file->getMimeType(),
+                    'file_size' => $file->getSize(),
+                    'media_type' => 'edited',
+                    'uploaded_by' => $userId,
+                    'workflow_stage' => ShootFile::STAGE_COMPLETED,
+                ]);
+            });
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+            'files' => [UploadedFile::fake()->image('edited-upload.jpg')],
+            'upload_type' => 'edited',
+        ], ['Accept' => 'application/json']);
+
+        $response->assertOk()
+            ->assertJsonPath('success_count', 1)
+            ->assertJsonPath('error_count', 0);
+
+        $this->assertDatabaseHas('shoot_files', [
+            'shoot_id' => $shoot->id,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'media_type' => 'edited',
+        ]);
+    }
+
+    /** @test */
+    public function superadmin_can_upload_edited_files_after_delivery(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->superadmin);
+
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('uploadToCompleted')
+            ->once()
+            ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
+                $path = 'shoots/' . $shoot->id . '/completed/' . $file->hashName();
+                Storage::disk('public')->put($path, 'superadmin-edited-upload');
+
+                return ShootFile::create([
+                    'shoot_id' => $shoot->id,
+                    'filename' => $file->getClientOriginalName(),
+                    'stored_filename' => basename($path),
+                    'path' => $path,
+                    'storage_path' => $path,
+                    'file_type' => $file->getMimeType(),
+                    'file_size' => $file->getSize(),
+                    'media_type' => 'edited',
+                    'uploaded_by' => $userId,
+                    'workflow_stage' => ShootFile::STAGE_COMPLETED,
+                ]);
+            });
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+            'files' => [UploadedFile::fake()->image('superadmin-upload.jpg')],
+            'upload_type' => 'edited',
+        ], ['Accept' => 'application/json']);
+
+        $response->assertOk()
+            ->assertJsonPath('success_count', 1)
+            ->assertJsonPath('error_count', 0);
     }
 
     /** @test */
