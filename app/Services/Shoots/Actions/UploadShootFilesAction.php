@@ -5,6 +5,7 @@ namespace App\Services\Shoots\Actions;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,8 @@ class UploadShootFilesAction
 {
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
-        protected ShootMediaMutationSupportService $support
+        protected ShootMediaMutationSupportService $support,
+        protected ShootActivityLogger $activityLogger
     ) {
     }
 
@@ -233,6 +235,29 @@ class UploadShootFilesAction
             }
 
             DB::commit();
+
+            if (count($uploadedFiles) > 0) {
+                try {
+                    $this->activityLogger->log(
+                        $shoot,
+                        'media_uploaded',
+                        [
+                            'uploaded_by_role' => $user?->role,
+                            'uploaded_by_name' => $user?->name,
+                            'type' => $uploadType === 'edited' ? 'edited' : 'raw',
+                            'file_count' => count($uploadedFiles),
+                            'file_ids' => array_values(array_filter(array_column($uploadedFiles, 'id'))),
+                            'filenames' => array_values(array_filter(array_column($uploadedFiles, 'filename'))),
+                        ],
+                        $user
+                    );
+                } catch (\Exception $activityException) {
+                    Log::warning('Failed to log shoot media upload activity', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $activityException->getMessage(),
+                    ]);
+                }
+            }
 
             return [
                 'status' => 200,

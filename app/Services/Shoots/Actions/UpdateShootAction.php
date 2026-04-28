@@ -176,6 +176,7 @@ class UpdateShootAction
         $originalCompanyNotes = $shoot->company_notes;
         $originalPhotographerNotes = $shoot->photographer_notes;
         $originalEditorNotes = $shoot->editor_notes;
+        $originalTourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
 
         if (array_key_exists('is_private_listing', $validated)) {
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
@@ -253,6 +254,11 @@ class UpdateShootAction
         }
 
         $this->editablePayloadService->apply($shoot, $validated);
+        $updatedTourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+        $tourLinksChanged = $originalTourLinks !== $updatedTourLinks;
+        $generatedTourLinkKeys = $tourLinksChanged
+            ? $this->extractMeaningfulTourLinkKeys($updatedTourLinks)
+            : [];
 
         if (array_key_exists('ghost_user_ids', $validated)) {
             $shoot->ghostUsers()->sync($ghostUserIds);
@@ -318,6 +324,9 @@ class UpdateShootAction
             if ($originalEditorNotes !== $shoot->editor_notes) {
                 $changes['editor_notes'] = 'updated';
             }
+            if ($tourLinksChanged) {
+                $changes['tour_links'] = 'updated';
+            }
 
             if (!empty($changes)) {
                 $this->activityLogger->log(
@@ -332,6 +341,24 @@ class UpdateShootAction
             }
         } catch (\Exception $e) {
             Log::warning('Failed to log shoot update activity: ' . $e->getMessage());
+        }
+
+        if (!empty($generatedTourLinkKeys)) {
+            try {
+                $this->activityLogger->log(
+                    $shoot,
+                    'tour_links_generated',
+                    [
+                        'changed_keys' => $generatedTourLinkKeys,
+                        'tour_link_count' => count($generatedTourLinkKeys),
+                        'generated_by_role' => $user->role,
+                        'generated_by_name' => $user->name,
+                    ],
+                    $user
+                );
+            } catch (\Exception $e) {
+                Log::warning('Failed to log tour link activity: ' . $e->getMessage());
+            }
         }
 
         if ($previousPrivateListing !== (bool) ($shoot->is_private_listing ?? false)) {
@@ -433,6 +460,62 @@ class UpdateShootAction
             $photographerChanged,
             $photographerNewlyAssigned
         )->afterCommit();
+    }
+
+    protected function normalizeTourLinks(mixed $tourLinks): array
+    {
+        if (is_string($tourLinks)) {
+            $tourLinks = json_decode($tourLinks, true) ?: [];
+        }
+
+        if (!is_array($tourLinks)) {
+            return [];
+        }
+
+        return $this->sortArrayRecursively($tourLinks);
+    }
+
+    protected function sortArrayRecursively(array $value): array
+    {
+        foreach ($value as $key => $item) {
+            if (is_array($item)) {
+                $value[$key] = $this->sortArrayRecursively($item);
+            }
+        }
+
+        ksort($value);
+
+        return $value;
+    }
+
+    protected function extractMeaningfulTourLinkKeys(array $tourLinks): array
+    {
+        $ignoredKeys = [
+            'property_description',
+            'property_mls',
+            'property_price',
+            'property_lot_size',
+            'realtor_client',
+            'realtor_client_id',
+            'realtorClient',
+            'realtorClientId',
+        ];
+
+        return collect($tourLinks)
+            ->filter(function ($value, $key) use ($ignoredKeys) {
+                if (in_array((string) $key, $ignoredKeys, true)) {
+                    return false;
+                }
+
+                if (is_array($value)) {
+                    return !empty(array_filter($value, fn ($item) => is_string($item) ? trim($item) !== '' : !empty($item)));
+                }
+
+                return is_string($value) ? trim($value) !== '' : !empty($value);
+            })
+            ->keys()
+            ->values()
+            ->all();
     }
 
     protected function abortJson(string $message, int $status): never

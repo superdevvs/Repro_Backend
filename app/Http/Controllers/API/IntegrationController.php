@@ -11,6 +11,7 @@ use App\Services\BrightMlsService;
 use App\Services\IguideService;
 use App\Services\DropboxWorkflowService;
 use App\Services\MmmService;
+use App\Services\ShootActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
@@ -24,19 +25,22 @@ class IntegrationController extends Controller
     protected $iguideService;
     protected $dropboxService;
     protected $mmmService;
+    protected $activityLogger;
 
     public function __construct(
         ZillowPropertyService $zillowService,
         BrightMlsService $brightMlsService,
         IguideService $iguideService,
         DropboxWorkflowService $dropboxService,
-        MmmService $mmmService
+        MmmService $mmmService,
+        ShootActivityLogger $activityLogger
     ) {
         $this->zillowService = $zillowService;
         $this->brightMlsService = $brightMlsService;
         $this->iguideService = $iguideService;
         $this->dropboxService = $dropboxService;
         $this->mmmService = $mmmService;
+        $this->activityLogger = $activityLogger;
     }
 
     /**
@@ -508,6 +512,29 @@ class IntegrationController extends Controller
 
             // Update shoot with publish status
             $this->brightMlsService->applyPublishResultToShoot($shoot, $result);
+
+            if (($result['success'] ?? false) === true) {
+                try {
+                    $this->activityLogger->log(
+                        $shoot,
+                        'bright_mls_synced',
+                        [
+                            'manifest_id' => $result['manifest_id'] ?? null,
+                            'mls_id' => $result['mls_id'] ?? $shoot->mls_id,
+                            'status' => $result['status'] ?? null,
+                            'mode' => $result['mode'] ?? null,
+                            'environment' => $result['environment'] ?? null,
+                            'auto_publish' => false,
+                        ],
+                        $request->user()
+                    );
+                } catch (\Exception $activityException) {
+                    Log::warning('Failed to log Bright MLS publish activity', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $activityException->getMessage(),
+                    ]);
+                }
+            }
 
             $message = $result['error'] ?? $result['message'] ?? ($result['success'] ? 'Published to Bright MLS' : 'Bright MLS publish failed');
 

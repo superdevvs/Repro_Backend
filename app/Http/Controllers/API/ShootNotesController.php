@@ -5,12 +5,21 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Payment;
 use App\Models\Shoot;
+use App\Models\WorkflowLog;
 use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Http\Request;
 
 class ShootNotesController extends Controller
 {
+    private const WORKFLOW_ACTIVITY_ACTIONS = [
+        'finalize_completed' => 'shoot_finalized_delivered',
+        'status_changed_to_delivered' => 'shoot_finalized_delivered',
+        'slideshow_created' => 'tour_links_generated',
+        'tour_links_generated' => 'tour_links_generated',
+        'bright_mls_synced' => 'bright_mls_synced',
+    ];
+
     public function __construct(
         protected ShootActivityLogger $activityLogger,
         protected StripePaymentMetadataService $stripePaymentMetadataService
@@ -265,18 +274,32 @@ class ShootNotesController extends Controller
 
         $activityLogs = $shoot->activityLogs()
             ->with('user:id,name,role')
-            ->orderBy('created_at', 'desc')
             ->get();
-        $paymentIds = $activityLogs
-            ->map(function ($log) {
-                $metadata = is_array($log->metadata) ? $log->metadata : [];
 
-                return $metadata['payment_id'] ?? $metadata['paymentId'] ?? null;
+        $workflowLogs = $shoot->workflowLogs()
+            ->with('user:id,name,role')
+            ->whereIn('action', array_keys(self::WORKFLOW_ACTIVITY_ACTIONS))
+            ->get()
+            ->reject(function (WorkflowLog $log) use ($activityLogs) {
+                $mappedAction = self::WORKFLOW_ACTIVITY_ACTIONS[$log->action] ?? $log->action;
+
+                return $activityLogs->contains('action', $mappedAction);
             })
+            ->values();
+
+        $entries = collect($activityLogs)
+            ->map(fn ($log) => $this->formatActivityLogEntry($log))
+            ->merge($workflowLogs->map(fn (WorkflowLog $log) => $this->formatWorkflowLogEntry($log)))
+            ->sortByDesc(fn (array $entry) => $entry['sort_at'])
+            ->values();
+
+        $paymentIds = $entries
+            ->map(fn (array $entry) => $entry['metadata']['payment_id'] ?? $entry['metadata']['paymentId'] ?? null)
             ->filter()
             ->map(fn ($paymentId) => (string) $paymentId)
             ->unique()
             ->values();
+
         $paymentsById = Payment::query()
             ->whereIn('id', $paymentIds)
             ->get()
@@ -286,8 +309,8 @@ class ShootNotesController extends Controller
             ->keyBy(fn (Payment $payment) => (string) $payment->id);
 
         return response()->json([
-            'data' => $activityLogs->map(function ($log) use ($paymentsById) {
-                $metadata = is_array($log->metadata) ? $log->metadata : [];
+            'data' => $entries->map(function (array $entry) use ($paymentsById) {
+                $metadata = $entry['metadata'];
                 $paymentId = isset($metadata['payment_id']) ? (string) $metadata['payment_id'] : (isset($metadata['paymentId']) ? (string) $metadata['paymentId'] : null);
                 $payment = $paymentId ? $paymentsById->get($paymentId) : null;
 
@@ -295,20 +318,62 @@ class ShootNotesController extends Controller
                     $metadata = array_merge($metadata, $this->stripePaymentMetadataService->buildActivityMetadata($payment));
                 }
 
-                return [
-                    'id' => $log->id,
-                    'action' => $log->action,
-                    'description' => $log->description,
-                    'metadata' => $metadata,
-                    'created_at' => $log->created_at->toIso8601String(),
-                    'timestamp' => $log->created_at->toIso8601String(),
-                    'user' => $log->user ? [
-                        'id' => $log->user->id,
-                        'name' => $log->user->name,
-                        'role' => $log->user->role,
-                    ] : null,
-                ];
+                unset($entry['sort_at']);
+                $entry['metadata'] = $metadata;
+
+                return $entry;
             }),
         ]);
+    }
+
+    private function formatActivityLogEntry($log): array
+    {
+        return [
+            'id' => $log->id,
+            'action' => $log->action,
+            'description' => $log->description,
+            'metadata' => is_array($log->metadata) ? $log->metadata : [],
+            'created_at' => $log->created_at->toIso8601String(),
+            'timestamp' => $log->created_at->toIso8601String(),
+            'user' => $this->formatActivityUser($log->user),
+            'source' => 'activity',
+            'sort_at' => $log->created_at,
+        ];
+    }
+
+    private function formatWorkflowLogEntry(WorkflowLog $log): array
+    {
+        $action = self::WORKFLOW_ACTIVITY_ACTIONS[$log->action] ?? $log->action;
+        $metadata = is_array($log->metadata) ? $log->metadata : [];
+        $metadata = array_merge($metadata, [
+            'workflow_action' => $log->action,
+            'workflow_details' => $log->details,
+        ]);
+
+        if ($action === 'shoot_finalized_delivered' && $log->user) {
+            $metadata['finalized_by_role'] = $metadata['finalized_by_role'] ?? $log->user->role;
+            $metadata['finalized_by_name'] = $metadata['finalized_by_name'] ?? $log->user->name;
+        }
+
+        return [
+            'id' => 'workflow-' . $log->id,
+            'action' => $action,
+            'description' => $this->activityLogger->describe($action, $metadata),
+            'metadata' => $metadata,
+            'created_at' => $log->created_at->toIso8601String(),
+            'timestamp' => $log->created_at->toIso8601String(),
+            'user' => $this->formatActivityUser($log->user),
+            'source' => 'workflow',
+            'sort_at' => $log->created_at,
+        ];
+    }
+
+    private function formatActivityUser($user): ?array
+    {
+        return $user ? [
+            'id' => $user->id,
+            'name' => $user->name,
+            'role' => $user->role,
+        ] : null;
     }
 }

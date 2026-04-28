@@ -43,6 +43,9 @@ class ShootActivityLogger
         'payment_marked_paid',
         'media_uploaded',
         'media_upload_initiated',
+        'shoot_finalized_delivered',
+        'bright_mls_synced',
+        'tour_links_generated',
         'hero_image_updated',
         'raw_downloaded_by_editor',
         'share_link_generated',
@@ -97,6 +100,10 @@ class ShootActivityLogger
     protected function generateDescription(string $action, array $metadata): string
     {
         $by = isset($metadata['by']) && $metadata['by'] ? " by {$metadata['by']}" : '';
+        $uploadedByRole = $metadata['uploaded_by_role'] ?? $metadata['role'] ?? null;
+        $uploadType = $metadata['type'] ?? $metadata['media_type'] ?? null;
+        $fileCount = $metadata['file_count'] ?? (isset($metadata['file_id']) ? 1 : null);
+        $finalizedByRole = $metadata['finalized_by_role'] ?? $metadata['role'] ?? null;
 
         $descriptions = [
             // Shoot lifecycle
@@ -110,6 +117,8 @@ class ShootActivityLogger
             'shoot_submitted_for_review' => 'Submitted for review' . $by,
             'shoot_completed' => 'Shoot completed' . $by,
             'shoot_delivered' => 'Shoot delivered to client' . $by,
+            'shoot_finalized_delivered' => 'Shoot has been finalized and delivered'
+                . ($finalizedByRole ? " by {$finalizedByRole}" : $by),
             'shoot_resumed_from_hold' => 'Shoot resumed from hold' . $by,
             'shoot_updated' => 'Shoot updated' . $by . (isset($metadata['changes']) && is_array($metadata['changes']) ? ': ' . implode(', ', array_keys($metadata['changes'])) : ''),
             'shoot_deleted' => 'Shoot deleted' . $by,
@@ -141,7 +150,11 @@ class ShootActivityLogger
             'payment_completion_email_sent' => 'Payment confirmation email sent' . (isset($metadata['recipient']) && $metadata['recipient'] ? " to {$metadata['recipient']}" : ''),
 
             // Media & files
-            'media_uploaded' => 'Media uploaded' . (isset($metadata['file_count']) && $metadata['file_count'] ? ": {$metadata['file_count']} files" : ''),
+            'media_uploaded' => $uploadedByRole
+                ? 'Media uploaded by ' . $uploadedByRole
+                    . ($fileCount ? ": {$fileCount} " . ((int) $fileCount === 1 ? 'file' : 'files') : '')
+                    . ($uploadType ? " ({$uploadType})" : '')
+                : 'Media uploaded' . ($fileCount ? ": {$fileCount} " . ((int) $fileCount === 1 ? 'file' : 'files') : ''),
             'media_upload_initiated' => 'Media upload started' . (isset($metadata['file_count']) && $metadata['file_count'] ? ": {$metadata['file_count']} files" : '') . (isset($metadata['type']) && $metadata['type'] ? " ({$metadata['type']})" : ''),
             'hero_image_updated' => 'Hero image updated' . $by . (isset($metadata['filename']) && $metadata['filename'] ? ": {$metadata['filename']}" : ''),
             'album_created' => 'Album created' . (isset($metadata['album_name']) && $metadata['album_name'] ? ": {$metadata['album_name']}" : ''),
@@ -150,6 +163,8 @@ class ShootActivityLogger
             // Sharing
             'share_link_generated' => 'Share link generated' . (isset($metadata['editor_name']) && $metadata['editor_name'] ? " by {$metadata['editor_name']}" : '') . (isset($metadata['file_count']) && $metadata['file_count'] ? " for {$metadata['file_count']} files" : ''),
             'share_link_revoked' => 'Share link revoked' . $by,
+            'bright_mls_synced' => 'Media has been synced to Bright MLS',
+            'tour_links_generated' => 'Tour links have been generated',
 
             // Notes
             'note_added' => 'Note added' . $by . (isset($metadata['note_type']) && $metadata['note_type'] ? " ({$metadata['note_type']})" : ''),
@@ -166,6 +181,11 @@ class ShootActivityLogger
         ];
 
         return $descriptions[$action] ?? ucfirst(str_replace('_', ' ', $action));
+    }
+
+    public function describe(string $action, array $metadata = []): string
+    {
+        return $this->generateDescription($action, $metadata);
     }
 
     /**

@@ -9,6 +9,7 @@ use App\Services\DropboxWorkflowService;
 use App\Services\MailService;
 use App\Services\BrightMlsService;
 use App\Services\Messaging\AutomationService;
+use App\Services\ShootActivityLogger;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -33,7 +34,7 @@ class FinalizeShootJob implements ShouldQueue
         $this->onQueue('default');
     }
 
-    public function handle(DropboxWorkflowService $dropboxService, AutomationService $automationService, MailService $mailService, BrightMlsService $brightMlsService): void
+    public function handle(DropboxWorkflowService $dropboxService, AutomationService $automationService, MailService $mailService, BrightMlsService $brightMlsService, ShootActivityLogger $activityLogger): void
     {
         $lock = Cache::lock("shoot:finalize:{$this->shootId}", 300);
         if (!$lock->get()) {
@@ -123,6 +124,28 @@ class FinalizeShootJob implements ShouldQueue
             }
 
             $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+            $actor = User::find($this->userId);
+
+            try {
+                $activityLogger->log(
+                    $shoot,
+                    'shoot_finalized_delivered',
+                    [
+                        'finalized_by_role' => $actor?->role,
+                        'finalized_by_name' => $actor?->name,
+                        'processed_files' => $processedFiles,
+                        'total_files' => $totalFiles,
+                        'result_status' => Shoot::STATUS_DELIVERED,
+                        'final_status' => $this->finalStatus,
+                    ],
+                    $actor
+                );
+            } catch (\Exception $activityException) {
+                Log::warning('Failed to log finalize activity', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $activityException->getMessage(),
+                ]);
+            }
 
             // Send shoot ready email to client
             $client = User::find($shoot->client_id);
@@ -144,6 +167,27 @@ class FinalizeShootJob implements ShouldQueue
                 try {
                     $mlsResult = $brightMlsService->autoPublishForShoot($shoot->fresh());
                     if ($mlsResult && $mlsResult['success']) {
+                        try {
+                            $activityLogger->log(
+                                $shoot,
+                                'bright_mls_synced',
+                                [
+                                    'manifest_id' => $mlsResult['manifest_id'] ?? null,
+                                    'mls_id' => $mlsResult['mls_id'] ?? $shoot->mls_id,
+                                    'status' => $mlsResult['status'] ?? null,
+                                    'mode' => $mlsResult['mode'] ?? null,
+                                    'environment' => $mlsResult['environment'] ?? null,
+                                    'auto_publish' => true,
+                                ],
+                                $actor
+                            );
+                        } catch (\Exception $activityException) {
+                            Log::warning('Failed to log Bright MLS auto-publish activity', [
+                                'shoot_id' => $shoot->id,
+                                'error' => $activityException->getMessage(),
+                            ]);
+                        }
+
                         Log::info('Bright MLS auto-published on finalize', [
                             'shoot_id' => $shoot->id,
                             'manifest_id' => $mlsResult['manifest_id'] ?? null,

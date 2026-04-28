@@ -270,13 +270,7 @@ class ShootMediaController extends Controller
         if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }
-        $url = $this->downloadShootMediaAction->execute($file);
-
-        if (!$url) {
-            return response()->json(['message' => 'File not available'], 404);
-        }
-
-        return response()->json(['url' => $url]);
+        return $this->downloadShootMediaAction->downloadResponse($file);
     }
 
     public function previewFile(Shoot $shoot, ShootFile $file)

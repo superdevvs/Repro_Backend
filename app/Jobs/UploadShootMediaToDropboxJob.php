@@ -7,6 +7,8 @@ use App\Models\ShootMediaAlbum;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxService;
+use App\Services\DropboxWorkflowService;
+use App\Services\ShootActivityLogger;
 use App\Jobs\GenerateWatermarkedImageJob;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -103,16 +105,21 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
             }
 
             // Log activity
+            $uploader = $this->uploadedBy ? User::find($this->uploadedBy) : null;
             $activityLogger->log(
                 $this->shoot,
                 'media_uploaded',
                 [
                     'file_id' => $shootFile->id,
+                    'file_ids' => [$shootFile->id],
                     'filename' => $this->originalFilename,
                     'type' => $this->mediaType,
+                    'file_count' => 1,
+                    'uploaded_by_role' => $uploader?->role,
+                    'uploaded_by_name' => $uploader?->name,
                     'album_id' => $this->album->id,
                 ],
-                $this->uploadedBy ? \App\Models\User::find($this->uploadedBy) : null
+                $uploader
             );
 
             // Create photographer note if provided
