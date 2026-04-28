@@ -23,7 +23,8 @@ class Invoice extends Model
 
     // Approval status constants
     public const APPROVAL_STATUS_PENDING = 'pending';
-    public const APPROVAL_STATUS_APPROVED = 'approved';
+    public const APPROVAL_STATUS_APPROVED = 'accounts_approved';
+    public const APPROVAL_STATUS_LEGACY_APPROVED = 'approved';
     public const APPROVAL_STATUS_REJECTED = 'rejected';
     public const APPROVAL_STATUS_PENDING_APPROVAL = 'pending_approval';
 
@@ -62,6 +63,11 @@ class Invoice extends Model
         'modified_by',
         'modified_at',
         'modification_notes',
+        'approval_snapshot',
+        'unresolved_warnings',
+        'warning_override_reason',
+        'warning_override_by',
+        'warning_override_at',
     ];
 
     protected $casts = [
@@ -77,9 +83,12 @@ class Invoice extends Model
         'is_paid' => 'boolean',
         'paid_at' => 'datetime',
         'payment_details' => 'array',
+        'approval_snapshot' => 'array',
+        'unresolved_warnings' => 'array',
         'rejected_at' => 'datetime',
         'approved_at' => 'datetime',
         'modified_at' => 'datetime',
+        'warning_override_at' => 'datetime',
     ];
 
     protected $attributes = [
@@ -211,6 +220,16 @@ class Invoice extends Model
         return $this->belongsTo(User::class, 'modified_by');
     }
 
+    public function warningOverrideBy()
+    {
+        return $this->belongsTo(User::class, 'warning_override_by');
+    }
+
+    public function auditEvents()
+    {
+        return $this->hasMany(InvoiceAuditEvent::class)->latest();
+    }
+
     /**
      * Check if invoice can be modified by photographer
      */
@@ -228,6 +247,68 @@ class Invoice extends Model
     public function requiresApproval(): bool
     {
         return $this->approval_status === self::APPROVAL_STATUS_PENDING_APPROVAL;
+    }
+
+    public function isAccountsApproved(): bool
+    {
+        return in_array($this->approval_status, [
+            self::APPROVAL_STATUS_APPROVED,
+            self::APPROVAL_STATUS_LEGACY_APPROVED,
+        ], true);
+    }
+
+    public function hasBlockingWarnings(): bool
+    {
+        return !empty($this->unresolved_warnings);
+    }
+
+    public function recordAuditEvent(string $event, ?User $actor = null, ?string $summary = null, array $metadata = []): InvoiceAuditEvent
+    {
+        return $this->auditEvents()->create([
+            'actor_id' => $actor?->id,
+            'event' => $event,
+            'summary' => $summary,
+            'metadata' => $metadata ?: null,
+        ]);
+    }
+
+    public function buildApprovalSnapshot(): array
+    {
+        $this->loadMissing(['items', 'shoots']);
+
+        $items = $this->items->map(fn (InvoiceItem $item) => [
+            'id' => $item->id,
+            'shoot_id' => $item->shoot_id,
+            'type' => $item->type,
+            'description' => $item->description,
+            'quantity' => (int) $item->quantity,
+            'unit_amount' => round((float) $item->unit_amount, 2),
+            'total_amount' => round((float) $item->total_amount, 2),
+            'meta' => $item->meta,
+        ])->values()->all();
+
+        $commissionableGross = collect($items)->sum(fn (array $item) => (float) data_get($item, 'meta.commissionable_gross', 0));
+        $excludedFees = collect($items)->sum(fn (array $item) => (float) data_get($item, 'meta.excluded_fees_total', 0));
+        $commissionRate = collect($items)
+            ->map(fn (array $item) => data_get($item, 'meta.commission_rate'))
+            ->filter(fn ($value) => $value !== null)
+            ->first();
+
+        return [
+            'invoice_id' => $this->id,
+            'role' => $this->role,
+            'billing_period_start' => optional($this->billing_period_start)->toDateString(),
+            'billing_period_end' => optional($this->billing_period_end)->toDateString(),
+            'total_amount' => round((float) $this->total_amount, 2),
+            'amount_paid' => round((float) $this->amount_paid, 2),
+            'commissionable_gross' => round($commissionableGross, 2),
+            'excluded_fees_total' => round($excludedFees, 2),
+            'commission_rate' => $commissionRate !== null ? (float) $commissionRate : null,
+            'shoot_ids' => $this->shoots->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
+            'items' => $items,
+            'warnings' => $this->unresolved_warnings ?? [],
+            'snapshot_at' => now()->toISOString(),
+        ];
     }
 
     public function payments()

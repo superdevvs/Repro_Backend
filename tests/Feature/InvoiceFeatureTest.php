@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\Service;
@@ -33,9 +34,17 @@ class InvoiceFeatureTest extends TestCase
                 'client_id' => $client->id,
                 'service_id' => $service->id,
                 'scheduled_date' => $start->copy()->addDays($index + 1),
+                'completed_at' => $start->copy()->addDays($index + 1)->setTime(14, 0),
+                'workflow_status' => Shoot::WORKFLOW_COMPLETED,
                 'base_quote' => 150 + ($index * 25),
                 'tax_amount' => 10,
                 'total_quote' => 160 + ($index * 25),
+            ]);
+            $shoot->services()->attach($service->id, [
+                'price' => 160 + ($index * 25),
+                'quantity' => 1,
+                'photographer_pay' => 160 + ($index * 25),
+                'photographer_id' => $photographer->id,
             ]);
 
             Payment::create([
@@ -77,9 +86,17 @@ class InvoiceFeatureTest extends TestCase
             'client_id' => $client->id,
             'service_id' => $service->id,
             'scheduled_date' => $start->copy()->addDay(),
+            'completed_at' => $start->copy()->addDay()->setTime(14, 0),
+            'workflow_status' => Shoot::WORKFLOW_COMPLETED,
             'total_quote' => 200,
             'base_quote' => 180,
             'tax_amount' => 20,
+        ]);
+        $shoot->services()->attach($service->id, [
+            'price' => 200,
+            'quantity' => 1,
+            'photographer_pay' => 200,
+            'photographer_id' => $photographer->id,
         ]);
 
         Payment::create([
@@ -126,9 +143,17 @@ class InvoiceFeatureTest extends TestCase
             'client_id' => $client->id,
             'service_id' => $service->id,
             'scheduled_date' => $start->copy()->addDay(),
+            'completed_at' => $start->copy()->addDay()->setTime(14, 0),
+            'workflow_status' => Shoot::WORKFLOW_COMPLETED,
             'total_quote' => 120,
             'base_quote' => 100,
             'tax_amount' => 20,
+        ]);
+        $shoot->services()->attach($service->id, [
+            'price' => 120,
+            'quantity' => 1,
+            'photographer_pay' => 120,
+            'photographer_id' => $photographer->id,
         ]);
 
         Payment::create([
@@ -150,5 +175,83 @@ class InvoiceFeatureTest extends TestCase
         $response->assertOk();
         $this->assertStringContainsString('text/csv', $response->headers->get('content-type'));
         $this->assertNotNull($response->headers->get('content-disposition'));
+    }
+
+    public function test_sales_rep_weekly_commission_generation_uses_sunday_to_saturday_scheduled_shoots_and_service_exclusions(): void
+    {
+        $salesRep = User::factory()->create([
+            'role' => 'salesRep',
+            'metadata' => [
+                'repDetails' => [
+                    'commissionPercentage' => 15,
+                ],
+            ],
+        ]);
+        $client = User::factory()->create(['role' => 'client']);
+        $baseService = Service::factory()->create([
+            'name' => 'Base photo package',
+            'price' => 1000,
+            'exclude_from_sales_commission' => false,
+        ]);
+        $travelService = Service::factory()->create([
+            'name' => 'Travel fee',
+            'price' => 100,
+            'exclude_from_sales_commission' => true,
+        ]);
+
+        $start = Carbon::parse('2026-04-05')->startOfDay(); // Sunday
+        $end = Carbon::parse('2026-04-11')->endOfDay(); // Saturday
+
+        $sundayShoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'rep_id' => $salesRep->id,
+            'scheduled_date' => '2026-04-05',
+            'total_quote' => 1100,
+            'base_quote' => 1000,
+        ]);
+        $sundayShoot->services()->attach($baseService->id, ['price' => 1000, 'quantity' => 1]);
+        $sundayShoot->services()->attach($travelService->id, ['price' => 100, 'quantity' => 1]);
+
+        $saturdayShoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'rep_id' => $salesRep->id,
+            'scheduled_date' => '2026-04-11',
+            'total_quote' => 400,
+            'base_quote' => 400,
+        ]);
+        $saturdayShoot->services()->attach($baseService->id, ['price' => 400, 'quantity' => 1]);
+
+        $holdShoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'rep_id' => $salesRep->id,
+            'scheduled_date' => null,
+            'workflow_status' => 'on_hold',
+            'total_quote' => 900,
+            'base_quote' => 900,
+        ]);
+        $holdShoot->services()->attach($baseService->id, ['price' => 900, 'quantity' => 1]);
+
+        $invoices = app(InvoiceService::class)->generateSalesRepInvoicesForPeriod($start, $end);
+
+        $this->assertCount(1, $invoices);
+
+        $invoice = $invoices->first()->fresh(['items', 'shoots']);
+        $this->assertSame(Invoice::ROLE_SALES_REP, $invoice->role);
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING, $invoice->approval_status);
+        $this->assertEquals(210.0, (float) $invoice->total_amount);
+        $this->assertSame(2, $invoice->shoots()->count());
+        $this->assertTrue($invoice->shoots->contains('id', $sundayShoot->id));
+        $this->assertTrue($invoice->shoots->contains('id', $saturdayShoot->id));
+        $this->assertFalse($invoice->shoots->contains('id', $holdShoot->id));
+        $this->assertSame([], $invoice->unresolved_warnings);
+
+        $sundayItem = $invoice->items
+            ->where('type', InvoiceItem::TYPE_CHARGE)
+            ->firstWhere('shoot_id', $sundayShoot->id);
+
+        $this->assertEquals(150.0, (float) $sundayItem->total_amount);
+        $this->assertEquals(1000.0, (float) $sundayItem->meta['commissionable_gross']);
+        $this->assertEquals(100.0, (float) $sundayItem->meta['excluded_fees_total']);
+        $this->assertEquals(15.0, (float) $sundayItem->meta['commission_rate']);
     }
 }

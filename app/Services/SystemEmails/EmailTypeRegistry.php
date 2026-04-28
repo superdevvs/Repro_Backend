@@ -72,7 +72,7 @@ class EmailTypeRegistry
             'INVOICE_APPROVED' => new EmailTypeDefinition('INVOICE_APPROVED', 1, 'invoice', 'emails.invoice_approved', 'v1', $invoice, ['photographer', 'rep']),
             'INVOICE_REJECTED' => new EmailTypeDefinition('INVOICE_REJECTED', 1, 'invoice', 'emails.invoice_rejected', 'v1', $invoice, ['photographer', 'rep']),
             'SHOOT_PAID' => new EmailTypeDefinition('SHOOT_PAID', 1, 'payment', 'emails.shoot_paid', 'v1', ['recipient', 'shoot', 'branding', 'meta'], ['client']),
-            'SHOOT_CANCELLED' => new EmailTypeDefinition('SHOOT_CANCELLED', 1, 'booking', 'emails.shoot_removed', 'v1', $shoot, ['client', 'photographer']),
+            'SHOOT_CANCELLED' => new EmailTypeDefinition('SHOOT_CANCELLED', 1, 'booking', 'emails.shoot_cancelled', 'v1', $shoot, ['client', 'photographer']),
             'PHOTOGRAPHER_CHANGED' => new EmailTypeDefinition('PHOTOGRAPHER_CHANGED', 1, 'booking', 'emails.photographer_changed', 'v1', $shoot, ['photographer']),
             'CANCELLATION_FEE_INVOICE' => new EmailTypeDefinition('CANCELLATION_FEE_INVOICE', 1, 'invoice', 'emails.cancellation_fee_invoice', 'v1', ['recipient', 'invoice', 'shoot', 'branding', 'meta'], ['client']),
         ];

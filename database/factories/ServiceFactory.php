@@ -21,6 +21,7 @@ class ServiceFactory extends Factory
             'price' => $this->faker->randomFloat(2, 100, 1000),
             'delivery_time' => $this->faker->numberBetween(24, 168),
             'category_id' => Category::factory(),
+            'exclude_from_sales_commission' => false,
         ];
     }
 }

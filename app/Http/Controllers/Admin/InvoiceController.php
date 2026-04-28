@@ -216,6 +216,15 @@ class InvoiceController extends Controller
 
         $invoice->save();
         $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
+        if ($isPaid) {
+            $this->markPayoutShootsPaid($invoice, $paidAt);
+            $invoice->recordAuditEvent('paid', $request->user(), 'Invoice payment marked as sent.', [
+                'amount_paid' => $amountPaid,
+                'payment_amount' => $paymentAmount,
+                'payment_method' => $paymentMethod,
+                'paid_at' => $paidAt->toISOString(),
+            ]);
+        }
 
         $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
         $context = [
@@ -283,6 +292,33 @@ class InvoiceController extends Controller
 
         $shoot->loadMissing('payments');
         $shoot->syncPaymentStatusFromRecords($paymentMethod ?: $shoot->payment_type);
+    }
+
+    private function markPayoutShootsPaid(Invoice $invoice, Carbon $paidAt): void
+    {
+        if (!in_array($invoice->role, [Invoice::ROLE_PHOTOGRAPHER, Invoice::ROLE_SALES_REP], true)) {
+            return;
+        }
+
+        $invoice->loadMissing('shoots');
+
+        foreach ($invoice->shoots as $shoot) {
+            $updateData = [];
+
+            if ($invoice->photographer_id && !$shoot->photographer_paid_at) {
+                $updateData['photographer_paid_at'] = $paidAt;
+                $updateData['photographer_paid_invoice_id'] = $invoice->id;
+            }
+
+            if ($invoice->sales_rep_id && !$shoot->sales_rep_paid_at) {
+                $updateData['sales_rep_paid_at'] = $paidAt;
+                $updateData['sales_rep_paid_invoice_id'] = $invoice->id;
+            }
+
+            if (!empty($updateData)) {
+                $shoot->update($updateData);
+            }
+        }
     }
 
     private function buildInvoiceResponse(Invoice $invoice): Invoice

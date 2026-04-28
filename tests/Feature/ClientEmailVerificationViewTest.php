@@ -112,32 +112,7 @@ class ClientEmailVerificationViewTest extends TestCase
 
     public function test_shoot_removed_email_uses_the_shared_theme_contract(): void
     {
-        $shoot = (object) [
-            'dashboard_url' => 'https://reprodashboard.com/shoots/1',
-            'location' => '123 Main St, Washington, DC',
-            'status_label' => 'Cancelled',
-            'service_category' => 'Photography',
-            'is_private_listing' => false,
-            'date' => 'April 23, 2026',
-            'time' => '10:00 AM',
-            'client_name' => 'Shubham Prasad',
-            'client_email' => 'shubham@example.com',
-            'rep_name' => null,
-            'photographers_label' => 'TBD',
-            'primary_photographer' => null,
-            'photographers' => [],
-            'property_highlights' => [],
-            'services' => [],
-            'access_details' => [],
-            'notes_lines' => [],
-            'company_notes_lines' => [],
-            'photographer_notes_lines' => [],
-            'tax' => 0,
-            'tax_rate' => 0,
-            'formatted_subtotal' => '$0.00',
-            'formatted_tax' => '$0.00',
-            'formatted_grand_total' => '$0.00',
-        ];
+        $shoot = $this->shootEmailViewData();
 
         $html = view('emails.shoot_removed', [
             'shoot' => $shoot,
@@ -145,12 +120,28 @@ class ClientEmailVerificationViewTest extends TestCase
 
         $normalizedHtml = str_replace(' ', '', strtolower($html));
 
+        $this->assertStringContainsString('Your shoot has been removed.', $html);
+        $this->assertStringContainsString('This shoot has been removed.', $html);
+        $this->assertStringNotContainsString('Your shoot has been cancelled.', $html);
+        $this->assertStringNotContainsString('This shoot has been cancelled.', $html);
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
         $this->assertStringContainsString('background-color:#111c2e!important', $normalizedHtml);
         $this->assertStringContainsString('background-color:#fff0f1', $normalizedHtml);
         $this->assertStringContainsString('background-color:#351b22!important', $normalizedHtml);
+    }
+
+    public function test_shoot_cancelled_email_keeps_cancellation_copy(): void
+    {
+        $html = view('emails.shoot_cancelled', [
+            'shoot' => $this->shootEmailViewData(),
+        ])->render();
+
+        $this->assertStringContainsString('Your shoot has been cancelled.', $html);
+        $this->assertStringContainsString('This shoot has been cancelled.', $html);
+        $this->assertStringNotContainsString('Your shoot has been removed.', $html);
+        $this->assertStringNotContainsString('This shoot has been removed.', $html);
     }
 
     public function test_invoice_generated_email_uses_the_shared_theme_contract(): void
@@ -183,5 +174,35 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('background-color:#16233a!important', $normalizedHtml);
         $this->assertStringContainsString('background-color:#f7fbff', $normalizedHtml);
         $this->assertStringContainsString('background-color:#111c2e!important', $normalizedHtml);
+    }
+
+    private function shootEmailViewData(): object
+    {
+        return (object) [
+            'dashboard_url' => 'https://reprodashboard.com/shoots/1',
+            'location' => '123 Main St, Washington, DC',
+            'status_label' => 'Cancelled',
+            'service_category' => 'Photography',
+            'is_private_listing' => false,
+            'date' => 'April 23, 2026',
+            'time' => '10:00 AM',
+            'client_name' => 'Shubham Prasad',
+            'client_email' => 'shubham@example.com',
+            'rep_name' => null,
+            'photographers_label' => 'TBD',
+            'primary_photographer' => null,
+            'photographers' => [],
+            'property_highlights' => [],
+            'services' => [],
+            'access_details' => [],
+            'notes_lines' => [],
+            'company_notes_lines' => [],
+            'photographer_notes_lines' => [],
+            'tax' => 0,
+            'tax_rate' => 0,
+            'formatted_subtotal' => '$0.00',
+            'formatted_tax' => '$0.00',
+            'formatted_grand_total' => '$0.00',
+        ];
     }
 }

@@ -38,7 +38,7 @@ class InvoiceApprovalController extends Controller
 
         $filters = $request->validate([
             'role' => 'nullable|string|in:photographer,salesRep,salesrep',
-            'approval_status' => 'nullable|string|in:pending_approval,approved,rejected',
+            'approval_status' => 'nullable|string|in:pending_approval,approved,accounts_approved,rejected',
             'search' => 'nullable|string|max:255',
             'start' => 'nullable|date',
             'end' => 'nullable|date',
@@ -60,7 +60,7 @@ class InvoiceApprovalController extends Controller
             'invoice_count' => (clone $query)->count(),
             'total_amount' => round((float) (clone $query)->sum('total_amount'), 2),
             'needs_review_count' => (int) (($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING_APPROVAL] ?? 0) + ($statusBreakdown[Invoice::APPROVAL_STATUS_PENDING] ?? 0)),
-            'approved_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_APPROVED] ?? 0),
+            'approved_count' => (int) (($statusBreakdown[Invoice::APPROVAL_STATUS_APPROVED] ?? 0) + ($statusBreakdown[Invoice::APPROVAL_STATUS_LEGACY_APPROVED] ?? 0)),
             'returned_count' => (int) ($statusBreakdown[Invoice::APPROVAL_STATUS_REJECTED] ?? 0),
         ];
 
@@ -105,6 +105,8 @@ class InvoiceApprovalController extends Controller
             'modifiedBy',
             'approvedBy',
             'rejectedBy',
+            'warningOverrideBy',
+            'auditEvents.actor',
         ])->loadCount([
             'shoots',
             'items as charge_count' => fn (Builder $builder) => $builder->where('type', InvoiceItem::TYPE_CHARGE),
@@ -155,34 +157,40 @@ class InvoiceApprovalController extends Controller
             ], 422);
         }
 
+        $validated = $request->validate([
+            'warning_override_reason' => 'nullable|string|max:1000',
+        ]);
+
+        $warnings = $invoice->unresolved_warnings ?? [];
+        if (!empty($warnings) && empty($validated['warning_override_reason'])) {
+            return response()->json([
+                'message' => 'Unresolved warnings must be fixed or overridden with a reason before approval.',
+                'warnings' => $warnings,
+            ], 422);
+        }
+
         try {
             DB::beginTransaction();
 
-            $invoice->update([
+            $updateData = [
                 'approval_status' => Invoice::APPROVAL_STATUS_APPROVED,
                 'approved_by' => $user->id,
                 'approved_at' => now(),
-            ]);
+                'approval_snapshot' => $invoice->buildApprovalSnapshot(),
+            ];
 
-            // Mark linked shoots as paid
-            $invoice->loadMissing('shoots');
-            foreach ($invoice->shoots as $shoot) {
-                $updateData = [];
-
-                if ($invoice->photographer_id && !$shoot->photographer_paid_at) {
-                    $updateData['photographer_paid_at'] = now();
-                    $updateData['photographer_paid_invoice_id'] = $invoice->id;
-                }
-
-                if ($invoice->sales_rep_id && !$shoot->sales_rep_paid_at) {
-                    $updateData['sales_rep_paid_at'] = now();
-                    $updateData['sales_rep_paid_invoice_id'] = $invoice->id;
-                }
-
-                if (!empty($updateData)) {
-                    $shoot->update($updateData);
-                }
+            if (!empty($warnings)) {
+                $updateData['warning_override_reason'] = $validated['warning_override_reason'];
+                $updateData['warning_override_by'] = $user->id;
+                $updateData['warning_override_at'] = now();
             }
+
+            $invoice->update($updateData);
+            $invoice->recordAuditEvent('accounts_approved', $user, 'Invoice approved by accounts.', [
+                'warnings' => $warnings,
+                'warning_override_reason' => $validated['warning_override_reason'] ?? null,
+                'snapshot' => $invoice->approval_snapshot,
+            ]);
 
             DB::commit();
 
@@ -238,6 +246,9 @@ class InvoiceApprovalController extends Controller
                 'rejected_by' => $user->id,
                 'rejected_at' => now(),
             ]);
+            $invoice->recordAuditEvent('returned', $user, 'Invoice returned for changes.', [
+                'reason' => $validated['reason'],
+            ]);
 
             // Notify photographer
             $this->mailService->sendInvoiceRejectedEmail($invoice);
@@ -290,6 +301,11 @@ class InvoiceApprovalController extends Controller
                     Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
                     Invoice::APPROVAL_STATUS_PENDING,
                 ]);
+            } elseif ($filters['approval_status'] === Invoice::APPROVAL_STATUS_LEGACY_APPROVED) {
+                $query->whereIn('approval_status', [
+                    Invoice::APPROVAL_STATUS_APPROVED,
+                    Invoice::APPROVAL_STATUS_LEGACY_APPROVED,
+                ]);
             } else {
                 $query->where('approval_status', $filters['approval_status']);
             }
@@ -318,12 +334,13 @@ class InvoiceApprovalController extends Controller
 
         return $query
             ->orderByRaw(
-                'CASE approval_status WHEN ? THEN 0 WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END',
+                'CASE approval_status WHEN ? THEN 0 WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 WHEN ? THEN 2 ELSE 3 END',
                 [
                     Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
                     Invoice::APPROVAL_STATUS_PENDING,
                     Invoice::APPROVAL_STATUS_REJECTED,
                     Invoice::APPROVAL_STATUS_APPROVED,
+                    Invoice::APPROVAL_STATUS_LEGACY_APPROVED,
                 ]
             )
             ->orderByRaw('COALESCE(modified_at, approved_at, rejected_at, created_at) DESC');
@@ -353,6 +370,11 @@ class InvoiceApprovalController extends Controller
             'modified_at' => optional($invoice->modified_at)->toISOString(),
             'approved_by' => $invoice->approved_by,
             'approved_at' => optional($invoice->approved_at)->toISOString(),
+            'approval_snapshot' => $invoice->approval_snapshot,
+            'unresolved_warnings' => $invoice->unresolved_warnings ?? [],
+            'warning_override_reason' => $invoice->warning_override_reason,
+            'warning_override_by' => $invoice->warning_override_by,
+            'warning_override_at' => optional($invoice->warning_override_at)->toISOString(),
             'rejected_by' => $invoice->rejected_by,
             'rejected_at' => optional($invoice->rejected_at)->toISOString(),
             'created_at' => optional($invoice->created_at)->toISOString(),
@@ -366,6 +388,7 @@ class InvoiceApprovalController extends Controller
             'modifiedBy' => $this->serializeActor($invoice->modifiedBy),
             'approvedBy' => $this->serializeActor($invoice->approvedBy),
             'rejectedBy' => $this->serializeActor($invoice->rejectedBy),
+            'warningOverrideBy' => $this->serializeActor($invoice->warningOverrideBy),
         ];
     }
 
@@ -411,6 +434,16 @@ class InvoiceApprovalController extends Controller
                 ])
                 ->values(),
             'timeline' => $this->buildTimeline($invoice),
+            'audit_events' => $invoice->auditEvents
+                ->map(fn ($event) => [
+                    'id' => $event->id,
+                    'event' => $event->event,
+                    'summary' => $event->summary,
+                    'metadata' => $event->metadata,
+                    'created_at' => optional($event->created_at)->toISOString(),
+                    'actor' => $this->serializeActor($event->actor),
+                ])
+                ->values(),
         ]);
     }
 
@@ -436,9 +469,16 @@ class InvoiceApprovalController extends Controller
             ] : null,
             $invoice->approved_at ? [
                 'key' => 'approved',
-                'label' => 'Approved for payout',
+                'label' => 'Approved by accounts',
                 'timestamp' => $invoice->approved_at->toISOString(),
                 'actor' => $this->serializeActor($invoice->approvedBy),
+            ] : null,
+            $invoice->warning_override_at ? [
+                'key' => 'warning_override',
+                'label' => 'Warnings overridden',
+                'timestamp' => $invoice->warning_override_at->toISOString(),
+                'actor' => $this->serializeActor($invoice->warningOverrideBy),
+                'reason' => $invoice->warning_override_reason,
             ] : null,
         ])->filter();
 
@@ -476,8 +516,8 @@ class InvoiceApprovalController extends Controller
             $start = Carbon::parse($filters['start'])->startOfDay();
             $end = Carbon::parse($filters['end'])->endOfDay();
         } else {
-            $end = now()->startOfWeek()->subDay()->endOfDay();
-            $start = $end->copy()->startOfWeek();
+            $end = now()->startOfWeek(Carbon::SUNDAY)->subDay()->endOfDay();
+            $start = $end->copy()->startOfWeek(Carbon::SUNDAY);
         }
 
         $this->invoiceService->generateForPeriod($start, $end, false);

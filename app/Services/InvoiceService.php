@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Payment;
+use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
@@ -17,6 +18,7 @@ use Illuminate\Support\Facades\Schema;
 class InvoiceService
 {
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+    private const DEFAULT_SALES_COMMISSION_RATE = 15.0;
 
     protected $mailService;
 
@@ -141,6 +143,19 @@ class InvoiceService
                     ->first();
 
                 if ($existingInvoice) {
+                    if ($existingInvoice->isAccountsApproved() || $existingInvoice->status === Invoice::STATUS_PAID) {
+                        $existingInvoice->recordAuditEvent('recalculation_skipped', null, 'Approved or paid photographer invoice was not recalculated.', [
+                            'total_amount' => $totalAmount,
+                            'service_count' => $photographerServices->count(),
+                        ]);
+                        $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
+                        continue;
+                    }
+
+                    $before = [
+                        'total_amount' => round((float) $existingInvoice->total_amount, 2),
+                        'unresolved_warnings' => $existingInvoice->unresolved_warnings ?? [],
+                    ];
                     $existingInvoice->items()
                         ->where('type', InvoiceItem::TYPE_CHARGE)
                         ->delete();
@@ -170,9 +185,19 @@ class InvoiceService
                         'total_amount' => $totalAmount,
                         'amount_paid' => $amountPaid,
                         'is_paid' => $totalAmount > 0 ? $amountPaid >= $totalAmount : false,
+                        'warning_override_reason' => null,
+                        'warning_override_by' => null,
+                        'warning_override_at' => null,
                     ]);
                     $existingInvoice->shoots()->sync($shootIds->all());
                     $existingInvoice->refreshTotals();
+                    $existingInvoice->recordAuditEvent('recalculated', null, 'Photographer invoice recalculated.', [
+                        'before' => $before,
+                        'after' => [
+                            'total_amount' => round((float) $existingInvoice->total_amount, 2),
+                            'service_count' => $photographerServices->count(),
+                        ],
+                    ]);
                     $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
                     continue;
                 }
@@ -239,6 +264,10 @@ class InvoiceService
 
                 // Refresh totals
                 $invoice->refreshTotals();
+                $invoice->recordAuditEvent('generated', null, 'Photographer invoice generated.', [
+                    'total_amount' => round((float) $invoice->total_amount, 2),
+                    'service_count' => $photographerServices->count(),
+                ]);
 
                 $invoice = $invoice->fresh(['photographer', 'items', 'shoots']);
 
@@ -310,7 +339,10 @@ class InvoiceService
                 'services',
             ])
             ->where('client_id', $user->id)
-            ->whereBetween('scheduled_date', [$start->toDateString(), $end->toDateString()])
+            ->whereBetween('scheduled_date', [
+                $start->copy()->startOfDay()->toDateTimeString(),
+                $end->copy()->endOfDay()->toDateTimeString(),
+            ])
             ->get();
 
         return DB::transaction(function () use ($user, $start, $end, $shoots) {
@@ -455,18 +487,20 @@ class InvoiceService
         $start = $start->copy()->startOfDay();
         $end = $end->copy()->endOfDay();
 
-        $shoots = Shoot::with(['services', 'rep:id,name,email,role,secondary_roles,metadata'])
-            ->where(function ($query) use ($start, $end) {
-                $query->whereBetween('completed_at', [$start, $end])
-                    ->orWhere(function ($innerQuery) use ($start, $end) {
-                        $innerQuery->whereNull('completed_at')
-                            ->whereBetween('admin_verified_at', [$start, $end]);
-                    });
-            })
+        $shoots = Shoot::with([
+                'service.sqftRanges',
+                'services' => fn ($query) => $query->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id']),
+                'rep:id,name,email,role,secondary_roles,metadata,account_status',
+            ])
+            ->whereBetween('scheduled_date', [
+                $start->copy()->startOfDay()->toDateTimeString(),
+                $end->copy()->endOfDay()->toDateTimeString(),
+            ])
             ->whereNotNull('rep_id')
-            ->whereIn('workflow_status', [
-                Shoot::WORKFLOW_COMPLETED,
-                Shoot::WORKFLOW_ADMIN_VERIFIED,
+            ->whereNotIn('workflow_status', [
+                Shoot::STATUS_ON_HOLD,
+                Shoot::STATUS_CANCELLED,
+                Shoot::STATUS_DECLINED,
             ])
             ->get();
 
@@ -481,17 +515,28 @@ class InvoiceService
 
             foreach ($grouped as $repId => $repShoots) {
                 $rep = $repShoots->first()->rep ?: User::find($repId);
-                if (!$this->isSalesRep($rep)) {
+                if (!$this->isActiveSalesRep($rep)) {
                     continue;
                 }
 
-                $commissionRate = (float) data_get($rep->metadata, 'repDetails.commissionPercentage', 0);
-                $grossTotal = (float) $repShoots->sum('total_quote');
-                $commissionTotal = $commissionRate > 0 ? round($grossTotal * ($commissionRate / 100), 2) : 0;
-                $invoiceNotes = $commissionRate > 0
-                    ? sprintf('Commission rate: %s%% on $%s gross', $commissionRate, number_format($grossTotal, 2))
-                    : null;
+                $commissionRate = $this->resolveSalesCommissionRate($rep);
+                $commissionRows = $repShoots
+                    ->map(fn (Shoot $shoot) => $this->buildSalesRepCommissionRow($shoot, $commissionRate))
+                    ->values();
+                $grossTotal = round((float) $commissionRows->sum('commissionable_gross'), 2);
+                $excludedFeesTotal = round((float) $commissionRows->sum('excluded_fees_total'), 2);
+                $commissionTotal = round((float) $commissionRows->sum('commission_amount'), 2);
+                $invoiceNotes = sprintf(
+                    'Commission rate: %s%% on $%s commissionable gross. Excluded fees: $%s.',
+                    $commissionRate,
+                    number_format($grossTotal, 2),
+                    number_format($excludedFeesTotal, 2)
+                );
                 $shootIds = $repShoots->pluck('id')->all();
+                $warnings = $commissionRows
+                    ->flatMap(fn (array $row) => $row['warnings'])
+                    ->values()
+                    ->all();
 
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('sales_rep_id', $repId)
@@ -501,18 +546,58 @@ class InvoiceService
                     ->first();
 
                 if ($existingInvoice) {
-                    $existingInvoice->update([
-                        'total_amount' => $commissionTotal,
-                        'notes' => $invoiceNotes,
-                    ]);
+                    if ($existingInvoice->isAccountsApproved() || $existingInvoice->status === Invoice::STATUS_PAID) {
+                        $existingInvoice->recordAuditEvent('recalculation_skipped', null, 'Approved or paid sales rep invoice was not recalculated.', [
+                            'commissionable_gross' => $grossTotal,
+                            'commission_total' => $commissionTotal,
+                            'warnings' => $warnings,
+                        ]);
+                        $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
+                        continue;
+                    }
+
+                    $before = [
+                        'total_amount' => round((float) $existingInvoice->total_amount, 2),
+                        'unresolved_warnings' => $existingInvoice->unresolved_warnings ?? [],
+                    ];
+                    $existingInvoice->items()
+                        ->where('type', InvoiceItem::TYPE_CHARGE)
+                        ->delete();
+
+                    foreach ($commissionRows as $row) {
+                        $this->createSalesRepCommissionItem($existingInvoice, $row, $commissionRate);
+                    }
+
+                    $invoiceUpdateData = [
+                        'unresolved_warnings' => $warnings,
+                        'warning_override_reason' => null,
+                        'warning_override_by' => null,
+                        'warning_override_at' => null,
+                    ];
+                    if ($this->invoiceTableHasColumn('notes')) {
+                        $invoiceUpdateData['notes'] = $invoiceNotes;
+                    } elseif ($this->invoiceTableHasColumn('modification_notes')) {
+                        $invoiceUpdateData['modification_notes'] = $invoiceNotes;
+                    }
+
+                    $existingInvoice->update($invoiceUpdateData);
                     $existingInvoice->shoots()->sync($shootIds);
                     $existingInvoice->refreshTotals();
+                    $existingInvoice->recordAuditEvent('recalculated', null, 'Sales rep commission invoice recalculated.', [
+                        'before' => $before,
+                        'after' => [
+                            'total_amount' => round((float) $existingInvoice->total_amount, 2),
+                            'commissionable_gross' => $grossTotal,
+                            'commission_total' => $commissionTotal,
+                            'unresolved_warnings' => $warnings,
+                        ],
+                    ]);
                     $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
                     continue;
                 }
 
                 // Create invoice
-                $invoice = Invoice::create([
+                $invoiceData = [
                     'sales_rep_id' => $repId,
                     'user_id' => $repId,
                     'role' => 'salesRep',
@@ -522,37 +607,19 @@ class InvoiceService
                     'billing_period_end' => $end->toDateString(),
                     'status' => Invoice::STATUS_DRAFT,
                     'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
-                    'total_amount' => $commissionTotal,
-                    'notes' => $invoiceNotes,
-                ]);
+                    'unresolved_warnings' => $warnings,
+                ];
+                if ($this->invoiceTableHasColumn('notes')) {
+                    $invoiceData['notes'] = $invoiceNotes;
+                } elseif ($this->invoiceTableHasColumn('modification_notes')) {
+                    $invoiceData['modification_notes'] = $invoiceNotes;
+                }
+
+                $invoice = Invoice::create($invoiceData);
 
                 // Create invoice items for each shoot
-                foreach ($repShoots as $shoot) {
-                    $shootTotal = (float) ($shoot->total_quote ?? 0);
-                    $shootCommission = $commissionRate > 0
-                        ? round($shootTotal * ($commissionRate / 100), 2)
-                        : 0;
-
-                    $invoice->items()->create([
-                        'shoot_id' => $shoot->id,
-                        'type' => InvoiceItem::TYPE_CHARGE,
-                        'description' => sprintf(
-                            'Shoot #%d - %s (Commission %s%% on $%s)',
-                            $shoot->id,
-                            $shoot->address ?? 'Location TBD',
-                            $commissionRate,
-                            number_format($shootTotal, 2)
-                        ),
-                        'quantity' => 1,
-                        'unit_amount' => $shootCommission,
-                        'total_amount' => $shootCommission,
-                        'recorded_at' => $shoot->scheduled_date,
-                        'meta' => [
-                            'workflow_status' => $shoot->workflow_status,
-                            'gross_amount' => $shootTotal,
-                            'commission_rate' => $commissionRate,
-                        ],
-                    ]);
+                foreach ($commissionRows as $row) {
+                    $this->createSalesRepCommissionItem($invoice, $row, $commissionRate);
                 }
 
                 // Sync shoots
@@ -560,6 +627,13 @@ class InvoiceService
 
                 // Refresh totals
                 $invoice->refreshTotals();
+                $invoice->recordAuditEvent('generated', null, 'Sales rep commission invoice generated.', [
+                    'commissionable_gross' => $grossTotal,
+                    'excluded_fees_total' => $excludedFeesTotal,
+                    'commission_rate' => $commissionRate,
+                    'commission_total' => $commissionTotal,
+                    'warnings' => $warnings,
+                ]);
 
                 $invoice = $invoice->fresh(['salesRep', 'items', 'shoots']);
 
@@ -597,13 +671,175 @@ class InvoiceService
      */
     public function generateForLastCompletedWeek(bool $sendEmails = false): Collection
     {
-        $end = now()->startOfWeek()->subDay()->endOfDay();
-        $start = $end->copy()->startOfWeek();
+        $end = now()->startOfWeek(Carbon::SUNDAY)->subDay()->endOfDay();
+        $start = $end->copy()->startOfWeek(Carbon::SUNDAY);
 
         $photographerInvoices = $this->generateForPeriod($start, $end, $sendEmails);
         $salesRepInvoices = $this->generateSalesRepInvoicesForPeriod($start, $end, $sendEmails);
 
         return $photographerInvoices->merge($salesRepInvoices);
+    }
+
+    private function resolveSalesCommissionRate(User $rep): float
+    {
+        $rate = data_get($rep->metadata, 'repDetails.commissionPercentage');
+
+        if (is_numeric($rate) && (float) $rate > 0) {
+            return round((float) $rate, 4);
+        }
+
+        return self::DEFAULT_SALES_COMMISSION_RATE;
+    }
+
+    private function buildSalesRepCommissionRow(Shoot $shoot, float $commissionRate): array
+    {
+        $warnings = [];
+        $commissionableGross = 0.0;
+        $excludedFeesTotal = 0.0;
+        $serviceLines = [];
+        $excludedLines = [];
+        $services = $shoot->services;
+
+        if ($services->isEmpty() && $shoot->service) {
+            $services = collect([$shoot->service]);
+        }
+
+        if ($services->isEmpty()) {
+            $warnings[] = $this->buildInvoiceWarning(
+                'missing_service_lines',
+                $shoot,
+                'Shoot has no priced service line items.'
+            );
+        }
+
+        foreach ($services as $service) {
+            $quantity = (int) data_get($service, 'pivot.quantity', 1);
+            $quantity = max($quantity, 1);
+            $lineAmount = $this->resolveShootServicePrice($shoot, $service, $quantity);
+            $line = [
+                'service_id' => $service->id,
+                'service_name' => $service->name,
+                'quantity' => $quantity,
+                'amount' => $lineAmount,
+                'excluded' => (bool) ($service->exclude_from_sales_commission ?? false),
+            ];
+
+            if ($lineAmount === null) {
+                $warnings[] = $this->buildInvoiceWarning(
+                    'missing_service_price',
+                    $shoot,
+                    sprintf('Service "%s" has no usable price for commission calculation.', $service->name ?? 'Unknown service'),
+                    ['service_id' => $service->id]
+                );
+                continue;
+            }
+
+            if ($this->looksLikeExcludedFee($service->name ?? '') && !$line['excluded']) {
+                $warnings[] = $this->buildInvoiceWarning(
+                    'ambiguous_exclusion',
+                    $shoot,
+                    sprintf('Service "%s" looks like travel/cancellation but is not marked excluded from commission.', $service->name),
+                    ['service_id' => $service->id]
+                );
+            }
+
+            if ($line['excluded']) {
+                $excludedFeesTotal += $lineAmount;
+                $excludedLines[] = $line;
+            } else {
+                $commissionableGross += $lineAmount;
+                $serviceLines[] = $line;
+            }
+        }
+
+        if ($commissionableGross <= 0 && empty($serviceLines)) {
+            $warnings[] = $this->buildInvoiceWarning(
+                'missing_commissionable_amount',
+                $shoot,
+                'Shoot has no commissionable priced service amount.'
+            );
+        }
+
+        return [
+            'shoot' => $shoot,
+            'shoot_id' => $shoot->id,
+            'address' => $shoot->address ?? 'Location TBD',
+            'scheduled_date' => $shoot->scheduled_date,
+            'workflow_status' => $shoot->workflow_status,
+            'commissionable_gross' => round($commissionableGross, 2),
+            'excluded_fees_total' => round($excludedFeesTotal, 2),
+            'commission_amount' => round($commissionableGross * ($commissionRate / 100), 2),
+            'service_lines' => $serviceLines,
+            'excluded_lines' => $excludedLines,
+            'warnings' => $warnings,
+        ];
+    }
+
+    private function resolveShootServicePrice(Shoot $shoot, Service $service, int $quantity): ?float
+    {
+        $pivotPrice = data_get($service, 'pivot.price');
+        if ($pivotPrice !== null && $pivotPrice !== '') {
+            return round((float) $pivotPrice * $quantity, 2);
+        }
+
+        $propertySqft = $this->extractShootSqft($shoot);
+        $price = method_exists($service, 'getPriceForSqft')
+            ? $service->getPriceForSqft($propertySqft)
+            : $service->price;
+
+        if ($price === null || $price === '') {
+            return null;
+        }
+
+        return round((float) $price * $quantity, 2);
+    }
+
+    private function createSalesRepCommissionItem(Invoice $invoice, array $row, float $commissionRate): void
+    {
+        $invoice->items()->create([
+            'shoot_id' => $row['shoot_id'],
+            'type' => InvoiceItem::TYPE_CHARGE,
+            'description' => sprintf(
+                'Shoot #%d - %s (Commission %s%% on $%s)',
+                $row['shoot_id'],
+                $row['address'],
+                $commissionRate,
+                number_format($row['commissionable_gross'], 2)
+            ),
+            'quantity' => 1,
+            'unit_amount' => $row['commission_amount'],
+            'total_amount' => $row['commission_amount'],
+            'recorded_at' => $row['scheduled_date'],
+            'meta' => [
+                'workflow_status' => $row['workflow_status'],
+                'commissionable_gross' => $row['commissionable_gross'],
+                'excluded_fees_total' => $row['excluded_fees_total'],
+                'commission_rate' => $commissionRate,
+                'service_lines' => $row['service_lines'],
+                'excluded_lines' => $row['excluded_lines'],
+                'warnings' => $row['warnings'],
+            ],
+        ]);
+    }
+
+    private function looksLikeExcludedFee(string $name): bool
+    {
+        return preg_match('/travel|cancel|cancellation|reschedule/i', $name) === 1;
+    }
+
+    private function buildInvoiceWarning(string $code, Shoot $shoot, string $message, array $extra = []): array
+    {
+        return array_merge([
+            'code' => $code,
+            'shoot_id' => $shoot->id,
+            'address' => $shoot->address,
+            'message' => $message,
+        ], $extra);
+    }
+
+    private function isActiveSalesRep(?User $user): bool
+    {
+        return $this->isSalesRep($user) && ($user->account_status ?? 'active') === 'active';
     }
 
     private function isSalesRep(?User $user): bool
@@ -864,7 +1100,6 @@ class InvoiceService
                 'is_paid' => false,
                 'is_sent' => true,
                 'status' => Invoice::STATUS_SENT,
-                'notes' => 'Cancellation fee for shoot at ' . $shoot->address,
             ];
 
             $optionalColumns = [
@@ -873,6 +1108,12 @@ class InvoiceService
                 'shoot_id' => $shoot->id,
                 'client_id' => $shoot->client_id,
             ];
+            $note = 'Cancellation fee for shoot at ' . $shoot->address;
+            if ($this->invoiceTableHasColumn('notes')) {
+                $optionalColumns['notes'] = $note;
+            } elseif ($this->invoiceTableHasColumn('modification_notes')) {
+                $optionalColumns['modification_notes'] = $note;
+            }
 
             foreach ($optionalColumns as $column => $value) {
                 if ($this->invoiceTableHasColumn($column)) {

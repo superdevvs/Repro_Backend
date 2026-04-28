@@ -5,9 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
+use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class InvoiceController extends Controller
@@ -297,6 +299,14 @@ class InvoiceController extends Controller
 
         $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
         if ($isPaid) {
+            $this->markPayoutShootsPaid($invoice, $paidAt);
+            $invoice->recordAuditEvent('paid', $request->user(), 'Invoice payment marked as sent.', [
+                'amount_paid' => $amountPaid,
+                'payment_amount' => $paymentAmount,
+                'payment_method' => $paymentMethod,
+                'paid_at' => $paidAt->toISOString(),
+            ]);
+
             $context = [
                 'invoice' => $invoice,
                 'invoice_id' => $invoice->id,
@@ -379,6 +389,33 @@ class InvoiceController extends Controller
 
         $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
             ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
+    }
+
+    private function markPayoutShootsPaid(Invoice $invoice, Carbon $paidAt): void
+    {
+        if (!in_array($invoice->role, [Invoice::ROLE_PHOTOGRAPHER, Invoice::ROLE_SALES_REP], true)) {
+            return;
+        }
+
+        $invoice->loadMissing('shoots');
+
+        foreach ($invoice->shoots as $shoot) {
+            $updateData = [];
+
+            if ($invoice->photographer_id && !$shoot->photographer_paid_at) {
+                $updateData['photographer_paid_at'] = $paidAt;
+                $updateData['photographer_paid_invoice_id'] = $invoice->id;
+            }
+
+            if ($invoice->sales_rep_id && !$shoot->sales_rep_paid_at) {
+                $updateData['sales_rep_paid_at'] = $paidAt;
+                $updateData['sales_rep_paid_invoice_id'] = $invoice->id;
+            }
+
+            if (!empty($updateData)) {
+                $shoot->update($updateData);
+            }
+        }
     }
 
     private function hasRole($user, array $allowedRoles): bool

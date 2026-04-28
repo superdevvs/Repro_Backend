@@ -97,6 +97,11 @@ class PhotographerInvoiceController extends Controller
                     'modified_at' => now(),
                 ]);
             }
+            $invoice->recordAuditEvent('payee_edit', $user, 'Photographer added an invoice expense.', [
+                'item_id' => $item->id,
+                'description' => $item->description,
+                'amount' => (float) $item->total_amount,
+            ]);
 
             DB::commit();
 
@@ -157,6 +162,10 @@ class PhotographerInvoiceController extends Controller
                     'modified_at' => now(),
                 ]);
             }
+            $invoice->recordAuditEvent('payee_edit', $user, 'Photographer removed an invoice expense.', [
+                'item_id' => $item->id,
+                'description' => $item->description,
+            ]);
 
             DB::commit();
 
@@ -207,6 +216,9 @@ class PhotographerInvoiceController extends Controller
                 'rejected_by' => $user->id,
                 'rejected_at' => now(),
             ]);
+            $invoice->recordAuditEvent('payee_returned', $user, 'Photographer requested invoice changes.', [
+                'reason' => $validated['reason'] ?? 'Rejected by photographer',
+            ]);
 
             return response()->json([
                 'message' => 'Invoice rejected successfully',
@@ -252,6 +264,9 @@ class PhotographerInvoiceController extends Controller
                 'modified_by' => $user->id,
                 'modified_at' => now(),
                 'modification_notes' => $validated['notes'] ?? null,
+            ]);
+            $invoice->recordAuditEvent('submitted_for_approval', $user, 'Photographer submitted invoice for accounts approval.', [
+                'notes' => $validated['notes'] ?? null,
             ]);
 
             // Notify admins

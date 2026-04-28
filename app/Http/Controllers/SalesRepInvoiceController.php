@@ -98,6 +98,11 @@ class SalesRepInvoiceController extends Controller
                     'modified_at' => now(),
                 ]);
             }
+            $invoice->recordAuditEvent('payee_edit', $user, 'Sales rep added a commission adjustment.', [
+                'item_id' => $item->id,
+                'description' => $item->description,
+                'amount' => (float) $item->total_amount,
+            ]);
 
             DB::commit();
 
@@ -157,6 +162,10 @@ class SalesRepInvoiceController extends Controller
                     'modified_at' => now(),
                 ]);
             }
+            $invoice->recordAuditEvent('payee_edit', $user, 'Sales rep removed a commission adjustment.', [
+                'item_id' => $item->id,
+                'description' => $item->description,
+            ]);
 
             DB::commit();
 
@@ -207,6 +216,9 @@ class SalesRepInvoiceController extends Controller
                 'rejected_by' => $user->id,
                 'rejected_at' => now(),
             ]);
+            $invoice->recordAuditEvent('payee_returned', $user, 'Sales rep requested commission changes.', [
+                'reason' => $validated['reason'] ?? 'Rejected by sales rep',
+            ]);
 
             return response()->json([
                 'message' => 'Invoice rejected successfully',
@@ -252,6 +264,9 @@ class SalesRepInvoiceController extends Controller
                 'modified_by' => $user->id,
                 'modified_at' => now(),
                 'modification_notes' => $validated['notes'] ?? null,
+            ]);
+            $invoice->recordAuditEvent('submitted_for_approval', $user, 'Sales rep submitted commission invoice for accounts approval.', [
+                'notes' => $validated['notes'] ?? null,
             ]);
 
             // Notify admins

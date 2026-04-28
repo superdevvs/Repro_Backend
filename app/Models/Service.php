@@ -23,6 +23,7 @@ class Service extends Model
         'icon',
         'photographer_required',
         'photographer_pay',
+        'exclude_from_sales_commission',
         'photo_count',
         'quantity',
     ];
@@ -33,6 +34,7 @@ class Service extends Model
         'category_id' => 'integer',
         'photographer_required' => 'boolean',
         'photographer_pay' => 'decimal:2',
+        'exclude_from_sales_commission' => 'boolean',
         'photo_count' => 'integer',
         'allow_multiple' => 'boolean',
         'quantity' => 'integer',

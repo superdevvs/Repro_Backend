@@ -1,16 +1,16 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Your Shoot Has Been Removed')
-@section('preheader', 'Your scheduled shoot has been removed from the schedule and the latest details are included for your records.')
+@section('title', 'Your Shoot Has Been Cancelled')
+@section('preheader', 'Your scheduled shoot has been cancelled and the latest details are included for your records.')
 
 @section('hero')
-    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Removed</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your shoot has been removed.</p>
+    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Cancelled</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your shoot has been cancelled.</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">The last confirmed details are included below for your records, along with the fastest way to rebook if needed.</p>
 @endsection
 
 @section('content')
-<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">This shoot has been removed.</strong></p>
+<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">This shoot has been cancelled.</strong></p>
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
         <tr>
@@ -33,5 +33,5 @@
 @endsection
 
 @section('footer_note')
-    Keep this email if you need a record of the removed appointment details.
+    Keep this email if you need a record of the cancelled appointment details.
 @endsection

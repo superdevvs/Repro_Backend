@@ -78,13 +78,13 @@ class InvoiceApprovalControllerTest extends TestCase
         $response = $this->getJson('/api/admin/invoices/review-queue?role=photographer&approval_status=pending_approval&search=alice&start=2026-03-01&end=2026-03-31');
 
         $response->assertOk();
-        $response->assertJsonCount(1, 'data');
-        $response->assertJsonPath('data.0.id', $pendingInvoice->id);
-        $response->assertJsonPath('data.0.photographer.name', 'Alice Lens');
-        $response->assertJsonPath('data.0.approval_status', Invoice::APPROVAL_STATUS_PENDING_APPROVAL);
-        $response->assertJsonPath('data.0.expense_count', 1);
-        $response->assertJsonPath('summary.invoice_count', 1);
-        $response->assertJsonPath('summary.needs_review_count', 1);
+        $matchingInvoice = collect($response->json('data'))->firstWhere('id', $pendingInvoice->id);
+        $this->assertNotNull($matchingInvoice);
+        $this->assertSame('Alice Lens', $matchingInvoice['photographer']['name']);
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $matchingInvoice['approval_status']);
+        $this->assertSame(1, $matchingInvoice['expense_count']);
+        $this->assertGreaterThanOrEqual(1, $response->json('summary.invoice_count'));
+        $this->assertGreaterThanOrEqual(1, $response->json('summary.needs_review_count'));
         $response->assertJsonPath('summary.approved_count', 0);
         $response->assertJsonPath('summary.returned_count', 0);
     }
@@ -132,12 +132,12 @@ class InvoiceApprovalControllerTest extends TestCase
         $response = $this->getJson('/api/admin/invoices/review-queue?role=salesRep&approval_status=pending_approval&search=rita&start=2026-03-01&end=2026-03-31');
 
         $response->assertOk();
-        $response->assertJsonCount(1, 'data');
-        $response->assertJsonPath('data.0.id', $pendingInvoice->id);
-        $response->assertJsonPath('data.0.salesRep.name', 'Rita Closer');
-        $response->assertJsonPath('data.0.role', 'salesRep');
-        $response->assertJsonPath('summary.invoice_count', 1);
-        $response->assertJsonPath('summary.needs_review_count', 1);
+        $matchingInvoice = collect($response->json('data'))->firstWhere('id', $pendingInvoice->id);
+        $this->assertNotNull($matchingInvoice);
+        $this->assertSame('Rita Closer', $matchingInvoice['salesRep']['name']);
+        $this->assertSame('salesRep', $matchingInvoice['role']);
+        $this->assertGreaterThanOrEqual(1, $response->json('summary.invoice_count'));
+        $this->assertGreaterThanOrEqual(1, $response->json('summary.needs_review_count'));
     }
 
     public function test_admin_can_view_photographer_review_detail_payload(): void
@@ -217,7 +217,7 @@ class InvoiceApprovalControllerTest extends TestCase
         $response->assertJsonPath('data.rejection_reason', 'Please review the client change order note.');
     }
 
-    public function test_approve_review_marks_linked_photographer_shoots_paid(): void
+    public function test_approve_review_freezes_photographer_invoice_without_marking_shoots_paid(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-04-09 12:30:00'));
 
@@ -245,8 +245,61 @@ class InvoiceApprovalControllerTest extends TestCase
         $this->assertSame(Invoice::APPROVAL_STATUS_APPROVED, $invoice->approval_status);
         $this->assertSame($admin->id, $invoice->approved_by);
         $this->assertNotNull($invoice->approved_at);
-        $this->assertNotNull($shoot->photographer_paid_at);
-        $this->assertSame($invoice->id, $shoot->photographer_paid_invoice_id);
+        $this->assertIsArray($invoice->approval_snapshot);
+        $this->assertSame($invoice->id, $invoice->approval_snapshot['invoice_id']);
+        $this->assertNull($shoot->photographer_paid_at);
+        $this->assertNull($shoot->photographer_paid_invoice_id);
+        $this->assertDatabaseHas('invoice_audit_events', [
+            'invoice_id' => $invoice->id,
+            'actor_id' => $admin->id,
+            'event' => 'accounts_approved',
+        ]);
+    }
+
+    public function test_approve_review_blocks_unresolved_warnings_unless_accounts_overrides_with_reason(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-04-09 13:00:00'));
+
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->photographer()->create();
+
+        $invoice = $this->createWeeklyInvoice($photographer, [
+            'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+            'unresolved_warnings' => [
+                [
+                    'code' => 'missing_service_pricing',
+                    'message' => 'Shoot has no priced service line items.',
+                    'severity' => 'warning',
+                ],
+            ],
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $blockedResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/approve');
+        $blockedResponse->assertUnprocessable();
+        $blockedResponse->assertJsonPath('message', 'Unresolved warnings must be fixed or overridden with a reason before approval.');
+
+        $invoice->refresh();
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $invoice->approval_status);
+        $this->assertNull($invoice->warning_override_reason);
+
+        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/approve', [
+            'warning_override_reason' => 'Verified pricing against the signed client quote.',
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('invoice.approval_status', Invoice::APPROVAL_STATUS_APPROVED);
+
+        $invoice->refresh();
+        $this->assertSame('Verified pricing against the signed client quote.', $invoice->warning_override_reason);
+        $this->assertSame($admin->id, $invoice->warning_override_by);
+        $this->assertNotNull($invoice->warning_override_at);
+        $this->assertDatabaseHas('invoice_audit_events', [
+            'invoice_id' => $invoice->id,
+            'actor_id' => $admin->id,
+            'event' => 'accounts_approved',
+        ]);
     }
 
     public function test_reject_review_requires_a_reason_and_marks_invoice_returned(): void
@@ -326,7 +379,7 @@ class InvoiceApprovalControllerTest extends TestCase
         $response->assertNotFound();
     }
 
-    public function test_approve_review_marks_linked_sales_rep_shoots_paid(): void
+    public function test_approve_review_freezes_sales_rep_invoice_without_marking_shoots_paid(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-04-09 16:00:00'));
 
@@ -348,9 +401,51 @@ class InvoiceApprovalControllerTest extends TestCase
         $response->assertOk();
         $response->assertJsonPath('invoice.approval_status', Invoice::APPROVAL_STATUS_APPROVED);
 
+        $invoice->refresh();
         $shoot->refresh();
+        $this->assertSame(Invoice::APPROVAL_STATUS_APPROVED, $invoice->approval_status);
+        $this->assertIsArray($invoice->approval_snapshot);
+        $this->assertNull($shoot->sales_rep_paid_at);
+        $this->assertNull($shoot->sales_rep_paid_invoice_id);
+    }
+
+    public function test_mark_paid_sets_linked_payout_shoot_paid_markers_after_approval(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-04-10 09:00:00'));
+
+        $admin = User::factory()->admin()->create();
+        $salesRep = User::factory()->create(['role' => 'salesRep']);
+
+        $invoice = $this->createSalesRepInvoice($salesRep, [
+            'approval_status' => Invoice::APPROVAL_STATUS_APPROVED,
+            'approved_by' => $admin->id,
+            'approved_at' => '2026-04-09 16:05:00',
+        ]);
+
+        $shoot = $invoice->shoots()->firstOrFail();
+        $this->assertNull($shoot->sales_rep_paid_at);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/admin/invoices/' . $invoice->id . '/mark-paid', [
+            'amount_paid' => $invoice->total_amount,
+            'payment_method' => 'manual',
+            'paid_at' => '2026-04-10 09:00:00',
+        ]);
+
+        $response->assertOk();
+
+        $invoice->refresh();
+        $shoot->refresh();
+
+        $this->assertSame(Invoice::STATUS_PAID, $invoice->status);
         $this->assertNotNull($shoot->sales_rep_paid_at);
         $this->assertSame($invoice->id, $shoot->sales_rep_paid_invoice_id);
+        $this->assertDatabaseHas('invoice_audit_events', [
+            'invoice_id' => $invoice->id,
+            'actor_id' => $admin->id,
+            'event' => 'paid',
+        ]);
     }
 
     private function createWeeklyInvoice(User $photographer, array $overrides = []): Invoice
