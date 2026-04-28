@@ -20,6 +20,7 @@ echo "[5/6] Caching config & routes..."
 php artisan config:cache 2>&1
 php artisan route:cache 2>&1
 php artisan view:cache 2>&1
+php artisan queue:restart 2>&1
 
 echo "[6/6] Clearing OPcache..."
 php -r 'file_put_contents("/var/www/backend/public/opcache_reset_temp.php", "<?php opcache_reset(); echo \"opcache_cleared\";");'
