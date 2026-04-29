@@ -43,7 +43,13 @@ class MailService
     /**
      * Send account created email
      */
-    public function sendAccountCreatedEmail(User $user, string $resetLink, ?string $verificationLink = null): bool
+    public function sendAccountCreatedEmail(
+        User $user,
+        string $resetLink,
+        ?string $verificationLink = null,
+        ?string $equipmentVerificationLink = null,
+        int $pendingEquipmentCount = 0
+    ): bool
     {
         try {
             $payload = $this->buildProtectedEmailPayload([
@@ -52,11 +58,13 @@ class MailService
                 'links' => [
                     'reset_password' => $resetLink,
                     'verification' => $verificationLink,
+                    'equipment_verification' => $equipmentVerificationLink,
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
                 'meta' => [
                     'recipient_type' => $user->role === 'client' ? 'client' : 'other',
-                    'event_version' => sha1($resetLink . '|' . ($verificationLink ?? '')),
+                    'pending_equipment_count' => $pendingEquipmentCount,
+                    'event_version' => sha1($resetLink . '|' . ($verificationLink ?? '') . '|' . ($equipmentVerificationLink ?? '') . '|' . $pendingEquipmentCount),
                 ],
             ]);
 
@@ -78,6 +86,50 @@ class MailService
                 'error' => $e->getMessage()
             ]);
             
+            return false;
+        }
+    }
+
+    public function sendPhotographerEquipmentVerificationEmail(User $photographer, int $pendingEquipmentCount = 0): bool
+    {
+        try {
+            $equipmentVerificationLink = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
+                . '/photographer-account?tab=equipments';
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($photographer),
+                'account' => $this->formatUserData($photographer),
+                'links' => [
+                    'equipment_verification' => $equipmentVerificationLink,
+                    'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
+                ],
+                'meta' => [
+                    'recipient_type' => 'photographer',
+                    'pending_equipment_count' => $pendingEquipmentCount,
+                    'event_version' => 'equipment_verification_' . now()->timestamp,
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('PHOTOGRAPHER_EQUIPMENT_VERIFICATION', $payload, $photographer->email, [], [], [
+                'related_account_id' => $photographer->id,
+            ], [
+                'force' => true,
+            ]);
+
+            Log::info('Photographer equipment verification email sent', [
+                'user_id' => $photographer->id,
+                'email' => $photographer->email,
+                'pending_equipment_count' => $pendingEquipmentCount,
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send photographer equipment verification email', [
+                'user_id' => $photographer->id,
+                'email' => $photographer->email,
+                'error' => $exception->getMessage(),
+            ]);
+
             return false;
         }
     }

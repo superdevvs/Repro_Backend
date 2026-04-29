@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\PhotographerEquipment;
+use App\Models\PhotographerEquipmentPhoto;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Models\AccountLink;
@@ -12,6 +14,7 @@ use App\Services\MailService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
@@ -180,6 +183,10 @@ class UserController extends Controller
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
             'editing_capabilities' => 'nullable|string',
+            'equipments' => 'nullable',
+            'equipment_reference_photos' => 'nullable|array',
+            'equipment_reference_photos.*' => 'nullable|array',
+            'equipment_reference_photos.*.*' => 'file|image|max:10240',
         ];
 
         if ($this->serviceGroupsFeatureAvailable()) {
@@ -188,6 +195,7 @@ class UserController extends Controller
         }
 
         $validated = $request->validate($rules);
+        $equipmentPayload = $this->normalizePhotographerEquipmentPayload($request->input('equipments'));
 
         $requestedRole = $validated['role'] ?? null;
         if ($this->isSalesRepUser($admin) && !in_array($requestedRole, $this->salesRepCreatableRoles(), true)) {
@@ -215,6 +223,7 @@ class UserController extends Controller
         }
 
         unset($validated['email_warning_override']);
+        unset($validated['equipments'], $validated['equipment_reference_photos']);
         $validated = array_merge($validated, $emailHealthMutation['attributes']);
 
         $serviceGroupIdsProvided = array_key_exists('service_group_ids', $validated);
@@ -336,6 +345,9 @@ class UserController extends Controller
         }
 
         $user = User::create($validated);
+        $pendingEquipmentCount = $user->role === 'photographer'
+            ? $this->createPhotographerEquipmentFromRequest($request, $user, $admin, $equipmentPayload)
+            : 0;
         $this->logUserActivity(
             $user,
             'account_created',
@@ -385,6 +397,13 @@ class UserController extends Controller
             $accountCreatedContext = $automationService->buildUserContext($user);
             $accountCreatedContext['client'] = $user;
             $accountCreatedContext['password_reset_link'] = $resetLink;
+            $equipmentVerificationLink = $pendingEquipmentCount > 0
+                ? rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/') . '/photographer-account?tab=equipments'
+                : null;
+            if ($equipmentVerificationLink !== null) {
+                $accountCreatedContext['equipment_verification_link'] = $equipmentVerificationLink;
+                $accountCreatedContext['pending_equipment_count'] = $pendingEquipmentCount;
+            }
             $verificationToken = null;
             $verificationLink = null;
 
@@ -399,7 +418,13 @@ class UserController extends Controller
 
             $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
             if ($automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-                $mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
+                $mailService->sendAccountCreatedEmail(
+                    $user,
+                    $resetLink,
+                    $verificationLink,
+                    $equipmentVerificationLink,
+                    $pendingEquipmentCount
+                );
             }
 
             if ($user->role === 'client' && $mailService->sendClientEmailVerificationEmail($user, [
@@ -2295,5 +2320,86 @@ class UserController extends Controller
             'message' => 'User deleted successfully',
             'user' => $deletedUser,
         ]);
+    }
+
+    private function normalizePhotographerEquipmentPayload(mixed $rawEquipment): array
+    {
+        if (is_string($rawEquipment)) {
+            $decoded = json_decode($rawEquipment, true);
+            $rawEquipment = json_last_error() === JSON_ERROR_NONE ? $decoded : [];
+        }
+
+        if (!is_array($rawEquipment)) {
+            return [];
+        }
+
+        return collect($rawEquipment)
+            ->filter(fn ($item) => is_array($item))
+            ->map(function (array $item) {
+                $issueDate = trim((string) ($item['issue_date'] ?? $item['issueDate'] ?? ''));
+
+                return [
+                    'name' => trim((string) ($item['name'] ?? '')),
+                    'serial_number' => trim((string) ($item['serial_number'] ?? $item['serialNumber'] ?? '')) ?: null,
+                    'issue_date' => preg_match('/^\d{4}-\d{2}-\d{2}$/', $issueDate) ? $issueDate : null,
+                ];
+            })
+            ->filter(fn (array $item) => $item['name'] !== '')
+            ->values()
+            ->all();
+    }
+
+    private function createPhotographerEquipmentFromRequest(Request $request, User $photographer, User $admin, array $equipmentPayload): int
+    {
+        $created = 0;
+
+        foreach ($equipmentPayload as $index => $item) {
+            $equipment = PhotographerEquipment::create([
+                'photographer_id' => $photographer->id,
+                'name' => $item['name'],
+                'serial_number' => $item['serial_number'] ?? null,
+                'issue_date' => $item['issue_date'] ?? null,
+                'status' => PhotographerEquipment::STATUS_PENDING,
+            ]);
+
+            $this->storePhotographerEquipmentPhotos(
+                $equipment,
+                $request->file("equipment_reference_photos.{$index}", []),
+                $admin
+            );
+
+            $created++;
+        }
+
+        return $created;
+    }
+
+    /**
+     * @param array<int, UploadedFile>|UploadedFile|null $files
+     */
+    private function storePhotographerEquipmentPhotos(PhotographerEquipment $equipment, array|UploadedFile|null $files, User $uploadedBy): void
+    {
+        $files = $files instanceof UploadedFile ? [$files] : ($files ?: []);
+
+        foreach ($files as $file) {
+            if (!$file instanceof UploadedFile) {
+                continue;
+            }
+
+            $path = $file->store(
+                "photographer-equipment/{$equipment->id}/" . PhotographerEquipmentPhoto::TYPE_ADMIN_REFERENCE,
+                'local'
+            );
+
+            $equipment->photos()->create([
+                'uploaded_by' => $uploadedBy->id,
+                'type' => PhotographerEquipmentPhoto::TYPE_ADMIN_REFERENCE,
+                'disk' => 'local',
+                'path' => $path,
+                'original_name' => $file->getClientOriginalName(),
+                'mime_type' => $file->getClientMimeType(),
+                'size' => $file->getSize(),
+            ]);
+        }
     }
 }

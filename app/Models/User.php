@@ -212,6 +212,11 @@ class User extends Authenticatable
         return $this->hasMany(Shoot::class, 'photographer_id');
     }
 
+    public function photographerEquipments()
+    {
+        return $this->hasMany(PhotographerEquipment::class, 'photographer_id');
+    }
+
     public function googleCalendarConnection()
     {
         return $this->hasOne(GoogleCalendarConnection::class);

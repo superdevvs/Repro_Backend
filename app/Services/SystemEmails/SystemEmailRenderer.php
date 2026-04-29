@@ -59,6 +59,8 @@ class SystemEmailRenderer
             'ACCOUNT_CREATED' => $shared + [
                 'resetLink' => $links['reset_password'] ?? null,
                 'verificationLink' => $links['verification'] ?? null,
+                'equipmentVerificationUrl' => $links['equipment_verification'] ?? null,
+                'equipmentCount' => (int) ($meta->pending_equipment_count ?? 0),
             ],
             'CLIENT_EMAIL_VERIFICATION' => $shared + [
                 'verificationLink' => $links['verification'] ?? null,
@@ -67,6 +69,10 @@ class SystemEmailRenderer
             'CLIENT_EMAIL_VERIFIED' => $shared + [
                 'dashboardUrl' => $links['dashboard'] ?? $branding->dashboard_url ?? null,
                 'settingsUrl' => $links['settings'] ?? null,
+            ],
+            'PHOTOGRAPHER_EQUIPMENT_VERIFICATION' => $shared + [
+                'equipmentVerificationUrl' => $links['equipment_verification'] ?? null,
+                'equipmentCount' => (int) ($meta->pending_equipment_count ?? 0),
             ],
             'PASSWORD_RESET' => $shared + [
                 'resetLink' => $links['reset_password'] ?? null,

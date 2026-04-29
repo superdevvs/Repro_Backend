@@ -17,6 +17,7 @@ use App\Http\Controllers\API\ShootController;
 use App\Http\Controllers\API\ShootWorkflowController;
 use App\Http\Controllers\API\DashboardController;
 use App\Http\Controllers\PhotographerAvailabilityController;
+use App\Http\Controllers\PhotographerEquipmentController;
 use App\Http\Controllers\PhotographerShootController;
 use App\Http\Controllers\ClientBillingController;
 use App\Http\Controllers\InvoiceController;
@@ -371,6 +372,27 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesR
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,client,salesRep'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
 // Public lightweight list for dropdowns
 Route::get('/photographers', [UserController::class, 'simplePhotographers']);
+
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin/photographer-equipments')->group(function () {
+    Route::get('/', [PhotographerEquipmentController::class, 'adminIndex']);
+    Route::post('/', [PhotographerEquipmentController::class, 'adminStore']);
+    Route::put('/{equipment}', [PhotographerEquipmentController::class, 'adminUpdate']);
+    Route::delete('/{equipment}', [PhotographerEquipmentController::class, 'adminDestroy']);
+    Route::post('/{equipment}/photos', [PhotographerEquipmentController::class, 'adminUploadPhotos']);
+    Route::post('/{equipment}/approve', [PhotographerEquipmentController::class, 'approve']);
+    Route::post('/{equipment}/reject', [PhotographerEquipmentController::class, 'reject']);
+    Route::post('/{equipment}/send-verification-email', [PhotographerEquipmentController::class, 'sendVerificationEmail']);
+});
+
+Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/equipments')->group(function () {
+    Route::get('/', [PhotographerEquipmentController::class, 'photographerIndex']);
+    Route::post('/{equipment}/verification-photos', [PhotographerEquipmentController::class, 'photographerUploadVerificationPhotos']);
+});
+
+Route::middleware('auth:sanctum')->get(
+    '/photographer-equipments/{equipment}/photos/{photo}',
+    [PhotographerEquipmentController::class, 'showPhoto']
+);
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/service-groups', [ServiceGroupController::class, 'index']);
 
