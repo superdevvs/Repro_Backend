@@ -11,6 +11,8 @@ class PhotographerEquipment extends Model
 {
     use HasFactory;
 
+    protected $table = 'photographer_equipments';
+
     public const STATUS_PENDING = 'pending_verification';
     public const STATUS_SUBMITTED = 'submitted';
     public const STATUS_VERIFIED = 'verified';
