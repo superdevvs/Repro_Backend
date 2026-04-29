@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Services\MailService;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
@@ -15,6 +16,10 @@ class PhotographerEquipmentController extends Controller
 {
     public function adminIndex(Request $request)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
         $query = PhotographerEquipment::query()
             ->with(['photographer:id,name,email,role', 'photos', 'verifier:id,name,email'])
             ->latest();
@@ -46,6 +51,10 @@ class PhotographerEquipmentController extends Controller
 
     public function adminStore(Request $request)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
         $validated = $request->validate([
             'photographer_id' => ['required', 'integer', 'exists:users,id'],
             'name' => ['required', 'string', 'max:255'],
@@ -81,8 +90,14 @@ class PhotographerEquipmentController extends Controller
         ], 201);
     }
 
-    public function adminUpdate(Request $request, PhotographerEquipment $equipment)
+    public function adminUpdate(Request $request, int $equipmentId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+
         $validated = $request->validate([
             'photographer_id' => ['sometimes', 'integer', 'exists:users,id'],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
@@ -106,8 +121,13 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function adminDestroy(PhotographerEquipment $equipment)
+    public function adminDestroy(int $equipmentId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
         $equipment->load('photos');
         foreach ($equipment->photos as $photo) {
             $this->deleteStoredPhoto($photo);
@@ -118,8 +138,14 @@ class PhotographerEquipmentController extends Controller
         return response()->json(['message' => 'Equipment deleted successfully.']);
     }
 
-    public function adminUploadPhotos(Request $request, PhotographerEquipment $equipment)
+    public function adminUploadPhotos(Request $request, int $equipmentId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+
         $request->validate([
             'photos' => ['required', 'array', 'min:1'],
             'photos.*' => ['file', 'image', 'max:10240'],
@@ -138,8 +164,14 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function approve(Request $request, PhotographerEquipment $equipment)
+    public function approve(Request $request, int $equipmentId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+
         $equipment->forceFill([
             'status' => PhotographerEquipment::STATUS_VERIFIED,
             'verified_at' => now(),
@@ -154,8 +186,14 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function reject(Request $request, PhotographerEquipment $equipment)
+    public function reject(Request $request, int $equipmentId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+
         $validated = $request->validate([
             'rejection_reason' => ['nullable', 'string', 'max:1000'],
         ]);
@@ -174,8 +212,13 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function sendVerificationEmail(Request $request, PhotographerEquipment $equipment, MailService $mailService)
+    public function sendVerificationEmail(Request $request, int $equipmentId, MailService $mailService)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
         $equipment->load('photographer');
         $photographer = $equipment->photographer;
 
@@ -202,6 +245,10 @@ class PhotographerEquipmentController extends Controller
 
     public function photographerIndex(Request $request)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
         $equipments = PhotographerEquipment::query()
             ->with(['photos', 'verifier:id,name,email'])
             ->where('photographer_id', $request->user()->id)
@@ -213,8 +260,14 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function photographerUploadVerificationPhotos(Request $request, PhotographerEquipment $equipment)
+    public function photographerUploadVerificationPhotos(Request $request, int $equipmentId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+
         if ((int) $equipment->photographer_id !== (int) $request->user()->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
@@ -246,8 +299,15 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function showPhoto(Request $request, PhotographerEquipment $equipment, PhotographerEquipmentPhoto $photo)
+    public function showPhoto(Request $request, int $equipmentId, int $photoId)
     {
+        if (!$this->equipmentTablesReady()) {
+            return $this->equipmentTablesMissingResponse();
+        }
+
+        $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+        $photo = PhotographerEquipmentPhoto::query()->findOrFail($photoId);
+
         if ((int) $photo->equipment_id !== (int) $equipment->id) {
             abort(404);
         }
@@ -363,5 +423,19 @@ class PhotographerEquipmentController extends Controller
     private function isPhotographer(User $user): bool
     {
         return $user->role === 'photographer' || in_array('photographer', (array) $user->secondary_roles, true);
+    }
+
+    private function equipmentTablesReady(): bool
+    {
+        return Schema::hasTable('photographer_equipments')
+            && Schema::hasTable('photographer_equipment_photos');
+    }
+
+    private function equipmentTablesMissingResponse()
+    {
+        return response()->json([
+            'message' => 'Photographer equipment tables are not available yet. Run backend migrations before using equipment verification.',
+            'setup_required' => 'php artisan migrate',
+        ], 503);
     }
 }

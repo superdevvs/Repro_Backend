@@ -18,6 +18,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 
@@ -196,6 +197,13 @@ class UserController extends Controller
 
         $validated = $request->validate($rules);
         $equipmentPayload = $this->normalizePhotographerEquipmentPayload($request->input('equipments'));
+
+        if (($validated['role'] ?? null) === 'photographer' && $equipmentPayload !== [] && !$this->photographerEquipmentTablesReady()) {
+            return response()->json([
+                'message' => 'Photographer equipment tables are not available yet. Run backend migrations before creating accounts with equipment.',
+                'setup_required' => 'php artisan migrate',
+            ], 503);
+        }
 
         $requestedRole = $validated['role'] ?? null;
         if ($this->isSalesRepUser($admin) && !in_array($requestedRole, $this->salesRepCreatableRoles(), true)) {
@@ -2401,5 +2409,11 @@ class UserController extends Controller
                 'size' => $file->getSize(),
             ]);
         }
+    }
+
+    private function photographerEquipmentTablesReady(): bool
+    {
+        return Schema::hasTable('photographer_equipments')
+            && Schema::hasTable('photographer_equipment_photos');
     }
 }

@@ -376,21 +376,21 @@ Route::get('/photographers', [UserController::class, 'simplePhotographers']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin/photographer-equipments')->group(function () {
     Route::get('/', [PhotographerEquipmentController::class, 'adminIndex']);
     Route::post('/', [PhotographerEquipmentController::class, 'adminStore']);
-    Route::put('/{equipment}', [PhotographerEquipmentController::class, 'adminUpdate']);
-    Route::delete('/{equipment}', [PhotographerEquipmentController::class, 'adminDestroy']);
-    Route::post('/{equipment}/photos', [PhotographerEquipmentController::class, 'adminUploadPhotos']);
-    Route::post('/{equipment}/approve', [PhotographerEquipmentController::class, 'approve']);
-    Route::post('/{equipment}/reject', [PhotographerEquipmentController::class, 'reject']);
-    Route::post('/{equipment}/send-verification-email', [PhotographerEquipmentController::class, 'sendVerificationEmail']);
+    Route::put('/{equipmentId}', [PhotographerEquipmentController::class, 'adminUpdate']);
+    Route::delete('/{equipmentId}', [PhotographerEquipmentController::class, 'adminDestroy']);
+    Route::post('/{equipmentId}/photos', [PhotographerEquipmentController::class, 'adminUploadPhotos']);
+    Route::post('/{equipmentId}/approve', [PhotographerEquipmentController::class, 'approve']);
+    Route::post('/{equipmentId}/reject', [PhotographerEquipmentController::class, 'reject']);
+    Route::post('/{equipmentId}/send-verification-email', [PhotographerEquipmentController::class, 'sendVerificationEmail']);
 });
 
 Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/equipments')->group(function () {
     Route::get('/', [PhotographerEquipmentController::class, 'photographerIndex']);
-    Route::post('/{equipment}/verification-photos', [PhotographerEquipmentController::class, 'photographerUploadVerificationPhotos']);
+    Route::post('/{equipmentId}/verification-photos', [PhotographerEquipmentController::class, 'photographerUploadVerificationPhotos']);
 });
 
 Route::middleware('auth:sanctum')->get(
-    '/photographer-equipments/{equipment}/photos/{photo}',
+    '/photographer-equipments/{equipmentId}/photos/{photoId}',
     [PhotographerEquipmentController::class, 'showPhoto']
 );
 
