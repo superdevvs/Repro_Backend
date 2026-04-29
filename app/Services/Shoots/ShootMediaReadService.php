@@ -291,6 +291,9 @@ class ShootMediaReadService
             }
 
             $originalUrl = $dropboxUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
+            if (!$originalUrl && $this->isVideoFile($file)) {
+                $originalUrl = url('/api/shoots/' . $file->shoot_id . '/files/' . $file->id . '/preview');
+            }
             $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
             $webUrl = $this->resolvePreviewPath($file->web_path);
             $mediumUrl = $webUrl;
@@ -320,6 +323,7 @@ class ShootMediaReadService
 
         $fileData = [
             'id' => $file->id,
+            'shoot_id' => $file->shoot_id,
             'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
             'stored_filename' => $file->stored_filename,
             'url' => $url,
@@ -388,6 +392,23 @@ class ShootMediaReadService
         }
 
         return $fileData;
+    }
+
+    protected function isVideoFile(ShootFile $file): bool
+    {
+        $mediaType = strtolower((string) ($file->media_type ?? ''));
+        if ($mediaType === 'video') {
+            return true;
+        }
+
+        $mimeType = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        if (str_starts_with($mimeType, 'video/')) {
+            return true;
+        }
+
+        $filename = strtolower((string) ($file->filename ?? $file->stored_filename ?? $file->path ?? $file->storage_path ?? ''));
+
+        return (bool) preg_match('/\.(mp4|mov|m4v|avi|mkv|wmv|webm|mpg|mpeg|3gp)(?:$|[?#])/', $filename);
     }
 
     protected function extractComments(ShootFile $file): array
