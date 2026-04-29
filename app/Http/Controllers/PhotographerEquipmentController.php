@@ -125,7 +125,7 @@ class PhotographerEquipmentController extends Controller
         $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
 
         $validated = $request->validate([
-            'photographer_id' => ['sometimes', 'integer', 'exists:users,id'],
+            'photographer_id' => ['sometimes', 'nullable', 'integer', 'exists:users,id'],
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'serial_number' => ['nullable', 'string', 'max:255'],
             'issue_date' => ['nullable', 'date'],
@@ -141,7 +141,7 @@ class PhotographerEquipmentController extends Controller
             return response()->json(['message' => 'Only admins and superadmins can manage equipment financials.'], 403);
         }
 
-        if (array_key_exists('photographer_id', $validated)) {
+        if (array_key_exists('photographer_id', $validated) && !empty($validated['photographer_id'])) {
             $photographer = User::query()->findOrFail($validated['photographer_id']);
             if (!$this->isPhotographer($photographer)) {
                 return response()->json(['message' => 'Equipment can only be assigned to photographers.'], 422);
@@ -154,6 +154,19 @@ class PhotographerEquipmentController extends Controller
 
         DB::transaction(function () use ($equipment, $request, $validated) {
             unset($validated['add_to_expense'], $validated['receipt']);
+            $photographerChanged = array_key_exists('photographer_id', $validated)
+                && (string) ($validated['photographer_id'] ?? '') !== (string) ($equipment->photographer_id ?? '');
+
+            if ($photographerChanged && !empty($validated['photographer_id'])) {
+                $validated['status'] = PhotographerEquipment::STATUS_PENDING;
+                $validated['verification_requested_at'] = null;
+                $validated['submitted_at'] = null;
+                $validated['verified_at'] = null;
+                $validated['verified_by'] = null;
+                $validated['rejected_at'] = null;
+                $validated['rejection_reason'] = null;
+            }
+
             $equipment->fill($validated)->save();
             $this->syncEquipmentExpense($equipment->fresh(), $request);
         });
