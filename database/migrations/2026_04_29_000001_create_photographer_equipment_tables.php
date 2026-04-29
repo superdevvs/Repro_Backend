@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('photographer_equipments', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('photographer_id')->constrained('users')->cascadeOnDelete();
+            $table->foreignId('photographer_id')->nullable()->constrained('users')->nullOnDelete();
             $table->string('name');
             $table->string('serial_number')->nullable();
             $table->date('issue_date')->nullable();

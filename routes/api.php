@@ -9,6 +9,7 @@ use App\Http\Controllers\API\ShootNotesController;
 use App\Http\Controllers\API\ShootPaymentsController;
 use App\Http\Controllers\API\ShootPublicAssetsController;
 use App\Http\Controllers\Admin\PermissionController;
+use App\Http\Controllers\Admin\AccountingExpenseController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceGroupController;
@@ -382,6 +383,16 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::post('/{equipmentId}/approve', [PhotographerEquipmentController::class, 'approve']);
     Route::post('/{equipmentId}/reject', [PhotographerEquipmentController::class, 'reject']);
     Route::post('/{equipmentId}/send-verification-email', [PhotographerEquipmentController::class, 'sendVerificationEmail']);
+});
+
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin/accounting-expenses')->group(function () {
+    Route::get('/', [AccountingExpenseController::class, 'index']);
+    Route::post('/', [AccountingExpenseController::class, 'store']);
+    Route::get('/{expense}', [AccountingExpenseController::class, 'show']);
+    Route::put('/{expense}', [AccountingExpenseController::class, 'update']);
+    Route::delete('/{expense}', [AccountingExpenseController::class, 'destroy']);
+    Route::post('/{expense}/receipt', [AccountingExpenseController::class, 'uploadReceipt']);
+    Route::get('/{expense}/receipt', [AccountingExpenseController::class, 'showReceipt']);
 });
 
 Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/equipments')->group(function () {

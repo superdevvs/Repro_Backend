@@ -185,6 +185,8 @@ class UserController extends Controller
             'specialties' => 'nullable|string',
             'editing_capabilities' => 'nullable|string',
             'equipments' => 'nullable',
+            'existing_equipment_ids' => 'nullable|array',
+            'existing_equipment_ids.*' => 'integer',
             'equipment_reference_photos' => 'nullable|array',
             'equipment_reference_photos.*' => 'nullable|array',
             'equipment_reference_photos.*.*' => 'file|image|max:10240',
@@ -197,8 +199,14 @@ class UserController extends Controller
 
         $validated = $request->validate($rules);
         $equipmentPayload = $this->normalizePhotographerEquipmentPayload($request->input('equipments'));
+        $existingEquipmentIds = collect($request->input('existing_equipment_ids', []))
+            ->map(fn ($id) => (int) $id)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
 
-        if (($validated['role'] ?? null) === 'photographer' && $equipmentPayload !== [] && !$this->photographerEquipmentTablesReady()) {
+        if (($validated['role'] ?? null) === 'photographer' && ($equipmentPayload !== [] || $existingEquipmentIds !== []) && !$this->photographerEquipmentTablesReady()) {
             return response()->json([
                 'message' => 'Photographer equipment tables are not available yet. Run backend migrations before creating accounts with equipment.',
                 'setup_required' => 'php artisan migrate',
@@ -231,7 +239,7 @@ class UserController extends Controller
         }
 
         unset($validated['email_warning_override']);
-        unset($validated['equipments'], $validated['equipment_reference_photos']);
+        unset($validated['equipments'], $validated['existing_equipment_ids'], $validated['equipment_reference_photos']);
         $validated = array_merge($validated, $emailHealthMutation['attributes']);
 
         $serviceGroupIdsProvided = array_key_exists('service_group_ids', $validated);
@@ -354,7 +362,7 @@ class UserController extends Controller
 
         $user = User::create($validated);
         $pendingEquipmentCount = $user->role === 'photographer'
-            ? $this->createPhotographerEquipmentFromRequest($request, $user, $admin, $equipmentPayload)
+            ? $this->createPhotographerEquipmentFromRequest($request, $user, $admin, $equipmentPayload, $existingEquipmentIds)
             : 0;
         $this->logUserActivity(
             $user,
@@ -2357,9 +2365,30 @@ class UserController extends Controller
             ->all();
     }
 
-    private function createPhotographerEquipmentFromRequest(Request $request, User $photographer, User $admin, array $equipmentPayload): int
+    private function createPhotographerEquipmentFromRequest(Request $request, User $photographer, User $admin, array $equipmentPayload, array $existingEquipmentIds = []): int
     {
         $created = 0;
+
+        if ($existingEquipmentIds !== []) {
+            $assigned = PhotographerEquipment::query()
+                ->whereIn('id', $existingEquipmentIds)
+                ->whereNull('photographer_id')
+                ->get();
+
+            foreach ($assigned as $equipment) {
+                $equipment->forceFill([
+                    'photographer_id' => $photographer->id,
+                    'status' => PhotographerEquipment::STATUS_PENDING,
+                    'verification_requested_at' => null,
+                    'submitted_at' => null,
+                    'verified_at' => null,
+                    'verified_by' => null,
+                    'rejected_at' => null,
+                    'rejection_reason' => null,
+                ])->save();
+                $created++;
+            }
+        }
 
         foreach ($equipmentPayload as $index => $item) {
             $equipment = PhotographerEquipment::create([

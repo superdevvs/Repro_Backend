@@ -30,6 +30,10 @@ class PhotographerEquipment extends Model
         'name',
         'serial_number',
         'issue_date',
+        'purchase_date',
+        'purchase_cost',
+        'vendor',
+        'expense_id',
         'status',
         'verification_requested_at',
         'submitted_at',
@@ -43,6 +47,8 @@ class PhotographerEquipment extends Model
     {
         return [
             'issue_date' => 'date',
+            'purchase_date' => 'date',
+            'purchase_cost' => 'decimal:2',
             'verification_requested_at' => 'datetime',
             'submitted_at' => 'datetime',
             'verified_at' => 'datetime',
@@ -58,6 +64,11 @@ class PhotographerEquipment extends Model
     public function verifier(): BelongsTo
     {
         return $this->belongsTo(User::class, 'verified_by');
+    }
+
+    public function expense(): BelongsTo
+    {
+        return $this->belongsTo(AccountingExpense::class, 'expense_id');
     }
 
     public function photos(): HasMany

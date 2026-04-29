@@ -4,10 +4,12 @@ namespace App\Http\Controllers;
 
 use App\Models\PhotographerEquipment;
 use App\Models\PhotographerEquipmentPhoto;
+use App\Models\AccountingExpense;
 use App\Models\User;
 use App\Services\MailService;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -21,7 +23,7 @@ class PhotographerEquipmentController extends Controller
         }
 
         $query = PhotographerEquipment::query()
-            ->with(['photographer:id,name,email,role', 'photos', 'verifier:id,name,email'])
+            ->with(['photographer:id,name,email,role', 'photos', 'verifier:id,name,email', 'expense'])
             ->latest();
 
         if ($request->filled('photographer_id')) {
@@ -56,26 +58,50 @@ class PhotographerEquipmentController extends Controller
         }
 
         $validated = $request->validate([
-            'photographer_id' => ['required', 'integer', 'exists:users,id'],
+            'photographer_id' => ['nullable', 'integer', 'exists:users,id'],
             'name' => ['required', 'string', 'max:255'],
             'serial_number' => ['nullable', 'string', 'max:255'],
             'issue_date' => ['nullable', 'date'],
+            'purchase_date' => ['nullable', 'date'],
+            'purchase_cost' => ['nullable', 'numeric', 'min:0'],
+            'vendor' => ['nullable', 'string', 'max:255'],
+            'add_to_expense' => ['nullable', 'boolean'],
+            'receipt' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
             'photos' => ['nullable', 'array'],
             'photos.*' => ['file', 'image', 'max:10240'],
         ]);
 
-        $photographer = User::query()->findOrFail($validated['photographer_id']);
-        if (!$this->isPhotographer($photographer)) {
-            return response()->json(['message' => 'Equipment can only be assigned to photographers.'], 422);
+        if ($this->containsFinancialData($request) && !$this->canManageFinancials($request->user())) {
+            return response()->json(['message' => 'Only admins and superadmins can manage equipment financials.'], 403);
         }
 
-        $equipment = PhotographerEquipment::create([
-            'photographer_id' => $photographer->id,
-            'name' => $validated['name'],
-            'serial_number' => $validated['serial_number'] ?? null,
-            'issue_date' => $validated['issue_date'] ?? null,
-            'status' => PhotographerEquipment::STATUS_PENDING,
-        ]);
+        if (!empty($validated['photographer_id'])) {
+            $photographer = User::query()->findOrFail($validated['photographer_id']);
+            if (!$this->isPhotographer($photographer)) {
+                return response()->json(['message' => 'Equipment can only be assigned to photographers.'], 422);
+            }
+        }
+
+        if ($request->boolean('add_to_expense') && empty($validated['purchase_date'])) {
+            return response()->json(['message' => 'Purchase date is required when adding equipment as an expense.'], 422);
+        }
+
+        $equipment = DB::transaction(function () use ($request, $validated) {
+            $equipment = PhotographerEquipment::create([
+                'photographer_id' => $validated['photographer_id'] ?? null,
+                'name' => $validated['name'],
+                'serial_number' => $validated['serial_number'] ?? null,
+                'issue_date' => $validated['issue_date'] ?? null,
+                'purchase_date' => $validated['purchase_date'] ?? null,
+                'purchase_cost' => $validated['purchase_cost'] ?? null,
+                'vendor' => $validated['vendor'] ?? null,
+                'status' => PhotographerEquipment::STATUS_PENDING,
+            ]);
+
+            $this->syncEquipmentExpense($equipment, $request);
+
+            return $equipment;
+        });
 
         $this->storePhotos(
             $equipment,
@@ -86,7 +112,7 @@ class PhotographerEquipmentController extends Controller
 
         return response()->json([
             'message' => 'Equipment assigned successfully.',
-            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier'])),
+            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier', 'expense'])),
         ], 201);
     }
 
@@ -103,8 +129,17 @@ class PhotographerEquipmentController extends Controller
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'serial_number' => ['nullable', 'string', 'max:255'],
             'issue_date' => ['nullable', 'date'],
+            'purchase_date' => ['nullable', 'date'],
+            'purchase_cost' => ['nullable', 'numeric', 'min:0'],
+            'vendor' => ['nullable', 'string', 'max:255'],
+            'add_to_expense' => ['nullable', 'boolean'],
+            'receipt' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:10240'],
             'status' => ['sometimes', Rule::in(PhotographerEquipment::STATUSES)],
         ]);
+
+        if ($this->containsFinancialData($request) && !$this->canManageFinancials($request->user())) {
+            return response()->json(['message' => 'Only admins and superadmins can manage equipment financials.'], 403);
+        }
 
         if (array_key_exists('photographer_id', $validated)) {
             $photographer = User::query()->findOrFail($validated['photographer_id']);
@@ -113,11 +148,19 @@ class PhotographerEquipmentController extends Controller
             }
         }
 
-        $equipment->fill($validated)->save();
+        if ($request->boolean('add_to_expense') && empty($validated['purchase_date']) && empty($equipment->purchase_date)) {
+            return response()->json(['message' => 'Purchase date is required when adding equipment as an expense.'], 422);
+        }
+
+        DB::transaction(function () use ($equipment, $request, $validated) {
+            unset($validated['add_to_expense'], $validated['receipt']);
+            $equipment->fill($validated)->save();
+            $this->syncEquipmentExpense($equipment->fresh(), $request);
+        });
 
         return response()->json([
             'message' => 'Equipment updated successfully.',
-            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier'])),
+            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier', 'expense'])),
         ]);
     }
 
@@ -336,9 +379,9 @@ class PhotographerEquipmentController extends Controller
 
     private function presentEquipment(PhotographerEquipment $equipment): array
     {
-        $equipment->loadMissing(['photographer:id,name,email,role', 'photos', 'verifier:id,name,email']);
+        $equipment->loadMissing(['photographer:id,name,email,role', 'photos', 'verifier:id,name,email', 'expense']);
 
-        return [
+        $payload = [
             'id' => $equipment->id,
             'photographer_id' => $equipment->photographer_id,
             'photographer' => $equipment->photographer ? [
@@ -376,6 +419,24 @@ class PhotographerEquipmentController extends Controller
             'created_at' => optional($equipment->created_at)?->toIso8601String(),
             'updated_at' => optional($equipment->updated_at)?->toIso8601String(),
         ];
+
+        if ($this->canManageFinancials(request()->user())) {
+            $payload['purchase_date'] = optional($equipment->purchase_date)?->toDateString();
+            $payload['purchase_cost'] = $equipment->purchase_cost !== null ? (float) $equipment->purchase_cost : null;
+            $payload['vendor'] = $equipment->vendor;
+            $payload['expense_id'] = $equipment->expense_id;
+            $payload['expense'] = $equipment->expense ? [
+                'id' => $equipment->expense->id,
+                'status' => $equipment->expense->status,
+                'category' => $equipment->expense->category,
+                'amount' => (float) $equipment->expense->amount,
+                'expense_date' => optional($equipment->expense->expense_date)?->toDateString(),
+                'has_receipt' => (bool) $equipment->expense->receipt_path,
+                'receipt_url' => $equipment->expense->receipt_path ? "/api/admin/accounting-expenses/{$equipment->expense->id}/receipt" : null,
+            ] : null;
+        }
+
+        return $payload;
     }
 
     /**
@@ -420,6 +481,20 @@ class PhotographerEquipmentController extends Controller
         return in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
     }
 
+    private function canManageFinancials(?User $user): bool
+    {
+        return $user instanceof User && in_array($user->role, ['admin', 'superadmin'], true);
+    }
+
+    private function containsFinancialData(Request $request): bool
+    {
+        return $request->filled('purchase_date')
+            || $request->filled('purchase_cost')
+            || $request->filled('vendor')
+            || $request->boolean('add_to_expense')
+            || $request->hasFile('receipt');
+    }
+
     private function isPhotographer(User $user): bool
     {
         return $user->role === 'photographer' || in_array('photographer', (array) $user->secondary_roles, true);
@@ -428,7 +503,8 @@ class PhotographerEquipmentController extends Controller
     private function equipmentTablesReady(): bool
     {
         return Schema::hasTable('photographer_equipments')
-            && Schema::hasTable('photographer_equipment_photos');
+            && Schema::hasTable('photographer_equipment_photos')
+            && Schema::hasTable('accounting_expenses');
     }
 
     private function equipmentTablesMissingResponse()
@@ -437,5 +513,61 @@ class PhotographerEquipmentController extends Controller
             'message' => 'Photographer equipment tables are not available yet. Run backend migrations before using equipment verification.',
             'setup_required' => 'php artisan migrate',
         ], 503);
+    }
+
+    private function syncEquipmentExpense(PhotographerEquipment $equipment, Request $request): void
+    {
+        if (!$this->canManageFinancials($request->user())) {
+            return;
+        }
+
+        $shouldSync = $request->boolean('add_to_expense') || $equipment->expense_id;
+        if (!$shouldSync) {
+            return;
+        }
+
+        if (!$equipment->purchase_date) {
+            throw new \InvalidArgumentException('Purchase date is required when adding equipment as an expense.');
+        }
+
+        $expense = $equipment->expense_id
+            ? AccountingExpense::query()->find($equipment->expense_id)
+            : null;
+
+        $expenseData = [
+            'category' => 'Equipment',
+            'description' => trim($equipment->name . ($equipment->serial_number ? ' - Serial #' . $equipment->serial_number : '')),
+            'amount' => $equipment->purchase_cost ?? 0,
+            'expense_date' => $equipment->purchase_date,
+            'vendor' => $equipment->vendor,
+            'status' => $expense?->status ?? AccountingExpense::STATUS_UNREVIEWED,
+            'reimbursable' => false,
+            'related_type' => AccountingExpense::RELATED_PHOTOGRAPHER_EQUIPMENT,
+            'related_id' => $equipment->id,
+            'created_by' => $expense?->created_by ?? $request->user()->id,
+        ];
+
+        if ($expense) {
+            $expense->fill($expenseData)->save();
+        } else {
+            $expense = AccountingExpense::create($expenseData);
+            $equipment->forceFill(['expense_id' => $expense->id])->save();
+        }
+
+        if ($request->hasFile('receipt')) {
+            if ($expense->receipt_disk && $expense->receipt_path && Storage::disk($expense->receipt_disk)->exists($expense->receipt_path)) {
+                Storage::disk($expense->receipt_disk)->delete($expense->receipt_path);
+            }
+
+            $receipt = $request->file('receipt');
+            $path = $receipt->store("accounting-expenses/{$expense->id}/receipt", 'local');
+            $expense->forceFill([
+                'receipt_disk' => 'local',
+                'receipt_path' => $path,
+                'receipt_original_name' => $receipt->getClientOriginalName(),
+                'receipt_mime_type' => $receipt->getClientMimeType(),
+                'receipt_size' => $receipt->getSize(),
+            ])->save();
+        }
     }
 }
