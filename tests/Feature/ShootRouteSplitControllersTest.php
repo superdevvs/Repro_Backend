@@ -72,6 +72,84 @@ class ShootRouteSplitControllersTest extends TestCase
     }
 
     /** @test */
+    public function public_video_links_are_hidden_until_the_shoot_is_delivered(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $shoot->tour_links = [
+            'video_branded' => 'https://vimeo.com/1186135733',
+            'video_mls' => 'https://vimeo.com/1186135734',
+            'video_generic' => 'https://vimeo.com/1186135735',
+            'video_link' => 'https://vimeo.com/1186135736',
+            'matterport_branded' => 'https://example.test/matterport',
+        ];
+        $shoot->save();
+
+        $response = $this->getJson("/api/public/shoots/{$shoot->id}/branded");
+
+        $response->assertOk()
+            ->assertJsonPath('video_link', null)
+            ->assertJsonPath('video_thumbnail_url', null)
+            ->assertJsonPath('video_access_restricted', true)
+            ->assertJsonPath('tour_links.matterport_branded', 'https://example.test/matterport');
+
+        $this->assertArrayNotHasKey('video_branded', $response->json('tour_links'));
+        $this->assertArrayNotHasKey('video_link', $response->json('tour_links'));
+    }
+
+    /** @test */
+    public function privileged_users_can_view_video_links_before_delivery(): void
+    {
+        $editingManager = User::factory()->create([
+            'role' => 'editing_manager',
+            'email' => 'route-split-editing-manager@test.com',
+        ]);
+        Sanctum::actingAs($editingManager);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+        $shoot->tour_links = [
+            'video_branded' => 'https://youtu.be/dQw4w9WgXcQ',
+        ];
+        $shoot->save();
+
+        $response = $this->getJson("/api/public/shoots/{$shoot->id}/branded");
+
+        $response->assertOk()
+            ->assertJsonPath('video_link', 'https://youtu.be/dQw4w9WgXcQ')
+            ->assertJsonPath('tour_links.video_branded', 'https://youtu.be/dQw4w9WgXcQ');
+    }
+
+    /** @test */
+    public function delivered_video_links_are_public(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+        ]);
+        $shoot->tour_links = [
+            'video_mls' => 'https://vimeo.com/1186135733',
+        ];
+        $shoot->save();
+
+        $response = $this->getJson("/api/public/shoots/{$shoot->id}/mls");
+
+        $response->assertOk()
+            ->assertJsonPath('video_link', 'https://vimeo.com/1186135733')
+            ->assertJsonPath('tour_links.video_mls', 'https://vimeo.com/1186135733');
+    }
+
+    /** @test */
     public function notes_route_still_returns_note_payloads_after_the_route_split(): void
     {
         Sanctum::actingAs($this->admin);

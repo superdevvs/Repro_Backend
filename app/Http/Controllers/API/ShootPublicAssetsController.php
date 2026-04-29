@@ -22,7 +22,7 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return response()->json($this->shootPublicAssetsService->buildTypedPublicAssets($shoot, 'branded'));
+        return response()->json($this->buildVisiblePublicAssets($request, $shoot, 'branded'));
     }
 
     public function publicMls(Request $request, $shootId = null)
@@ -32,7 +32,7 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return response()->json($this->shootPublicAssetsService->buildTypedPublicAssets($shoot, 'mls'));
+        return response()->json($this->buildVisiblePublicAssets($request, $shoot, 'mls'));
     }
 
     public function publicGenericMls(Request $request, $shootId = null)
@@ -42,7 +42,81 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return response()->json($this->shootPublicAssetsService->buildTypedPublicAssets($shoot, 'generic-mls'));
+        return response()->json($this->buildVisiblePublicAssets($request, $shoot, 'generic-mls'));
+    }
+
+    private function buildVisiblePublicAssets(Request $request, Shoot $shoot, string $type): array
+    {
+        $assets = $this->shootPublicAssetsService->buildTypedPublicAssets($shoot, $type);
+
+        if ($this->canViewVideoAssets($request, $shoot)) {
+            return $assets;
+        }
+
+        foreach (['video_link', 'video_thumbnail_url', 'video_poster_url'] as $key) {
+            $assets[$key] = null;
+        }
+
+        $assets['video_access_restricted'] = true;
+        $assets['tour_links'] = $this->stripVideoTourLinks($assets['tour_links'] ?? []);
+        $assets['embeds'] = [];
+
+        return $assets;
+    }
+
+    private function canViewVideoAssets(Request $request, Shoot $shoot): bool
+    {
+        if ($this->isDelivered($shoot)) {
+            return true;
+        }
+
+        $user = $request->user() ?? auth('sanctum')->user();
+        if (!$user) {
+            return false;
+        }
+
+        $roles = collect(array_merge([$user->role], is_array($user->secondary_roles) ? $user->secondary_roles : []))
+            ->map(fn ($role) => $this->normalizeRole($role))
+            ->filter()
+            ->values()
+            ->all();
+
+        return !empty(array_intersect($roles, [
+            'admin',
+            'superadmin',
+            'editingmanager',
+            'salesrep',
+            'rep',
+            'representative',
+        ]));
+    }
+
+    private function isDelivered(Shoot $shoot): bool
+    {
+        return $shoot->status === Shoot::STATUS_DELIVERED
+            || $shoot->workflow_status === Shoot::STATUS_DELIVERED;
+    }
+
+    private function normalizeRole(?string $role): string
+    {
+        return strtolower(str_replace(['_', '-', ' '], '', (string) $role));
+    }
+
+    private function stripVideoTourLinks(array $tourLinks): array
+    {
+        foreach ([
+            'video_link',
+            'video_branded',
+            'video_mls',
+            'video_generic',
+            'embeds',
+            'featured_embed',
+            'featured_embed_id',
+        ] as $key) {
+            unset($tourLinks[$key]);
+        }
+
+        return $tourLinks;
     }
 
     public function publicClientProfile(Request $request, $clientId)
