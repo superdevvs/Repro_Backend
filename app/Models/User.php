@@ -15,6 +15,9 @@ class User extends Authenticatable
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable, HasApiTokens;
 
+    private const CATEGORY_SPECIALTY_PREFIX = 'category:';
+    private const CATEGORY_NAME_SPECIALTY_PREFIX = 'category-name:';
+
     /**
      * The attributes that are mass assignable.
      *
@@ -231,20 +234,50 @@ class User extends Authenticatable
     }
 
     /**
-     * Get the service capabilities (service IDs) for this photographer
-     * Stored in metadata.specialties as array of service IDs
+     * Get the service capabilities for this photographer.
+     * Supports category capability keys and legacy service IDs.
      */
     public function getServiceCapabilities(): array
     {
         $metadata = $this->metadata ?? [];
         $specialties = $metadata['specialties'] ?? [];
         
-        // Ensure we return an array of strings (service IDs)
         if (!is_array($specialties)) {
             return [];
         }
         
         return array_map('strval', $specialties);
+    }
+
+    private static function normalizeCategoryNameForCapability(?string $name): string
+    {
+        $normalized = strtolower(trim((string) $name));
+        $normalized = preg_replace('/\s+/', '-', $normalized) ?? '';
+        $normalized = preg_replace('/[^a-z0-9-]/', '', $normalized) ?? '';
+
+        return $normalized !== '' ? $normalized : 'other';
+    }
+
+    private static function categoryCapabilityKeysForService(int|string $serviceId): array
+    {
+        $service = Service::with('category:id,name')->find($serviceId);
+
+        if (!$service) {
+            return [];
+        }
+
+        $keys = [];
+
+        if ($service->category_id) {
+            $keys[] = self::CATEGORY_SPECIALTY_PREFIX . (string) $service->category_id;
+        }
+
+        $categoryName = $service->category?->name;
+        if ($categoryName) {
+            $keys[] = self::CATEGORY_NAME_SPECIALTY_PREFIX . self::normalizeCategoryNameForCapability($categoryName);
+        }
+
+        return $keys;
     }
 
     /**
@@ -253,7 +286,17 @@ class User extends Authenticatable
     public function canPerformService(int|string $serviceId): bool
     {
         $capabilities = $this->getServiceCapabilities();
-        return in_array((string) $serviceId, $capabilities, true);
+        if (in_array((string) $serviceId, $capabilities, true)) {
+            return true;
+        }
+
+        foreach (self::categoryCapabilityKeysForService($serviceId) as $categoryKey) {
+            if (in_array($categoryKey, $capabilities, true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -261,9 +304,8 @@ class User extends Authenticatable
      */
     public function canPerformAllServices(array $serviceIds): bool
     {
-        $capabilities = $this->getServiceCapabilities();
         foreach ($serviceIds as $serviceId) {
-            if (!in_array((string) $serviceId, $capabilities, true)) {
+            if (!$this->canPerformService($serviceId)) {
                 return false;
             }
         }
@@ -271,12 +313,12 @@ class User extends Authenticatable
     }
 
     /**
-     * Set service capabilities for this photographer
+     * Set service/category capabilities for this photographer
      */
-    public function setServiceCapabilities(array $serviceIds): void
+    public function setServiceCapabilities(array $capabilities): void
     {
         $metadata = $this->metadata ?? [];
-        $metadata['specialties'] = array_map('strval', $serviceIds);
+        $metadata['specialties'] = array_map('strval', $capabilities);
         $this->metadata = $metadata;
     }
 
