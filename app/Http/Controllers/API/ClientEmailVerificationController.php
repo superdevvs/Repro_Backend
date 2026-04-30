@@ -47,7 +47,7 @@ class ClientEmailVerificationController extends Controller
                 return response()->view('email_verification_result', $this->pageData(
                     'Verification link invalid',
                     $verificationResult->reason === 'hash_mismatch'
-                        ? 'The verification link does not match the current client email. Please request a new verification email from the dashboard.'
+                        ? 'The verification link does not match the current account email. Please request a new verification email from the dashboard.'
                         : 'This verification link is invalid or has expired. Please request a new verification email from your dashboard.',
                     false,
                 ), $verificationResult->reason === 'hash_mismatch' ? 422 : 403);
@@ -89,7 +89,7 @@ class ClientEmailVerificationController extends Controller
 
             return response()->view('email_verification_result', $this->pageData(
                 'Verification link invalid',
-                'The verification link does not match the current client email. Please request a new verification email from the dashboard.',
+                'The verification link does not match the current account email. Please request a new verification email from the dashboard.',
                 false,
             ), 422);
         }
@@ -99,7 +99,7 @@ class ClientEmailVerificationController extends Controller
             $user,
             'email_verified',
             'Email verified',
-            'The client confirmed their email address and can now receive normal dashboard notifications.'
+            'The account holder confirmed their email address and can now receive normal dashboard notifications.'
         );
 
         if (!$this->mailService->sendClientEmailVerifiedEmail($user, [
@@ -113,7 +113,7 @@ class ClientEmailVerificationController extends Controller
 
         return response()->view('email_verification_result', $this->pageData(
             'Email verified',
-            'This client email address is now verified and ready for normal outbound communication.',
+            'This account email address is now verified and ready for normal outbound communication.',
             true,
         ));
     }

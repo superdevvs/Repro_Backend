@@ -423,9 +423,9 @@ class UserController extends Controller
             $verificationToken = null;
             $verificationLink = null;
 
-            if ($user->role === 'client') {
+            if ($this->shouldRequireEmailVerificationForRole($user->role)) {
                 $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
-                    'issued_context' => 'admin_resend',
+                    'issued_context' => 'admin_account_created',
                     'issued_by' => $admin->id,
                 ]);
                 $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
@@ -443,8 +443,8 @@ class UserController extends Controller
                 );
             }
 
-            if ($user->role === 'client' && $mailService->sendClientEmailVerificationEmail($user, [
-                'issued_context' => 'admin_resend',
+            if ($verificationToken !== null && $mailService->sendClientEmailVerificationEmail($user, [
+                'issued_context' => 'admin_account_created',
                 'issued_by' => $admin->id,
                 'verification_token' => $verificationToken,
                 'verification_link' => $verificationLink,
@@ -454,7 +454,7 @@ class UserController extends Controller
                     $user,
                     'email_verification_requested',
                     'Email verification sent',
-                    'A verification email was sent to the client address.',
+                    'A verification email was sent to the account address.',
                     $admin,
                     [
                         'email' => $user->email,
@@ -848,7 +848,7 @@ class UserController extends Controller
                 $user,
                 'email_warning_override',
                 'Email warning overridden',
-                'The editor confirmed keeping a likely typo email address.',
+                'The account editor confirmed keeping a likely typo email address.',
                 $admin,
                 [
                     'email' => $user->email,
@@ -858,7 +858,7 @@ class UserController extends Controller
             );
         }
 
-        if ($emailHealthMutation['email_changed'] && $user->role === 'client') {
+        if ($emailHealthMutation['email_changed'] && $this->shouldRequireEmailVerificationForRole($user->role)) {
             try {
                 $mailService = app(MailService::class);
                 if ($mailService->sendClientEmailVerificationEmail($user, [
@@ -868,7 +868,7 @@ class UserController extends Controller
                     $this->emailHealthService->markVerificationSent($user);
                 }
             } catch (\Throwable $exception) {
-                \Log::warning('Failed to send client email verification email after update', [
+                \Log::warning('Failed to send account email verification email after update', [
                     'user_id' => $user->id,
                     'email' => $user->email,
                     'error' => $exception->getMessage(),
@@ -879,7 +879,7 @@ class UserController extends Controller
                 $user,
                 'email_verification_requested',
                 'Email verification sent',
-                'A new verification email was sent after the client email changed.',
+                'A new verification email was sent after the account email changed.',
                 $admin,
                 [
                     'email' => $user->email,
@@ -1086,15 +1086,15 @@ class UserController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if ($user->role !== 'client') {
+        if (!$this->shouldRequireEmailVerificationForRole($user->role)) {
             return response()->json([
-                'message' => 'Verification emails can only be sent to client accounts.',
+                'message' => 'Verification emails are not required for this account role.',
             ], 422);
         }
 
         if (blank($user->email)) {
             return response()->json([
-                'message' => 'This client does not have an email address on file.',
+                'message' => 'This account does not have an email address on file.',
             ], 422);
         }
 
@@ -1256,11 +1256,9 @@ class UserController extends Controller
             ? array_key_exists('email', $validated) && $email !== strtolower(trim((string) $existingUser->email))
             : true;
 
-        if ($targetRole !== 'client') {
+        if (!$this->shouldRequireEmailVerificationForRole($targetRole)) {
             return [
-                'attributes' => $existingUser && $existingUser->role === 'client' && ($validated['role'] ?? null) !== 'client'
-                    ? $this->clearEmailHealthAttributes()
-                    : [],
+                'attributes' => $existingUser ? $this->clearEmailHealthAttributes() : [],
                 'analysis' => null,
                 'warning_override' => false,
                 'email_changed' => $emailChanged,
@@ -1337,6 +1335,11 @@ class UserController extends Controller
             'email_warning_message' => null,
             'email_suggested_correction' => null,
         ];
+    }
+
+    protected function shouldRequireEmailVerificationForRole(?string $role): bool
+    {
+        return !in_array($role, ['admin', 'superadmin'], true);
     }
 
     protected function normalizeClientDiscount(?string $role, mixed $discountType, mixed $discountValue): array

@@ -233,6 +233,85 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
+    public function test_admin_created_accounts_require_email_verification_except_admin_roles(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $roles = [
+            'superadmin' => 'aj@reprophotos.com',
+            'admin' => 'created.admin@gmail.com',
+            'editing_manager' => 'created.editing.manager@gmail.com',
+            'client' => 'created.client@gmail.com',
+            'photographer' => 'created.photographer@gmail.com',
+            'editor' => 'created.editor@gmail.com',
+            'salesRep' => 'created.sales.rep@gmail.com',
+        ];
+        $verificationRoles = array_diff_key($roles, array_flip(['superadmin', 'admin']));
+
+        $this->partialMock(MailService::class, function (MockInterface $mock) use ($roles, $verificationRoles) {
+            $mock->shouldReceive('sendAccountCreatedEmail')
+                ->times(count($roles))
+                ->andReturnTrue();
+
+            $mock->shouldReceive('sendClientEmailVerificationEmail')
+                ->times(count($verificationRoles))
+                ->withArgs(function (User $user, array $context) use ($verificationRoles): bool {
+                    return array_key_exists($user->role, $verificationRoles)
+                        && ($context['issued_context'] ?? null) === 'admin_account_created'
+                        && ($context['verification_token'] ?? null) instanceof ClientEmailVerificationToken
+                        && is_string($context['verification_link'] ?? null)
+                        && str_contains($context['verification_link'], '/email/verify/');
+                })
+                ->andReturnTrue();
+        });
+
+        Sanctum::actingAs($admin);
+
+        foreach ($roles as $role => $email) {
+            $response = $this->postJson('/api/admin/users', [
+                'name' => "Created {$role}",
+                'email' => $email,
+                'role' => $role,
+            ]);
+
+            $response->assertCreated();
+            $response->assertJsonPath('user.role', $role);
+
+            $userId = $response->json('user.id');
+            $this->assertDatabaseHas('users', [
+                'id' => $userId,
+                'role' => $role,
+                'email' => $email,
+                'email_verified_at' => null,
+            ]);
+
+            if (array_key_exists($role, $verificationRoles)) {
+                $this->assertContains($response->json('user.email_health.status'), ['unverified', 'risky']);
+                $this->assertNotNull($response->json('user.email_health.verification_sent_at'));
+                $this->assertDatabaseHas('client_email_verification_tokens', [
+                    'user_id' => $userId,
+                    'issued_context' => 'admin_account_created',
+                ]);
+                $this->assertDatabaseHas('user_activity_logs', [
+                    'user_id' => $userId,
+                    'event_type' => 'email_verification_requested',
+                    'title' => 'Email verification sent',
+                ]);
+            } else {
+                $response->assertJsonPath('user.email_health.status', null);
+                $response->assertJsonPath('user.email_health.verification_sent_at', null);
+                $this->assertDatabaseMissing('client_email_verification_tokens', [
+                    'user_id' => $userId,
+                    'issued_context' => 'admin_account_created',
+                ]);
+                $this->assertDatabaseMissing('user_activity_logs', [
+                    'user_id' => $userId,
+                    'event_type' => 'email_verification_requested',
+                    'title' => 'Email verification sent',
+                ]);
+            }
+        }
+    }
+
     public function test_admin_cannot_resend_verification_for_already_verified_client(): void
     {
         $admin = User::factory()->admin()->create();

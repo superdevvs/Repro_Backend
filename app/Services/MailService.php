@@ -161,7 +161,7 @@ class MailService
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
                 'meta' => [
-                    'recipient_type' => 'client',
+                    'recipient_type' => $user->role === 'client' ? 'client' : 'other',
                     'event_version' => 'verification_token_' . $verificationToken->id,
                     'verification_token_id' => $verificationToken->id,
                     'verification_expires_at' => $verificationToken->expires_at?->toIso8601String(),
@@ -180,7 +180,7 @@ class MailService
                 ],
             ]);
 
-            Log::info('Client email verification email sent', [
+            Log::info('Account email verification email sent', [
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'verification_token_id' => $verificationToken->id,
@@ -189,7 +189,7 @@ class MailService
 
             return true;
         } catch (\Throwable $exception) {
-            Log::error('Failed to send client email verification email', [
+            Log::error('Failed to send account email verification email', [
                 'user_id' => $user->id,
                 'email' => $user->email,
                 'error' => $exception->getMessage(),

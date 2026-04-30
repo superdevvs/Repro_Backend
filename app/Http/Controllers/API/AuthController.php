@@ -117,21 +117,19 @@ class AuthController extends Controller
         $verificationToken = null;
         $verificationLink = null;
 
-        if ($user->role === 'client') {
-            $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
-                'issued_context' => 'registration',
-                'issued_by' => $user->id,
-            ]);
-            $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
-            $accountCreatedContext['verification_link'] = $verificationLink;
-        }
+        $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
+            'issued_context' => 'registration',
+            'issued_by' => $user->id,
+        ]);
+        $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
+        $accountCreatedContext['verification_link'] = $verificationLink;
 
         $accountCreatedDispatch = $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
         if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
             $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
         }
 
-        if ($user->role === 'client' && $this->mailService->sendClientEmailVerificationEmail($user, [
+        if ($this->mailService->sendClientEmailVerificationEmail($user, [
             'issued_context' => 'registration',
             'issued_by' => $user->id,
             'verification_token' => $verificationToken,
@@ -142,7 +140,7 @@ class AuthController extends Controller
                 $user,
                 'email_verification_requested',
                 'Email verification sent',
-                'A verification email was sent to the client address after registration.',
+                'A verification email was sent to the account address after registration.',
                 [
                     'email' => $user->email,
                     'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
@@ -266,17 +264,22 @@ class AuthController extends Controller
 
         $emailHealthMutation = null;
         if ($emailChanged) {
-            $emailHealthMutation = $this->resolveEmailHealthMutation(
-                (string) $incomingEmail,
-                $request->boolean('email_warning_override')
-            );
+            if ($this->shouldRequireEmailVerificationForRole($user->role)) {
+                $emailHealthMutation = $this->resolveEmailHealthMutation(
+                    (string) $incomingEmail,
+                    $request->boolean('email_warning_override')
+                );
 
-            if ($emailHealthMutation['response']) {
-                return $emailHealthMutation['response'];
+                if ($emailHealthMutation['response']) {
+                    return $emailHealthMutation['response'];
+                }
+
+                $validated = array_merge($validated, $emailHealthMutation['attributes']);
+                $validated['email'] = $emailHealthMutation['attributes']['email'];
+            } else {
+                $validated = array_merge($validated, $this->clearEmailHealthAttributes());
+                $validated['email'] = strtolower(trim((string) $incomingEmail));
             }
-
-            $validated = array_merge($validated, $emailHealthMutation['attributes']);
-            $validated['email'] = $emailHealthMutation['attributes']['email'];
         }
 
         // Map phone_number to phonenumber if provided
@@ -339,7 +342,7 @@ class AuthController extends Controller
             );
         }
 
-        if ($emailChanged && $user->role === 'client') {
+        if ($emailChanged && $this->shouldRequireEmailVerificationForRole($user->role)) {
             $verificationSent = false;
 
             try {
@@ -351,7 +354,7 @@ class AuthController extends Controller
                     $verificationSent = true;
                 }
             } catch (\Throwable $exception) {
-                Log::warning('Failed to send client email verification email after self-service profile update', [
+                Log::warning('Failed to send account email verification email after self-service profile update', [
                     'user_id' => $user->id,
                     'email' => $user->email,
                     'error' => $exception->getMessage(),
@@ -363,7 +366,7 @@ class AuthController extends Controller
                     $user,
                     'email_verification_requested',
                     'Email verification sent',
-                    'A new verification email was sent after the client updated their email address.',
+                    'A new verification email was sent after the account email address changed.',
                     [
                         'email' => $user->email,
                         'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
@@ -426,8 +429,11 @@ class AuthController extends Controller
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
-        if (strtolower((string) $user->role) !== 'client') {
-            return response()->json(['message' => 'Only client accounts can resend verification emails.'], 403);
+        if (!$this->shouldRequireEmailVerificationForRole($user->role)) {
+            return response()->json([
+                'message' => 'Verification emails are not required for this account role.',
+                'user' => $user->fresh(),
+            ], 422);
         }
 
         if ($user->email_status === EmailHealthService::STATUS_VERIFIED) {
@@ -451,7 +457,7 @@ class AuthController extends Controller
             $user,
             'email_verification_requested',
             'Email verification sent',
-            'A new verification email was requested from the client dashboard.',
+            'A new verification email was requested from the dashboard.',
             [
                 'email' => $user->email,
                 'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
@@ -686,6 +692,29 @@ class AuthController extends Controller
                 'entered_email' => strtolower(trim($email)),
             ],
         ], 422);
+    }
+
+    protected function shouldRequireEmailVerificationForRole(?string $role): bool
+    {
+        return !in_array($role, ['admin', 'superadmin'], true);
+    }
+
+    /**
+     * @return array<string, null>
+     */
+    protected function clearEmailHealthAttributes(): array
+    {
+        return [
+            'email_status' => null,
+            'verification_sent_at' => null,
+            'email_verified_at' => null,
+            'email_last_delivery_attempt_at' => null,
+            'email_last_bounced_at' => null,
+            'email_bounce_reason' => null,
+            'email_warning_code' => null,
+            'email_warning_message' => null,
+            'email_suggested_correction' => null,
+        ];
     }
 
     protected function recordUserActivity(
