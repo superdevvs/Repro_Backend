@@ -139,7 +139,7 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
+        if ($user->role === 'photographer' && !$this->shootAuthorizationSupport->isPhotographerAssignedToShoot($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

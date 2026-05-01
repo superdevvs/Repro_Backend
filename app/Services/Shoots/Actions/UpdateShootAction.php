@@ -81,7 +81,8 @@ class UpdateShootAction
         if (!$isAdmin) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
-            $assignedPhotographer = $isPhotographer && (string) $shoot->photographer_id === (string) $user->id;
+            $assignedPhotographer = $isPhotographer
+                && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->isPhotographerAssignedToShoot($shoot, $user);
 
             if ($ownsShoot) {
                 $onlyClientEditableFields = count($requestKeys) > 0 && count(array_diff($requestKeys, $clientEditableKeys)) === 0;
@@ -142,6 +143,7 @@ class UpdateShootAction
             [
             'status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
             'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
+            'skip_availability_check' => 'nullable|boolean',
             'is_private_listing' => 'nullable|boolean',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,sold,rented',
@@ -157,6 +159,56 @@ class UpdateShootAction
             ],
             ]
         ));
+        $availabilityPayload = $validated;
+        $scheduledAtProvidedForAvailability = array_key_exists('scheduled_at', $validated);
+        $scheduledDateProvidedForAvailability = array_key_exists('scheduled_date', $validated);
+        $timeProvidedForAvailability = array_key_exists('time', $validated);
+
+        if (!$scheduledAtProvidedForAvailability && ($scheduledDateProvidedForAvailability || $timeProvidedForAvailability)) {
+            $normalizedScheduledDate = $validated['scheduled_date']
+                ?? $shoot->scheduled_date?->toDateString()
+                ?? $shoot->scheduled_date;
+            $normalizedTime = $validated['time'] ?? $shoot->time;
+
+            if ($normalizedScheduledDate) {
+                $availabilityPayload['scheduled_at'] = Carbon::parse(
+                    trim(sprintf('%s %s', $normalizedScheduledDate, $normalizedTime ?: '00:00'))
+                )->format('Y-m-d H:i:s');
+            }
+        }
+
+        $availabilityRelevantKeys = [
+            'scheduled_at',
+            'scheduled_date',
+            'time',
+            'photographer_id',
+            'services',
+            'service_items',
+            'service_photographers',
+        ];
+        $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
+        if ($needsAvailabilityCheck && !($validated['skip_availability_check'] ?? false)) {
+            $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
+            $targetScheduledAt = isset($availabilityPayload['scheduled_at'])
+                ? new \DateTime((string) $availabilityPayload['scheduled_at'])
+                : ($shoot->scheduled_at ? new \DateTime($shoot->scheduled_at->format('Y-m-d H:i:s')) : null);
+            $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $availabilityPayload);
+
+            if ($targetPhotographerId && $targetScheduledAt) {
+                $this->support->checkPhotographerAvailability(
+                    (int) $targetPhotographerId,
+                    $targetScheduledAt,
+                    $this->support->calculateShootDurationFromServices($targetServices),
+                    $shoot->id
+                );
+            }
+
+            $this->support->checkServiceItemPhotographerAvailability(
+                $targetServices,
+                $targetPhotographerId ? (int) $targetPhotographerId : null,
+                $shoot->id
+            );
+        }
         $ghostUserIds = collect($validated['ghost_user_ids'] ?? [])
             ->map(fn ($id) => (int) $id)
             ->unique()

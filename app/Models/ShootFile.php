@@ -11,6 +11,7 @@ class ShootFile extends Model
 
     protected $fillable = [
         'shoot_id',
+        'shoot_service_id',
         'album_id',
         'filename',
         'stored_filename',
@@ -78,6 +79,11 @@ class ShootFile extends Model
     public function shoot()
     {
         return $this->belongsTo(Shoot::class);
+    }
+
+    public function serviceItem()
+    {
+        return $this->belongsTo(ShootService::class, 'shoot_service_id');
     }
 
     public function album()
@@ -157,6 +163,16 @@ class ShootFile extends Model
     {
         $shoot = $this->shoot;
 
+        if ($this->shoot_service_id) {
+            $serviceItem = $this->relationLoaded('serviceItem')
+                ? $this->serviceItem
+                : $this->serviceItem()->with('shoot')->first();
+
+            if ($serviceItem?->is_unlocked_for_delivery) {
+                return $this->storage_path ?? $this->dropbox_path;
+            }
+        }
+
         // If bypass_paywall is true OR payment_status is paid, return original
         if ($shoot->bypass_paywall || $shoot->payment_status === 'paid') {
             return $this->storage_path ?? $this->dropbox_path;
@@ -178,6 +194,17 @@ class ShootFile extends Model
     public function shouldBeWatermarked(): bool
     {
         $shoot = $this->shoot;
+
+        if ($this->shoot_service_id) {
+            $serviceItem = $this->relationLoaded('serviceItem')
+                ? $this->serviceItem
+                : $this->serviceItem()->with('shoot')->first();
+
+            if ($serviceItem?->is_unlocked_for_delivery) {
+                return false;
+            }
+        }
+
         return !$shoot->bypass_paywall && $shoot->payment_status !== 'paid';
     }
 }

@@ -39,6 +39,7 @@ class Shoot extends Model
         'tax_amount',
         'total_quote',
         'payment_status',
+        'delivery_status',
         'payment_type',
         'bypass_paywall',
         'tax_region',
@@ -218,8 +219,31 @@ class Shoot extends Model
     public function services()
     {
         return $this->belongsToMany(Service::class, 'shoot_service')
-            ->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id', 'editor_id', 'editing_completed_at'])
+            ->withPivot([
+                'id',
+                'price',
+                'quantity',
+                'photographer_pay',
+                'photographer_id',
+                'editor_id',
+                'editing_completed_at',
+                'scheduled_at',
+                'workflow_status',
+                'delivery_status',
+                'ready_at',
+                'delivered_at',
+                'cancelled_at',
+                'is_deliverable',
+                'force_unlock_delivery',
+                'unlock_reason',
+                'unlocked_by',
+            ])
             ->withTimestamps();
+    }
+
+    public function serviceItems()
+    {
+        return $this->hasMany(ShootService::class);
     }
 
     public function ghostUsers()
@@ -467,6 +491,47 @@ class Shoot extends Model
         ];
     }
 
+    public function syncServiceItemRollups(): array
+    {
+        $items = $this->serviceItems()->get();
+
+        if ($items->isEmpty()) {
+            return [
+                'delivery_status' => $this->delivery_status ?? 'not_started',
+                'workflow_status' => $this->workflow_status,
+            ];
+        }
+
+        $deliverableItems = $items->filter(function (ShootService $item) {
+            return $item->is_deliverable
+                && $item->workflow_status !== ShootService::WORKFLOW_CANCELLED
+                && $item->delivery_status !== ShootService::DELIVERY_CANCELLED;
+        });
+
+        if ($deliverableItems->isEmpty()) {
+            $deliveryStatus = 'delivered';
+        } elseif ($deliverableItems->every(fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED)) {
+            $deliveryStatus = 'delivered';
+        } elseif ($deliverableItems->contains(fn (ShootService $item) => in_array($item->delivery_status, [
+            ShootService::DELIVERY_READY,
+            ShootService::DELIVERY_DELIVERED,
+        ], true))) {
+            $deliveryStatus = 'partially_delivered';
+        } else {
+            $deliveryStatus = 'not_started';
+        }
+
+        if ($this->delivery_status !== $deliveryStatus) {
+            $this->delivery_status = $deliveryStatus;
+            $this->save();
+        }
+
+        return [
+            'delivery_status' => $deliveryStatus,
+            'workflow_status' => $this->workflow_status,
+        ];
+    }
+
     public function invoices()
     {
         return $this->belongsToMany(Invoice::class, 'invoice_shoot')->withTimestamps();
@@ -674,6 +739,7 @@ class Shoot extends Model
                 $this->admin_verified_at = now();
                 $this->verified_by = $userId;
                 $this->completed_at = now();
+                $this->delivery_status = 'delivered';
                 if (!$this->editing_completed_at) {
                     $this->editing_completed_at = now();
                 }

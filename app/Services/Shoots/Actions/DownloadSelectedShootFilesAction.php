@@ -33,10 +33,6 @@ class DownloadSelectedShootFilesAction
             ], 403);
         }
 
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
-            return $this->shootClientReleaseAccessService->downloadLockedResponse();
-        }
-
         $request->validate([
             'file_ids' => 'nullable|array',
             'file_ids.*' => 'integer',
@@ -53,6 +49,16 @@ class DownloadSelectedShootFilesAction
         $files = $shoot->files()->whereIn('id', $fileIds)->get();
         if ($files->isEmpty()) {
             return response()->json(['error' => 'No files found for selected IDs'], 404);
+        }
+
+        foreach ($files as $file) {
+            if (!$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
+                return $this->shootClientReleaseAccessService->downloadLockedResponse();
+            }
         }
 
         $size = $request->input('size', 'original');

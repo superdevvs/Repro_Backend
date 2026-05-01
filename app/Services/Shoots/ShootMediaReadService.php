@@ -119,6 +119,9 @@ class ShootMediaReadService
         if ($user && $user->role === 'editor') {
             $files = app(ShootEditingAssignmentService::class)->filterFilesForEditor($files, $shoot, $user);
         }
+        if ($user && $user->role === 'photographer') {
+            $files = $this->filterFilesForPhotographer($files, $shoot, $user);
+        }
         if ($type === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
@@ -128,8 +131,11 @@ class ShootMediaReadService
         $dropboxUrls = $this->resolveDropboxUrls($files);
         $needsWatermark = $this->needsWatermark($shoot, $user);
 
-        $formattedFiles = $files->map(function (ShootFile $file) use ($dropboxUrls, $needsWatermark) {
-            return $this->formatFile($file, $dropboxUrls, $needsWatermark);
+        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $dropboxUrls, $needsWatermark) {
+            $fileNeedsWatermark = $needsWatermark
+                && $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
+
+            return $this->formatFile($file, $dropboxUrls, $fileNeedsWatermark);
         })->values()->all();
 
         Cache::put($cacheKey, $formattedFiles, now()->addSeconds(30));
@@ -144,6 +150,24 @@ class ShootMediaReadService
     {
         if ($user && $user->role === 'editor') {
             $filesPayload = $this->getEditorScopedMediaPayload($shoot, $type, $user);
+
+            return [
+                'data' => $filesPayload,
+                'counts' => [
+                    'raw_photo_count' => $shoot->raw_photo_count,
+                    'edited_photo_count' => $shoot->edited_photo_count,
+                    'extra_photo_count' => $shoot->extra_photo_count,
+                    'expected_raw_count' => $shoot->expected_raw_count,
+                    'expected_final_count' => $shoot->expected_final_count,
+                    'raw_missing_count' => $shoot->raw_missing_count,
+                    'edited_missing_count' => $shoot->edited_missing_count,
+                    'bracket_mode' => $shoot->bracket_mode,
+                ],
+            ];
+        }
+
+        if ($user && $user->role === 'photographer') {
+            $filesPayload = $this->getPhotographerScopedMediaPayload($shoot, $type, $user);
 
             return [
                 'data' => $filesPayload,
@@ -217,6 +241,41 @@ class ShootMediaReadService
         })->values()->all();
     }
 
+    protected function getPhotographerScopedMediaPayload(Shoot $shoot, string $type, User $user): array
+    {
+        $normalizedType = strtolower($type);
+        $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
+
+        if ($normalizedType === 'raw') {
+            $filesQuery->where(function ($query) {
+                $query->where('workflow_stage', ShootFile::STAGE_TODO)->orWhereNull('workflow_stage');
+            });
+        } elseif ($normalizedType === 'edited') {
+            $filesQuery->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]);
+        }
+
+        $files = $this->filterFilesForPhotographer($filesQuery->get(), $shoot, $user);
+
+        if ($normalizedType === 'edited') {
+            $files = $files
+                ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
+                ->values();
+        }
+
+        $dropboxUrls = $this->resolveDropboxUrls($files);
+
+        return $files->map(function (ShootFile $file) use ($dropboxUrls) {
+            return $this->formatFile($file, $dropboxUrls, false);
+        })->values()->all();
+    }
+
+    protected function filterFilesForPhotographer(Collection $files, Shoot $shoot, User $user): Collection
+    {
+        return $files
+            ->filter(fn (ShootFile $file) => $this->authorizationSupport->canPhotographerAccessFile($shoot, $file, $user))
+            ->values();
+    }
+
     protected function resolveDropboxUrls($files): array
     {
         $dropboxUrls = [];
@@ -258,6 +317,7 @@ class ShootMediaReadService
 
     protected function formatFile(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
     {
+        $needsWatermark = $needsWatermark && $file->shouldBeWatermarked();
         $url = null;
         $thumbUrl = null;
         $mediumUrl = null;
@@ -324,6 +384,8 @@ class ShootMediaReadService
         $fileData = [
             'id' => $file->id,
             'shoot_id' => $file->shoot_id,
+            'shoot_service_id' => $file->shoot_service_id,
+            'shootServiceId' => $file->shoot_service_id,
             'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
             'stored_filename' => $file->stored_filename,
             'url' => $url,

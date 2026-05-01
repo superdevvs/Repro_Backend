@@ -14,9 +14,11 @@ use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootPaymentStatusSupport;
+use App\Services\Shoots\ShootServiceItemSupport;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class ShootPaymentsController extends Controller
 {
@@ -25,7 +27,8 @@ class ShootPaymentsController extends Controller
         protected MailService $mailService,
         protected ShootActivityLogger $activityLogger,
         protected ShootPaymentStatusSupport $shootPaymentStatusSupport,
-        protected StripePaymentMetadataService $stripePaymentMetadataService
+        protected StripePaymentMetadataService $stripePaymentMetadataService,
+        protected ShootServiceItemSupport $serviceItemSupport
     ) {
     }
 
@@ -38,11 +41,23 @@ class ShootPaymentsController extends Controller
 
         $request->validate([
             'final_status' => 'nullable|string|in:admin_verified,completed',
+            'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
         ]);
 
         $shoot = Shoot::with(['files'])->findOrFail($shootId);
-        $completedFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_COMPLETED)->get();
-        $rawFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->get();
+        $shootServiceId = $request->integer('shoot_service_id') ?: null;
+        if ($shootServiceId && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
+            return response()->json(['message' => 'Selected service item does not belong to this shoot'], 422);
+        }
+
+        $completedFiles = $shoot->files()
+            ->where('workflow_stage', ShootFile::STAGE_COMPLETED)
+            ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
+            ->get();
+        $rawFiles = $shoot->files()
+            ->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
+            ->get();
         $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
         $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
 
@@ -70,10 +85,11 @@ class ShootPaymentsController extends Controller
                     'queued_at' => now()->toISOString(),
                     'completed_file_count' => $completedFiles->count(),
                     'final_status' => $request->input('final_status'),
+                    'shoot_service_id' => $shootServiceId,
                 ],
             ]);
 
-            FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'));
+            FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId);
 
             return response()->json([
                 'message' => 'Finalize started in background',
@@ -151,6 +167,12 @@ class ShootPaymentsController extends Controller
             'payment_type' => 'nullable|string|in:manual,square,check,cash,bank_transfer,zelle,ach,other',
             'payment_details' => 'nullable|array',
             'payment_date' => 'nullable|date',
+            'shoot_service_ids' => 'nullable|array',
+            'shoot_service_ids.*' => 'integer|exists:shoot_service,id',
+            'allocations' => 'nullable|array',
+            'allocations.*.shoot_service_id' => 'required_with:allocations|integer|exists:shoot_service,id',
+            'allocations.*.amount' => 'required_with:allocations|numeric|min:0.01',
+            'allocation_strategy' => 'nullable|string|in:oldest_unpaid,manual,selected_service,selected_services',
         ]);
 
         try {
@@ -206,6 +228,12 @@ class ShootPaymentsController extends Controller
                 ], 422);
             }
 
+            if ($this->serviceItemSupport->requiresExplicitAllocation($shoot->fresh(['payments']), $amount, $validated)) {
+                return response()->json([
+                    'message' => 'Custom partial payments must target selected services, explicit allocations, or an allocation strategy.',
+                ], 422);
+            }
+
             if ($amount <= 0) {
                 $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
                     ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
@@ -240,6 +268,7 @@ class ShootPaymentsController extends Controller
                 'status' => Payment::STATUS_COMPLETED,
                 'processed_at' => $processedAt,
             ]);
+            $this->serviceItemSupport->allocatePayment($payment, $shoot->fresh(), $validated);
 
             $oldPaymentStatus = $shoot->payment_status;
             $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
@@ -301,8 +330,11 @@ class ShootPaymentsController extends Controller
                     'payment_id' => $payment->id,
                     'total_paid' => $totalPaid,
                     'payment_status' => $newPaymentStatus,
+                    'service_items' => $this->serviceItemSupport->summaries($shoot->fresh()),
                 ],
             ]);
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Error marking shoot as paid', [
                 'shoot_id' => $shoot->id,
@@ -437,11 +469,14 @@ class ShootPaymentsController extends Controller
             'tax_amount' => (float) ($shoot->tax_amount ?? 0),
             'services' => $shoot->services->map(fn ($service) => [
                 'name' => $service->name,
+                'shoot_service_id' => $service->pivot->id ?? null,
                 'pivot' => [
                     'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
                     'quantity' => (int) ($service->pivot->quantity ?? 1),
                 ],
             ]),
+            'service_items' => $this->serviceItemSupport->summaries($shoot),
+            'serviceItems' => $this->serviceItemSupport->summaries($shoot),
             'payments' => $payments
                 ->filter(fn ($payment) => $payment instanceof Payment)
                 ->map(fn (Payment $payment) => $this->stripePaymentMetadataService->serializePayment($payment))

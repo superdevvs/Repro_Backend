@@ -6,6 +6,7 @@ use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
+use Illuminate\Validation\Rule;
 
 class ShootEditablePayloadService
 {
@@ -25,6 +26,22 @@ class ShootEditablePayloadService
             'services.*.id' => 'required_with:services|integer|exists:services,id',
             'services.*.price' => 'nullable|numeric|min:0',
             'services.*.quantity' => 'nullable|integer|min:1',
+            'services.*.photographer_id' => 'nullable|integer|exists:users,id',
+            'services.*.editor_id' => 'nullable|integer|exists:users,id',
+            'services.*.scheduled_at' => 'nullable|date',
+            'services.*.is_deliverable' => 'nullable|boolean',
+            'service_items' => 'nullable|array',
+            'service_items.*.service_id' => 'required_with:service_items|integer|exists:services,id',
+            'service_items.*.price' => 'nullable|numeric|min:0',
+            'service_items.*.quantity' => 'nullable|integer|min:1',
+            'service_items.*.photographer_id' => 'nullable|integer|exists:users,id',
+            'service_items.*.editor_id' => 'nullable|integer|exists:users,id',
+            'service_items.*.scheduled_at' => 'nullable|date',
+            'service_items.*.is_deliverable' => 'nullable|boolean',
+            'service_items.*.workflow_status' => ['nullable', Rule::in(['pending', 'scheduled', 'in_progress', 'ready', 'delivered', 'cancelled'])],
+            'service_items.*.delivery_status' => ['nullable', Rule::in(['not_started', 'ready', 'delivered', 'cancelled'])],
+            'service_items.*.force_unlock_delivery' => 'nullable|boolean',
+            'service_items.*.unlock_reason' => 'nullable|string|max:2000',
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:255',
             'state' => 'nullable|string|max:2',
@@ -54,7 +71,7 @@ class ShootEditablePayloadService
             'notify_photographer' => 'nullable|boolean',
             'service_photographers' => 'nullable|array',
             'service_photographers.*.service_id' => 'required_with:service_photographers|integer',
-            'service_photographers.*.photographer_id' => 'required_with:service_photographers|integer|exists:users,id',
+            'service_photographers.*.photographer_id' => 'nullable|integer|exists:users,id',
         ];
     }
 
@@ -70,9 +87,7 @@ class ShootEditablePayloadService
             || array_key_exists('tax_amount', $validated)
             || array_key_exists('total_quote', $validated);
         $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
-        $targetServices = array_key_exists('services', $validated)
-            ? $validated['services']
-            : $shoot->services->map(fn ($service) => ['id' => $service->id])->values()->all();
+        $targetServices = $this->targetServicesFor($shoot, $validated);
 
         $this->support->ensureClientCanBookServices($targetClientId, $targetServices);
 
@@ -86,9 +101,13 @@ class ShootEditablePayloadService
             $shoot->time = $validated['time'];
         }
 
-        if (array_key_exists('services', $validated) && is_array($validated['services'])) {
-            $this->support->attachServices($shoot, $validated['services']);
-            $invoiceNeedsRefresh = true;
+        if (
+            array_key_exists('services', $validated)
+            || array_key_exists('service_items', $validated)
+            || array_key_exists('service_photographers', $validated)
+        ) {
+            $this->support->attachServices($shoot, $targetServices);
+            $invoiceNeedsRefresh = array_key_exists('services', $validated) || array_key_exists('service_items', $validated);
         }
 
         if (array_key_exists('address', $validated)) {
@@ -243,7 +262,6 @@ class ShootEditablePayloadService
         }
 
         $shoot->save();
-        $this->support->assignServicePhotographers($shoot, $validated['service_photographers'] ?? null);
 
         if ($invoiceNeedsRefresh) {
             try {
@@ -258,5 +276,31 @@ class ShootEditablePayloadService
                 ]);
             }
         }
+    }
+
+    public function targetServicesFor(Shoot $shoot, array $validated): array
+    {
+        $shoot->loadMissing('services');
+
+        $targetServices = array_key_exists('services', $validated)
+            ? $validated['services']
+            : $shoot->services->map(fn ($service) => [
+                'id' => $service->id,
+                'price' => $service->pivot?->price,
+                'quantity' => $service->pivot?->quantity ?? 1,
+                'photographer_id' => $service->pivot?->photographer_id,
+                'editor_id' => $service->pivot?->editor_id,
+                'scheduled_at' => $service->pivot?->scheduled_at,
+                'workflow_status' => $service->pivot?->workflow_status,
+                'delivery_status' => $service->pivot?->delivery_status,
+                'is_deliverable' => $service->pivot?->is_deliverable,
+            ])->values()->all();
+
+        return $this->support->mergeServiceItemPayload(
+            $targetServices,
+            $validated['service_items'] ?? null,
+            $validated['service_photographers'] ?? null,
+            $validated['scheduled_at'] ?? $shoot->scheduled_at
+        );
     }
 }

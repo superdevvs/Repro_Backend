@@ -351,6 +351,9 @@ class MailService
     {
         try {
             $normalizedEmail = $this->normalizeDeliverableEmail($recipient->email);
+            $recipientShootData = $isPhotographer
+                ? $this->formatShootData($shoot, $recipient, 'photographer')
+                : $shootData;
 
             if ($normalizedEmail === null) {
                 $this->logSkippedShootEmailDelivery(
@@ -366,14 +369,16 @@ class MailService
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($recipient),
                 'account' => $this->formatUserData($shoot->client),
-                'shoot' => $shootData,
+                'shoot' => $recipientShootData,
                 'links' => [
                     'payment' => $paymentLink,
-                    'dashboard' => $shootData->dashboard_url ?? null,
+                    'dashboard' => $recipientShootData->dashboard_url ?? null,
                 ],
                 'meta' => [
                     'recipient_type' => $isPhotographer ? 'photographer' : 'client',
                     'is_photographer' => $isPhotographer,
+                    'role_context' => $isPhotographer ? 'photographer' : 'client',
+                    'shoot_service_ids' => $recipientShootData->service_item_ids ?? [],
                     'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                 ],
             ]);
@@ -383,10 +388,11 @@ class MailService
                 'related_account_id' => $isPhotographer ? null : $recipient->id,
             ], [
                 'idempotency_key' => sprintf(
-                    'SHOOT_SCHEDULED:%d:%d:%s',
+                    'SHOOT_SCHEDULED:%d:%d:%s:%s',
                     $shoot->id,
                     $recipient->id,
-                    $isPhotographer ? 'photographer' : 'client'
+                    $isPhotographer ? 'photographer' : 'client',
+                    $this->serviceScopeHash($recipientShootData)
                 ),
             ]);
 
@@ -438,6 +444,9 @@ class MailService
             $shouldNotifyClient = $notifyClient !== false;
             $shouldNotifyPhotographer = $notifyPhotographer !== false;
             $isPrimaryRecipientPhotographer = $this->isPhotographerRecipient($user, $shoot);
+            $primaryShootData = $isPrimaryRecipientPhotographer
+                ? $this->formatShootData($shoot, $user, 'photographer')
+                : $shootData;
             $sentClient = false;
             $sentPhotographer = false;
             
@@ -450,10 +459,12 @@ class MailService
                     $payload = $this->buildProtectedEmailPayload([
                         'recipient' => $this->formatUserData($user),
                         'account' => $this->formatUserData($shoot->client),
-                        'shoot' => $shootData,
+                        'shoot' => $primaryShootData,
                         'meta' => [
                             'recipient_type' => $isPrimaryRecipientPhotographer ? 'photographer' : 'client',
                             'is_photographer' => $isPrimaryRecipientPhotographer,
+                            'role_context' => $isPrimaryRecipientPhotographer ? 'photographer' : 'client',
+                            'shoot_service_ids' => $primaryShootData->service_item_ids ?? [],
                             'changes_summary' => $normalizedChangesSummary,
                             'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                         ],
@@ -486,6 +497,7 @@ class MailService
             ) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
                     $normalizedEmail = $this->normalizeDeliverableEmail($photographer->email);
+                    $photographerShootData = $this->formatShootData($shoot, $photographer, 'photographer');
 
                     if ($normalizedEmail === null) {
                         $this->logSkippedShootEmailDelivery('SHOOT_UPDATED', $shoot, $photographer, 'photographer');
@@ -495,10 +507,12 @@ class MailService
                     $payload = $this->buildProtectedEmailPayload([
                         'recipient' => $this->formatUserData($photographer),
                         'account' => $this->formatUserData($shoot->client),
-                        'shoot' => $shootData,
+                        'shoot' => $photographerShootData,
                         'meta' => [
                             'recipient_type' => 'photographer',
                             'is_photographer' => true,
+                            'role_context' => 'photographer',
+                            'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
                             'changes_summary' => $normalizedChangesSummary,
                             'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                         ],
@@ -506,7 +520,13 @@ class MailService
                     $this->dispatchProtectedEmail('SHOOT_UPDATED', $payload, $normalizedEmail, [], [], [
                         'related_shoot_id' => $shoot->id,
                     ], [
-                        'idempotency_key' => sprintf('SHOOT_UPDATED:%d:%d:photographer:%s', $shoot->id, $photographer->id, sha1($normalizedChangesSummary)),
+                        'idempotency_key' => sprintf(
+                            'SHOOT_UPDATED:%d:%d:photographer:%s:%s',
+                            $shoot->id,
+                            $photographer->id,
+                            $this->serviceScopeHash($photographerShootData),
+                            sha1($normalizedChangesSummary)
+                        ),
                     ]);
                     $sentPhotographer = true;
                     Log::info('Shoot updated email sent to photographer', [
@@ -576,14 +596,20 @@ class MailService
         Shoot $shoot,
         ?CarbonInterface $scheduledAt = null,
         array $tags = [],
-        ?bool $shouldNotifyPhotographer = true
+        ?bool $shouldNotifyPhotographer = true,
+        array $serviceItemIds = []
     ): bool
     {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
-            $shootData = $this->formatShootData($shoot);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $isDirectPhotographer = $this->isPhotographerRecipient($user, $shoot);
+            $shootData = $this->formatShootData(
+                $shoot,
+                $user,
+                $isDirectPhotographer ? 'photographer' : null,
+                $serviceItemIds
+            );
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($shoot->client),
@@ -591,6 +617,8 @@ class MailService
                 'meta' => [
                     'recipient_type' => $isDirectPhotographer ? 'photographer' : 'client',
                     'is_photographer' => $isDirectPhotographer,
+                    'role_context' => $isDirectPhotographer ? 'photographer' : 'client',
+                    'shoot_service_ids' => $shootData->service_item_ids ?? [],
                     'scheduled_at' => $scheduledAt?->toIso8601String(),
                     'event_version' => $scheduledAt?->toIso8601String() ?? $shoot->scheduled_at?->toIso8601String() ?? $shoot->id,
                 ],
@@ -599,7 +627,13 @@ class MailService
             $this->dispatchProtectedEmail('SHOOT_REMINDER', $payload, $user->email, $clientCcEmails, $tags, $this->automatedClientPayload($isDirectPhotographer ? null : $user, [
                 'related_shoot_id' => $shoot->id,
             ]), [
-                'idempotency_key' => sprintf('SHOOT_REMINDER:%d:%d:%s', $shoot->id, $user->id, $scheduledAt?->toIso8601String() ?? 'default'),
+                'idempotency_key' => sprintf(
+                    'SHOOT_REMINDER:%d:%d:%s:%s',
+                    $shoot->id,
+                    $user->id,
+                    $this->serviceScopeHash($shootData),
+                    $scheduledAt?->toIso8601String() ?? 'default'
+                ),
             ]);
 
             if (
@@ -607,13 +641,16 @@ class MailService
                 && $this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMINDER)
             ) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $photographerShootData = $this->formatShootData($shoot, $photographer, 'photographer', $serviceItemIds);
                     $payload = $this->buildProtectedEmailPayload([
                         'recipient' => $this->formatUserData($photographer),
                         'account' => $this->formatUserData($shoot->client),
-                        'shoot' => $shootData,
+                        'shoot' => $photographerShootData,
                         'meta' => [
                             'recipient_type' => 'photographer',
                             'is_photographer' => true,
+                            'role_context' => 'photographer',
+                            'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
                             'scheduled_at' => $scheduledAt?->toIso8601String(),
                             'event_version' => $scheduledAt?->toIso8601String() ?? $shoot->scheduled_at?->toIso8601String() ?? $shoot->id,
                         ],
@@ -622,7 +659,13 @@ class MailService
                     $this->dispatchProtectedEmail('SHOOT_REMINDER', $payload, $photographer->email, [], $tags, [
                         'related_shoot_id' => $shoot->id,
                     ], [
-                        'idempotency_key' => sprintf('SHOOT_REMINDER:%d:%d:%s', $shoot->id, $photographer->id, $scheduledAt?->toIso8601String() ?? 'default'),
+                        'idempotency_key' => sprintf(
+                            'SHOOT_REMINDER:%d:%d:%s:%s',
+                            $shoot->id,
+                            $photographer->id,
+                            $this->serviceScopeHash($photographerShootData),
+                            $scheduledAt?->toIso8601String() ?? 'default'
+                        ),
                     ]);
                 }
             }
@@ -903,11 +946,16 @@ class MailService
     /**
      * Send shoot ready email
      */
-    public function sendShootReadyEmail(User $user, Shoot $shoot): bool
+    public function sendShootReadyEmail(
+        User $user,
+        Shoot $shoot,
+        array $serviceItemIds = [],
+        bool $isFullOrderDelivery = true
+    ): bool
     {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments']) ?? $shoot;
-            $shootData = $this->formatShootData($shoot);
+            $shootData = $this->formatShootData($shoot, $user, 'client', $serviceItemIds);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
             $paymentLink = $this->shouldShowShootReadyPaymentLink($shoot)
                 ? $this->generatePaymentLink($shoot)
@@ -921,13 +969,22 @@ class MailService
                 ],
                 'meta' => [
                     'recipient_type' => 'client',
+                    'role_context' => 'client',
+                    'shoot_service_ids' => $shootData->service_item_ids ?? [],
+                    'is_full_order_delivery' => $isFullOrderDelivery,
                     'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                 ],
             ]);
             $this->dispatchProtectedEmail('SHOOT_DELIVERED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
                 'related_shoot_id' => $shoot->id,
             ]), [
-                'idempotency_key' => sprintf('SHOOT_DELIVERED:%d:%d', $shoot->id, $user->id),
+                'idempotency_key' => sprintf(
+                    'SHOOT_DELIVERED:%d:%d:%s:%s',
+                    $shoot->id,
+                    $user->id,
+                    $isFullOrderDelivery ? 'full' : 'partial',
+                    $this->serviceScopeHash($shootData)
+                ),
             ]);
             
             Log::info('Shoot ready email sent', [
@@ -1267,7 +1324,12 @@ class MailService
     /**
      * Format shoot data for email templates
      */
-    private function formatShootData(Shoot $shoot): object
+    private function formatShootData(
+        Shoot $shoot,
+        ?User $recipient = null,
+        ?string $roleContext = null,
+        array $serviceItemIds = []
+    ): object
     {
         $shoot->loadMissing(['client', 'photographer', 'rep', 'services.category']);
 
@@ -1292,8 +1354,18 @@ class MailService
         }
 
         $notesText = $this->formatNotes($shoot);
-        $serviceRows = $this->formatDetailedServices($shoot);
+        $serviceRows = $this->formatDetailedServices($shoot, $recipient, $roleContext, $serviceItemIds);
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot, $serviceRows);
+        $packageRows = ($recipient || !empty($serviceItemIds))
+            ? $this->formatPackagesFromServiceRows($serviceRows)
+            : $this->formatPackages($shoot);
+        $resolvedServiceItemIds = collect($serviceRows)
+            ->pluck('shoot_service_id')
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
         $paymentStatus = $this->resolveShootPaymentStatus($shoot);
         $totalPaid = $shoot->relationLoaded('payments')
             ? $shoot->calculateCanonicalTotalPaid()
@@ -1329,8 +1401,10 @@ class MailService
             'payment_status' => $paymentStatus,
             'remaining_balance' => $remainingBalance,
             'formatted_remaining_balance' => $this->formatCurrency($remainingBalance),
-            'packages' => $this->formatPackages($shoot),
+            'packages' => $packageRows,
             'services' => $serviceRows,
+            'service_items' => $serviceRows,
+            'service_item_ids' => $resolvedServiceItemIds,
             'service_category' => $shoot->service_category ?? 'Standard',
             'property_highlights' => $this->buildPropertyHighlightRows($propertyDetails),
             'access_details' => $this->buildAccessRows($propertyDetails),
@@ -1484,9 +1558,19 @@ class MailService
         return $packages;
     }
 
-    private function formatDetailedServices(Shoot $shoot): array
+    private function formatDetailedServices(
+        Shoot $shoot,
+        ?User $recipient = null,
+        ?string $roleContext = null,
+        array $serviceItemIds = []
+    ): array
     {
         $shoot->loadMissing(['services.category']);
+        $serviceItemScope = collect($serviceItemIds)
+            ->map(fn ($id) => (int) $id)
+            ->filter()
+            ->unique()
+            ->values();
 
         $servicePhotographerIds = collect($shoot->services ?? [])
             ->pluck('pivot.photographer_id')
@@ -1501,10 +1585,33 @@ class MailService
         $rows = [];
 
         foreach ($shoot->services ?? [] as $service) {
+            $shootServiceId = (int) ($service->pivot->id ?? 0);
+            if ($serviceItemScope->isNotEmpty() && (!$shootServiceId || !$serviceItemScope->contains($shootServiceId))) {
+                continue;
+            }
+
             $quantity = (int) ($service->pivot->quantity ?? 1);
             $unitPrice = (float) ($service->pivot->price ?? $service->price ?? 0);
             $lineTotal = $unitPrice * $quantity;
             $resolvedPhotographerId = $service->pivot->photographer_id ?? $shoot->photographer_id;
+            $resolvedEditorId = $service->pivot->editor_id ?? $shoot->editor_id;
+
+            if (
+                $recipient
+                && $roleContext === 'photographer'
+                && (!$resolvedPhotographerId || (int) $resolvedPhotographerId !== (int) $recipient->id)
+            ) {
+                continue;
+            }
+
+            if (
+                $recipient
+                && $roleContext === 'editor'
+                && (!$resolvedEditorId || (int) $resolvedEditorId !== (int) $recipient->id)
+            ) {
+                continue;
+            }
+
             $resolvedPhotographer = null;
 
             if ($resolvedPhotographerId) {
@@ -1529,8 +1636,11 @@ class MailService
             }
 
             $serviceName = $service->name ?? $service->service_name ?? 'Service';
+            $scheduledAt = $service->pivot->scheduled_at ?? $shoot->scheduled_at;
+            $formattedSchedule = $this->formatServiceSchedule($scheduledAt);
 
             $rows[] = [
+                'shoot_service_id' => $shootServiceId ?: null,
                 'name' => $serviceName,
                 'display_name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
                 'quantity' => $quantity,
@@ -1539,11 +1649,19 @@ class MailService
                 'line_total' => $lineTotal,
                 'formatted_total' => $this->formatCurrency($lineTotal),
                 'photographer_name' => $resolvedPhotographer?->name,
+                'photographer_id' => $resolvedPhotographerId ? (int) $resolvedPhotographerId : null,
+                'editor_id' => $resolvedEditorId ? (int) $resolvedEditorId : null,
+                'scheduled_at' => $scheduledAt instanceof \DateTimeInterface ? $scheduledAt->format(DATE_ATOM) : $scheduledAt,
+                'schedule' => $formattedSchedule,
+                'formatted_schedule' => $formattedSchedule,
+                'workflow_status' => $service->pivot->workflow_status ?? null,
+                'delivery_status' => $service->pivot->delivery_status ?? null,
+                'payment_status' => null,
                 'meta' => implode(' | ', $meta),
             ];
         }
 
-        if (empty($rows)) {
+        if (empty($rows) && (!$recipient || !$roleContext) && $serviceItemScope->isEmpty()) {
             foreach ($this->formatPackages($shoot) as $package) {
                 $rows[] = [
                     'name' => $package['name'],
@@ -1562,16 +1680,55 @@ class MailService
         return $rows;
     }
 
+    private function formatPackagesFromServiceRows(array $serviceRows): array
+    {
+        return collect($serviceRows)
+            ->map(fn (array $service) => [
+                'name' => $service['display_name'] ?? $service['name'] ?? 'Service',
+                'price' => (float) ($service['line_total'] ?? $service['unit_price'] ?? 0),
+            ])
+            ->values()
+            ->all();
+    }
+
     private function formatAssignedPhotographers(Shoot $shoot, array $serviceRows): array
     {
         return collect($serviceRows)
             ->pluck('photographer_name')
             ->filter()
-            ->prepend($shoot->photographer?->name)
-            ->filter()
             ->unique()
             ->values()
             ->all();
+    }
+
+    private function formatServiceSchedule(mixed $scheduledAt): string
+    {
+        if (!$scheduledAt) {
+            return 'TBD';
+        }
+
+        try {
+            $date = $scheduledAt instanceof \DateTimeInterface
+                ? \Carbon\Carbon::instance($scheduledAt)
+                : \Carbon\Carbon::parse((string) $scheduledAt);
+
+            return $date->format('M j, Y \a\t g:i A');
+        } catch (\Throwable) {
+            return (string) $scheduledAt;
+        }
+    }
+
+    private function serviceScopeHash(object $shootData): string
+    {
+        $ids = collect($shootData->service_item_ids ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->filter()
+            ->sort()
+            ->values();
+
+        return $ids->isEmpty()
+            ? 'all'
+            : sha1($ids->implode(','));
     }
 
     private function isPhotographerRecipient(User $user, Shoot $shoot): bool
@@ -1592,12 +1749,17 @@ class MailService
     {
         $shoot->loadMissing(['photographer', 'services']);
 
-        $photographerIds = collect([
-            $shoot->photographer_id,
-            $shoot->photographer?->id,
-        ])
+        $services = collect($shoot->services ?? []);
+        $hasServices = $services->isNotEmpty();
+        $hasServicesWithoutPhotographer = $services->contains(fn ($service) => empty($service->pivot->photographer_id));
+        $parentPhotographerId = ($shoot->photographer_id || $shoot->photographer?->id)
+            && (!$hasServices || $hasServicesWithoutPhotographer)
+                ? ($shoot->photographer_id ?? $shoot->photographer?->id)
+                : null;
+
+        $photographerIds = collect([$parentPhotographerId])
             ->merge(
-                collect($shoot->services ?? [])
+                $services
                     ->pluck('pivot.photographer_id')
                     ->filter()
             )

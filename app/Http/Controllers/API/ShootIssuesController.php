@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Services\Shoots\ShootEditingAssignmentService;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootIssueParsingService;
 use Illuminate\Http\Request;
 
@@ -13,6 +14,7 @@ class ShootIssuesController extends Controller
     public function __construct(
         protected ShootIssueParsingService $shootIssueParsingService,
         protected ShootEditingAssignmentService $shootEditingAssignmentService,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport,
     )
     {
     }
@@ -22,7 +24,7 @@ class ShootIssuesController extends Controller
         $user = auth()->user();
         $shoot = Shoot::findOrFail($shootId);
 
-        $isPhotographer = $shoot->photographer_id === $user->id;
+        $isPhotographer = $this->shootAuthorizationSupport->isPhotographerAssignedToShoot($shoot, $user);
         $isEditor = $shoot->editor_id === $user->id || $user->role === 'editor';
         $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
 

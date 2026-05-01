@@ -72,6 +72,34 @@ class StoreShootRequest extends FormRequest
             'services.*.id' => 'required|exists:services,id',
             'services.*.quantity' => 'nullable|integer|min:1',
             'services.*.price' => 'nullable|numeric|min:0',
+            'services.*.photographer_id' => 'nullable|exists:users,id',
+            'services.*.editor_id' => 'nullable|exists:users,id',
+            'services.*.scheduled_at' => 'nullable|date',
+            'services.*.is_deliverable' => 'nullable|boolean',
+
+            // Service item details: optional override rows for per-service scheduling/roles.
+            'service_items' => 'nullable|array',
+            'service_items.*.service_id' => 'required_with:service_items|exists:services,id',
+            'service_items.*.photographer_id' => 'nullable|exists:users,id',
+            'service_items.*.editor_id' => 'nullable|exists:users,id',
+            'service_items.*.scheduled_at' => 'nullable|date',
+            'service_items.*.price' => 'nullable|numeric|min:0',
+            'service_items.*.quantity' => 'nullable|integer|min:1',
+            'service_items.*.is_deliverable' => 'nullable|boolean',
+            'service_items.*.workflow_status' => [
+                'nullable',
+                Rule::in(['pending', 'scheduled', 'in_progress', 'ready', 'delivered', 'cancelled']),
+            ],
+            'service_items.*.delivery_status' => [
+                'nullable',
+                Rule::in(['not_started', 'ready', 'delivered', 'cancelled']),
+            ],
+            'service_items.*.force_unlock_delivery' => 'nullable|boolean',
+            'service_items.*.unlock_reason' => 'nullable|string|max:2000',
+
+            'service_photographers' => 'nullable|array',
+            'service_photographers.*.service_id' => 'required_with:service_photographers|exists:services,id',
+            'service_photographers.*.photographer_id' => 'nullable|exists:users,id',
 
             // Scheduling: optional (becomes Hold-On if missing)
             'scheduled_at' => 'nullable|date',
@@ -80,6 +108,11 @@ class StoreShootRequest extends FormRequest
             // Paywall and tax
             'bypass_paywall' => 'nullable|boolean',
             'tax_region' => 'nullable|string|in:md,dc,va,none',
+            'admin_adjusted_total_quote' => [
+                $isAdmin ? 'nullable' : 'prohibited',
+                'numeric',
+                'min:0',
+            ],
 
             // Coupon code
             'coupon_code' => 'nullable|string|max:50',
@@ -141,4 +174,3 @@ class StoreShootRequest extends FormRequest
         }
     }
 }
-

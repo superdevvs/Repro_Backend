@@ -7,6 +7,7 @@ use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Models\Invoice;
 use Carbon\Carbon;
@@ -372,12 +373,28 @@ class AutomationService
                             $targetTime->copy()->subDay()->toDateString(),
                             $targetTime->copy()->addDay()->toDateString(),
                         ]);
+                })->orWhereHas('serviceItems', function ($serviceQuery) use ($targetTime) {
+                    $serviceQuery
+                        ->whereBetween('scheduled_at', [
+                            $targetTime->copy()->subMinutes(5),
+                            $targetTime->copy()->addMinutes(5),
+                        ])
+                        ->where('workflow_status', '!=', ShootService::WORKFLOW_CANCELLED);
                 });
             })
-            ->with(['client', 'photographer', 'rep', 'service', 'services', 'notes'])
+            ->with(['client', 'photographer', 'rep', 'service', 'services', 'serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor', 'notes'])
             ->get();
 
         foreach ($shoots as $shoot) {
+            $dueServiceItems = $this->resolveDueServiceReminderItems($shoot, $targetTime);
+            if ($dueServiceItems->isNotEmpty()) {
+                foreach ($dueServiceItems as $serviceItem) {
+                    $this->dispatchServiceItemReminder($shoot, $serviceItem);
+                }
+
+                continue;
+            }
+
             $scheduledAt = $this->resolveShootDateTime($shoot);
             if (!$scheduledAt) {
                 continue;
@@ -435,6 +452,88 @@ class AutomationService
         }
     }
 
+    private function resolveDueServiceReminderItems(Shoot $shoot, Carbon $targetTime): \Illuminate\Support\Collection
+    {
+        return collect($shoot->serviceItems ?? [])
+            ->filter(function (ShootService $serviceItem) use ($targetTime) {
+                if (!$serviceItem->scheduled_at) {
+                    return false;
+                }
+
+                if ($serviceItem->workflow_status === ShootService::WORKFLOW_CANCELLED) {
+                    return false;
+                }
+
+                return $serviceItem->scheduled_at->between(
+                    $targetTime->copy()->subMinutes(5),
+                    $targetTime->copy()->addMinutes(5)
+                );
+            })
+            ->values();
+    }
+
+    private function dispatchServiceItemReminder(Shoot $shoot, ShootService $serviceItem): void
+    {
+        $scheduledAt = $serviceItem->scheduled_at;
+        if (!$scheduledAt) {
+            return;
+        }
+
+        $tag = sprintf(
+            'SHOOT_REMINDER:24H:shoot_service:%d:%s',
+            $serviceItem->id,
+            $scheduledAt->toIso8601String()
+        );
+
+        if ($this->hasSentAutomationTag($tag)) {
+            return;
+        }
+
+        $photographer = $this->resolveServiceItemPhotographer($shoot, $serviceItem);
+        $context = $this->buildShootContext($shoot);
+        $context['shoot_datetime'] = $scheduledAt;
+        $context['shoot_service_id'] = $serviceItem->id;
+        $context['service_items'] = [$this->formatServiceItemContext($shoot, $serviceItem)];
+        $context['shoot_services'] = $serviceItem->service?->name ?? $context['shoot_services'];
+        $context['photographer'] = $photographer;
+        $context['photographers'] = $photographer ? [$photographer] : [];
+        $context['role_context'] = 'service_item';
+        $context['tags_json'] = [$tag];
+
+        $shouldUseFallback = true;
+        $clientEmailSent = false;
+        $photographerEmailSent = false;
+
+        if ($this->hasActiveTrigger('SHOOT_REMINDER')) {
+            $dispatchResult = $this->handleEvent('SHOOT_REMINDER', $context);
+            $shouldUseFallback = $this->shouldUseFallback('SHOOT_REMINDER', $dispatchResult) !== false;
+            $clientEmailSent = (bool) ($dispatchResult['client_email_sent'] ?? false);
+            $photographerEmailSent = (bool) ($dispatchResult['photographer_email_sent'] ?? false);
+        }
+
+        if ($this->mailService && !empty($context['client']) && ($shouldUseFallback || !$clientEmailSent)) {
+            $this->mailService->sendShootReminderEmail(
+                $context['client'],
+                $shoot,
+                $scheduledAt,
+                [$tag],
+                false,
+                [$serviceItem->id]
+            );
+        }
+
+        if ($this->mailService && $photographer && ($shouldUseFallback || !$photographerEmailSent)) {
+            $this->mailService->sendShootReminderEmail(
+                $photographer,
+                $shoot,
+                $scheduledAt,
+                [$tag],
+                false,
+                [$serviceItem->id]
+            );
+        }
+    }
+
     public function buildUserContext(User $user): array
     {
         $context = [
@@ -475,10 +574,13 @@ class AutomationService
             'shoot_services' => $shoot->services->count() > 0
                 ? $shoot->services->pluck('name')->implode(', ')
                 : ($shoot->service?->name ?? 'Photography'),
+            'service_items' => $this->formatServiceItemsContext($shoot),
             'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
             'photographer' => $assignedPhotographers[0] ?? $shoot->photographer,
             'photographers' => $assignedPhotographers,
+            'photographer_service_items' => $this->groupServiceItemsByRole($shoot, 'photographer'),
+            'editor_service_items' => $this->groupServiceItemsByRole($shoot, 'editor'),
             'account_id' => $shoot->client_id,
             'property_details' => $propertyDetails,
             'presence_option' => $propertyDetails['presenceOption'] ?? null,
@@ -632,12 +734,17 @@ class AutomationService
     {
         $shoot->loadMissing(['photographer', 'services']);
 
-        $photographerIds = collect([
-            $shoot->photographer_id,
-            $shoot->photographer?->id,
-        ])
+        $services = collect($shoot->services ?? []);
+        $hasServices = $services->isNotEmpty();
+        $hasServicesWithoutPhotographer = $services->contains(fn ($service) => empty($service->pivot->photographer_id));
+        $parentPhotographerId = ($shoot->photographer_id || $shoot->photographer?->id)
+            && (!$hasServices || $hasServicesWithoutPhotographer)
+                ? ($shoot->photographer_id ?? $shoot->photographer?->id)
+                : null;
+
+        $photographerIds = collect([$parentPhotographerId])
             ->merge(
-                collect($shoot->services ?? [])
+                $services
                     ->pluck('pivot.photographer_id')
                     ->filter()
             )
@@ -664,6 +771,83 @@ class AutomationService
             ->filter(fn ($user) => $user instanceof User)
             ->unique('id')
             ->values()
+            ->all();
+    }
+
+    private function resolveServiceItemPhotographer(Shoot $shoot, ShootService $serviceItem): ?User
+    {
+        if ($serviceItem->photographer) {
+            return $serviceItem->photographer;
+        }
+
+        $photographerId = $serviceItem->photographer_id ?: $shoot->photographer_id;
+
+        if (!$photographerId) {
+            return null;
+        }
+
+        if ($shoot->photographer && (int) $shoot->photographer->id === (int) $photographerId) {
+            return $shoot->photographer;
+        }
+
+        return User::find($photographerId);
+    }
+
+    private function formatServiceItemsContext(Shoot $shoot): array
+    {
+        $shoot->loadMissing(['serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor']);
+
+        return $shoot->serviceItems
+            ->map(fn (ShootService $serviceItem) => $this->formatServiceItemContext($shoot, $serviceItem))
+            ->values()
+            ->all();
+    }
+
+    private function formatServiceItemContext(Shoot $shoot, ShootService $serviceItem): array
+    {
+        $photographer = $this->resolveServiceItemPhotographer($shoot, $serviceItem);
+
+        return [
+            'shoot_service_id' => $serviceItem->id,
+            'service_id' => $serviceItem->service_id,
+            'name' => $serviceItem->service?->name,
+            'category' => $serviceItem->service?->category?->name ?? $serviceItem->service?->category,
+            'scheduled_at' => $serviceItem->scheduled_at?->toIso8601String(),
+            'workflow_status' => $serviceItem->workflow_status,
+            'delivery_status' => $serviceItem->delivery_status,
+            'photographer_id' => $photographer?->id,
+            'photographer_name' => $photographer?->name,
+            'editor_id' => $serviceItem->editor_id,
+            'editor_name' => $serviceItem->editor?->name,
+            'role_context' => null,
+        ];
+    }
+
+    private function groupServiceItemsByRole(Shoot $shoot, string $role): array
+    {
+        $shoot->loadMissing(['serviceItems.service.category', 'serviceItems.photographer', 'serviceItems.editor']);
+
+        return $shoot->serviceItems
+            ->map(function (ShootService $serviceItem) use ($shoot, $role) {
+                $userId = $role === 'editor'
+                    ? $serviceItem->editor_id
+                    : ($serviceItem->photographer_id ?: $shoot->photographer_id);
+
+                if (!$userId) {
+                    return null;
+                }
+
+                $context = $this->formatServiceItemContext($shoot, $serviceItem);
+                $context['role_context'] = $role;
+
+                return [
+                    'user_id' => (int) $userId,
+                    'item' => $context,
+                ];
+            })
+            ->filter()
+            ->groupBy('user_id')
+            ->map(fn ($rows) => collect($rows)->pluck('item')->values()->all())
             ->all();
     }
 

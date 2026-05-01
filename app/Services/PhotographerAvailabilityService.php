@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\PhotographerAvailability;
 use App\Models\Shoot;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Services\ShootWorkflowService;
 use Carbon\Carbon;
@@ -103,6 +104,38 @@ class PhotographerAvailabilityService
             ];
         }
 
+        $serviceItems = ShootService::with(['shoot', 'service'])
+            ->where('photographer_id', $photographerId)
+            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereIn('workflow_status', [
+                ShootService::WORKFLOW_SCHEDULED,
+                ShootService::WORKFLOW_IN_PROGRESS,
+                ShootService::WORKFLOW_READY,
+            ])
+            ->whereNotNull('scheduled_at')
+            ->whereHas('shoot', function ($query) {
+                $query->whereNotIn('status', [
+                    Shoot::STATUS_CANCELLED,
+                    Shoot::STATUS_DECLINED,
+                    Shoot::STATUS_ON_HOLD,
+                ]);
+            })
+            ->get();
+
+        foreach ($serviceItems as $item) {
+            $scheduledAt = Carbon::parse($item->scheduled_at);
+            $endTime = $scheduledAt->copy()->addMinutes($this->calculateServiceItemDuration($item));
+
+            $blocked[] = [
+                'start' => $scheduledAt->format('H:i'),
+                'end' => $endTime->format('H:i'),
+                'shoot_id' => $item->shoot_id,
+                'shoot_service_id' => $item->id,
+            ];
+        }
+
+        usort($blocked, fn ($a, $b) => strcmp($a['start'], $b['start']));
+
         return $blocked;
     }
 
@@ -139,6 +172,44 @@ class PhotographerAvailabilityService
                 'shoot_id' => $shoot->id,
             ];
         }
+
+        $serviceItems = ShootService::with(['shoot', 'service'])
+            ->where('photographer_id', $photographerId)
+            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereIn('workflow_status', [
+                ShootService::WORKFLOW_SCHEDULED,
+                ShootService::WORKFLOW_IN_PROGRESS,
+                ShootService::WORKFLOW_READY,
+            ])
+            ->whereNotNull('scheduled_at')
+            ->whereHas('shoot', function ($query) {
+                $query->whereNotIn('status', [
+                    Shoot::STATUS_CANCELLED,
+                    Shoot::STATUS_DECLINED,
+                    Shoot::STATUS_ON_HOLD,
+                ]);
+            })
+            ->orderBy('scheduled_at')
+            ->get();
+
+        foreach ($serviceItems as $item) {
+            $scheduledAt = Carbon::parse($item->scheduled_at);
+            $endTime = $scheduledAt->copy()->addMinutes($this->calculateServiceItemDuration($item));
+
+            $bookedSlots[] = [
+                'id' => 'service_item_' . $item->id,
+                'photographer_id' => $photographerId,
+                'date' => $date->toDateString(),
+                'day_of_week' => strtolower($date->format('l')),
+                'start_time' => $scheduledAt->format('H:i'),
+                'end_time' => $endTime->format('H:i'),
+                'status' => 'booked',
+                'shoot_id' => $item->shoot_id,
+                'shoot_service_id' => $item->id,
+            ];
+        }
+
+        usort($bookedSlots, fn ($a, $b) => strcmp($a['start_time'], $b['start_time']));
 
         return $bookedSlots;
     }
@@ -298,11 +369,48 @@ class PhotographerAvailabilityService
                 $conflictingShootIds[] = $shoot->id;
             }
         }
+
+        $conflictingServiceItems = ShootService::with(['shoot', 'service'])
+            ->where('photographer_id', $photographerId)
+            ->whereNotNull('scheduled_at')
+            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereIn('workflow_status', [
+                ShootService::WORKFLOW_SCHEDULED,
+                ShootService::WORKFLOW_IN_PROGRESS,
+                ShootService::WORKFLOW_READY,
+            ])
+            ->whereHas('shoot', function ($query) use ($excludeShootId) {
+                $query->whereNotIn('status', [
+                    Shoot::STATUS_CANCELLED,
+                    Shoot::STATUS_DECLINED,
+                    Shoot::STATUS_ON_HOLD,
+                ]);
+
+                if ($excludeShootId) {
+                    $query->where('id', '!=', $excludeShootId);
+                }
+            })
+            ->orderBy('scheduled_at')
+            ->get();
+
+        $conflictingServiceItemIds = [];
+        foreach ($conflictingServiceItems as $item) {
+            $itemStart = Carbon::parse($item->scheduled_at);
+            $itemDuration = $this->calculateServiceItemDuration($item);
+            $itemEnd = $itemStart->copy()->addMinutes($itemDuration);
+            $itemEndWithBuffer = $itemEnd->copy()->addMinutes($bufferMinutes);
+            $itemStartWithBuffer = $itemStart->copy()->subMinutes($bufferMinutes);
+
+            if ($datetimeLocal < $itemEndWithBuffer && $requestEndTime > $itemStartWithBuffer) {
+                $conflictingServiceItemIds[] = $item->id;
+            }
+        }
         
-        if (!empty($conflictingShootIds)) {
+        if (!empty($conflictingShootIds) || !empty($conflictingServiceItemIds)) {
             Log::warning('Availability check failed: shoot conflict', array_merge($logContext, [
                 'reason' => 'shoot_conflict',
                 'conflicting_shoot_ids' => $conflictingShootIds,
+                'conflicting_shoot_service_ids' => $conflictingServiceItemIds,
                 'buffer_minutes' => $bufferMinutes,
                 'result' => false,
             ]));
@@ -485,6 +593,22 @@ class PhotographerAvailabilityService
         return $defaultDurationMinutes;
     }
 
+    protected function calculateServiceItemDuration(ShootService $item): int
+    {
+        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
+        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
+        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
+
+        $service = $item->relationLoaded('service') ? $item->service : $item->service()->first();
+        if (!$service || !$service->delivery_time) {
+            return $defaultDurationMinutes;
+        }
+
+        $durationMinutes = (int) ((float) $service->delivery_time * 60);
+
+        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+    }
+
     /**
      * Get availability summary for a date range
      */
@@ -505,4 +629,3 @@ class PhotographerAvailabilityService
         return $summary;
     }
 }
-

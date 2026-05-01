@@ -96,6 +96,46 @@ class ShootMutationSupportService
         }
     }
 
+    public function checkServiceItemPhotographerAvailability(
+        array $services,
+        ?int $fallbackPhotographerId = null,
+        ?int $excludeShootId = null
+    ): void {
+        $serviceIds = collect($services)
+            ->pluck('id')
+            ->filter()
+            ->unique()
+            ->values();
+        $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
+
+        foreach ($services as $service) {
+            $scheduledAt = $service['scheduled_at'] ?? null;
+            $photographerId = $service['photographer_id'] ?? $fallbackPhotographerId;
+
+            if (!$scheduledAt || !$photographerId) {
+                continue;
+            }
+
+            $serviceModel = $serviceModels->get((int) ($service['id'] ?? 0));
+            $durationMinutes = $this->calculateServiceItemDuration($serviceModel);
+
+            try {
+                $this->checkPhotographerAvailability(
+                    (int) $photographerId,
+                    new \DateTime((string) $scheduledAt),
+                    $durationMinutes,
+                    $excludeShootId
+                );
+            } catch (ValidationException $exception) {
+                $serviceName = $serviceModel?->name ?: 'service item';
+
+                throw ValidationException::withMessages([
+                    'service_items' => ["Photographer is not available for {$serviceName} at the selected service schedule."],
+                ]);
+            }
+        }
+    }
+
     public function calculateShootDurationFromServices(array $services): int
     {
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
@@ -111,6 +151,21 @@ class ShootMutationSupportService
 
         $maxHours = $serviceModels->max('delivery_time') ?? ($defaultDurationMinutes / 60);
         $durationMinutes = (int) ($maxHours * 60);
+
+        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+    }
+
+    public function calculateServiceItemDuration(?Service $service): int
+    {
+        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
+        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
+        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
+
+        if (!$service || !$service->delivery_time) {
+            return $defaultDurationMinutes;
+        }
+
+        $durationMinutes = (int) ((float) $service->delivery_time * 60);
 
         return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
     }
@@ -136,21 +191,104 @@ class ShootMutationSupportService
     {
         $serviceIds = collect($services)->pluck('id');
         $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
+        $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
 
-        $pivotData = collect($services)->mapWithKeys(function ($service) use ($serviceModels) {
+        $pivotData = collect($services)->mapWithKeys(function ($service) use ($serviceModels, $currentItems, $shoot) {
             $serviceModel = $serviceModels->get($service['id']);
+            $currentItem = $currentItems->get($service['id']);
+            $scheduledAt = array_key_exists('scheduled_at', $service)
+                ? $this->normalizeDateTimeForDatabase($service['scheduled_at'])
+                : ($currentItem?->scheduled_at?->format('Y-m-d H:i:s') ?? $shoot->scheduled_at?->format('Y-m-d H:i:s'));
 
             return [
                 $service['id'] => [
                     'price' => $service['price'] ?? $serviceModel?->price ?? 0,
                     'quantity' => $service['quantity'] ?? 1,
-                    'photographer_pay' => $service['photographer_pay'] ?? null,
+                    'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
+                    'photographer_id' => array_key_exists('photographer_id', $service)
+                        ? $this->normalizeNullableInteger($service['photographer_id'])
+                        : $currentItem?->photographer_id,
+                    'editor_id' => array_key_exists('editor_id', $service)
+                        ? $this->normalizeNullableInteger($service['editor_id'])
+                        : $currentItem?->editor_id,
+                    'scheduled_at' => $scheduledAt,
+                    'workflow_status' => $service['workflow_status']
+                        ?? $currentItem?->workflow_status
+                        ?? ($scheduledAt ? 'scheduled' : 'pending'),
+                    'delivery_status' => $service['delivery_status']
+                        ?? $currentItem?->delivery_status
+                        ?? 'not_started',
+                    'ready_at' => array_key_exists('ready_at', $service)
+                        ? $this->normalizeDateTimeForDatabase($service['ready_at'])
+                        : $currentItem?->ready_at?->format('Y-m-d H:i:s'),
+                    'delivered_at' => array_key_exists('delivered_at', $service)
+                        ? $this->normalizeDateTimeForDatabase($service['delivered_at'])
+                        : $currentItem?->delivered_at?->format('Y-m-d H:i:s'),
+                    'cancelled_at' => array_key_exists('cancelled_at', $service)
+                        ? $this->normalizeDateTimeForDatabase($service['cancelled_at'])
+                        : $currentItem?->cancelled_at?->format('Y-m-d H:i:s'),
+                    'is_deliverable' => array_key_exists('is_deliverable', $service)
+                        ? (bool) $service['is_deliverable']
+                        : ($currentItem?->is_deliverable ?? true),
+                    'force_unlock_delivery' => array_key_exists('force_unlock_delivery', $service)
+                        ? (bool) $service['force_unlock_delivery']
+                        : ($currentItem?->force_unlock_delivery ?? false),
+                    'unlock_reason' => array_key_exists('unlock_reason', $service)
+                        ? $service['unlock_reason']
+                        : $currentItem?->unlock_reason,
+                    'unlocked_by' => array_key_exists('unlocked_by', $service)
+                        ? $this->normalizeNullableInteger($service['unlocked_by'])
+                        : $currentItem?->unlocked_by,
                 ],
             ];
         })->toArray();
 
         $shoot->services()->sync($pivotData);
-        $shoot->load('services');
+        $shoot->load(['services', 'serviceItems']);
+        $shoot->syncServiceItemRollups();
+    }
+
+    public function mergeServiceItemPayload(
+        array $services,
+        ?array $serviceItems,
+        ?array $servicePhotographers,
+        mixed $defaultScheduledAt = null
+    ): array {
+        $itemsByService = collect($serviceItems ?? [])
+            ->filter(fn ($item) => isset($item['service_id']) || isset($item['id']))
+            ->keyBy(fn ($item) => (int) ($item['service_id'] ?? $item['id']));
+
+        $photographersByService = collect($servicePhotographers ?? [])
+            ->filter(fn ($item) => isset($item['service_id']))
+            ->keyBy(fn ($item) => (int) $item['service_id']);
+
+        $defaultScheduledAt = $this->normalizeDateTimeForDatabase($defaultScheduledAt);
+
+        return collect($services)->map(function ($service) use ($itemsByService, $photographersByService, $defaultScheduledAt) {
+            $serviceId = (int) ($service['id'] ?? $service['service_id']);
+            $item = $itemsByService->get($serviceId, []);
+            $photographerAssignment = $photographersByService->get($serviceId, []);
+            $scheduledAt = $item['scheduled_at'] ?? $service['scheduled_at'] ?? $defaultScheduledAt;
+
+            return array_merge($service, [
+                'id' => $serviceId,
+                'price' => $item['price'] ?? $service['price'] ?? null,
+                'quantity' => $item['quantity'] ?? $service['quantity'] ?? 1,
+                'photographer_id' => array_key_exists('photographer_id', $item)
+                    ? $item['photographer_id']
+                    : ($service['photographer_id'] ?? $photographerAssignment['photographer_id'] ?? null),
+                'editor_id' => array_key_exists('editor_id', $item)
+                    ? $item['editor_id']
+                    : ($service['editor_id'] ?? null),
+                'scheduled_at' => $this->normalizeDateTimeForDatabase($scheduledAt),
+                'workflow_status' => $item['workflow_status'] ?? $service['workflow_status'] ?? ($scheduledAt ? 'scheduled' : 'pending'),
+                'delivery_status' => $item['delivery_status'] ?? $service['delivery_status'] ?? 'not_started',
+                'is_deliverable' => $item['is_deliverable'] ?? $service['is_deliverable'] ?? true,
+                'force_unlock_delivery' => $item['force_unlock_delivery'] ?? $service['force_unlock_delivery'] ?? false,
+                'unlock_reason' => $item['unlock_reason'] ?? $service['unlock_reason'] ?? null,
+                'unlocked_by' => $item['unlocked_by'] ?? $service['unlocked_by'] ?? null,
+            ]);
+        })->values()->all();
     }
 
     public function assignServicePhotographers(Shoot $shoot, ?array $servicePhotographers): void
@@ -174,6 +312,28 @@ class ShootMutationSupportService
                 );
             }
         }
+    }
+
+    public function normalizeDateTimeForDatabase(mixed $value): ?string
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return Carbon::instance($value)->format('Y-m-d H:i:s');
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        return Carbon::parse($value)->format('Y-m-d H:i:s');
+    }
+
+    protected function normalizeNullableInteger(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (int) $value;
     }
 
     public function ensureClientCanBookServices(int $clientId, array $services): void

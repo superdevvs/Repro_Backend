@@ -41,19 +41,37 @@ class CreateShootAction
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
         $result = DB::transaction(function () use ($validated, $user, $request, $client) {
-            $pricingCalculation = $this->support->buildPricingCalculation(
+            $userRole = strtolower($user->role ?? '');
+            $scheduledAt = !empty($validated['scheduled_at'])
+                ? new \DateTime($validated['scheduled_at'])
+                : null;
+            $servicesPayload = $this->support->mergeServiceItemPayload(
                 $validated['services'],
+                $validated['service_items'] ?? null,
+                $request->input('service_photographers'),
+                $scheduledAt
+            );
+            $pricingCalculation = $this->support->buildPricingCalculation(
+                $servicesPayload,
                 $client,
                 $validated['state'] ?? null,
                 $validated['tax_region'] ?? null,
                 $validated['coupon_code'] ?? null
             );
-            $repId = $validated['rep_id'] ?? $this->support->getClientRep($validated['client_id']);
-            $scheduledAt = !empty($validated['scheduled_at'])
-                ? new \DateTime($validated['scheduled_at'])
-                : null;
 
-            $userRole = strtolower($user->role ?? '');
+            if (
+                in_array($userRole, ['admin', 'superadmin'], true)
+                && array_key_exists('admin_adjusted_total_quote', $validated)
+                && $validated['admin_adjusted_total_quote'] !== null
+            ) {
+                $pricingCalculation = $this->applyAdminAdjustedTotal(
+                    $pricingCalculation,
+                    (float) $validated['admin_adjusted_total_quote']
+                );
+            }
+
+            $repId = $validated['rep_id'] ?? $this->support->getClientRep($validated['client_id']);
+
             $isClient = $userRole === 'client';
             $isClientSelfBooking = $validated['client_id'] == $user->id;
             $isClientRequestFlag = $request->input('is_client_request', false);
@@ -93,8 +111,15 @@ class CreateShootAction
                     ->lockForUpdate()
                     ->get();
 
-                $durationMinutes = $this->support->calculateShootDurationFromServices($validated['services']);
+                $durationMinutes = $this->support->calculateShootDurationFromServices($servicesPayload);
                 $this->support->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes);
+            }
+
+            if (!$treatAsClientRequest) {
+                $this->support->checkServiceItemPhotographerAvailability(
+                    $servicesPayload,
+                    $photographerId
+                );
             }
 
             $propertyDetailsPayload = is_array($validated['property_details'] ?? null)
@@ -120,7 +145,7 @@ class CreateShootAction
                 'client_id' => $validated['client_id'],
                 'rep_id' => $repId,
                 'photographer_id' => $photographerId,
-                'service_id' => $validated['services'][0]['id'],
+                'service_id' => $servicesPayload[0]['id'],
                 'address' => $validated['address'],
                 'city' => $validated['city'],
                 'state' => $validated['state'],
@@ -161,8 +186,7 @@ class CreateShootAction
                 'editor_notes' => $validated['editor_notes'] ?? null,
             ]);
 
-            $this->support->attachServices($shoot, $validated['services']);
-            $this->support->assignServicePhotographers($shoot, $request->input('service_photographers'));
+            $this->support->attachServices($shoot, $servicesPayload);
 
             if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
                 $coupon = $this->support->resolveCoupon($pricingCalculation['coupon_code']);
@@ -206,6 +230,27 @@ class CreateShootAction
         $this->googleCalendarSyncDispatcher->dispatchShootSync($result->shoot->id);
 
         return $result;
+    }
+
+    protected function applyAdminAdjustedTotal(array $pricingCalculation, float $adjustedTotalQuote): array
+    {
+        $totalQuote = round(max($adjustedTotalQuote, 0), 2);
+        $taxPercent = (float) ($pricingCalculation['tax_percent'] ?? 0);
+        $baseQuote = $taxPercent > 0
+            ? round($totalQuote / (1 + ($taxPercent / 100)), 2)
+            : $totalQuote;
+        $taxAmount = round($totalQuote - $baseQuote, 2);
+
+        return array_merge($pricingCalculation, [
+            'service_subtotal' => $baseQuote,
+            'base_quote' => $baseQuote,
+            'discount_type' => null,
+            'discount_value' => null,
+            'discount_amount' => 0.0,
+            'discounted_subtotal' => $baseQuote,
+            'tax_amount' => $taxAmount,
+            'total_quote' => $totalQuote,
+        ]);
     }
 
     protected function registerDeferredSideEffects(CreateShootResult $result): void

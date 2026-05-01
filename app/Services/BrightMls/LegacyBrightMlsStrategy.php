@@ -4,6 +4,8 @@ namespace App\Services\BrightMls;
 
 class LegacyBrightMlsStrategy implements BrightMlsStrategyInterface
 {
+    private const MAX_FILE_NAME_LENGTH = 50;
+
     private string $apiUrl;
     private string $importUrlBase;
 
@@ -45,6 +47,10 @@ class LegacyBrightMlsStrategy implements BrightMlsStrategyInterface
             $itemIndex = $index + 1;
             $mediaType = $item['mediaType'] ?? null;
             $description = (string) ($item['description'] ?? '');
+
+            if (array_key_exists('fileName', $item) && strlen((string) $item['fileName']) > self::MAX_FILE_NAME_LENGTH) {
+                $errors[] = "Item {$itemIndex}: fileName must be 50 characters or fewer.";
+            }
 
             if (strlen($description) > 50) {
                 $errors[] = "Item {$itemIndex}: description must be 50 characters or fewer.";

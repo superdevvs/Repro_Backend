@@ -142,7 +142,9 @@ class ShootMediaController extends Controller
         $file = ShootFile::where('shoot_id', $shootId)->findOrFail($fileId);
         $user = auth()->user();
         $isAdmin = $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
-        $isAssignedPhotographer = $shoot->photographer_id === $user->id;
+        $isAssignedPhotographer = $user
+            && $this->shootAuthorizationSupport->hasRole($user, ['photographer'])
+            && $this->shootAuthorizationSupport->canPhotographerAccessFile($shoot, $file, $user);
 
         if (!$isAdmin && !$isAssignedPhotographer) {
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -183,7 +185,10 @@ class ShootMediaController extends Controller
     public function flagMedia(Request $request, Shoot $shoot, ShootFile $file)
     {
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
-        if (!$this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer'])) {
+        if (
+            !$this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer'])
+            || !$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, auth()->user())
+        ) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -244,7 +249,10 @@ class ShootMediaController extends Controller
     public function deleteMedia(Shoot $shoot, ShootFile $file)
     {
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
-        if (!$this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])) {
+        if (
+            !$this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
+            || !$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, auth()->user())
+        ) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -267,7 +275,7 @@ class ShootMediaController extends Controller
         if (!$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
+        if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }
         return $this->downloadShootMediaAction->downloadResponse($file);
@@ -281,21 +289,25 @@ class ShootMediaController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $needsWatermark = $this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user);
+        $needsWatermark = $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
         return $this->shootMediaReadService->previewFileResponse($file, $needsWatermark);
     }
 
     public function bulkDownloadMedia(Request $request, Shoot $shoot)
     {
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
-            return $this->shootClientReleaseAccessService->downloadLockedResponse();
-        }
-
         $request->validate([
             'ids' => 'required|array|min:1',
             'ids.*' => 'integer',
         ]);
+
+        $files = $shoot->files()->whereIn('id', $request->input('ids'))->get();
+        if ($files->contains(fn (ShootFile $file) => !$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $request->user()))) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+        if ($files->contains(fn (ShootFile $file) => $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $request->user()))) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
 
         $urls = $this->shootMediaReadService->resolveBulkDownloadUrls($shoot, $request->input('ids'));
 
@@ -321,13 +333,18 @@ class ShootMediaController extends Controller
             'ids.*' => 'integer',
         ]);
 
-        if (!$this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])) {
+        $files = $shoot->files()->whereIn('id', $request->input('ids'))->get();
+        $user = auth()->user();
+        if (
+            !$this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
+            || $files->contains(fn (ShootFile $file) => !$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))
+        ) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         $result = $this->shootMediaInteractionService->bulkDelete(
             $shoot,
-            $shoot->files()->whereIn('id', $request->input('ids'))->get()
+            $files
         );
 
         return response()->json($result['payload'], $result['status']);
@@ -380,7 +397,7 @@ class ShootMediaController extends Controller
     public function createAlbum(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
+        if ($user->role === 'photographer' && !$this->shootAuthorizationSupport->isPhotographerAssignedToShoot($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if (!$this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer'])) {
@@ -391,7 +408,22 @@ class ShootMediaController extends Controller
             'source' => 'required|in:dropbox,local',
             'folder_path' => 'nullable|string|max:500',
             'photographer_id' => 'nullable|exists:users,id',
+            'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
         ]);
+
+        if (!empty($validated['shoot_service_id']) && !$shoot->serviceItems()->whereKey($validated['shoot_service_id'])->exists()) {
+            return response()->json(['message' => 'Selected service item does not belong to this shoot'], 422);
+        }
+        if (
+            $user->role === 'photographer'
+            && !empty($validated['shoot_service_id'])
+            && !$this->shootAuthorizationSupport->canPhotographerAccessServiceItem($shoot, (int) $validated['shoot_service_id'], $user)
+        ) {
+            return response()->json(['message' => 'You can only create albums for assigned service items'], 403);
+        }
+        if ($user->role === 'photographer' && empty($validated['shoot_service_id']) && (string) $shoot->photographer_id !== (string) $user->id) {
+            return response()->json(['message' => 'Select an assigned service item for this album'], 422);
+        }
 
         return response()->json([
             'message' => 'Album created successfully',
@@ -401,15 +433,19 @@ class ShootMediaController extends Controller
 
     public function listAlbums(Request $request, Shoot $shoot)
     {
+        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
         return response()->json([
-            'data' => $this->shootAlbumService->listAlbums($shoot),
+            'data' => $this->shootAlbumService->listAlbums($shoot, $request->user()),
         ]);
     }
 
     public function uploadMedia(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        if ($user->role === 'photographer' && $shoot->photographer_id !== $user->id) {
+        if ($user->role === 'photographer' && !$this->shootAuthorizationSupport->isPhotographerAssignedToShoot($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
         if (!$this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])) {
@@ -628,6 +664,11 @@ class ShootMediaController extends Controller
             !$this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
             || !$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)
         ) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $files = $shoot->files()->whereIn('id', $request->input('file_ids'))->get();
+        if ($files->contains(fn (ShootFile $file) => !$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

@@ -55,8 +55,6 @@ class ApproveShootAction
             ]
         ));
 
-        $this->editablePayloadService->apply($shoot, $validated);
-
         $scheduledAt = isset($validated['scheduled_at'])
             ? new \DateTime($validated['scheduled_at'])
             : (
@@ -65,8 +63,25 @@ class ApproveShootAction
                     : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime())
             );
 
+        $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
+        $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
+        $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated);
+        if (!$skipAvailabilityCheck) {
+            if (!empty($targetPhotographerId)) {
+                $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices);
+                $this->support->checkPhotographerAvailability((int) $targetPhotographerId, $scheduledAt, $durationMinutes, $shoot->id);
+            }
+
+            $this->support->checkServiceItemPhotographerAvailability(
+                $targetServices,
+                $targetPhotographerId ? (int) $targetPhotographerId : null,
+                $shoot->id
+            );
+        }
+
+        $this->editablePayloadService->apply($shoot, $validated);
+
         if (!empty($shoot->photographer_id)) {
-            $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
             if (!$skipAvailabilityCheck) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices(
                     $shoot->services->map(fn ($service) => ['id' => $service->id])->toArray()

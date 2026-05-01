@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\ShootFile;
 use App\Models\Shoot;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
@@ -253,9 +254,8 @@ class ImageDownloadController extends Controller
             return true;
         }
 
-        // Photographer can download their own shoots
-        if ($user->role === 'photographer' && $shoot->photographer_id == $user->id) {
-            return true;
+        if ($user->role === 'photographer') {
+            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
         }
 
         // Editor can download completed shoots
@@ -282,9 +282,8 @@ class ImageDownloadController extends Controller
             return true;
         }
 
-        // Photographer can view their own shoots
-        if ($user->role === 'photographer' && $shoot->photographer_id == $user->id) {
-            return true;
+        if ($user->role === 'photographer') {
+            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
         }
 
         // Editor can view completed shoots

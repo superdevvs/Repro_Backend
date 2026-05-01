@@ -97,6 +97,8 @@ class ShootMediaMutationSupportService
     {
         return [
             'id' => $file->id,
+            'shoot_service_id' => $file->shoot_service_id,
+            'shootServiceId' => $file->shoot_service_id,
             'filename' => $file->filename,
             'stored_filename' => $file->stored_filename,
             'path' => $file->path,
@@ -113,11 +115,12 @@ class ShootMediaMutationSupportService
         ];
     }
 
-    public function getOrCreateAlbumForType(Shoot $shoot, string $type, User $user): ShootMediaAlbum
+    public function getOrCreateAlbumForType(Shoot $shoot, string $type, User $user, ?int $shootServiceId = null): ShootMediaAlbum
     {
         $photographerId = $user->role === 'photographer' ? $user->id : $shoot->photographer_id;
 
         $album = $shoot->mediaAlbums()
+            ->where('shoot_service_id', $shootServiceId)
             ->where('photographer_id', $photographerId)
             ->whereHas('files', function ($query) use ($type) {
                 $query->where('media_type', $type);
@@ -130,9 +133,12 @@ class ShootMediaMutationSupportService
 
         return ShootMediaAlbum::create([
             'shoot_id' => $shoot->id,
+            'shoot_service_id' => $shootServiceId,
             'photographer_id' => $photographerId,
             'source' => 'dropbox',
-            'folder_path' => "/shoots/{$shoot->id}/{$type}/{$photographerId}/",
+            'folder_path' => $shootServiceId
+                ? "/shoots/{$shoot->id}/service-{$shootServiceId}/{$type}/{$photographerId}/"
+                : "/shoots/{$shoot->id}/{$type}/{$photographerId}/",
             'is_watermarked' => false,
         ]);
     }

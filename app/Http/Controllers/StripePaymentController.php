@@ -10,12 +10,14 @@ use App\Models\Payment;
 use App\Models\User;
 use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
+use App\Services\Shoots\ShootServiceItemSupport;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Stripe\Stripe;
 use Stripe\Customer as StripeCustomer;
 use Stripe\Checkout\Session as StripeSession;
@@ -29,18 +31,21 @@ class StripePaymentController extends Controller
     protected $activityLogger;
     protected $automationService;
     protected $stripePaymentMetadataService;
+    protected $serviceItemSupport;
 
     public function __construct(
         MailService $mailService,
         ShootActivityLogger $activityLogger,
         AutomationService $automationService,
-        StripePaymentMetadataService $stripePaymentMetadataService
+        StripePaymentMetadataService $stripePaymentMetadataService,
+        ShootServiceItemSupport $serviceItemSupport
     )
     {
         $this->mailService = $mailService;
         $this->activityLogger = $activityLogger;
         $this->automationService = $automationService;
         $this->stripePaymentMetadataService = $stripePaymentMetadataService;
+        $this->serviceItemSupport = $serviceItemSupport;
     }
 
     /**
@@ -64,7 +69,8 @@ class StripePaymentController extends Controller
     public function createCheckoutSession(Request $request, Shoot $shoot)
     {
         $shoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
-        $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
+        $allocationPayload = $this->buildAllocationPayloadFromRequest($request);
+        $amountToPay = $this->resolveCheckoutAmountCents($shoot, $request, $allocationPayload);
 
         // Allow an optional partial payment amount from the request
         if ($request->has('amount')) {
@@ -84,6 +90,10 @@ class StripePaymentController extends Controller
             $paymentUrl = app(PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot);
             $currency = config('services.stripe.currency', 'USD');
             $client = User::find($shoot->client_id);
+            $metadata = array_merge([
+                'shoot_id' => (string) $shoot->id,
+                'type' => 'single',
+            ], $this->buildStripeAllocationMetadata($allocationPayload));
 
             $sessionParams = [
                 'payment_method_types' => ['card'],
@@ -101,11 +111,8 @@ class StripePaymentController extends Controller
                     ],
                     'quantity' => 1,
                 ]],
-                'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot),
-                'metadata' => [
-                    'shoot_id' => (string) $shoot->id,
-                    'type' => 'single',
-                ],
+                'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot, $metadata),
+                'metadata' => $metadata,
                 'client_reference_id' => 'shoot:' . $shoot->id,
                 'success_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
                 'cancel_url'  => $paymentUrl,
@@ -122,6 +129,8 @@ class StripePaymentController extends Controller
 
         } catch (\RuntimeException $e) {
             return response()->json(['error' => $e->getMessage()], 500);
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Stripe createCheckoutSession error', [
                 'shoot_id' => $shoot->id,
@@ -138,15 +147,9 @@ class StripePaymentController extends Controller
     public function createEmbeddedCheckoutSession(Request $request, Shoot $shoot)
     {
         $shoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
-        $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
+        $allocationPayload = $this->buildAllocationPayloadFromRequest($request);
+        $amountToPay = $this->resolveCheckoutAmountCents($shoot, $request, $allocationPayload);
         $returnTo = $this->sanitizeReturnTo($request->input('return_to'));
-
-        if ($request->has('amount')) {
-            $requestedAmount = (int) round($request->input('amount') * 100);
-            if ($requestedAmount > 0 && $requestedAmount <= $amountToPay) {
-                $amountToPay = $requestedAmount;
-            }
-        }
 
         if ($amountToPay <= 0) {
             return response()->json(['error' => 'This shoot is already fully paid or has a zero balance.'], 400);
@@ -162,7 +165,7 @@ class StripePaymentController extends Controller
             $metadata = [
                 'shoot_id' => (string) $shoot->id,
                 'type' => 'single',
-            ];
+            ] + $this->buildStripeAllocationMetadata($allocationPayload);
 
             if ($returnTo) {
                 $metadata['return_to'] = $returnTo;
@@ -185,7 +188,7 @@ class StripePaymentController extends Controller
                     ],
                     'quantity' => 1,
                 ]],
-                'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot),
+                'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot, $metadata),
                 'metadata' => $metadata,
                 'client_reference_id' => 'shoot:' . $shoot->id,
                 'return_url' => $this->buildEmbeddedReturnUrl($shoot, $returnTo, $paymentUrl),
@@ -202,6 +205,8 @@ class StripePaymentController extends Controller
 
         } catch (\RuntimeException $e) {
             return response()->json(['error' => $e->getMessage()], 500);
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Exception $e) {
             Log::error('Stripe createEmbeddedCheckoutSession error', [
                 'shoot_id' => $shoot->id,
@@ -645,6 +650,11 @@ class StripePaymentController extends Controller
                 ]);
 
                 $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
+                $this->serviceItemSupport->allocatePayment(
+                    $payment,
+                    $shoot,
+                    $this->buildAllocationPayloadFromStripeMetadata($session->metadata)
+                );
                 $this->updateShootPaymentStatus($shoot, $payment, $amountTotal);
 
                 return true;
@@ -715,6 +725,7 @@ class StripePaymentController extends Controller
                     ]);
 
                     $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
+                    $this->serviceItemSupport->allocatePayment($payment, $shoot, []);
                     $this->updateShootPaymentStatus($shoot, $payment, $amount);
                 }
 
@@ -729,6 +740,93 @@ class StripePaymentController extends Controller
             ]);
             return false;
         }
+    }
+
+    protected function buildAllocationPayloadFromRequest(Request $request): array
+    {
+        return [
+            'shoot_service_ids' => collect($request->input('shoot_service_ids', []))
+                ->map(fn ($id) => (int) $id)
+                ->filter()
+                ->unique()
+                ->values()
+                ->all(),
+            'allocations' => is_array($request->input('allocations')) ? $request->input('allocations') : [],
+            'allocation_strategy' => $request->input('allocation_strategy'),
+        ];
+    }
+
+    protected function buildAllocationPayloadFromStripeMetadata(mixed $metadata): array
+    {
+        $serviceIds = (string) ($metadata->shoot_service_ids ?? '');
+
+        return [
+            'shoot_service_ids' => collect(explode(',', $serviceIds))
+                ->map(fn ($id) => (int) trim($id))
+                ->filter()
+                ->unique()
+                ->values()
+                ->all(),
+            'allocation_strategy' => $metadata->allocation_strategy ?? null,
+        ];
+    }
+
+    protected function buildStripeAllocationMetadata(array $payload): array
+    {
+        $metadata = [];
+
+        if (!empty($payload['shoot_service_ids'])) {
+            $metadata['shoot_service_ids'] = implode(',', $payload['shoot_service_ids']);
+        }
+
+        if (!empty($payload['allocation_strategy'])) {
+            $metadata['allocation_strategy'] = (string) $payload['allocation_strategy'];
+        }
+
+        return $metadata;
+    }
+
+    protected function resolveCheckoutAmountCents(Shoot $shoot, Request $request, array $allocationPayload): int
+    {
+        $outstandingCents = $this->calculateCanonicalOutstandingAmountCents($shoot);
+        $amountToPay = $outstandingCents;
+
+        if (!empty($allocationPayload['shoot_service_ids'])) {
+            $serviceItems = collect($this->serviceItemSupport->summaries($shoot));
+            $matchedCount = $serviceItems
+                ->whereIn('shoot_service_id', $allocationPayload['shoot_service_ids'])
+                ->count();
+
+            if ($matchedCount !== count($allocationPayload['shoot_service_ids'])) {
+                throw ValidationException::withMessages([
+                    'shoot_service_ids' => ['One or more selected services do not belong to this shoot.'],
+                ]);
+            }
+
+            $selectedBalance = $serviceItems
+                ->whereIn('shoot_service_id', $allocationPayload['shoot_service_ids'])
+                ->sum(fn ($item) => (float) ($item['balance_due'] ?? 0));
+
+            $selectedAmountCents = (int) round($selectedBalance * 100);
+            if ($selectedAmountCents > 0) {
+                $amountToPay = min($selectedAmountCents, $outstandingCents);
+            }
+        }
+
+        if ($request->has('amount')) {
+            $requestedAmount = (int) round(((float) $request->input('amount')) * 100);
+            if ($requestedAmount > 0 && $requestedAmount <= $outstandingCents) {
+                $amountToPay = $requestedAmount;
+            }
+        }
+
+        if ($this->serviceItemSupport->requiresExplicitAllocation($shoot, $amountToPay / 100, $allocationPayload)) {
+            throw ValidationException::withMessages([
+                'amount' => ['Custom partial payments must target selected services or an allocation strategy.'],
+            ]);
+        }
+
+        return $amountToPay;
     }
 
     protected function applyCheckoutCustomerParams(array $sessionParams, ?User $client): array
@@ -750,14 +848,14 @@ class StripePaymentController extends Controller
         return $sessionParams;
     }
 
-    protected function buildPaymentIntentDataForSingleShoot(Shoot $shoot): array
+    protected function buildPaymentIntentDataForSingleShoot(Shoot $shoot, array $metadata = []): array
     {
         return [
             'description' => $this->buildStripePaymentDescriptionForSingleShoot($shoot),
-            'metadata' => [
+            'metadata' => array_merge([
                 'shoot_id' => (string) $shoot->id,
                 'shoot_address' => $this->formatShootAddress($shoot) ?? '',
-            ],
+            ], $metadata),
         ];
     }
 

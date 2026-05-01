@@ -53,6 +53,17 @@ class ScheduleShootAction
             $durationMinutes = $this->support->calculateShootDurationFromShoot($shoot);
             $this->support->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes, $shoot->id);
 
+            $targetServices = $shoot->services->map(function ($service) use ($scheduledAt) {
+                return [
+                    'id' => (int) $service->id,
+                    'photographer_id' => $service->pivot?->photographer_id,
+                    'scheduled_at' => $service->pivot?->scheduled_at ?: $scheduledAt->format('Y-m-d H:i:s'),
+                    'price' => $service->pivot?->price,
+                    'quantity' => $service->pivot?->quantity ?? 1,
+                ];
+            })->values()->all();
+            $this->support->checkServiceItemPhotographerAvailability($targetServices, (int) $photographerId, $shoot->id);
+
             if ($photographerId !== $shoot->photographer_id) {
                 $shoot->photographer_id = $photographerId;
                 $shoot->save();
@@ -73,6 +84,13 @@ class ScheduleShootAction
         }
 
         $this->workflowService->schedule($shoot, $scheduledAt, $user);
+        $shoot->serviceItems()
+            ->whereNull('scheduled_at')
+            ->update([
+                'scheduled_at' => \Carbon\Carbon::parse($scheduledAt)->format('Y-m-d H:i:s'),
+                'workflow_status' => 'scheduled',
+                'updated_at' => now(),
+            ]);
 
         if (!$shoot->dropbox_raw_folder) {
             $this->dropboxService->createShootFolders($shoot);

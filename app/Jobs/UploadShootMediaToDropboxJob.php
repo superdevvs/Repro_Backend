@@ -32,7 +32,8 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
         public string $originalFilename,
         public string $mediaType, // raw, edited, video, iguide
         public ?int $uploadedBy = null,
-        public ?string $photographerNote = null
+        public ?string $photographerNote = null,
+        public ?int $shootServiceId = null
     ) {
         $this->uploadedBy = $uploadedBy ?? auth()->id();
     }
@@ -42,6 +43,7 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
         try {
             Log::info('UploadShootMediaToDropboxJob: Starting upload', [
                 'shoot_id' => $this->shoot->id,
+                'shoot_service_id' => $this->shootServiceId ?? $this->album->shoot_service_id,
                 'album_id' => $this->album->id,
                 'filename' => $this->originalFilename,
                 'type' => $this->mediaType,
@@ -118,6 +120,7 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
                     'uploaded_by_role' => $uploader?->role,
                     'uploaded_by_name' => $uploader?->name,
                     'album_id' => $this->album->id,
+                    'shoot_service_id' => $this->shootServiceId ?? $this->album->shoot_service_id,
                 ],
                 $uploader
             );

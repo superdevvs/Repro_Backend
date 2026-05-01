@@ -107,7 +107,7 @@ class ShootAuthorizationSupport
         }
 
         if ($this->hasRole($user, ['photographer'])) {
-            return (string) $shoot->photographer_id === (string) $user->id;
+            return $this->isPhotographerAssignedToShoot($shoot, $user);
         }
 
         if ($this->hasRole($user, ['editor'])) {
@@ -215,6 +215,10 @@ class ShootAuthorizationSupport
             return app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $user);
         }
 
+        if ($this->hasRole($user, ['photographer'])) {
+            return $this->canPhotographerAccessFile($shoot, $file, $user);
+        }
+
         if ($this->isClientUser($user)) {
             return $this->isClientInteractableEditedFile($file);
         }
@@ -233,6 +237,10 @@ class ShootAuthorizationSupport
             return $this->canEditorDownloadRawFile($shoot, $file, $user);
         }
 
+        if ($this->hasRole($user, ['photographer'])) {
+            return $this->canPhotographerAccessFile($shoot, $file, $user);
+        }
+
         if ($this->isClientUser($user)) {
             return $this->isClientInteractableEditedFile($file);
         }
@@ -247,6 +255,57 @@ class ShootAuthorizationSupport
         }
 
         return $file->workflow_stage === ShootFile::STAGE_TODO;
+    }
+
+    public function isPhotographerAssignedToShoot(Shoot $shoot, User $photographer): bool
+    {
+        if ((string) $shoot->photographer_id === (string) $photographer->id) {
+            return true;
+        }
+
+        if ($shoot->relationLoaded('services')) {
+            return $shoot->services->contains(function ($service) use ($photographer) {
+                return (string) ($service->pivot?->photographer_id ?? '') === (string) $photographer->id;
+            });
+        }
+
+        return $shoot->services()
+            ->wherePivot('photographer_id', $photographer->id)
+            ->exists();
+    }
+
+    public function canPhotographerAccessServiceItem(Shoot $shoot, ?int $shootServiceId, User $photographer): bool
+    {
+        if (!$shootServiceId) {
+            return $this->isPhotographerAssignedToShoot($shoot, $photographer);
+        }
+
+        $serviceItem = $shoot->serviceItems()
+            ->whereKey($shootServiceId)
+            ->first();
+
+        if (!$serviceItem) {
+            return false;
+        }
+
+        if ($serviceItem->photographer_id) {
+            return (string) $serviceItem->photographer_id === (string) $photographer->id;
+        }
+
+        return (string) $shoot->photographer_id === (string) $photographer->id;
+    }
+
+    public function canPhotographerAccessFile(Shoot $shoot, ShootFile $file, User $photographer): bool
+    {
+        if (!$file->shoot_service_id) {
+            return $this->isPhotographerAssignedToShoot($shoot, $photographer);
+        }
+
+        return $this->canPhotographerAccessServiceItem(
+            $shoot,
+            (int) $file->shoot_service_id,
+            $photographer
+        );
     }
 
     protected function normalizeRole(string $role): string

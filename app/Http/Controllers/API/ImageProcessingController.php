@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\ImageProcessingService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -322,9 +323,8 @@ class ImageProcessingController extends Controller
             return true;
         }
 
-        // Photographer can process their own shoots
-        if ($user->role === 'photographer' && $shoot->photographer_id == $user->id) {
-            return true;
+        if ($user->role === 'photographer') {
+            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
         }
 
         // Editor can process completed shoots
@@ -345,9 +345,8 @@ class ImageProcessingController extends Controller
             return true;
         }
 
-        // Photographer can view their own shoots
-        if ($user->role === 'photographer' && $shoot->photographer_id == $user->id) {
-            return true;
+        if ($user->role === 'photographer') {
+            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
         }
 
         // Editor can view completed shoots

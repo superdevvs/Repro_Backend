@@ -123,6 +123,22 @@ class ShootEditingAssignmentService
 
     public function canEditorAccessFile(Shoot $shoot, ShootFile $file, User $editor): bool
     {
+        if ($file->shoot_service_id) {
+            $serviceItem = $shoot->serviceItems()
+                ->whereKey($file->shoot_service_id)
+                ->first();
+
+            if (!$serviceItem) {
+                return false;
+            }
+
+            if ($serviceItem->editor_id) {
+                return (string) $serviceItem->editor_id === (string) $editor->id;
+            }
+
+            return (string) $shoot->editor_id === (string) $editor->id;
+        }
+
         $assignedLanes = $this->getAssignedLanesForEditor($shoot, $editor);
         if (empty($assignedLanes)) {
             return false;

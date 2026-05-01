@@ -7,6 +7,7 @@ use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,6 +19,7 @@ class UploadShootFilesAction
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootMediaMutationSupportService $support,
+        protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootActivityLogger $activityLogger
     ) {
     }
@@ -109,6 +111,50 @@ class UploadShootFilesAction
 
         $request->files->set('files', $files);
         $uploadType = $request->input('upload_type', 'raw');
+        $shootServiceId = $request->input('shoot_service_id');
+        $shootServiceId = $shootServiceId !== null && $shootServiceId !== '' ? (int) $shootServiceId : null;
+
+        if ($shootServiceId && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
+            return [
+                'status' => 422,
+                'payload' => [
+                    'error_type' => 'invalid_service_item',
+                    'message' => 'Selected service item does not belong to this shoot',
+                    'upload_limits' => $uploadLimits,
+                ],
+            ];
+        }
+
+        if (
+            $user
+            && $user->role === 'photographer'
+            && $shootServiceId
+            && !$this->authorizationSupport->canPhotographerAccessServiceItem($shoot, $shootServiceId, $user)
+        ) {
+            return [
+                'status' => 403,
+                'payload' => [
+                    'error_type' => 'forbidden',
+                    'message' => 'You can only upload media for assigned service items',
+                    'upload_limits' => $uploadLimits,
+                ],
+            ];
+        }
+        if (
+            $user
+            && $user->role === 'photographer'
+            && !$shootServiceId
+            && (string) $shoot->photographer_id !== (string) $user->id
+        ) {
+            return [
+                'status' => 422,
+                'payload' => [
+                    'error_type' => 'missing_service_item',
+                    'message' => 'Select an assigned service item for this upload',
+                    'upload_limits' => $uploadLimits,
+                ],
+            ];
+        }
 
         if ($uploadType === 'raw' && $request->has('bracket_mode')) {
             $bracketMode = (int) $request->input('bracket_mode');
@@ -197,6 +243,11 @@ class UploadShootFilesAction
                         ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType)
                         : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
 
+                    if ($shootServiceId && !$shootFile->shoot_service_id) {
+                        $shootFile->shoot_service_id = $shootServiceId;
+                        $shootFile->save();
+                    }
+
                     if ($uploadType === 'raw' && $rawBracketMode > 1 && $shootFile->media_type === 'raw') {
                         $shootFile->update([
                             'bracket_group' => intdiv($rawSequenceIndex, $rawBracketMode) + 1,
@@ -214,6 +265,7 @@ class UploadShootFilesAction
                         'workflow_stage' => $shootFile->workflow_stage,
                         'dropbox_path' => $shootFile->dropbox_path,
                         'file_size' => $shootFile->file_size,
+                        'shoot_service_id' => $shootFile->shoot_service_id,
                         'uploaded_at' => $shootFile->created_at,
                         'is_extra' => $shootFile->media_type === 'extra',
                         'bracket_group' => $shootFile->bracket_group,
@@ -263,6 +315,7 @@ class UploadShootFilesAction
                             'uploaded_by_role' => $user?->role,
                             'uploaded_by_name' => $user?->name,
                             'type' => $uploadType === 'edited' ? 'edited' : 'raw',
+                            'shoot_service_id' => $shootServiceId,
                             'file_count' => count($uploadedFiles),
                             'file_ids' => array_values(array_filter(array_column($uploadedFiles, 'id'))),
                             'filenames' => array_values(array_filter(array_column($uploadedFiles, 'filename'))),

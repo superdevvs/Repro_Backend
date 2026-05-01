@@ -13,6 +13,7 @@ class BrightMlsService
 {
     private const MAX_PHOTOS = 150;
     private const MAX_TOUR_URLS = 20;
+    private const MAX_FILE_NAME_LENGTH = 50;
     private const MODE_LEGACY = 'legacy';
     private const MODE_NEW = 'new';
     private const ENVIRONMENT_DEFAULTS = [
@@ -629,10 +630,17 @@ class BrightMlsService
         if (!empty($options['documents']) && is_array($options['documents'])) {
             foreach ($options['documents'] as $doc) {
                 if (!empty($doc['url'])) {
-                    $fileName = $doc['filename'] ?? basename($doc['url']);
+                    $rawFileName = $doc['filename'] ?? basename((string) $doc['url']);
+                    $fileName = $this->normalizeBrightMlsDocumentFilename(
+                        $rawFileName,
+                        $doc['url'] ?? null,
+                        $itemId
+                    );
                     $isPdf = str_ends_with(strtolower($fileName), '.pdf');
                     $isFloorPlan = $isPdf && (
                         ($doc['type'] ?? '') === 'floor_plan' ||
+                        stripos((string) $rawFileName, 'floor') !== false ||
+                        stripos((string) $rawFileName, 'floorplan') !== false ||
                         stripos($fileName, 'floor') !== false ||
                         stripos($fileName, 'floorplan') !== false
                     );
@@ -1025,6 +1033,11 @@ class BrightMlsService
         }
 
         if (in_array($item['mediaType'] ?? null, ['document', 'floor_plan'], true)) {
+            $item['fileName'] = $this->normalizeBrightMlsDocumentFilename(
+                $item['fileName'] ?? null,
+                $item['docUrl'] ?? null,
+                $item['id'] ?? $id
+            );
             $item['docVisibility'] = $item['docVisibility'] ?? $this->defaultDocVisibility;
         }
 
@@ -1038,11 +1051,21 @@ class BrightMlsService
         $urlFilename = $urlPath !== '' ? trim(basename($urlPath)) : '';
 
         if (preg_match('/\.jpe?g$/i', $preferredName)) {
-            return $preferredName;
+            return $this->normalizeBrightMlsFileName(
+                $preferredName,
+                strtolower((string) pathinfo($preferredName, PATHINFO_EXTENSION)) === 'jpeg' ? '.jpeg' : '.jpg',
+                'photo',
+                $fallbackId
+            );
         }
 
         if (preg_match('/\.jpe?g$/i', $urlFilename)) {
-            return $urlFilename;
+            return $this->normalizeBrightMlsFileName(
+                $urlFilename,
+                strtolower((string) pathinfo($urlFilename, PATHINFO_EXTENSION)) === 'jpeg' ? '.jpeg' : '.jpg',
+                'photo',
+                $fallbackId
+            );
         }
 
         $candidate = $preferredName !== '' ? $preferredName : $urlFilename;
@@ -1052,7 +1075,63 @@ class BrightMlsService
             $baseName = 'photo' . ($fallbackId !== null ? '-' . $fallbackId : '');
         }
 
-        return $baseName . '.jpg';
+        return $this->normalizeBrightMlsFileName($baseName . '.jpg', '.jpg', 'photo', $fallbackId);
+    }
+
+    private function normalizeBrightMlsDocumentFilename(?string $preferredName, ?string $docUrl, int|string|null $fallbackId = null): string
+    {
+        $preferredName = is_string($preferredName) ? trim($preferredName) : '';
+        $urlPath = is_string($docUrl) ? (parse_url($docUrl, PHP_URL_PATH) ?: $docUrl) : '';
+        $urlFilename = $urlPath !== '' ? trim(basename($urlPath)) : '';
+
+        if (preg_match('/\.pdf$/i', $preferredName)) {
+            return $this->normalizeBrightMlsFileName($preferredName, '.pdf', 'document', $fallbackId);
+        }
+
+        if (preg_match('/\.pdf$/i', $urlFilename)) {
+            return $this->normalizeBrightMlsFileName($urlFilename, '.pdf', 'document', $fallbackId);
+        }
+
+        $candidate = $preferredName !== '' ? $preferredName : $urlFilename;
+        $baseName = trim((string) pathinfo($candidate, PATHINFO_FILENAME));
+
+        if ($baseName === '' || $baseName === '.' || $baseName === '..') {
+            $baseName = 'document' . ($fallbackId !== null ? '-' . $fallbackId : '');
+        }
+
+        return $this->normalizeBrightMlsFileName($baseName . '.pdf', '.pdf', 'document', $fallbackId);
+    }
+
+    private function normalizeBrightMlsFileName(
+        string $candidate,
+        string $requiredExtension,
+        string $fallbackPrefix,
+        int|string|null $fallbackId = null
+    ): string {
+        $extension = '.' . ltrim(strtolower($requiredExtension), '.');
+        $fileName = trim(basename(str_replace('\\', '/', $candidate)));
+        $baseName = trim((string) pathinfo($fileName, PATHINFO_FILENAME));
+
+        if ($baseName === '' || $baseName === '.' || $baseName === '..') {
+            $baseName = $fallbackPrefix . ($fallbackId !== null ? '-' . $fallbackId : '');
+        }
+
+        $normalized = $baseName . $extension;
+        if (strlen($normalized) <= self::MAX_FILE_NAME_LENGTH) {
+            return $normalized;
+        }
+
+        $suffix = $fallbackId !== null ? '-' . preg_replace('/[^A-Za-z0-9]+/', '', (string) $fallbackId) : '';
+        $reservedLength = strlen($suffix) + strlen($extension);
+
+        if ($reservedLength >= self::MAX_FILE_NAME_LENGTH) {
+            $suffix = substr($suffix, 0, max(0, self::MAX_FILE_NAME_LENGTH - strlen($extension) - 1));
+            $reservedLength = strlen($suffix) + strlen($extension);
+        }
+
+        $maxBaseLength = max(1, self::MAX_FILE_NAME_LENGTH - $reservedLength);
+
+        return substr($baseName, 0, $maxBaseLength) . $suffix . $extension;
     }
 
     private function buildPropertyAddressFromShoot(array $shoot): string

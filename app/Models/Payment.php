@@ -45,4 +45,9 @@ class Payment extends Model
     {
         return $this->belongsTo(Invoice::class);
     }
+
+    public function serviceAllocations()
+    {
+        return $this->hasMany(PaymentServiceAllocation::class);
+    }
 }

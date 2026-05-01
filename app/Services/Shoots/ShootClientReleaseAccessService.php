@@ -3,6 +3,7 @@
 namespace App\Services\Shoots;
 
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 
@@ -37,6 +38,23 @@ class ShootClientReleaseAccessService
         }
 
         return $this->resolvePaymentStatus($shoot) !== 'paid';
+    }
+
+    public function isFileReleaseLocked(Shoot $shoot, ShootFile $file, ?User $user): bool
+    {
+        if (!$this->isClientReleaseLocked($shoot, $user)) {
+            return false;
+        }
+
+        if (!$file->shoot_service_id) {
+            return true;
+        }
+
+        $serviceItem = $file->relationLoaded('serviceItem')
+            ? $file->serviceItem
+            : $file->serviceItem()->with('shoot')->first();
+
+        return !$serviceItem?->is_unlocked_for_delivery;
     }
 
     public function isPublicReleaseLocked(Shoot $shoot): bool

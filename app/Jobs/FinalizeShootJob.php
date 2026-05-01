@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\MailService;
@@ -29,7 +30,8 @@ class FinalizeShootJob implements ShouldQueue
     public function __construct(
         public int $shootId,
         public int $userId,
-        public ?string $finalStatus = null
+        public ?string $finalStatus = null,
+        public ?int $shootServiceId = null
     ) {
         $this->onQueue('default');
     }
@@ -58,8 +60,31 @@ class FinalizeShootJob implements ShouldQueue
                 return;
             }
 
-            $completedFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_COMPLETED)->get();
-            $rawFiles = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->get();
+            $serviceItem = null;
+            if ($this->shootServiceId) {
+                $serviceItem = $shoot->serviceItems()->whereKey($this->shootServiceId)->first();
+                if (!$serviceItem) {
+                    $shoot->workflowLogs()->create([
+                        'user_id' => $this->userId,
+                        'action' => 'finalize_failed',
+                        'details' => 'Finalize aborted: selected service item does not belong to this shoot',
+                        'metadata' => [
+                            'shoot_service_id' => $this->shootServiceId,
+                            'failed_at' => now()->toISOString(),
+                        ],
+                    ]);
+                    return;
+                }
+            }
+
+            $completedFiles = $shoot->files()
+                ->where('workflow_stage', ShootFile::STAGE_COMPLETED)
+                ->when($this->shootServiceId, fn ($query) => $query->where('shoot_service_id', $this->shootServiceId))
+                ->get();
+            $rawFiles = $shoot->files()
+                ->where('workflow_stage', ShootFile::STAGE_TODO)
+                ->when($this->shootServiceId, fn ($query) => $query->where('shoot_service_id', $this->shootServiceId))
+                ->get();
 
             $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
             $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
@@ -102,6 +127,7 @@ class FinalizeShootJob implements ShouldQueue
                     'started_at' => now()->toISOString(),
                     'total_files' => $totalFiles,
                     'final_status' => $this->finalStatus,
+                    'shoot_service_id' => $this->shootServiceId,
                 ],
             ]);
 
@@ -123,7 +149,41 @@ class FinalizeShootJob implements ShouldQueue
                 }
             }
 
-            $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+            $isFullOrderDelivery = true;
+            if ($serviceItem) {
+                $serviceItem->forceFill([
+                    'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+                    'delivery_status' => ShootService::DELIVERY_DELIVERED,
+                    'delivered_at' => now(),
+                    'ready_at' => $serviceItem->ready_at ?? now(),
+                ])->save();
+
+                $rollups = $shoot->fresh()->syncServiceItemRollups();
+                $isFullOrderDelivery = ($rollups['delivery_status'] ?? null) === 'delivered';
+            } else {
+                $deliverableItems = $shoot->serviceItems()
+                    ->where('is_deliverable', true)
+                    ->where('workflow_status', '!=', ShootService::WORKFLOW_CANCELLED)
+                    ->where('delivery_status', '!=', ShootService::DELIVERY_CANCELLED)
+                    ->get();
+
+                if ($deliverableItems->isNotEmpty()) {
+                    foreach ($deliverableItems as $item) {
+                        $item->forceFill([
+                            'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+                            'delivery_status' => ShootService::DELIVERY_DELIVERED,
+                            'delivered_at' => $item->delivered_at ?? now(),
+                            'ready_at' => $item->ready_at ?? now(),
+                        ])->save();
+                    }
+
+                    $shoot->fresh()->syncServiceItemRollups();
+                }
+            }
+
+            if ($isFullOrderDelivery) {
+                $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+            }
             $actor = User::find($this->userId);
 
             try {
@@ -137,6 +197,8 @@ class FinalizeShootJob implements ShouldQueue
                         'total_files' => $totalFiles,
                         'result_status' => Shoot::STATUS_DELIVERED,
                         'final_status' => $this->finalStatus,
+                        'shoot_service_id' => $this->shootServiceId,
+                        'full_order_delivery' => $isFullOrderDelivery,
                     ],
                     $actor
                 );
@@ -150,7 +212,18 @@ class FinalizeShootJob implements ShouldQueue
             // Send shoot ready email to client
             $client = User::find($shoot->client_id);
             $systemEmailAlreadySent = false;
-            if ($client) {
+            if ($client && $serviceItem) {
+                try {
+                    $mailService->sendShootReadyEmail($client, $shoot, [$serviceItem->id], $isFullOrderDelivery);
+                    $systemEmailAlreadySent = $isFullOrderDelivery;
+                } catch (\Exception $mailEx) {
+                    Log::warning('Service item ready email failed (non-blocking)', [
+                        'shoot_id' => $shoot->id,
+                        'shoot_service_id' => $serviceItem->id,
+                        'error' => $mailEx->getMessage(),
+                    ]);
+                }
+            } elseif ($client && $isFullOrderDelivery) {
                 try {
                     $mailService->sendShootReadyEmail($client, $shoot);
                     $systemEmailAlreadySent = true;
@@ -163,7 +236,7 @@ class FinalizeShootJob implements ShouldQueue
             }
 
             // Auto-publish to Bright MLS when finalized
-            if ($brightMlsService->isAutoPublishAvailable()) {
+            if ($isFullOrderDelivery && $brightMlsService->isAutoPublishAvailable()) {
                 try {
                     $mlsResult = $brightMlsService->autoPublishForShoot($shoot->fresh());
                     if ($mlsResult && $mlsResult['success']) {
@@ -201,13 +274,15 @@ class FinalizeShootJob implements ShouldQueue
                 }
             }
 
-            $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-            $context = $automationService->buildShootContext($shoot);
-            if ($shoot->rep) {
-                $context['rep'] = $shoot->rep;
+            if ($isFullOrderDelivery) {
+                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
+                $context = $automationService->buildShootContext($shoot);
+                if ($shoot->rep) {
+                    $context['rep'] = $shoot->rep;
+                }
+                $context['system_email_already_sent'] = $systemEmailAlreadySent;
+                $automationService->handleEvent('SHOOT_COMPLETED', $context);
             }
-            $context['system_email_already_sent'] = $systemEmailAlreadySent;
-            $automationService->handleEvent('SHOOT_COMPLETED', $context);
 
             $shoot->workflowLogs()->create([
                 'user_id' => $this->userId,
@@ -217,8 +292,10 @@ class FinalizeShootJob implements ShouldQueue
                     'processed_files' => $processedFiles,
                     'total_files' => $totalFiles,
                     'completed_at' => now()->toISOString(),
-                    'result_status' => Shoot::STATUS_DELIVERED,
+                    'result_status' => $isFullOrderDelivery ? Shoot::STATUS_DELIVERED : 'partially_delivered',
                     'final_status' => $this->finalStatus,
+                    'shoot_service_id' => $this->shootServiceId,
+                    'full_order_delivery' => $isFullOrderDelivery,
                 ],
             ]);
         } catch (\Throwable $e) {

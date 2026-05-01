@@ -11,6 +11,7 @@ class ShootMediaAlbum extends Model
 
     protected $fillable = [
         'shoot_id',
+        'shoot_service_id',
         'photographer_id',
         'source',
         'folder_path',
@@ -31,6 +32,11 @@ class ShootMediaAlbum extends Model
     public function shoot()
     {
         return $this->belongsTo(Shoot::class);
+    }
+
+    public function serviceItem()
+    {
+        return $this->belongsTo(ShootService::class, 'shoot_service_id');
     }
 
     public function photographer()

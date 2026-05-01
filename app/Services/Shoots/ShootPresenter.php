@@ -45,7 +45,9 @@ class ShootPresenter
             && !in_array($shootArray['payment_status'] ?? '', ['paid', 'full'], true);
 
         if (isset($shootArray['files']) && is_array($shootArray['files'])) {
-            $shootArray['files'] = collect($shootArray['files'])->map(function ($file) use ($needsWatermark) {
+            $serviceUnlockByItemId = collect($shootArray['serviceItems'] ?? $shootArray['service_items'] ?? [])
+                ->keyBy(fn ($item) => (string) ($item['shoot_service_id'] ?? $item['shootServiceId'] ?? ''));
+            $shootArray['files'] = collect($shootArray['files'])->map(function ($file) use ($needsWatermark, $serviceUnlockByItemId) {
                 $resolveUrl = function ($path) {
                     if (!$path) {
                         return null;
@@ -59,8 +61,12 @@ class ShootPresenter
 
                     return url('storage/' . $path);
                 };
+                $shootServiceId = (string) ($file['shoot_service_id'] ?? $file['shootServiceId'] ?? '');
+                $serviceItem = $shootServiceId !== '' ? $serviceUnlockByItemId->get($shootServiceId) : null;
+                $fileNeedsWatermark = $needsWatermark
+                    && ($shootServiceId === '' || !($serviceItem['is_unlocked_for_delivery'] ?? $serviceItem['isUnlockedForDelivery'] ?? false));
 
-                if ($needsWatermark) {
+                if ($fileNeedsWatermark) {
                     $thumbUrl = $resolveUrl($file['watermarked_thumbnail_path'] ?? $file['thumbnail_path'] ?? null);
                     $webUrl = $resolveUrl($file['watermarked_web_path'] ?? $file['web_path'] ?? null);
                     $placeholderUrl = $resolveUrl($file['watermarked_placeholder_path'] ?? $file['placeholder_path'] ?? null);
@@ -109,7 +115,7 @@ class ShootPresenter
         $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers']);
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
-                $query->select('id', 'shoot_id', 'workflow_stage', 'is_favorite', 'is_cover', 'flag_reason', 'url', 'path', 'dropbox_path');
+                $query->select('id', 'shoot_id', 'shoot_service_id', 'workflow_stage', 'is_favorite', 'is_cover', 'flag_reason', 'url', 'path', 'dropbox_path');
             }]);
         }
         if (!$shoot->relationLoaded('payments')) {
@@ -166,6 +172,7 @@ class ShootPresenter
             $shoot,
             $isEditorRole ? $requestingUser : null
         );
+        $serviceItemSummaries = app(ShootServiceItemSupport::class)->summaries($shoot);
 
         if ($isClientRole && $shoot->photographer) {
             $shoot->setAttribute('photographer', [
@@ -341,13 +348,42 @@ class ShootPresenter
         $shoot->tour_links = $tourLinks;
         $shoot->setAttribute('editor_assignments', $editorAssignments);
         $shoot->setAttribute('editorAssignments', $editorAssignments);
+        $shoot->setAttribute('deliveryStatus', $shoot->delivery_status ?? 'not_started');
 
         try {
             if ($shoot->relationLoaded('services') && $shoot->services->isNotEmpty()) {
                 $servicesSource = collect($shoot->services);
                 if ($isEditorRole && $requestingUser) {
                     $servicesSource = $this->editingAssignmentService->filterServicesForEditor($shoot, $requestingUser);
+                    $visibleServiceIds = collect($servicesSource)->pluck('id')->map(fn ($id) => (int) $id)->all();
+                    $serviceItemSummaries = collect($serviceItemSummaries)
+                        ->filter(fn ($item) => in_array((int) ($item['service_id'] ?? 0), $visibleServiceIds, true))
+                        ->values()
+                        ->all();
                 }
+                if ($isPhotographerRole && $requestingUser) {
+                    $photographerUserId = (string) $requestingUser->id;
+                    $isTopLevelPhotographer = (string) $shoot->photographer_id === $photographerUserId;
+                    $servicesSource = collect($servicesSource)
+                        ->filter(function ($service) use ($photographerUserId, $isTopLevelPhotographer) {
+                            if (!is_object($service)) {
+                                return true;
+                            }
+
+                            $servicePhotographerId = $service->pivot?->photographer_id;
+
+                            return $servicePhotographerId
+                                ? (string) $servicePhotographerId === $photographerUserId
+                                : $isTopLevelPhotographer;
+                        })
+                        ->values();
+                    $visibleServiceIds = collect($servicesSource)->pluck('id')->map(fn ($id) => (int) $id)->all();
+                    $serviceItemSummaries = collect($serviceItemSummaries)
+                        ->filter(fn ($item) => in_array((int) ($item['service_id'] ?? 0), $visibleServiceIds, true))
+                        ->values()
+                        ->all();
+                }
+                $serviceItemByServiceId = collect($serviceItemSummaries)->keyBy('service_id');
 
                 $shootPhotographerId = $shoot->photographer_id;
                 $shootPhotographer = $shoot->photographer;
@@ -376,7 +412,8 @@ class ShootPresenter
                     $shootPhotographer,
                     $servicePhotographers,
                     $serviceEditors,
-                    $isEditorRole
+                    $isEditorRole,
+                    $serviceItemByServiceId
                 ) {
                     if (is_array($service)) {
                         return $service;
@@ -419,9 +456,12 @@ class ShootPresenter
                         }
                     }
                     $editingCompletedAt = $service->pivot?->editing_completed_at;
+                    $serviceItemSummary = $serviceItemByServiceId->get($service->id, []);
 
                     return [
                         'id' => (string) $service->id,
+                        'shoot_service_id' => isset($serviceItemSummary['shoot_service_id']) ? (string) $serviceItemSummary['shoot_service_id'] : ($service->pivot?->id ? (string) $service->pivot->id : null),
+                        'shootServiceId' => isset($serviceItemSummary['shootServiceId']) ? (string) $serviceItemSummary['shootServiceId'] : ($service->pivot?->id ? (string) $service->pivot->id : null),
                         'name' => $service->name,
                         'price' => (float) ($service->pivot?->price ?? $service->price ?? 0),
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
@@ -442,6 +482,30 @@ class ShootPresenter
                         'photographer' => $isEditorRole ? null : $resolvedPhotographer,
                         'editor_id' => $pivotEditorId ? (string) $pivotEditorId : null,
                         'editor' => $resolvedEditor,
+                        'scheduled_at' => $serviceItemSummary['scheduled_at'] ?? null,
+                        'scheduledAt' => $serviceItemSummary['scheduledAt'] ?? null,
+                        'workflow_status' => $serviceItemSummary['workflow_status'] ?? ($service->pivot?->workflow_status ?? null),
+                        'workflowStatus' => $serviceItemSummary['workflowStatus'] ?? ($service->pivot?->workflow_status ?? null),
+                        'delivery_status' => $serviceItemSummary['delivery_status'] ?? ($service->pivot?->delivery_status ?? null),
+                        'deliveryStatus' => $serviceItemSummary['deliveryStatus'] ?? ($service->pivot?->delivery_status ?? null),
+                        'ready_at' => $serviceItemSummary['ready_at'] ?? null,
+                        'readyAt' => $serviceItemSummary['readyAt'] ?? null,
+                        'delivered_at' => $serviceItemSummary['delivered_at'] ?? null,
+                        'deliveredAt' => $serviceItemSummary['deliveredAt'] ?? null,
+                        'is_deliverable' => $serviceItemSummary['is_deliverable'] ?? true,
+                        'isDeliverable' => $serviceItemSummary['isDeliverable'] ?? true,
+                        'paid_amount' => $serviceItemSummary['paid_amount'] ?? 0.0,
+                        'paidAmount' => $serviceItemSummary['paidAmount'] ?? 0.0,
+                        'balance_due' => $serviceItemSummary['balance_due'] ?? (float) ($service->pivot?->price ?? $service->price ?? 0),
+                        'balanceDue' => $serviceItemSummary['balanceDue'] ?? (float) ($service->pivot?->price ?? $service->price ?? 0),
+                        'payment_status' => $serviceItemSummary['payment_status'] ?? 'unpaid',
+                        'paymentStatus' => $serviceItemSummary['paymentStatus'] ?? 'unpaid',
+                        'force_unlock_delivery' => $serviceItemSummary['force_unlock_delivery'] ?? false,
+                        'forceUnlockDelivery' => $serviceItemSummary['forceUnlockDelivery'] ?? false,
+                        'is_unlocked_for_delivery' => $serviceItemSummary['is_unlocked_for_delivery'] ?? false,
+                        'isUnlockedForDelivery' => $serviceItemSummary['isUnlockedForDelivery'] ?? false,
+                        'unlock_state' => $serviceItemSummary['unlock_state'] ?? 'locked',
+                        'unlockState' => $serviceItemSummary['unlockState'] ?? 'locked',
                         'editing_completed_at' => $editingCompletedAt instanceof \DateTimeInterface
                             ? $editingCompletedAt->format(\DateTimeInterface::ATOM)
                             : ($editingCompletedAt ? (string) $editingCompletedAt : null),
@@ -461,6 +525,9 @@ class ShootPresenter
         } catch (\Throwable $e) {
             \Log::warning('transformShoot services error for shoot ' . $shoot->id . ': ' . $e->getMessage());
         }
+
+        $shoot->setAttribute('serviceItems', $serviceItemSummaries);
+        $shoot->setAttribute('service_items', $serviceItemSummaries);
 
         $servicesArray = collect($shoot->getAttribute('services') ?? $shoot->services)->pluck('name')->filter()->values()->all();
         $miscItems = $isEditorRole ? [] : $this->getInvoiceMiscItemNames($shoot);

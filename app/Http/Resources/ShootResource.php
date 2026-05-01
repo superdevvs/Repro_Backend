@@ -49,10 +49,24 @@ class ShootResource extends JsonResource
 
         $requestingUser = $request->user();
         $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor';
+        $isPhotographer = strtolower((string) ($requestingUser?->role ?? '')) === 'photographer';
         $assignmentService = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
         $serviceCollection = $this->services;
         if ($isEditor && $requestingUser) {
             $serviceCollection = $assignmentService->filterServicesForEditor($this->resource, $requestingUser);
+        }
+        if ($isPhotographer && $requestingUser) {
+            $photographerUserId = (string) $requestingUser->id;
+            $isTopLevelPhotographer = (string) $this->photographer_id === $photographerUserId;
+            $serviceCollection = $serviceCollection
+                ->filter(function ($service) use ($photographerUserId, $isTopLevelPhotographer) {
+                    $servicePhotographerId = $service->pivot?->photographer_id;
+
+                    return $servicePhotographerId
+                        ? (string) $servicePhotographerId === $photographerUserId
+                        : $isTopLevelPhotographer;
+                })
+                ->values();
         }
         $editorAssignments = $assignmentService->buildEditorAssignmentsPayload(
             $this->resource,
@@ -64,6 +78,22 @@ class ShootResource extends JsonResource
         } elseif (count($editorAssignments) === 1) {
             $resolvedTopLevelEditor = $editorAssignments[0]['editor'] ?? null;
         }
+        $serviceItemSummaries = app(\App\Services\Shoots\ShootServiceItemSupport::class)->summaries($this->resource);
+        if ($isEditor && $requestingUser) {
+            $visibleServiceIds = $serviceCollection->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $serviceItemSummaries = collect($serviceItemSummaries)
+                ->filter(fn ($item) => in_array((int) ($item['service_id'] ?? 0), $visibleServiceIds, true))
+                ->values()
+                ->all();
+        }
+        if ($isPhotographer && $requestingUser) {
+            $visibleServiceIds = $serviceCollection->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $serviceItemSummaries = collect($serviceItemSummaries)
+                ->filter(fn ($item) => in_array((int) ($item['service_id'] ?? 0), $visibleServiceIds, true))
+                ->values()
+                ->all();
+        }
+        $serviceItemByServiceId = collect($serviceItemSummaries)->keyBy('service_id');
 
         $tourLinks = is_array($this->tour_links) ? $this->tour_links : [];
         $realtorClient = $this->resolveRealtorClient($tourLinks);
@@ -99,7 +129,7 @@ class ShootResource extends JsonResource
                 'fullAddress' => "{$this->address}, {$this->city}, {$this->state} {$this->zip}",
             ],
             // Batch-load unique per-service photographer IDs to avoid N+1 queries
-            'services' => (function () use ($serviceCollection, $isEditor, $assignmentService) {
+            'services' => (function () use ($serviceCollection, $isEditor, $assignmentService, $serviceItemByServiceId) {
                 $servicePhotographerIds = $serviceCollection
                     ->pluck('pivot.photographer_id')
                     ->filter()
@@ -117,7 +147,7 @@ class ShootResource extends JsonResource
                     ? \App\Models\User::whereIn('id', $serviceEditorIds)->get()->keyBy('id')
                     : collect();
 
-                return $serviceCollection->map(function ($service) use ($servicePhotographers, $serviceEditors, $isEditor, $assignmentService) {
+                return $serviceCollection->map(function ($service) use ($servicePhotographers, $serviceEditors, $isEditor, $assignmentService, $serviceItemByServiceId) {
                 // FALLBACK RULE: service.photographer_id ?? shoot.photographer_id
                 $resolvedPhotographerId = $service->pivot->photographer_id ?? $this->photographer_id;
                 $sqftRanges = $service->relationLoaded('sqftRanges')
@@ -158,9 +188,12 @@ class ShootResource extends JsonResource
                 }
                 $categoryName = $service->category?->name ?? $service->category_name ?? $service->name;
                 $editingCompletedAt = $service->pivot->editing_completed_at;
+                $serviceItemSummary = $serviceItemByServiceId->get($service->id, []);
                 
                 return [
                     'id' => (string) $service->id,
+                    'shoot_service_id' => isset($serviceItemSummary['shoot_service_id']) ? (string) $serviceItemSummary['shoot_service_id'] : ($service->pivot->id ? (string) $service->pivot->id : null),
+                    'shootServiceId' => isset($serviceItemSummary['shootServiceId']) ? (string) $serviceItemSummary['shootServiceId'] : ($service->pivot->id ? (string) $service->pivot->id : null),
                     'name' => $service->name,
                     'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
                     'quantity' => (int) ($service->pivot->quantity ?? 1),
@@ -184,6 +217,30 @@ class ShootResource extends JsonResource
                     'photographer' => $isEditor ? null : $resolvedPhotographer,
                     'editor_id' => $pivotEditorId ? (string) $pivotEditorId : null,
                     'editor' => $resolvedEditor,
+                    'scheduled_at' => $serviceItemSummary['scheduled_at'] ?? null,
+                    'scheduledAt' => $serviceItemSummary['scheduledAt'] ?? null,
+                    'workflow_status' => $serviceItemSummary['workflow_status'] ?? ($service->pivot->workflow_status ?? null),
+                    'workflowStatus' => $serviceItemSummary['workflowStatus'] ?? ($service->pivot->workflow_status ?? null),
+                    'delivery_status' => $serviceItemSummary['delivery_status'] ?? ($service->pivot->delivery_status ?? null),
+                    'deliveryStatus' => $serviceItemSummary['deliveryStatus'] ?? ($service->pivot->delivery_status ?? null),
+                    'ready_at' => $serviceItemSummary['ready_at'] ?? null,
+                    'readyAt' => $serviceItemSummary['readyAt'] ?? null,
+                    'delivered_at' => $serviceItemSummary['delivered_at'] ?? null,
+                    'deliveredAt' => $serviceItemSummary['deliveredAt'] ?? null,
+                    'is_deliverable' => $serviceItemSummary['is_deliverable'] ?? true,
+                    'isDeliverable' => $serviceItemSummary['isDeliverable'] ?? true,
+                    'paid_amount' => $serviceItemSummary['paid_amount'] ?? 0.0,
+                    'paidAmount' => $serviceItemSummary['paidAmount'] ?? 0.0,
+                    'balance_due' => $serviceItemSummary['balance_due'] ?? (float) ($service->pivot->price ?? $service->price ?? 0),
+                    'balanceDue' => $serviceItemSummary['balanceDue'] ?? (float) ($service->pivot->price ?? $service->price ?? 0),
+                    'payment_status' => $serviceItemSummary['payment_status'] ?? 'unpaid',
+                    'paymentStatus' => $serviceItemSummary['paymentStatus'] ?? 'unpaid',
+                    'force_unlock_delivery' => $serviceItemSummary['force_unlock_delivery'] ?? false,
+                    'forceUnlockDelivery' => $serviceItemSummary['forceUnlockDelivery'] ?? false,
+                    'is_unlocked_for_delivery' => $serviceItemSummary['is_unlocked_for_delivery'] ?? false,
+                    'isUnlockedForDelivery' => $serviceItemSummary['isUnlockedForDelivery'] ?? false,
+                    'unlock_state' => $serviceItemSummary['unlock_state'] ?? 'locked',
+                    'unlockState' => $serviceItemSummary['unlockState'] ?? 'locked',
                     'editing_completed_at' => $editingCompletedAt instanceof \DateTimeInterface
                         ? $editingCompletedAt->format(\DateTimeInterface::ATOM)
                         : ($editingCompletedAt ? (string) $editingCompletedAt : null),
@@ -200,6 +257,8 @@ class ShootResource extends JsonResource
             })(),
             // Explicitly include services_list for frontend compatibility
             'services_list' => $serviceCollection->pluck('name')->filter()->values()->all(),
+            'serviceItems' => $serviceItemSummaries,
+            'service_items' => $serviceItemSummaries,
             'editor_assignments' => $editorAssignments,
             'editorAssignments' => $editorAssignments,
             'scheduledAt' => $this->scheduled_at?->toIso8601String(),
@@ -208,6 +267,7 @@ class ShootResource extends JsonResource
             'completedAt' => $this->completed_at?->toIso8601String(),
             'status' => $this->status,
             'workflowStatus' => $this->workflow_status,
+            'deliveryStatus' => $this->delivery_status ?? 'not_started',
             'payment' => [
                 'serviceSubtotal' => $isEditor ? 0.0 : (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
                 'baseQuote' => $isEditor ? 0.0 : (float) $this->base_quote,

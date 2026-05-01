@@ -9,6 +9,7 @@ use App\Models\AiVideoPreset;
 use App\Models\AiVideoGenerationJob;
 use App\Models\AiVideoVerticalVariant;
 use App\Services\HiggsFieldService;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Jobs\ProcessVideoAspectConversion;
 use App\Jobs\ProcessVideoGeneration;
 use Illuminate\Http\Request;
@@ -627,8 +628,8 @@ class HiggsFieldController extends Controller
             return true;
         }
 
-        if ($user->role === 'photographer' && $shoot->photographer_id === $user->id) {
-            return true;
+        if ($user->role === 'photographer') {
+            return app(ShootAuthorizationSupport::class)->isPhotographerAssignedToShoot($shoot, $user);
         }
 
         return false;
