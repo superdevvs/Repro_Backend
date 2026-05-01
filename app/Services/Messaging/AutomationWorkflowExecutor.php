@@ -539,7 +539,17 @@ class AutomationWorkflowExecutor
                 $user = $client ?? $rep ?? $this->contextUser($context, 'photographer');
                 $resetLink = (string) ($context['password_reset_link'] ?? '');
                 $verificationLink = isset($context['verification_link']) ? (string) $context['verification_link'] : null;
-                if ($user && $resetLink !== '' && $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink)) {
+                $equipmentVerificationLink = isset($context['equipment_verification_link'])
+                    ? (string) $context['equipment_verification_link']
+                    : null;
+                $pendingEquipmentCount = (int) ($context['pending_equipment_count'] ?? 0);
+                if ($user && $resetLink !== '' && $this->mailService->sendAccountCreatedEmail(
+                    $user,
+                    $resetLink,
+                    $verificationLink,
+                    $equipmentVerificationLink,
+                    $pendingEquipmentCount
+                )) {
                     $sentTo[] = $user->email;
                 }
                 break;

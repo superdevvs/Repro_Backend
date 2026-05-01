@@ -257,9 +257,8 @@ class MmmService
         $user = $params['user'] ?? null;
         $nameParts = $this->splitName($user);
         $propertyDetails = $shoot->property_details ?? [];
-        $address = $params['address'] ?? $this->formatAddress($shoot, $propertyDetails);
-        $artworkUrl = $this->resolveArtworkUrl($shoot, $params);
         $pictures = $this->buildPictures($shoot, $params['file_ids'] ?? []);
+        $property = $this->buildPropertyPayload($shoot, $propertyDetails, $params, $pictures);
 
         return [
             'duns' => $this->duns,
@@ -277,8 +276,8 @@ class MmmService
             'url_return' => $params['url_return'] ?? $this->urlReturn,
             'to_identity' => $params['to_identity'] ?? $this->toIdentity,
             'sender_identity' => $params['sender_identity'] ?? $this->senderIdentity,
-            'address' => $address !== '' ? $address : null,
-            'artwork_url' => $artworkUrl,
+            'address' => $property['formatted_address'] ?? null,
+            'property' => $property,
             'pictures' => $pictures,
         ];
     }
@@ -500,27 +499,106 @@ class MmmService
         ])));
     }
 
-    private function resolveArtworkUrl(Shoot $shoot, array $params = []): ?string
+    private function buildPropertyPayload(Shoot $shoot, array $propertyDetails, array $params, array $pictures): array
     {
-        if (!empty($params['artwork_url'])) {
-            return $params['artwork_url'];
-        }
+        $address = $this->resolvePropertyAddress($shoot, $propertyDetails, $params);
+        $city = $this->firstFilled([
+            $params['city'] ?? null,
+            $shoot->city,
+            data_get($propertyDetails, 'address.city'),
+            data_get($propertyDetails, 'city'),
+        ]);
+        $state = $this->firstFilled([
+            $params['state'] ?? null,
+            $shoot->state,
+            data_get($propertyDetails, 'address.state'),
+            data_get($propertyDetails, 'state'),
+        ]);
+        $zip = $this->firstFilled([
+            $params['zip'] ?? null,
+            $shoot->zip,
+            data_get($propertyDetails, 'address.zip'),
+            data_get($propertyDetails, 'address.postal_code'),
+            data_get($propertyDetails, 'address.postalCode'),
+            data_get($propertyDetails, 'zip'),
+            data_get($propertyDetails, 'postal_code'),
+            data_get($propertyDetails, 'postalCode'),
+        ]);
 
-        $artworkFileId = $params['artwork_file_id'] ?? null;
-        if ($artworkFileId) {
-            $file = $shoot->files->firstWhere('id', (int) $artworkFileId);
-            if ($file) {
-                return $this->resolveFileUrl($file);
+        return [
+            'id' => $this->firstFilled([
+                $params['property_id'] ?? null,
+                $params['mls_id'] ?? null,
+                $shoot->mls_id,
+                data_get($propertyDetails, 'id'),
+                data_get($propertyDetails, 'property_id'),
+                data_get($propertyDetails, 'mls_id'),
+                data_get($propertyDetails, 'listing_id'),
+            ]),
+            'price' => $this->normalizePrice($this->firstFilled([
+                $params['price'] ?? null,
+                data_get($propertyDetails, 'price'),
+                data_get($propertyDetails, 'list_price'),
+                data_get($propertyDetails, 'listPrice'),
+                data_get($propertyDetails, 'listing_price'),
+                data_get($propertyDetails, 'listingPrice'),
+            ])),
+            'address' => $address,
+            'city' => $city,
+            'state' => $state,
+            'zip' => $zip,
+            'description' => $this->firstFilled([
+                $params['description'] ?? null,
+                data_get($propertyDetails, 'description'),
+                data_get($propertyDetails, 'public_remarks'),
+                data_get($propertyDetails, 'publicRemarks'),
+                data_get($propertyDetails, 'remarks'),
+            ]),
+            'pictures' => $pictures,
+            'formatted_address' => $this->formatAddress($shoot, $propertyDetails),
+        ];
+    }
+
+    private function resolvePropertyAddress(Shoot $shoot, array $propertyDetails, array $params): ?string
+    {
+        return $this->firstFilled([
+            $params['address'] ?? null,
+            $shoot->address,
+            data_get($propertyDetails, 'address.street'),
+            data_get($propertyDetails, 'address.street_address'),
+            data_get($propertyDetails, 'address.streetAddress'),
+            data_get($propertyDetails, 'address.line1'),
+            data_get($propertyDetails, 'address.address1'),
+            data_get($propertyDetails, 'address.formatted'),
+            data_get($propertyDetails, 'address'),
+        ]);
+    }
+
+    private function firstFilled(array $values): ?string
+    {
+        foreach ($values as $value) {
+            if (is_array($value)) {
+                continue;
+            }
+
+            $candidate = trim((string) $value);
+            if ($candidate !== '') {
+                return $candidate;
             }
         }
 
-        $pdfFile = $shoot->files->first(function (ShootFile $file) {
-            $filename = strtolower($file->stored_filename ?? $file->filename ?? '');
-            $mime = strtolower($file->mime_type ?? $file->file_type ?? '');
-            return str_contains($mime, 'pdf') || str_ends_with($filename, '.pdf');
-        });
+        return null;
+    }
 
-        return $pdfFile ? $this->resolveFileUrl($pdfFile) : null;
+    private function normalizePrice(?string $price): ?string
+    {
+        if ($price === null) {
+            return null;
+        }
+
+        $normalized = preg_replace('/[^\d.]/', '', $price) ?? '';
+
+        return $normalized !== '' ? $normalized : null;
     }
 
     private function buildPictures(Shoot $shoot, array $fileIds = []): array

@@ -9,7 +9,7 @@ use Tests\TestCase;
 class MmmXmlBuilderTest extends TestCase
 {
     #[Test]
-    public function it_builds_the_phase_one_vendor_xml_shape(): void
+    public function it_builds_the_mmm_vendor_property_prefill_xml_shape(): void
     {
         $xml = app(MmmXmlBuilder::class)->buildPunchoutSetupRequest([
             'duns' => 'Wqsw5cPn3Neo9Blz',
@@ -22,23 +22,30 @@ class MmmXmlBuilderTest extends TestCase
             'first_name' => 'Print',
             'last_name' => 'Admin',
             'start_point' => 'category',
-            'artwork_url' => 'https://cdn.example.test/artwork/property-flyer.pdf',
             'template_external_number' => null,
             'deployment_mode' => 'test',
             'url_return' => 'https://app.test/api/integrations/mmm/return',
-            'address' => '250 MMM Lane, Baltimore, MD 21201',
-            'pictures' => [
-                [
-                    'id' => '11',
-                    'caption' => 'Front Exterior',
-                    'filename' => 'front.jpg',
-                    'url' => 'https://cdn.example.test/images/front.jpg',
-                ],
-                [
-                    'id' => '12',
-                    'caption' => 'Kitchen',
-                    'filename' => 'kitchen.jpg',
-                    'url' => 'https://cdn.example.test/images/kitchen.jpg',
+            'property' => [
+                'id' => 'WAFGX96178',
+                'price' => '1225000',
+                'address' => '123 Development Dr',
+                'city' => 'Gaithersburg',
+                'state' => 'MD',
+                'zip' => '20987',
+                'description' => 'Welcome to 123 Development Dr.',
+                'pictures' => [
+                    [
+                        'id' => '11',
+                        'caption' => 'Front Exterior',
+                        'filename' => 'front.jpg',
+                        'url' => 'https://cdn.example.test/images/front.jpg',
+                    ],
+                    [
+                        'id' => '12',
+                        'caption' => 'Kitchen',
+                        'filename' => 'kitchen.jpg',
+                        'url' => 'https://cdn.example.test/images/kitchen.jpg',
+                    ],
                 ],
             ],
         ]);
@@ -52,27 +59,33 @@ class MmmXmlBuilderTest extends TestCase
         }
 
         $this->assertSame('Repro', $extrinsics['CostCenter'] ?? null);
-        $this->assertSame('Print', $extrinsics['UserFirstName'] ?? null);
-        $this->assertSame('Admin', $extrinsics['UserLastName'] ?? null);
         $this->assertSame('print-admin@example.com', $extrinsics['UserEmail'] ?? null);
         $this->assertSame('print-admin@example.com', $extrinsics['UniqueName'] ?? null);
+        $this->assertSame('Print', $extrinsics['FirstName'] ?? null);
+        $this->assertSame('Admin', $extrinsics['LastName'] ?? null);
         $this->assertSame('category', $extrinsics['StartPoint'] ?? null);
-        $this->assertSame('https://cdn.example.test/artwork/property-flyer.pdf', $extrinsics['ArtworkURL'] ?? null);
 
-        $this->assertArrayNotHasKey('FirstName', $extrinsics);
-        $this->assertArrayNotHasKey('LastName', $extrinsics);
+        $this->assertArrayNotHasKey('UserFirstName', $extrinsics);
+        $this->assertArrayNotHasKey('UserLastName', $extrinsics);
+        $this->assertArrayNotHasKey('ArtworkURL', $extrinsics);
 
         $this->assertSame(1, $document->getElementsByTagName('Properties')->length);
         $this->assertSame(1, $document->getElementsByTagName('Property')->length);
-        $this->assertSame('250 MMM Lane, Baltimore, MD 21201', $document->getElementsByTagName('Address')->item(0)?->textContent);
+        $this->assertSame('WAFGX96178', $document->getElementsByTagName('ID')->item(0)?->textContent);
+        $this->assertSame('1225000', $document->getElementsByTagName('Price')->item(0)?->textContent);
+        $this->assertSame('123 Development Dr', $document->getElementsByTagName('Address')->item(0)?->textContent);
+        $this->assertSame('Gaithersburg', $document->getElementsByTagName('City')->item(0)?->textContent);
+        $this->assertSame('MD', $document->getElementsByTagName('State')->item(0)?->textContent);
+        $this->assertSame('20987', $document->getElementsByTagName('Zip')->item(0)?->textContent);
+        $this->assertSame('Welcome to 123 Development Dr.', $document->getElementsByTagName('Description')->item(0)?->textContent);
         $this->assertSame(1, $document->getElementsByTagName('Pictures')->length);
         $this->assertSame(2, $document->getElementsByTagName('Picture')->length);
         $this->assertSame('front.jpg', $document->getElementsByTagName('FileName')->item(0)?->textContent);
-        $this->assertSame('https://cdn.example.test/images/front.jpg', $document->getElementsByTagName('URL')->item(1)?->textContent);
+        $this->assertSame('https://cdn.example.test/images/front.jpg', $document->getElementsByTagName('URL')->item(0)?->textContent);
 
-        $supplierPartId = $document->getElementsByTagName('SupplierPartID')->item(0);
-        $this->assertNotNull($supplierPartId);
-        $this->assertSame('', $supplierPartId->textContent);
+        $this->assertSame(0, $document->getElementsByTagName('BrowserFormPost')->length);
+        $this->assertSame(0, $document->getElementsByTagName('SelectedItem')->length);
+        $this->assertSame(0, $document->getElementsByTagName('SupplierPartID')->length);
     }
 
     #[Test]

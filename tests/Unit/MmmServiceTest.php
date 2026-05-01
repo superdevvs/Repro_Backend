@@ -25,6 +25,7 @@ class MmmServiceTest extends TestCase
         $this->configureMmm();
 
         $formattedShoot = $this->createShoot([
+            'address' => '123 Formatted Ave, Annapolis, MD 21401',
             'property_details' => [
                 'address' => [
                     'formatted' => '123 Formatted Ave, Annapolis, MD 21401',
@@ -45,36 +46,33 @@ class MmmServiceTest extends TestCase
         $fallbackPayload = $service->buildPunchoutPayload($fallbackShoot);
 
         $this->assertSame('123 Formatted Ave, Annapolis, MD 21401', $formattedPayload['address']);
+        $this->assertSame('123 Formatted Ave, Annapolis, MD 21401', $formattedPayload['property']['address']);
         $this->assertSame('250 MMM Lane, Baltimore, MD 21201', $fallbackPayload['address']);
+        $this->assertSame('250 MMM Lane', $fallbackPayload['property']['address']);
+        $this->assertSame('Baltimore', $fallbackPayload['property']['city']);
+        $this->assertSame('MD', $fallbackPayload['property']['state']);
+        $this->assertSame('21201', $fallbackPayload['property']['zip']);
     }
 
     #[Test]
-    public function build_punchout_payload_uses_pdf_as_artwork_when_no_explicit_artwork_is_provided(): void
+    public function build_punchout_payload_includes_mmm_property_metadata_from_the_shoot(): void
     {
         $this->configureMmm();
-        Storage::fake('public');
 
-        $shoot = $this->createShoot();
-        $uploader = User::factory()->create();
-        $pdfPath = 'shoots/' . $shoot->id . '/flyer.pdf';
-
-        Storage::disk('public')->put($pdfPath, 'pdf');
-        ShootFile::create([
-            'shoot_id' => $shoot->id,
-            'filename' => 'flyer.pdf',
-            'stored_filename' => 'flyer.pdf',
-            'path' => $pdfPath,
-            'storage_path' => $pdfPath,
-            'file_type' => 'application/pdf',
-            'mime_type' => 'application/pdf',
-            'file_size' => 1024,
-            'uploaded_by' => $uploader->id,
-            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        $shoot = $this->createShoot([
+            'mls_id' => 'WAFGX96178',
+            'property_details' => [
+                'list_price' => '$1,225,000',
+                'description' => 'Welcome to 123 Development Dr.',
+            ],
         ]);
 
         $payload = app(MmmService::class)->buildPunchoutPayload($shoot->fresh());
 
-        $this->assertSame(url('/storage/' . $pdfPath), $payload['artwork_url']);
+        $this->assertSame('WAFGX96178', $payload['property']['id']);
+        $this->assertSame('1225000', $payload['property']['price']);
+        $this->assertSame('Welcome to 123 Development Dr.', $payload['property']['description']);
+        $this->assertArrayNotHasKey('artwork_url', $payload);
     }
 
     #[Test]
@@ -141,17 +139,17 @@ class MmmServiceTest extends TestCase
             'file_ids' => [$completedImage->id],
         ]);
 
-        $this->assertCount(2, $fallbackPayload['pictures']);
+        $this->assertCount(2, $fallbackPayload['property']['pictures']);
         $this->assertSame(
             ['verified-front.jpg', 'completed-kitchen.jpg'],
-            array_column($fallbackPayload['pictures'], 'filename'),
+            array_column($fallbackPayload['property']['pictures'], 'filename'),
         );
         $this->assertSame(
             ['completed-kitchen.jpg'],
-            array_column($selectedPayload['pictures'], 'filename'),
+            array_column($selectedPayload['property']['pictures'], 'filename'),
         );
-        $this->assertNotContains($rawOnlyImage->stored_filename, array_column($fallbackPayload['pictures'], 'filename'));
-        $this->assertContains($verifiedImage->stored_filename, array_column($fallbackPayload['pictures'], 'filename'));
+        $this->assertNotContains($rawOnlyImage->stored_filename, array_column($fallbackPayload['property']['pictures'], 'filename'));
+        $this->assertContains($verifiedImage->stored_filename, array_column($fallbackPayload['property']['pictures'], 'filename'));
     }
 
     #[Test]

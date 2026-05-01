@@ -60,6 +60,10 @@ class AutomationService
             return true;
         }
 
+        if (strtoupper($triggerType) === 'ACCOUNT_CREATED' && empty($dispatchResult['email_sent_to'] ?? [])) {
+            return true;
+        }
+
         return !($dispatchResult['handled'] ?? false);
     }
 

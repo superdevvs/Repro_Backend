@@ -24,7 +24,7 @@
         <tr>
             <td class="callout-bg" style="padding:18px 20px; border-radius:14px; border:1px solid #24344d; background-color:#16233a;">
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#e8edf5; font-weight:800;">What to upload</p>
-                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Open the Equipments tab, review each assigned item, and upload clear verification photos that show the item and serial number where available.</p>
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Open the Equipments tab in your profile, review each assigned item, and upload clear verification photos that show the item and serial number where available.</p>
             </td>
         </tr>
     </table>

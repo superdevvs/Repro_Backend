@@ -93,8 +93,7 @@ class MailService
     public function sendPhotographerEquipmentVerificationEmail(User $photographer, int $pendingEquipmentCount = 0): bool
     {
         try {
-            $equipmentVerificationLink = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
-                . '/photographer-account?tab=equipments';
+            $equipmentVerificationLink = $this->equipmentVerificationLink();
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($photographer),
@@ -132,6 +131,12 @@ class MailService
 
             return false;
         }
+    }
+
+    public function equipmentVerificationLink(): string
+    {
+        return rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
+            . '/profile?tab=equipments';
     }
 
     public function generateClientEmailVerificationLink(User $user, array $context = []): string

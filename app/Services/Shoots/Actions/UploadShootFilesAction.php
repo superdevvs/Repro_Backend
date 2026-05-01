@@ -3,6 +3,7 @@
 namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
@@ -175,6 +176,13 @@ class UploadShootFilesAction
             $isExtra = $request->boolean('is_extra', false);
             $mediaTypeOverride = $request->input('media_type');
             $serviceCategory = $request->input('service_category');
+            $rawBracketMode = $uploadType === 'raw' ? (int) ($request->input('bracket_mode') ?? $shoot->bracket_mode ?? 0) : 0;
+            $rawSequenceIndex = $rawBracketMode > 1
+                ? $shoot->files()
+                    ->where('workflow_stage', ShootFile::STAGE_TODO)
+                    ->where('media_type', 'raw')
+                    ->count()
+                : 0;
 
             foreach ($files as $file) {
                 try {
@@ -189,6 +197,14 @@ class UploadShootFilesAction
                         ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType)
                         : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
 
+                    if ($uploadType === 'raw' && $rawBracketMode > 1 && $shootFile->media_type === 'raw') {
+                        $shootFile->update([
+                            'bracket_group' => intdiv($rawSequenceIndex, $rawBracketMode) + 1,
+                            'sequence' => ($rawSequenceIndex % $rawBracketMode) + 1,
+                        ]);
+                        $rawSequenceIndex++;
+                    }
+
                     $thumbUrl = $shootFile->thumbnail_path ? Storage::disk('public')->url($shootFile->thumbnail_path) : null;
                     $webUrl = $shootFile->web_path ? Storage::disk('public')->url($shootFile->web_path) : null;
 
@@ -200,6 +216,8 @@ class UploadShootFilesAction
                         'file_size' => $shootFile->file_size,
                         'uploaded_at' => $shootFile->created_at,
                         'is_extra' => $shootFile->media_type === 'extra',
+                        'bracket_group' => $shootFile->bracket_group,
+                        'sequence' => $shootFile->sequence,
                         'thumbnail_path' => $shootFile->thumbnail_path,
                         'web_path' => $shootFile->web_path,
                         'placeholder_path' => $shootFile->placeholder_path,

@@ -101,7 +101,13 @@ class MmmPunchoutTest extends TestCase
         ]);
 
         Sanctum::actingAs($this->admin);
-        $shoot = $this->createShoot();
+        $shoot = $this->createShoot([
+            'mls_id' => 'WAFGX96178',
+            'property_details' => [
+                'list_price' => '$1,225,000',
+                'description' => 'Welcome to 250 MMM Lane.',
+            ],
+        ]);
         $this->attachShootFile($shoot, [
             'filename' => 'front.jpg',
             'stored_filename' => 'front.jpg',
@@ -129,15 +135,6 @@ class MmmPunchoutTest extends TestCase
             'mime_type' => 'image/jpeg',
             'workflow_stage' => ShootFile::STAGE_TODO,
         ], 'raw-image');
-        $this->attachShootFile($shoot, [
-            'filename' => 'flyer.pdf',
-            'stored_filename' => 'flyer.pdf',
-            'path' => 'shoots/' . $shoot->id . '/flyer.pdf',
-            'storage_path' => 'shoots/' . $shoot->id . '/flyer.pdf',
-            'file_type' => 'application/pdf',
-            'mime_type' => 'application/pdf',
-            'workflow_stage' => ShootFile::STAGE_COMPLETED,
-        ], 'pdf-artwork');
 
         $response = $this->postJson("/api/integrations/shoots/{$shoot->id}/mmm/punchout");
 
@@ -159,11 +156,14 @@ class MmmPunchoutTest extends TestCase
         $this->assertSame($redirectUrl, $session->redirect_url);
         $this->assertSame('category', data_get($session->request_payload, 'payload.start_point'));
         $this->assertSame('250 MMM Lane, Baltimore, MD 21201', data_get($session->request_payload, 'payload.address'));
-        $this->assertSame(
-            url('/storage/shoots/' . $shoot->id . '/flyer.pdf'),
-            data_get($session->request_payload, 'payload.artwork_url'),
-        );
-        $this->assertCount(2, data_get($session->request_payload, 'payload.pictures', []));
+        $this->assertSame('WAFGX96178', data_get($session->request_payload, 'payload.property.id'));
+        $this->assertSame('1225000', data_get($session->request_payload, 'payload.property.price'));
+        $this->assertSame('250 MMM Lane', data_get($session->request_payload, 'payload.property.address'));
+        $this->assertSame('Baltimore', data_get($session->request_payload, 'payload.property.city'));
+        $this->assertSame('MD', data_get($session->request_payload, 'payload.property.state'));
+        $this->assertSame('21201', data_get($session->request_payload, 'payload.property.zip'));
+        $this->assertSame('Welcome to 250 MMM Lane.', data_get($session->request_payload, 'payload.property.description'));
+        $this->assertCount(2, data_get($session->request_payload, 'payload.property.pictures', []));
 
         $this->assertSame('punchout_ready', $shoot->mmm_status);
         $this->assertSame($redirectUrl, $shoot->mmm_redirect_url);
@@ -187,16 +187,22 @@ class MmmPunchoutTest extends TestCase
             }
 
             return $request->url() === 'https://repro.mymarketingmatters.com/PunchoutSetup.asp'
-                && ($extrinsics['UserFirstName'] ?? null) === 'MMM'
-                && ($extrinsics['UserLastName'] ?? null) === 'Admin'
+                && ($extrinsics['FirstName'] ?? null) === 'MMM'
+                && ($extrinsics['LastName'] ?? null) === 'Admin'
                 && ($extrinsics['CostCenter'] ?? null) === 'Repro'
-                && ($extrinsics['ArtworkURL'] ?? null) === url('/storage/shoots/' . $shoot->id . '/flyer.pdf')
-                && $document->getElementsByTagName('Address')->item(0)?->textContent === '250 MMM Lane, Baltimore, MD 21201'
+                && !isset($extrinsics['UserFirstName'], $extrinsics['UserLastName'], $extrinsics['ArtworkURL'])
+                && $document->getElementsByTagName('ID')->item(0)?->textContent === 'WAFGX96178'
+                && $document->getElementsByTagName('Price')->item(0)?->textContent === '1225000'
+                && $document->getElementsByTagName('Address')->item(0)?->textContent === '250 MMM Lane'
+                && $document->getElementsByTagName('City')->item(0)?->textContent === 'Baltimore'
+                && $document->getElementsByTagName('State')->item(0)?->textContent === 'MD'
+                && $document->getElementsByTagName('Zip')->item(0)?->textContent === '21201'
+                && $document->getElementsByTagName('Description')->item(0)?->textContent === 'Welcome to 250 MMM Lane.'
                 && $document->getElementsByTagName('Picture')->length === 2
                 && $pictureFileNames === ['front.jpg', 'kitchen.jpg']
-                && $supplierPartId !== null
-                && $supplierPartId->textContent === ''
-                && !str_contains($xml, 'name="FirstName"')
+                && $supplierPartId === null
+                && !str_contains($xml, '<BrowserFormPost>')
+                && !str_contains($xml, '<SelectedItem>')
                 && !in_array('raw-only.jpg', $pictureFileNames, true);
         });
     }

@@ -339,6 +339,8 @@ class ShootMediaReadService
             'file_size' => $file->file_size,
             'fileSize' => $file->file_size,
             'sort_order' => $file->sort_order ?? 0,
+            'bracket_group' => $file->bracket_group,
+            'sequence' => $file->sequence,
             'is_hidden' => $file->is_hidden ?? false,
             'media_type' => $file->media_type,
             'thumbnail_path' => $needsWatermark ? null : $file->thumbnail_path,

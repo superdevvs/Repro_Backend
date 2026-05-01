@@ -414,7 +414,7 @@ class UserController extends Controller
             $accountCreatedContext['client'] = $user;
             $accountCreatedContext['password_reset_link'] = $resetLink;
             $equipmentVerificationLink = $pendingEquipmentCount > 0
-                ? rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/') . '/photographer-account?tab=equipments'
+                ? $mailService->equipmentVerificationLink()
                 : null;
             if ($equipmentVerificationLink !== null) {
                 $accountCreatedContext['equipment_verification_link'] = $equipmentVerificationLink;
@@ -433,14 +433,23 @@ class UserController extends Controller
             }
 
             $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
+            $accountCreatedEmailSent = !empty($accountCreatedDispatch['email_sent_to'] ?? []);
             if ($automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-                $mailService->sendAccountCreatedEmail(
+                $accountCreatedEmailSent = $mailService->sendAccountCreatedEmail(
                     $user,
                     $resetLink,
                     $verificationLink,
                     $equipmentVerificationLink,
                     $pendingEquipmentCount
                 );
+            }
+
+            if ($equipmentVerificationLink !== null && $accountCreatedEmailSent) {
+                PhotographerEquipment::query()
+                    ->where('photographer_id', $user->id)
+                    ->whereIn('status', [PhotographerEquipment::STATUS_PENDING, PhotographerEquipment::STATUS_REJECTED])
+                    ->whereNull('verification_requested_at')
+                    ->update(['verification_requested_at' => now()]);
             }
 
             if ($verificationToken !== null && $mailService->sendClientEmailVerificationEmail($user, [

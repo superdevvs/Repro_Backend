@@ -63,39 +63,36 @@ class MmmXmlBuilder
 
         $extrinsics = [
             'CostCenter' => $payload['cost_center_number'] ?? '',
-            'UserFirstName' => $payload['first_name'] ?? '',
-            'UserLastName' => $payload['last_name'] ?? '',
             'UserEmail' => $payload['employee_email'] ?? '',
             'UniqueName' => $payload['username'] ?? '',
+            'FirstName' => $payload['first_name'] ?? '',
+            'LastName' => $payload['last_name'] ?? '',
             'StartPoint' => $payload['start_point'] ?? '',
-            'ArtworkURL' => $payload['artwork_url'] ?? '',
         ];
 
         foreach ($extrinsics as $name => $value) {
-            $extrinsic = $dom->createElement('Extrinsic', $value);
+            $extrinsic = $dom->createElement('Extrinsic');
             $extrinsic->setAttribute('name', $name);
+            $extrinsic->appendChild($dom->createTextNode((string) $value));
             $punchout->appendChild($extrinsic);
         }
 
-        $browserFormPost = $dom->createElement('BrowserFormPost');
-        $browserFormPost->appendChild($dom->createElement('URL', $payload['url_return'] ?? ''));
-        $punchout->appendChild($browserFormPost);
+        $property = is_array($payload['property'] ?? null) ? $payload['property'] : [];
+        $pictures = is_array($property['pictures'] ?? null)
+            ? $property['pictures']
+            : (is_array($payload['pictures'] ?? null) ? $payload['pictures'] : []);
 
-        $selectedItem = $dom->createElement('SelectedItem');
-        $itemId = $dom->createElement('ItemID');
-        $itemId->appendChild($dom->createElement('SupplierPartID', $payload['template_external_number'] ?? ''));
-        $selectedItem->appendChild($itemId);
-        $punchout->appendChild($selectedItem);
-
-        $address = trim((string) ($payload['address'] ?? ''));
-        $pictures = is_array($payload['pictures'] ?? null) ? $payload['pictures'] : [];
-        if ($address !== '' || $pictures !== []) {
+        if ($this->propertyHasContent($property, $pictures)) {
             $properties = $dom->createElement('Properties');
             $propertyNode = $dom->createElement('Property');
 
-            if ($address !== '') {
-                $propertyNode->appendChild($dom->createElement('Address', $address));
-            }
+            $this->appendTextElement($dom, $propertyNode, 'ID', $property['id'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'Price', $property['price'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'Address', $property['address'] ?? $payload['address'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'City', $property['city'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'State', $property['state'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'Zip', $property['zip'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'Description', $property['description'] ?? null);
 
             if ($pictures !== []) {
                 $picturesNode = $dom->createElement('Pictures');
@@ -107,18 +104,10 @@ class MmmXmlBuilder
 
                     $pictureNode = $dom->createElement('Picture');
 
-                    if (!empty($picture['id'])) {
-                        $pictureNode->appendChild($dom->createElement('ID', (string) $picture['id']));
-                    }
-                    if (!empty($picture['caption'])) {
-                        $pictureNode->appendChild($dom->createElement('Caption', (string) $picture['caption']));
-                    }
-                    if (!empty($picture['filename'])) {
-                        $pictureNode->appendChild($dom->createElement('FileName', (string) $picture['filename']));
-                    }
-                    if (!empty($picture['url'])) {
-                        $pictureNode->appendChild($dom->createElement('URL', (string) $picture['url']));
-                    }
+                    $this->appendTextElement($dom, $pictureNode, 'ID', $picture['id'] ?? null);
+                    $this->appendTextElement($dom, $pictureNode, 'Caption', $picture['caption'] ?? null);
+                    $this->appendTextElement($dom, $pictureNode, 'FileName', $picture['filename'] ?? null);
+                    $this->appendTextElement($dom, $pictureNode, 'URL', $picture['url'] ?? null);
 
                     if ($pictureNode->hasChildNodes()) {
                         $picturesNode->appendChild($pictureNode);
@@ -136,13 +125,35 @@ class MmmXmlBuilder
             }
         }
 
-        $doctype = '<!DOCTYPE cXML SYSTEM "http://xml.cXML.org/schemas/cXML/1.2.007/cXML.dtd">';
         $body = $dom->saveXML($dom->documentElement, LIBXML_NOEMPTYTAG);
         if ($body === false) {
             return '';
         }
 
-        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{$doctype}\n{$body}";
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{$body}";
+    }
+
+    private function propertyHasContent(array $property, array $pictures): bool
+    {
+        foreach (['id', 'price', 'address', 'city', 'state', 'zip', 'description'] as $key) {
+            if (trim((string) ($property[$key] ?? '')) !== '') {
+                return true;
+            }
+        }
+
+        return $pictures !== [];
+    }
+
+    private function appendTextElement(\DOMDocument $dom, \DOMElement $parent, string $name, mixed $value): void
+    {
+        $text = trim((string) $value);
+        if ($text === '') {
+            return;
+        }
+
+        $element = $dom->createElement($name);
+        $element->appendChild($dom->createTextNode($text));
+        $parent->appendChild($element);
     }
 
     public function parsePunchoutSetupResponse(string $xml): array

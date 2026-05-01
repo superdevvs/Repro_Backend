@@ -78,8 +78,78 @@ class DropboxWorkflowService
         } catch (\Exception $e) {
             Log::debug('Could not read EXIF data', ['error' => $e->getMessage()]);
         }
+
+        $filename = $file->getClientOriginalName();
+        if (
+            $this->rawThumbnailService->isRawFile($filename)
+            || empty($metadata['captured_at'])
+            || empty($metadata['width'])
+            || empty($metadata['height'])
+        ) {
+            $exifToolMetadata = $this->extractMetadataWithExifTool($tempPath);
+            foreach ($exifToolMetadata as $key => $value) {
+                if (!array_key_exists($key, $metadata) || empty($metadata[$key])) {
+                    $metadata[$key] = $value;
+                }
+            }
+        }
         
         return $metadata;
+    }
+
+    protected function extractMetadataWithExifTool(?string $path): array
+    {
+        if (!$path || !file_exists($path) || !$this->commandExists('exiftool')) {
+            return [];
+        }
+
+        $cmd = sprintf(
+            'exiftool -j -DateTimeOriginal -CreateDate -ModifyDate -ImageWidth -ImageHeight -Make -Model %s',
+            escapeshellarg($path)
+        );
+        exec($cmd, $output, $code);
+
+        if ($code !== 0 || empty($output)) {
+            return [];
+        }
+
+        $rows = json_decode(implode("\n", $output), true);
+        if (!is_array($rows) || !isset($rows[0]) || !is_array($rows[0])) {
+            return [];
+        }
+
+        $row = $rows[0];
+        $metadata = [];
+        $capturedAt = $row['DateTimeOriginal'] ?? $row['CreateDate'] ?? $row['ModifyDate'] ?? null;
+        if (is_string($capturedAt) && $capturedAt !== '') {
+            $metadata['captured_at'] = $capturedAt;
+        }
+
+        if (isset($row['ImageWidth']) && is_numeric($row['ImageWidth'])) {
+            $metadata['width'] = (int) $row['ImageWidth'];
+        }
+
+        if (isset($row['ImageHeight']) && is_numeric($row['ImageHeight'])) {
+            $metadata['height'] = (int) $row['ImageHeight'];
+        }
+
+        if (!empty($row['Make']) && is_string($row['Make'])) {
+            $metadata['camera_make'] = $row['Make'];
+        }
+
+        if (!empty($row['Model']) && is_string($row['Model'])) {
+            $metadata['camera_model'] = $row['Model'];
+        }
+
+        return $metadata;
+    }
+
+    protected function commandExists(string $command): bool
+    {
+        $check = PHP_OS_FAMILY === 'Windows' ? 'where' : 'command -v';
+        exec(sprintf('%s %s', $check, escapeshellarg($command)), $output, $code);
+
+        return $code === 0;
     }
 
     /**

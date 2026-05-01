@@ -51,7 +51,7 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function adminStore(Request $request)
+    public function adminStore(Request $request, MailService $mailService)
     {
         if (!$this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
@@ -110,13 +110,15 @@ class PhotographerEquipmentController extends Controller
             $request->user()
         );
 
+        $this->sendAssignmentVerificationEmail($equipment, $mailService);
+
         return response()->json([
             'message' => 'Equipment assigned successfully.',
             'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier', 'expense'])),
         ], 201);
     }
 
-    public function adminUpdate(Request $request, int $equipmentId)
+    public function adminUpdate(Request $request, int $equipmentId, MailService $mailService)
     {
         if (!$this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
@@ -152,6 +154,8 @@ class PhotographerEquipmentController extends Controller
             return response()->json(['message' => 'Purchase date is required when adding equipment as an expense.'], 422);
         }
 
+        $previousPhotographerId = $equipment->photographer_id;
+
         DB::transaction(function () use ($equipment, $request, $validated) {
             unset($validated['add_to_expense'], $validated['receipt']);
             $photographerChanged = array_key_exists('photographer_id', $validated)
@@ -171,9 +175,14 @@ class PhotographerEquipmentController extends Controller
             $this->syncEquipmentExpense($equipment->fresh(), $request);
         });
 
+        $updatedEquipment = $equipment->fresh(['photographer', 'photos', 'verifier', 'expense']);
+        if ((int) ($updatedEquipment->photographer_id ?? 0) > 0 && (string) $previousPhotographerId !== (string) $updatedEquipment->photographer_id) {
+            $this->sendAssignmentVerificationEmail($updatedEquipment, $mailService);
+        }
+
         return response()->json([
             'message' => 'Equipment updated successfully.',
-            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier', 'expense'])),
+            'data' => $this->presentEquipment($updatedEquipment),
         ]);
     }
 
@@ -487,6 +496,24 @@ class PhotographerEquipmentController extends Controller
     private function canViewEquipment(User $user, PhotographerEquipment $equipment): bool
     {
         return $this->isAdmin($user) || (int) $equipment->photographer_id === (int) $user->id;
+    }
+
+    private function sendAssignmentVerificationEmail(PhotographerEquipment $equipment, MailService $mailService): void
+    {
+        $equipment->loadMissing('photographer');
+
+        if (!$equipment->photographer) {
+            return;
+        }
+
+        $pendingCount = PhotographerEquipment::query()
+            ->where('photographer_id', $equipment->photographer->id)
+            ->whereIn('status', [PhotographerEquipment::STATUS_PENDING, PhotographerEquipment::STATUS_REJECTED])
+            ->count();
+
+        if ($mailService->sendPhotographerEquipmentVerificationEmail($equipment->photographer, $pendingCount)) {
+            $equipment->forceFill(['verification_requested_at' => now()])->save();
+        }
     }
 
     private function isAdmin(User $user): bool
