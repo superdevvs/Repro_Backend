@@ -512,10 +512,7 @@ class Shoot extends Model
             $deliveryStatus = 'delivered';
         } elseif ($deliverableItems->every(fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED)) {
             $deliveryStatus = 'delivered';
-        } elseif ($deliverableItems->contains(fn (ShootService $item) => in_array($item->delivery_status, [
-            ShootService::DELIVERY_READY,
-            ShootService::DELIVERY_DELIVERED,
-        ], true))) {
+        } elseif ($deliverableItems->contains(fn (ShootService $item) => $item->delivery_status === ShootService::DELIVERY_DELIVERED)) {
             $deliveryStatus = 'partially_delivered';
         } else {
             $deliveryStatus = 'not_started';
