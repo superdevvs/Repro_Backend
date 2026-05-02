@@ -4,6 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 
@@ -54,7 +55,26 @@ class ShootClientReleaseAccessService
             ? $file->serviceItem
             : $file->serviceItem()->with('shoot')->first();
 
-        return !$serviceItem?->is_unlocked_for_delivery;
+        return !$serviceItem || !$this->isServiceItemUnlockedForClientDelivery($serviceItem);
+    }
+
+    public function isArchiveReleaseLocked(Shoot $shoot, ?int $shootServiceId, ?User $user): bool
+    {
+        if (($user?->role ?? null) !== 'client') {
+            return false;
+        }
+
+        if ($shoot->bypass_paywall) {
+            return false;
+        }
+
+        if ($shootServiceId === null) {
+            return $this->resolvePaymentStatus($shoot) !== 'paid';
+        }
+
+        $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
+
+        return !$serviceItem || !$this->isServiceItemUnlockedForClientDelivery($serviceItem);
     }
 
     public function isPublicReleaseLocked(Shoot $shoot): bool
@@ -72,6 +92,19 @@ class ShootClientReleaseAccessService
             'message' => 'Payment required to download files for this shoot.',
             'code' => 'payment_required',
         ], 403);
+    }
+
+    private function isServiceItemUnlockedForClientDelivery(ShootService $serviceItem): bool
+    {
+        if ($serviceItem->force_unlock_delivery) {
+            return true;
+        }
+
+        return $serviceItem->is_unlocked_for_delivery
+            && in_array($serviceItem->delivery_status, [
+                ShootService::DELIVERY_READY,
+                ShootService::DELIVERY_DELIVERED,
+            ], true);
     }
 
     public function buildLockedPublicPayload(Shoot $shoot, string $type): array

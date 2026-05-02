@@ -37,26 +37,27 @@ class ShootMediaArchiveService
         Shoot $shoot,
         string $type,
         string $size,
-        string $statusUrl
+        string $statusUrl,
+        ?int $shootServiceId = null
     ): array {
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
 
-        if (!$this->hasDownloadableFiles($shoot, $type, $size)) {
+        if (!$this->hasDownloadableFiles($shoot, $type, $size, $shootServiceId)) {
             throw new \RuntimeException('No downloadable files available');
         }
 
-        if ($this->hasFreshArchive($shoot, $type, $size)) {
+        if ($this->hasFreshArchive($shoot, $type, $size, $shootServiceId)) {
             return [
                 'status' => 200,
                 'payload' => [
                     'type' => 'redirect',
-                    'url' => $this->getArchiveUrl($shoot, $type, $size),
+                    'url' => $this->getArchiveUrl($shoot, $type, $size, $shootServiceId),
                 ],
             ];
         }
 
-        $this->queueArchiveGeneration($shoot, $type, $size);
+        $this->queueArchiveGeneration($shoot, $type, $size, $shootServiceId);
 
         return [
             'status' => 202,
@@ -69,24 +70,24 @@ class ShootMediaArchiveService
         ];
     }
 
-    public function queueArchiveGeneration(Shoot $shoot, string $type, string $size): bool
+    public function queueArchiveGeneration(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
 
-        if (!$this->hasDownloadableFiles($shoot, $type, $size)) {
+        if (!$this->hasDownloadableFiles($shoot, $type, $size, $shootServiceId)) {
             return false;
         }
 
-        if ($this->hasFreshArchive($shoot, $type, $size)) {
+        if ($this->hasFreshArchive($shoot, $type, $size, $shootServiceId)) {
             return false;
         }
 
-        if (!$this->acquireGenerationLock($shoot, $type, $size)) {
+        if (!$this->acquireGenerationLock($shoot, $type, $size, $shootServiceId)) {
             return false;
         }
 
-        GenerateShootMediaArchiveJob::dispatch($shoot->id, $type, $size);
+        GenerateShootMediaArchiveJob::dispatch($shoot->id, $type, $size, $shootServiceId);
 
         return true;
     }
@@ -95,46 +96,53 @@ class ShootMediaArchiveService
         Shoot $shoot,
         string $type,
         string $size,
-        bool $lockAlreadyHeld = false
+        bool $lockAlreadyHeld = false,
+        ?int $shootServiceId = null
     ): array {
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
 
         $lockAcquiredHere = false;
         if (!$lockAlreadyHeld) {
-            $lockAcquiredHere = $this->acquireGenerationLock($shoot, $type, $size);
+            $lockAcquiredHere = $this->acquireGenerationLock($shoot, $type, $size, $shootServiceId);
 
             if (!$lockAcquiredHere) {
-                return $this->readManifest($shoot, $type, $size) ?? [];
+                return $this->readManifest($shoot, $type, $size, $shootServiceId) ?? [];
             }
         }
 
+        $plan = [
+            'entries' => [],
+            'source_signature' => null,
+        ];
+
         try {
-            $plan = $this->buildArchivePlan($shoot, $type, $size);
+            $plan = $this->buildArchivePlan($shoot, $type, $size, $shootServiceId);
             if ($plan['entries'] === []) {
                 $this->writeManifest($shoot, $type, $size, [
                     'type' => $type,
                     'size' => $size,
+                    'shoot_service_id' => $shootServiceId,
                     'source_signature' => null,
                     'generated_at' => null,
                     'file_count' => 0,
                     'last_error' => 'No downloadable files available',
-                ]);
+                ], $shootServiceId);
 
                 throw new \RuntimeException('No downloadable files available');
             }
 
-            $manifest = $this->readManifest($shoot, $type, $size);
+            $manifest = $this->readManifest($shoot, $type, $size, $shootServiceId);
             if (
                 is_array($manifest)
                 && ($manifest['source_signature'] ?? null) === $plan['source_signature']
                 && empty($manifest['last_error'])
-                && $this->archiveExists($shoot, $type, $size)
+                && $this->archiveExists($shoot, $type, $size, $shootServiceId)
             ) {
                 return $manifest;
             }
 
-            $archivePath = $this->getArchivePath($shoot, $type, $size);
+            $archivePath = $this->getArchivePath($shoot, $type, $size, $shootServiceId);
             Storage::disk(self::ARCHIVE_DISK)->makeDirectory(dirname($archivePath));
 
             $zipAbsolutePath = Storage::disk(self::ARCHIVE_DISK)->path($archivePath);
@@ -176,27 +184,30 @@ class ShootMediaArchiveService
             $manifest = [
                 'type' => $type,
                 'size' => $size,
+                'shoot_service_id' => $shootServiceId,
                 'source_signature' => $plan['source_signature'],
                 'generated_at' => now()->toIso8601String(),
                 'file_count' => $addedFiles,
                 'last_error' => null,
             ];
 
-            $this->writeManifest($shoot, $type, $size, $manifest);
+            $this->writeManifest($shoot, $type, $size, $manifest, $shootServiceId);
 
             return $manifest;
         } catch (\Throwable $exception) {
             $this->writeManifest($shoot, $type, $size, [
                 'type' => $type,
                 'size' => $size,
+                'shoot_service_id' => $shootServiceId,
                 'source_signature' => $plan['source_signature'],
                 'generated_at' => now()->toIso8601String(),
                 'file_count' => 0,
                 'last_error' => $exception->getMessage(),
-            ]);
+            ], $shootServiceId);
 
             Log::warning('Shoot media archive generation failed', [
                 'shoot_id' => $shoot->id,
+                'shoot_service_id' => $shootServiceId,
                 'type' => $type,
                 'size' => $size,
                 'error' => $exception->getMessage(),
@@ -205,55 +216,57 @@ class ShootMediaArchiveService
             throw $exception;
         } finally {
             if ($lockAlreadyHeld || $lockAcquiredHere) {
-                $this->releaseGenerationLock($shoot, $type, $size);
+                $this->releaseGenerationLock($shoot, $type, $size, $shootServiceId);
             }
         }
     }
 
-    public function hasFreshArchive(Shoot $shoot, string $type, string $size): bool
+    public function hasFreshArchive(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
 
-        if (!$this->archiveExists($shoot, $type, $size)) {
+        if (!$this->archiveExists($shoot, $type, $size, $shootServiceId)) {
             return false;
         }
 
-        $manifest = $this->readManifest($shoot, $type, $size);
+        $manifest = $this->readManifest($shoot, $type, $size, $shootServiceId);
         if (!is_array($manifest) || !empty($manifest['last_error'])) {
             return false;
         }
 
-        $plan = $this->buildArchivePlan($shoot, $type, $size);
+        $plan = $this->buildArchivePlan($shoot, $type, $size, $shootServiceId);
 
         return $plan['entries'] !== []
             && ($manifest['source_signature'] ?? null) === $plan['source_signature'];
     }
 
-    public function hasDownloadableFiles(Shoot $shoot, string $type, string $size): bool
+    public function hasDownloadableFiles(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
-        return $this->buildArchivePlan($shoot, $type, $size)['entries'] !== [];
+        return $this->buildArchivePlan($shoot, $type, $size, $shootServiceId)['entries'] !== [];
     }
 
-    public function getArchivePath(Shoot $shoot, string $type, string $size): string
+    public function getArchivePath(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
+        $scope = $shootServiceId ? "service-{$shootServiceId}/" : '';
 
-        return "shoots/{$shoot->id}/archives/{$type}-{$size}.zip";
+        return "shoots/{$shoot->id}/archives/{$scope}{$type}-{$size}.zip";
     }
 
-    public function getManifestPath(Shoot $shoot, string $type, string $size): string
+    public function getManifestPath(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
+        $scope = $shootServiceId ? "service-{$shootServiceId}/" : '';
 
-        return "shoots/{$shoot->id}/archives/{$type}-{$size}.json";
+        return "shoots/{$shoot->id}/archives/{$scope}{$type}-{$size}.json";
     }
 
-    public function getArchiveUrl(Shoot $shoot, string $type, string $size): string
+    public function getArchiveUrl(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
-        $archivePath = $this->getArchivePath($shoot, $type, $size);
+        $archivePath = $this->getArchivePath($shoot, $type, $size, $shootServiceId);
         $diskUrl = Storage::disk(self::ARCHIVE_DISK)->url($archivePath);
 
         if (preg_match('/^https?:\/\//i', $diskUrl)) {
@@ -298,9 +311,13 @@ class ShootMediaArchiveService
         );
     }
 
-    public function getFilesForType(Shoot $shoot, string $type): Collection
+    public function getFilesForType(Shoot $shoot, string $type, ?int $shootServiceId = null): Collection
     {
         $query = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
+
+        if ($shootServiceId !== null) {
+            $query->where('shoot_service_id', $shootServiceId);
+        }
 
         if ($this->normalizeType($type) === 'raw') {
             $query->where(function ($builder) {
@@ -322,10 +339,10 @@ class ShootMediaArchiveService
         return $files;
     }
 
-    protected function buildArchivePlan(Shoot $shoot, string $type, string $size): array
+    protected function buildArchivePlan(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): array
     {
         $entries = [];
-        foreach ($this->getFilesForType($shoot, $type) as $file) {
+        foreach ($this->getFilesForType($shoot, $type, $shootServiceId) as $file) {
             $sourcePath = $this->resolveDownloadPath($file, $size);
             if (!$sourcePath) {
                 continue;
@@ -333,6 +350,7 @@ class ShootMediaArchiveService
 
             $entries[] = [
                 'file_id' => $file->id,
+                'shoot_service_id' => $file->shoot_service_id,
                 'archive_name' => $file->original_name ?? $file->filename ?? basename($sourcePath),
                 'source_path' => $sourcePath,
                 'updated_at' => optional($file->updated_at)->toIso8601String(),
@@ -406,9 +424,9 @@ class ShootMediaArchiveService
         return $downloaded;
     }
 
-    protected function readManifest(Shoot $shoot, string $type, string $size): ?array
+    protected function readManifest(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): ?array
     {
-        $manifestPath = $this->getManifestPath($shoot, $type, $size);
+        $manifestPath = $this->getManifestPath($shoot, $type, $size, $shootServiceId);
         if (!Storage::disk(self::ARCHIVE_DISK)->exists($manifestPath)) {
             return null;
         }
@@ -422,17 +440,17 @@ class ShootMediaArchiveService
         return is_array($decoded) ? $decoded : null;
     }
 
-    protected function writeManifest(Shoot $shoot, string $type, string $size, array $manifest): void
+    protected function writeManifest(Shoot $shoot, string $type, string $size, array $manifest, ?int $shootServiceId = null): void
     {
         Storage::disk(self::ARCHIVE_DISK)->put(
-            $this->getManifestPath($shoot, $type, $size),
+            $this->getManifestPath($shoot, $type, $size, $shootServiceId),
             json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
         );
     }
 
-    protected function archiveExists(Shoot $shoot, string $type, string $size): bool
+    protected function archiveExists(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
-        return Storage::disk(self::ARCHIVE_DISK)->exists($this->getArchivePath($shoot, $type, $size));
+        return Storage::disk(self::ARCHIVE_DISK)->exists($this->getArchivePath($shoot, $type, $size, $shootServiceId));
     }
 
     protected function buildPreparingMessage(string $size): string
@@ -447,6 +465,7 @@ class ShootMediaArchiveService
         return hash('sha256', json_encode(array_map(function (array $entry) {
             return [
                 'file_id' => $entry['file_id'],
+                'shoot_service_id' => $entry['shoot_service_id'] ?? null,
                 'archive_name' => $entry['archive_name'],
                 'source_path' => $entry['source_path'],
                 'updated_at' => $entry['updated_at'],
@@ -455,23 +474,25 @@ class ShootMediaArchiveService
         }, $entries), JSON_UNESCAPED_SLASHES));
     }
 
-    protected function acquireGenerationLock(Shoot $shoot, string $type, string $size): bool
+    protected function acquireGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
         return Cache::add(
-            $this->getGenerationLockKey($shoot, $type, $size),
+            $this->getGenerationLockKey($shoot, $type, $size, $shootServiceId),
             now()->toIso8601String(),
             now()->addSeconds(self::LOCK_TTL_SECONDS)
         );
     }
 
-    protected function releaseGenerationLock(Shoot $shoot, string $type, string $size): void
+    protected function releaseGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): void
     {
-        Cache::forget($this->getGenerationLockKey($shoot, $type, $size));
+        Cache::forget($this->getGenerationLockKey($shoot, $type, $size, $shootServiceId));
     }
 
-    protected function getGenerationLockKey(Shoot $shoot, string $type, string $size): string
+    protected function getGenerationLockKey(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
-        return 'shoot-media-archive:' . $shoot->id . ':' . $this->normalizeType($type) . ':' . $this->normalizeSize($size);
+        $scope = $shootServiceId ? ':service:' . $shootServiceId : '';
+
+        return 'shoot-media-archive:' . $shoot->id . $scope . ':' . $this->normalizeType($type) . ':' . $this->normalizeSize($size);
     }
 
     protected function normalizeType(?string $type): string

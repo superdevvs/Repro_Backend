@@ -119,13 +119,17 @@ class ApproveShootAction
         $context['notify_client'] = $notifyClient;
         $context['notify_photographer'] = $notifyPhotographer;
         $requestApprovalTrigger = 'SHOOT_REQUEST_APPROVED';
+        $requestApprovalAttemptedAt = null;
+        $requestApprovalClientEmailSent = false;
         if ($wasRequested) {
             if ($this->hasClientFacingRequestModifications($validated)) {
                 $requestApprovalTrigger = 'SHOOT_REQUEST_MODIFIED';
                 $context['request_modified'] = true;
             }
 
+            $requestApprovalAttemptedAt = now();
             $requestApprovalDispatch = $this->automationService->handleEvent($requestApprovalTrigger, $context);
+            $requestApprovalClientEmailSent = (bool) ($requestApprovalDispatch['client_email_sent'] ?? false);
             Log::info('Shoot request approval dispatch evaluated', [
                 'shoot_id' => $shoot->id,
                 'trigger_type' => $requestApprovalTrigger,
@@ -150,17 +154,20 @@ class ApproveShootAction
 
         $clientEmailSent = (bool) ($shootScheduledDispatch['client_email_sent'] ?? false);
         $photographerEmailSent = (bool) ($shootScheduledDispatch['photographer_email_sent'] ?? false);
+        $clientConfirmationCoveredByApproval = $wasRequested && $requestApprovalClientEmailSent;
 
-        if ($notifyClient !== false && $shoot->client && $clientEmailSent) {
+        if ($notifyClient !== false && $shoot->client && ($clientEmailSent || $clientConfirmationCoveredByApproval)) {
             $this->clientConfirmationRecoveryService->recordAutomationSent(
                 $shoot,
                 $shoot->client,
-                $shootScheduledAttemptedAt
+                $clientConfirmationCoveredByApproval && $requestApprovalAttemptedAt
+                    ? $requestApprovalAttemptedAt
+                    : $shootScheduledAttemptedAt
             );
         }
 
         if ($shouldUseFallback || !$clientEmailSent || !$photographerEmailSent) {
-            if ($notifyClient !== false && !$clientEmailSent) {
+            if ($notifyClient !== false && !$clientEmailSent && !$clientConfirmationCoveredByApproval) {
                 if (!$shoot->client) {
                     $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_SCHEDULED');
                 } elseif (!$this->clientConfirmationRecoveryService->hasDeliverableEmail($shoot->client)) {

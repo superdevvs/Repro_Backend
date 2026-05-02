@@ -38,10 +38,6 @@ class DownloadShootMediaZipAction
             ], 403);
         }
 
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $user)) {
-            return $this->shootClientReleaseAccessService->downloadLockedResponse();
-        }
-
         return $this->executeArchiveDownload($request, $shoot);
     }
 
@@ -55,12 +51,22 @@ class DownloadShootMediaZipAction
         $validated = $request->validate([
             'type' => 'nullable|in:raw,edited',
             'size' => 'nullable|in:original,small,medium,large',
+            'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
         ]);
 
         $type = $validated['type'] ?? 'raw';
         $requestedSize = $validated['size'] ?? 'original';
         $normalizedRequestedSize = strtolower((string) $requestedSize);
         $resolvedSize = $this->shootMediaArchiveService->normalizeSize($requestedSize);
+        $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
+
+        if ($shootServiceId !== null && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
+            return response()->json(['message' => 'Selected service item does not belong to this shoot'], 422);
+        }
+
+        if ($this->shootClientReleaseAccessService->isArchiveReleaseLocked($shoot, $shootServiceId, $request->user())) {
+            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
 
         if (in_array($normalizedRequestedSize, ['small', 'original'], true)) {
             try {
@@ -68,7 +74,8 @@ class DownloadShootMediaZipAction
                     $shoot,
                     $type,
                     $resolvedSize,
-                    $request->fullUrl()
+                    $request->fullUrl(),
+                    $shootServiceId
                 );
 
                 return response()->json($archiveResponse['payload'], $archiveResponse['status']);
@@ -87,10 +94,10 @@ class DownloadShootMediaZipAction
         }
 
         try {
-            $zipPath = $this->generateZipFromFiles($shoot, $type, $resolvedSize);
+            $zipPath = $this->generateZipFromFiles($shoot, $type, $resolvedSize, $shootServiceId);
 
             return response()
-                ->download($zipPath, $this->buildZipFilename($shoot, $type, $resolvedSize))
+                ->download($zipPath, $this->buildZipFilename($shoot, $type, $resolvedSize, $shootServiceId))
                 ->deleteFileAfterSend(true);
         } catch (\RuntimeException $e) {
             return response()->json(['error' => $e->getMessage()], 404);
@@ -106,14 +113,15 @@ class DownloadShootMediaZipAction
         }
     }
 
-    protected function generateZipFromFiles(Shoot $shoot, string $type, string $size): string
+    protected function generateZipFromFiles(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
-        $files = $this->getFilesForType($shoot, $type);
+        $files = $this->getFilesForType($shoot, $type, $shootServiceId);
         if ($files->isEmpty()) {
             throw new \RuntimeException('No downloadable files available');
         }
 
-        $zipPath = storage_path('app/temp/shoot-' . $shoot->id . '-' . $type . '-' . $size . '-' . time() . '.zip');
+        $scope = $shootServiceId ? '-service-' . $shootServiceId : '';
+        $zipPath = storage_path('app/temp/shoot-' . $shoot->id . $scope . '-' . $type . '-' . $size . '-' . time() . '.zip');
         if (!file_exists(dirname($zipPath))) {
             mkdir(dirname($zipPath), 0755, true);
         }
@@ -165,9 +173,9 @@ class DownloadShootMediaZipAction
         return $zipPath;
     }
 
-    protected function getFilesForType(Shoot $shoot, string $type): Collection
+    protected function getFilesForType(Shoot $shoot, string $type, ?int $shootServiceId = null): Collection
     {
-        return $this->shootMediaArchiveService->getFilesForType($shoot, $type);
+        return $this->shootMediaArchiveService->getFilesForType($shoot, $type, $shootServiceId);
     }
 
     protected function resolveDownloadPath(ShootFile $file, string $size): ?string
@@ -196,10 +204,11 @@ class DownloadShootMediaZipAction
             ?? $file->thumbnail_path;
     }
 
-    protected function buildZipFilename(Shoot $shoot, string $type, string $size): string
+    protected function buildZipFilename(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
         $suffix = $size !== 'original' ? '-' . $size : '';
+        $scope = $shootServiceId ? "-service-{$shootServiceId}" : '';
 
-        return "shoot-{$shoot->id}-{$type}{$suffix}.zip";
+        return "shoot-{$shoot->id}{$scope}-{$type}{$suffix}.zip";
     }
 }

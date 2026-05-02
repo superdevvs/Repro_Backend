@@ -22,7 +22,8 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
     public function __construct(
         public int $shootId,
         public string $type,
-        public string $size
+        public string $size,
+        public ?int $shootServiceId = null
     ) {
         $this->onQueue('default');
         $this->afterCommit();
@@ -34,6 +35,7 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
         if (!$shoot) {
             Log::warning('Shoot media archive job skipped because shoot was not found', [
                 'shoot_id' => $this->shootId,
+                'shoot_service_id' => $this->shootServiceId,
                 'type' => $this->type,
                 'size' => $this->size,
             ]);
@@ -41,13 +43,14 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
             return;
         }
 
-        $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true);
+        $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true, $this->shootServiceId);
     }
 
     public function failed(\Throwable $exception): void
     {
         Log::error('Shoot media archive job failed permanently', [
             'shoot_id' => $this->shootId,
+            'shoot_service_id' => $this->shootServiceId,
             'type' => $this->type,
             'size' => $this->size,
             'error' => $exception->getMessage(),

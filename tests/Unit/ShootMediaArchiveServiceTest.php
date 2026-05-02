@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\ShootMediaArchiveService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Mockery;
@@ -138,6 +139,65 @@ class ShootMediaArchiveServiceTest extends TestCase
         ]);
 
         $this->assertFalse($archiveService->hasFreshArchive($shoot->fresh(), 'edited', 'small'));
+    }
+
+    /** @test */
+    public function it_generates_service_scoped_archives_for_only_the_selected_service_item(): void
+    {
+        Storage::fake('public');
+        $this->mockDropboxDisabled();
+
+        $shoot = $this->createShoot();
+        $firstServiceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $shoot->id,
+            'service_id' => $this->service->id,
+            'price' => 150,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $secondService = Service::factory()->create(['name' => 'Video Service']);
+        $secondServiceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $shoot->id,
+            'service_id' => $secondService->id,
+            'price' => 250,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $firstPath = 'shoots/' . $shoot->id . '/completed/service-one.jpg';
+        $secondPath = 'shoots/' . $shoot->id . '/completed/service-two.jpg';
+        Storage::disk('public')->put($firstPath, 'service-one-bytes');
+        Storage::disk('public')->put($secondPath, 'service-two-bytes');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'service-one.jpg',
+            'stored_filename' => 'service-one.jpg',
+            'path' => $firstPath,
+            'storage_path' => $firstPath,
+            'shoot_service_id' => $firstServiceItemId,
+        ]);
+        $this->createShootFile($shoot, [
+            'filename' => 'service-two.jpg',
+            'stored_filename' => 'service-two.jpg',
+            'path' => $secondPath,
+            'storage_path' => $secondPath,
+            'shoot_service_id' => $secondServiceItemId,
+        ]);
+
+        $archiveService = app(ShootMediaArchiveService::class);
+        $archiveService->generateArchive($shoot, 'edited', 'original', false, $firstServiceItemId);
+
+        $zip = new ZipArchive();
+        $archivePath = Storage::disk('public')->path(
+            $archiveService->getArchivePath($shoot, 'edited', 'original', $firstServiceItemId)
+        );
+
+        $this->assertTrue($zip->open($archivePath) === true);
+        $this->assertSame('service-one-bytes', $zip->getFromName('service-one.jpg'));
+        $this->assertFalse($zip->locateName('service-two.jpg'));
+        $zip->close();
     }
 
     protected function createShoot(array $overrides = []): Shoot

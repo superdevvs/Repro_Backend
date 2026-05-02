@@ -7,8 +7,10 @@ use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Service;
+use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\ShootMediaArchiveService;
@@ -17,6 +19,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -523,6 +526,210 @@ class ShootMediaActionsTest extends TestCase
             '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
             (string) $response->json('url')
         );
+    }
+
+    /** @test */
+    public function media_zip_download_can_target_a_single_service_item_archive(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $secondService = Service::factory()->create([
+            'name' => 'Service scoped video',
+        ]);
+
+        $firstServiceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $shoot->id,
+            'service_id' => $this->service->id,
+            'price' => 125,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $secondServiceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $shoot->id,
+            'service_id' => $secondService->id,
+            'price' => 175,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $firstWebPath = 'shoots/' . $shoot->id . '/web/first-service.jpg';
+        $secondWebPath = 'shoots/' . $shoot->id . '/web/second-service.jpg';
+        Storage::disk('public')->put($firstWebPath, 'first-service-web');
+        Storage::disk('public')->put($secondWebPath, 'second-service-web');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'first-service.jpg',
+            'stored_filename' => 'first-service.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/first-service.jpg',
+            'storage_path' => 'shoots/' . $shoot->id . '/completed/first-service.jpg',
+            'web_path' => $firstWebPath,
+            'shoot_service_id' => $firstServiceItemId,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+        $this->createShootFile($shoot, [
+            'filename' => 'second-service.jpg',
+            'stored_filename' => 'second-service.jpg',
+            'path' => 'shoots/' . $shoot->id . '/completed/second-service.jpg',
+            'storage_path' => 'shoots/' . $shoot->id . '/completed/second-service.jpg',
+            'web_path' => $secondWebPath,
+            'shoot_service_id' => $secondServiceItemId,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small', true, $firstServiceItemId);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small&shoot_service_id=' . $firstServiceItemId);
+
+        $response->assertOk()
+            ->assertJsonPath('type', 'redirect');
+
+        $this->assertStringContainsString(
+            '/storage/shoots/' . $shoot->id . '/archives/service-' . $firstServiceItemId . '/edited-small.zip',
+            (string) $response->json('url')
+        );
+    }
+
+    /** @test */
+    public function media_zip_download_rejects_a_service_item_from_another_shoot(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot();
+        $otherShoot = $this->createShoot();
+        $otherServiceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $otherShoot->id,
+            'service_id' => $this->service->id,
+            'price' => 125,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small&shoot_service_id=' . $otherServiceItemId);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('message', 'Selected service item does not belong to this shoot');
+    }
+
+    /** @test */
+    public function client_can_download_a_paid_delivered_service_archive_on_a_partial_order(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->client);
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'partial',
+            'total_quote' => 300,
+        ]);
+
+        $serviceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $shoot->id,
+            'service_id' => $this->service->id,
+            'price' => 125,
+            'quantity' => 1,
+            'delivery_status' => ShootService::DELIVERY_DELIVERED,
+            'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+            'is_deliverable' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $payment = Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 125,
+            'currency' => 'USD',
+            'payment_method' => 'manual',
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+
+        DB::table('payment_service_allocations')->insert([
+            'payment_id' => $payment->id,
+            'shoot_service_id' => $serviceItemId,
+            'amount' => 125,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $webPath = 'shoots/' . $shoot->id . '/web/client-service.jpg';
+        $originalPath = 'shoots/' . $shoot->id . '/completed/client-service.jpg';
+        Storage::disk('public')->put($webPath, 'client-service-web');
+        Storage::disk('public')->put($originalPath, 'client-service-original');
+
+        $this->createShootFile($shoot, [
+            'filename' => 'client-service.jpg',
+            'stored_filename' => 'client-service.jpg',
+            'path' => $originalPath,
+            'storage_path' => $originalPath,
+            'web_path' => $webPath,
+            'shoot_service_id' => $serviceItemId,
+            'workflow_stage' => ShootFile::STAGE_COMPLETED,
+        ]);
+
+        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox->shouldReceive('isEnabled')->andReturnFalse();
+        app()->instance(DropboxWorkflowService::class, $dropbox);
+
+        app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small', true, $serviceItemId);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small&shoot_service_id=' . $serviceItemId);
+
+        $response->assertOk()
+            ->assertJsonPath('type', 'redirect');
+    }
+
+    /** @test */
+    public function client_cannot_download_whole_shoot_archive_until_the_partial_order_is_paid(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->client);
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'partial',
+            'total_quote' => 300,
+        ]);
+
+        $serviceItemId = DB::table('shoot_service')->insertGetId([
+            'shoot_id' => $shoot->id,
+            'service_id' => $this->service->id,
+            'price' => 125,
+            'quantity' => 1,
+            'delivery_status' => ShootService::DELIVERY_DELIVERED,
+            'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+            'is_deliverable' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $payment = Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 125,
+            'currency' => 'USD',
+            'payment_method' => 'manual',
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+
+        DB::table('payment_service_allocations')->insert([
+            'payment_id' => $payment->id,
+            'shoot_service_id' => $serviceItemId,
+            'amount' => 125,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+
+        $response->assertForbidden()
+            ->assertJsonPath('code', 'payment_required');
     }
 
     /** @test */

@@ -393,10 +393,6 @@ class ShootMediaController extends Controller
     {
         $shoot = Shoot::findOrFail($id);
 
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
-            return $this->shootClientReleaseAccessService->downloadLockedResponse();
-        }
-
         return $this->downloadShootMediaZipAction->execute($request, $shoot);
     }
 
