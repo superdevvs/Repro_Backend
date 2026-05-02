@@ -332,10 +332,6 @@ class ShootMediaController extends Controller
 
     public function downloadSelectedFiles(Request $request, Shoot $shoot)
     {
-        if ($this->shootClientReleaseAccessService->isClientReleaseLocked($shoot, $request->user())) {
-            return $this->shootClientReleaseAccessService->downloadLockedResponse();
-        }
-
         return $this->downloadSelectedShootFilesAction->execute($request, $shoot, $request->user());
     }
 

@@ -87,7 +87,17 @@ class ShootMediaReadService
         $user = $request->user();
         $userId = $user ? $user->id : 'guest';
         $userRole = $user ? $user->role : 'guest';
-        $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole;
+        $filesUpdatedAt = (string) $shoot->files()->max('updated_at');
+        $serviceItemsUpdatedAt = (string) $shoot->serviceItems()->max('updated_at');
+        $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole . '_' . md5(
+            implode('|', [
+                (string) $shoot->updated_at,
+                $filesUpdatedAt,
+                $serviceItemsUpdatedAt,
+                (string) $shoot->payment_status,
+                (string) $shoot->delivery_status,
+            ])
+        );
 
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
