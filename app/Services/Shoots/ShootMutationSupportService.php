@@ -324,7 +324,14 @@ class ShootMutationSupportService
             return null;
         }
 
-        return Carbon::parse($value)->format('Y-m-d H:i:s');
+        $trimmedValue = trim($value);
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}(?::\d{2})?)/', $trimmedValue, $matches)) {
+            $time = strlen($matches[2]) === 5 ? "{$matches[2]}:00" : $matches[2];
+
+            return "{$matches[1]} {$time}";
+        }
+
+        return Carbon::parse($trimmedValue)->format('Y-m-d H:i:s');
     }
 
     protected function normalizeNullableInteger(mixed $value): ?int

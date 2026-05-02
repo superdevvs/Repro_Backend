@@ -436,12 +436,28 @@ class DropboxWorkflowService
             }
 
             if (!$processedInline) {
-                ProcessImageJob::dispatch($shootFile)->afterResponse();
+                try {
+                    ProcessImageJob::dispatch($shootFile)->afterResponse();
+                } catch (\Throwable $e) {
+                    Log::warning('Image processing dispatch failed after local upload', [
+                        'shoot_id' => $shoot->id,
+                        'file_id' => $shootFile->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
         }
 
         if ($this->isEnabled()) {
-            SyncShootFileToDropboxJob::dispatch($shootFile->id);
+            try {
+                SyncShootFileToDropboxJob::dispatch($shootFile->id);
+            } catch (\Throwable $e) {
+                Log::warning('Dropbox sync dispatch failed after local upload', [
+                    'shoot_id' => $shoot->id,
+                    'file_id' => $shootFile->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         // When photos are uploaded, auto-transition from scheduled to uploaded

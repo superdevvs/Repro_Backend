@@ -51,7 +51,7 @@ class IpLocationController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'IP-based location was not available.',
-            ], 404);
+            ]);
         }
 
         return response()->json([

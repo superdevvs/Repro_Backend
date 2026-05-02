@@ -178,19 +178,29 @@ class ShootEditingAssignmentService
 
         $laneAssignments = [];
         foreach ($trackedAssignments->groupBy('lane') as $lane => $services) {
-            $editor = $this->resolveEditorForLane($lane);
-            if (!$editor) {
+            $existingEditorIds = $services->pluck('editor_id')->filter()->unique()->values();
+            $servicesMissingEditor = $services
+                ->filter(fn (array $service) => empty($service['editor_id']))
+                ->values();
+
+            $editor = $existingEditorIds->isNotEmpty()
+                ? User::find((int) $existingEditorIds->first())
+                : $this->resolveEditorForLane($lane);
+
+            if (!$editor && $servicesMissingEditor->isNotEmpty()) {
                 throw new \InvalidArgumentException("No {$lane} editor account is configured.");
             }
 
-            DB::table('shoot_service')
-                ->where('shoot_id', $shoot->id)
-                ->whereIn('service_id', $services->pluck('service_id')->all())
-                ->update([
-                    'editor_id' => $editor->id,
-                    'editing_completed_at' => null,
-                    'updated_at' => now(),
-                ]);
+            if ($editor && $servicesMissingEditor->isNotEmpty()) {
+                DB::table('shoot_service')
+                    ->where('shoot_id', $shoot->id)
+                    ->whereIn('service_id', $servicesMissingEditor->pluck('service_id')->all())
+                    ->update([
+                        'editor_id' => $editor->id,
+                        'editing_completed_at' => null,
+                        'updated_at' => now(),
+                    ]);
+            }
 
             $laneAssignments[$lane] = [
                 'lane' => $lane,

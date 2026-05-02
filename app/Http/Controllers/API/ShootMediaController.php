@@ -268,7 +268,7 @@ class ShootMediaController extends Controller
         }
     }
 
-    public function downloadMedia(Shoot $shoot, ShootFile $file)
+    public function downloadMedia(Request $request, Shoot $shoot, ShootFile $file)
     {
         $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
@@ -278,6 +278,19 @@ class ShootMediaController extends Controller
         if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }
+
+        $acceptHeader = $request->headers->get('Accept', '');
+        if (
+            str_contains($acceptHeader, 'application/json')
+            && !str_contains($acceptHeader, 'application/octet-stream')
+        ) {
+            $url = $this->downloadShootMediaAction->execute($file);
+
+            return $url
+                ? response()->json(['url' => $url])
+                : response()->json(['message' => 'File not available'], 404);
+        }
+
         return $this->downloadShootMediaAction->downloadResponse($file);
     }
 

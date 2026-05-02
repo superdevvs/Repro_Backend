@@ -35,7 +35,7 @@ class ShootServiceItemSupport
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
-            if (!$hasAllocations && ($shoot->bypass_paywall || $shoot->payment_status === 'paid')) {
+            if (!$hasAllocations && $shoot->payment_status === 'paid') {
                 $paidAmount = $subtotal;
             }
 

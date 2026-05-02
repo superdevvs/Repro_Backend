@@ -165,9 +165,11 @@ class UpdateShootAction
         $timeProvidedForAvailability = array_key_exists('time', $validated);
 
         if (!$scheduledAtProvidedForAvailability && ($scheduledDateProvidedForAvailability || $timeProvidedForAvailability)) {
-            $normalizedScheduledDate = $validated['scheduled_date']
+            $normalizedScheduledDate = $this->normalizeScheduledDateForDateTime(
+                $validated['scheduled_date']
                 ?? $shoot->scheduled_date?->toDateString()
-                ?? $shoot->scheduled_date;
+                ?? $shoot->scheduled_date
+            );
             $normalizedTime = $validated['time'] ?? $shoot->time;
 
             if ($normalizedScheduledDate) {
@@ -187,7 +189,8 @@ class UpdateShootAction
             'service_photographers',
         ];
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
-        if ($needsAvailabilityCheck && !($validated['skip_availability_check'] ?? false)) {
+        $skipAvailabilityCheck = $validated['skip_availability_check'] ?? $isAdmin;
+        if ($needsAvailabilityCheck && !$skipAvailabilityCheck) {
             $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
             $targetScheduledAt = isset($availabilityPayload['scheduled_at'])
                 ? new \DateTime((string) $availabilityPayload['scheduled_at'])
@@ -270,9 +273,11 @@ class UpdateShootAction
             }
 
             if ($scheduledDateProvided || $timeProvided) {
-                $normalizedScheduledDate = $validated['scheduled_date']
+                $normalizedScheduledDate = $this->normalizeScheduledDateForDateTime(
+                    $validated['scheduled_date']
                     ?? $shoot->scheduled_date?->toDateString()
-                    ?? $shoot->scheduled_date;
+                    ?? $shoot->scheduled_date
+                );
                 $normalizedTime = $validated['time'] ?? $shoot->time;
 
                 if ($normalizedScheduledDate) {
@@ -568,6 +573,19 @@ class UpdateShootAction
             ->keys()
             ->values()
             ->all();
+    }
+
+    protected function normalizeScheduledDateForDateTime(mixed $value): ?string
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return Carbon::instance($value)->toDateString();
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return Carbon::parse((string) $value)->toDateString();
     }
 
     protected function abortJson(string $message, int $status): never

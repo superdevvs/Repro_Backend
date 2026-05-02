@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
@@ -248,6 +249,30 @@ class UploadShootFilesAction
                         $shootFile->save();
                     }
 
+                    if ($shootServiceId) {
+                        $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
+                        if ($serviceItem) {
+                            if ($uploadType === 'raw' && !in_array($serviceItem->workflow_status, [
+                                ShootService::WORKFLOW_READY,
+                                ShootService::WORKFLOW_DELIVERED,
+                                ShootService::WORKFLOW_CANCELLED,
+                            ], true)) {
+                                $serviceItem->forceFill([
+                                    'workflow_status' => ShootService::WORKFLOW_IN_PROGRESS,
+                                    'delivery_status' => $serviceItem->delivery_status ?: ShootService::DELIVERY_NOT_STARTED,
+                                ])->save();
+                            }
+
+                            if ($uploadType === 'edited' && $serviceItem->workflow_status !== ShootService::WORKFLOW_DELIVERED) {
+                                $serviceItem->forceFill([
+                                    'workflow_status' => ShootService::WORKFLOW_READY,
+                                    'delivery_status' => ShootService::DELIVERY_READY,
+                                    'ready_at' => $serviceItem->ready_at ?? now(),
+                                ])->save();
+                            }
+                        }
+                    }
+
                     if ($uploadType === 'raw' && $rawBracketMode > 1 && $shootFile->media_type === 'raw') {
                         $shootFile->update([
                             'bracket_group' => intdiv($rawSequenceIndex, $rawBracketMode) + 1,
@@ -294,6 +319,9 @@ class UploadShootFilesAction
             }
 
             $shoot = $this->support->refreshMediaCounters($shoot->fresh());
+            if ($shootServiceId) {
+                $shoot->syncServiceItemRollups();
+            }
             $this->support->clearShootFilesCache($shoot);
 
             if ($uploadType === 'edited' && count($uploadedFiles) > 0 && $user && in_array($user->role, ['admin', 'superadmin', 'editor', 'editing_manager'], true)) {

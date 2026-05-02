@@ -22,7 +22,8 @@ class ShootMediaReadService
         protected ShootFileAccessService $shootFileAccessService,
         protected ImageProcessingService $imageProcessingService,
         protected ShootAuthorizationSupport $authorizationSupport,
-        protected ShootPaymentStatusSupport $paymentStatusSupport
+        protected ShootPaymentStatusSupport $paymentStatusSupport,
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
     ) {
     }
 
@@ -101,13 +102,16 @@ class ShootMediaReadService
         ]);
 
         $filesQuery = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
-        if ($this->authorizationSupport->isClientUser($user)) {
+        $isClientUser = $this->authorizationSupport->isClientUser($user);
+        if ($isClientUser) {
             $filesQuery->where(function ($query) {
                 $query->where('is_hidden', false)->orWhereNull('is_hidden');
             });
         }
 
-        if ($type === 'raw') {
+        if ($isClientUser) {
+            $filesQuery->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]);
+        } elseif ($type === 'raw') {
             $filesQuery->where(function ($query) {
                 $query->where('workflow_stage', ShootFile::STAGE_TODO)->orWhereNull('workflow_stage');
             });
