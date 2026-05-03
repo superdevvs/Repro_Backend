@@ -89,6 +89,36 @@ class MmmXmlBuilderTest extends TestCase
     }
 
     #[Test]
+    public function it_keeps_the_vendor_property_node_set_when_optional_values_are_missing(): void
+    {
+        $xml = app(MmmXmlBuilder::class)->buildPunchoutSetupRequest([
+            'buyer_cookie' => '00000000-0000-0000-0000-000000000001',
+            'property' => [
+                'address' => '6275 Kerrydale Drive',
+                'city' => 'Springfield',
+                'state' => 'VA',
+                'zip' => '22152',
+                'pictures' => [
+                    [
+                        'filename' => 'front.jpg',
+                        'url' => 'https://cdn.example.test/front.jpg',
+                    ],
+                ],
+            ],
+        ]);
+
+        $document = new \DOMDocument();
+        $document->loadXML($xml);
+
+        $this->assertSame('', $document->getElementsByTagName('ID')->item(0)?->textContent);
+        $this->assertSame('', $document->getElementsByTagName('Price')->item(0)?->textContent);
+        $this->assertSame('6275 Kerrydale Drive', $document->getElementsByTagName('Address')->item(0)?->textContent);
+        $this->assertSame('', $document->getElementsByTagName('Description')->item(0)?->textContent);
+        $this->assertSame('', $document->getElementsByTagName('Caption')->item(0)?->textContent);
+        $this->assertSame('front.jpg', $document->getElementsByTagName('FileName')->item(0)?->textContent);
+    }
+
+    #[Test]
     public function it_prefers_the_start_page_url_when_parsing_a_punchout_response(): void
     {
         $parsed = app(MmmXmlBuilder::class)->parsePunchoutSetupResponse(<<<XML

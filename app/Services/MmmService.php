@@ -306,7 +306,7 @@ class MmmService
                 $responseBody = $response->body();
 
                 if (!$response->successful()) {
-                    return $this->buildHttpErrorResult($response, $responseBody);
+                    return $this->buildHttpErrorResult($response, $responseBody, $xml);
                 }
             }
 
@@ -355,7 +355,7 @@ class MmmService
             ]);
     }
 
-    private function buildHttpErrorResult(Response $response, string $responseBody): array
+    private function buildHttpErrorResult(Response $response, string $responseBody, string $requestXml): array
     {
         $parsed = $this->xmlBuilder->parsePunchoutSetupResponse($responseBody);
         $errorMessage =
@@ -370,6 +370,8 @@ class MmmService
             'http_status' => $response->status(),
             'status_code' => $parsed['status_code'] ?? null,
             'status_text' => $parsed['status_text'] ?? null,
+            'request_xml' => $requestXml,
+            'response_xml' => $responseBody,
             'response' => $responseBody,
         ];
     }

@@ -203,6 +203,38 @@ class MmmServiceTest extends TestCase
     }
 
     #[Test]
+    public function send_punchout_request_keeps_request_and_response_xml_when_mmm_returns_http_error(): void
+    {
+        $this->configureMmm();
+
+        Http::fakeSequence()
+            ->push('Raw XML rejected', 500)
+            ->push('<html><body>Server Error 500</body></html>', 500);
+
+        $result = app(MmmService::class)->sendPunchoutRequest([
+            'duns' => 'Wqsw5cPn3Neo9Blz',
+            'shared_secret' => 'XxdU9n5pP8bWb4DG',
+            'user_agent' => 'REPro Photos Tests',
+            'buyer_cookie' => '00000000-0000-0000-0000-000000000001',
+            'cost_center_number' => 'Repro',
+            'employee_email' => 'print-admin@example.com',
+            'username' => 'print-admin@example.com',
+            'first_name' => 'Print',
+            'last_name' => 'Admin',
+            'start_point' => 'category',
+            'deployment_mode' => 'test',
+            'property' => [
+                'address' => '6275 Kerrydale Drive',
+            ],
+        ]);
+
+        $this->assertFalse($result['success']);
+        $this->assertSame('http_error', $result['status']);
+        $this->assertStringContainsString('<PunchOutSetupRequest operation="create">', $result['request_xml']);
+        $this->assertStringContainsString('Server Error 500', $result['response_xml']);
+    }
+
+    #[Test]
     public function validate_config_falls_back_to_env_when_database_settings_are_blank(): void
     {
         $this->configureMmm();

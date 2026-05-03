@@ -86,13 +86,13 @@ class MmmXmlBuilder
             $properties = $dom->createElement('Properties');
             $propertyNode = $dom->createElement('Property');
 
-            $this->appendTextElement($dom, $propertyNode, 'ID', $property['id'] ?? null);
-            $this->appendTextElement($dom, $propertyNode, 'Price', $property['price'] ?? null);
-            $this->appendTextElement($dom, $propertyNode, 'Address', $property['address'] ?? $payload['address'] ?? null);
-            $this->appendTextElement($dom, $propertyNode, 'City', $property['city'] ?? null);
-            $this->appendTextElement($dom, $propertyNode, 'State', $property['state'] ?? null);
-            $this->appendTextElement($dom, $propertyNode, 'Zip', $property['zip'] ?? null);
-            $this->appendTextElement($dom, $propertyNode, 'Description', $property['description'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'ID', $property['id'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'Price', $property['price'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'Address', $property['address'] ?? $payload['address'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'City', $property['city'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'State', $property['state'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'Zip', $property['zip'] ?? null);
+            $this->appendRequiredTextElement($dom, $propertyNode, 'Description', $property['description'] ?? null);
 
             if ($pictures !== []) {
                 $picturesNode = $dom->createElement('Pictures');
@@ -104,10 +104,10 @@ class MmmXmlBuilder
 
                     $pictureNode = $dom->createElement('Picture');
 
-                    $this->appendTextElement($dom, $pictureNode, 'ID', $picture['id'] ?? null);
-                    $this->appendTextElement($dom, $pictureNode, 'Caption', $picture['caption'] ?? null);
-                    $this->appendTextElement($dom, $pictureNode, 'FileName', $picture['filename'] ?? null);
-                    $this->appendTextElement($dom, $pictureNode, 'URL', $picture['url'] ?? null);
+                    $this->appendRequiredTextElement($dom, $pictureNode, 'ID', $picture['id'] ?? null);
+                    $this->appendRequiredTextElement($dom, $pictureNode, 'Caption', $picture['caption'] ?? null);
+                    $this->appendRequiredTextElement($dom, $pictureNode, 'FileName', $picture['filename'] ?? null);
+                    $this->appendRequiredTextElement($dom, $pictureNode, 'URL', $picture['url'] ?? null);
 
                     if ($pictureNode->hasChildNodes()) {
                         $picturesNode->appendChild($pictureNode);
@@ -153,6 +153,13 @@ class MmmXmlBuilder
 
         $element = $dom->createElement($name);
         $element->appendChild($dom->createTextNode($text));
+        $parent->appendChild($element);
+    }
+
+    private function appendRequiredTextElement(\DOMDocument $dom, \DOMElement $parent, string $name, mixed $value): void
+    {
+        $element = $dom->createElement($name);
+        $element->appendChild($dom->createTextNode(trim((string) $value)));
         $parent->appendChild($element);
     }
 
