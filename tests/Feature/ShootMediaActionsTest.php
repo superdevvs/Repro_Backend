@@ -10,6 +10,7 @@ use App\Models\Service;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootShareLink;
 use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
@@ -355,6 +356,12 @@ class ShootMediaActionsTest extends TestCase
 
         $shoot = $this->createShoot([
             'editor_id' => $this->editor->id,
+            'address' => '123 Main St #5',
+            'city' => 'Towson',
+            'state' => 'MD',
+            'zip' => '21204',
+            'scheduled_date' => '2026-05-14',
+            'scheduled_at' => '2026-05-14 10:00:00',
         ]);
 
         $rawPath = 'shoots/' . $shoot->id . '/todo/raw-1.nef';
@@ -392,6 +399,24 @@ class ShootMediaActionsTest extends TestCase
             'shoot_id' => $shoot->id,
             'created_by' => $this->editor->id,
         ]);
+
+        $shareLink = ShootShareLink::query()->where('shoot_id', $shoot->id)->firstOrFail();
+        $this->assertMatchesRegularExpression('/share-links\/' . $shoot->id . '\/share-link-[^\/]+\.zip$/', $shareLink->dropbox_path);
+
+        $this->getJson("/api/public/share-links/{$shareLink->public_token}")
+            ->assertOk()
+            ->assertJsonPath(
+                'redirect_url',
+                route('api.public.share-links.download', ['token' => $shareLink->public_token])
+            );
+
+        $downloadResponse = $this->get("/api/public/share-links/{$shareLink->public_token}/download");
+        $downloadResponse->assertOk();
+        $this->assertStringContainsString(
+            '123_Main_St_5_Towson_MD_21204_2026-05-14.zip',
+            $downloadResponse->headers->get('content-disposition', '')
+        );
+
         $this->assertDatabaseHas('shoot_activity_logs', [
             'shoot_id' => $shoot->id,
             'action' => 'share_link_generated',

@@ -83,6 +83,8 @@ Route::get('/ip-location', [IpLocationController::class, 'show'])
 
 Route::get('/public/share-links/{token}', [PublicShootShareLinkController::class, 'show'])
     ->name('api.public.share-links.show');
+Route::get('/public/share-links/{token}/download', [PublicShootShareLinkController::class, 'download'])
+    ->name('api.public.share-links.download');
 Route::get('/public/shoot-media/{shoot}/download-zip', [PublicShootMediaArchiveController::class, 'show'])
     ->middleware('signed')
     ->name('api.public.shoot-media.download');
