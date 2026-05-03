@@ -75,7 +75,8 @@ class ShootActivityLogger
             ]);
 
             // Fire broadcast event for real-time notifications
-            if (in_array($action, $this->broadcastableActions)) {
+            $shouldSuppressNotifications = (bool) ($metadata['suppress_notifications'] ?? false);
+            if (!$shouldSuppressNotifications && in_array($action, $this->broadcastableActions)) {
                 try {
                     event(new ShootActivityBroadcast(
                         $shoot,

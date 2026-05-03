@@ -178,19 +178,6 @@ class EmailHealthService
             ];
         }
 
-        if (!$this->isCommonDomain($domain)) {
-            return [
-                'valid' => true,
-                'normalized_email' => $normalized,
-                'status' => self::STATUS_RISKY,
-                'warning_code' => 'unusual_domain',
-                'warning_message' => 'This domain looks unusual. Please confirm before saving.',
-                'suggested_correction' => null,
-                'requires_confirmation' => false,
-                'error_message' => null,
-            ];
-        }
-
         return [
             'valid' => true,
             'normalized_email' => $normalized,

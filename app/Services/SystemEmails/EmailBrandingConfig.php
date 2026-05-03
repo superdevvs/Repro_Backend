@@ -22,6 +22,7 @@ class EmailBrandingConfig
             'dashboard_url' => $dashboardUrl,
             'base_url' => $dashboardUrl,
             'website_url' => 'https://reprophotos.com',
+            'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
             'email_logo_grey_url' => $emailLogoGreyUrl,
             'verification_logo_light_url' => $verificationLogoLightUrl,
             // Temporary aliases for older callers during the branding refactor.

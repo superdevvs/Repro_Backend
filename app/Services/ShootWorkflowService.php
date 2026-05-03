@@ -316,17 +316,44 @@ class ShootWorkflowService
     /**
      * Cancel a shoot
      */
-    public function cancel(Shoot $shoot, ?User $user = null, ?string $reason = null): void
+    public function cancel(
+        Shoot $shoot,
+        ?User $user = null,
+        ?string $reason = null,
+        float $cancellationFee = 0.0,
+        bool $suppressNotifications = false
+    ): void
     {
         $this->validateTransition($shoot, self::STATUS_CANCELLED);
 
-        DB::transaction(function () use ($shoot, $user, $reason) {
+        DB::transaction(function () use ($shoot, $user, $reason, $cancellationFee, $suppressNotifications) {
+            $originalFinancials = [
+                'base_quote' => (float) ($shoot->base_quote ?? 0),
+                'tax_amount' => (float) ($shoot->tax_amount ?? 0),
+                'total_quote' => (float) ($shoot->total_quote ?? 0),
+            ];
+
             $shoot->status = self::STATUS_CANCELLED;
             $shoot->workflow_status = self::STATUS_CANCELLED;
             $shoot->cancellation_requested_at = null;
             $shoot->cancellation_requested_by = null;
             $shoot->updated_by = $user?->id ?? auth()->id();
+
+            if ($cancellationFee > 0) {
+                $shoot->base_quote = round($cancellationFee, 2);
+                $shoot->discount_type = null;
+                $shoot->discount_value = null;
+                $shoot->discount_amount = 0;
+                $shoot->tax_region = 'none';
+                $shoot->tax_percent = 0;
+                $shoot->tax_amount = 0;
+                $shoot->total_quote = round($cancellationFee, 2);
+            }
+
             $shoot->save();
+            if ($cancellationFee > 0) {
+                $shoot->syncPaymentStatusFromRecords();
+            }
 
             $this->activityLogger->log(
                 $shoot,
@@ -334,6 +361,9 @@ class ShootWorkflowService
                 [
                     'by' => $user?->name ?? auth()->user()?->name,
                     'reason' => $reason,
+                    'cancellation_fee' => round($cancellationFee, 2),
+                    'original_financials' => $originalFinancials,
+                    'suppress_notifications' => $suppressNotifications,
                 ],
                 $user
             );

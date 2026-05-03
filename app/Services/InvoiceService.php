@@ -885,48 +885,15 @@ class InvoiceService
                 ->where('shoot_id', $shoot->id)
                 ->delete();
 
-            foreach ($shoot->services as $service) {
-                $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
-                $quantity = (int) ($service->pivot->quantity ?? 1);
-                $description = $service->name ?? $service->service_name ?? 'Service';
-
-                if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
-                    $description .= ' (1-2999 SQFT)';
-                } elseif (stripos($description, 'hdr') !== false || stripos($description, 'photo') !== false) {
-                    $propertyDetails = is_array($shoot->property_details) ? $shoot->property_details : (is_string($shoot->property_details) ? json_decode($shoot->property_details, true) : []);
-                    $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? 0;
-                    if ($sqft >= 1501 && $sqft <= 3000) {
-                        $description .= ' (1501-3000 SQFT)';
-                    } elseif ($sqft >= 3001 && $sqft <= 5000) {
-                        $description .= ' (3001-5000 SQFT)';
-                    } elseif ($sqft >= 5001 && $sqft <= 7000) {
-                        $description .= ' (5001-7000 SQFT)';
-                    } elseif ($sqft >= 7001 && $sqft <= 10000) {
-                        $description .= ' (7001-10000 SQFT)';
-                    } else {
-                        $description .= ' (1-1500 SQFT)';
-                    }
-                }
-
-                $existingInvoice->items()->create([
-                    'shoot_id' => $shoot->id,
-                    'type' => InvoiceItem::TYPE_CHARGE,
-                    'description' => $description,
-                    'quantity' => $quantity,
-                    'unit_amount' => $servicePrice,
-                    'total_amount' => $servicePrice * $quantity,
-                    'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
-                    'meta' => [
-                        'service_id' => $service->id,
-                        'service_name' => $service->name ?? $service->service_name,
-                    ],
-                ]);
-            }
+            $isCancellationFeeOnly = $this->usesCancellationFeeOnlyInvoice($shoot);
+            $this->createShootChargeItems($existingInvoice, $shoot, $isCancellationFeeOnly);
 
             // Update invoice totals
-            $subtotal = (float) ($shoot->base_quote ?? 0);
-            $taxAmount = (float) ($shoot->tax_amount ?? 0);
-            $total = (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
+            $subtotal = $isCancellationFeeOnly ? (float) ($shoot->total_quote ?? 0) : (float) ($shoot->base_quote ?? 0);
+            $taxAmount = $isCancellationFeeOnly ? 0.0 : (float) ($shoot->tax_amount ?? 0);
+            $total = $isCancellationFeeOnly
+                ? (float) ($shoot->total_quote ?? $subtotal)
+                : (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
             $totalPaid = (float) $shoot->payments->where('status', Payment::STATUS_COMPLETED)->sum('amount');
 
             $existingInvoice->update([
@@ -961,10 +928,12 @@ class InvoiceService
             );
 
             // Calculate totals from shoot data
-            $subtotal = (float) ($shoot->base_quote ?? 0);
-            $taxAmount = (float) ($shoot->tax_amount ?? 0);
-            $taxRate = $taxAmount > 0 && $subtotal > 0 ? ($taxAmount / $subtotal) * 100 : 0;
-            $total = (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
+            $isCancellationFeeOnly = $this->usesCancellationFeeOnlyInvoice($shoot);
+            $subtotal = $isCancellationFeeOnly ? (float) ($shoot->total_quote ?? 0) : (float) ($shoot->base_quote ?? 0);
+            $taxAmount = $isCancellationFeeOnly ? 0.0 : (float) ($shoot->tax_amount ?? 0);
+            $total = $isCancellationFeeOnly
+                ? (float) ($shoot->total_quote ?? $subtotal)
+                : (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
             $totalPaid = (float) $shoot->payments->where('status', Payment::STATUS_COMPLETED)->sum('amount');
 
             // Create invoice
@@ -1011,47 +980,7 @@ class InvoiceService
 
             $invoice = Invoice::create($invoiceData);
 
-            // Create invoice items for each service
-            foreach ($shoot->services as $service) {
-                $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
-                $quantity = (int) ($service->pivot->quantity ?? 1);
-
-                // Get service description
-                $description = $service->name ?? $service->service_name ?? 'Service';
-                
-                // Add service-specific descriptions
-                if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
-                    $description .= ' (1-2999 SQFT)';
-                } elseif (stripos($description, 'hdr') !== false || stripos($description, 'photo') !== false) {
-                    $propertyDetails = is_array($shoot->property_details) ? $shoot->property_details : (is_string($shoot->property_details) ? json_decode($shoot->property_details, true) : []);
-                    $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? 0;
-                    if ($sqft >= 1501 && $sqft <= 3000) {
-                        $description .= ' (1501-3000 SQFT)';
-                    } elseif ($sqft >= 3001 && $sqft <= 5000) {
-                        $description .= ' (3001-5000 SQFT)';
-                    } elseif ($sqft >= 5001 && $sqft <= 7000) {
-                        $description .= ' (5001-7000 SQFT)';
-                    } elseif ($sqft >= 7001 && $sqft <= 10000) {
-                        $description .= ' (7001-10000 SQFT)';
-                    } else {
-                        $description .= ' (1-1500 SQFT)';
-                    }
-                }
-
-                $invoice->items()->create([
-                    'shoot_id' => $shoot->id,
-                    'type' => InvoiceItem::TYPE_CHARGE,
-                    'description' => $description,
-                    'quantity' => $quantity,
-                    'unit_amount' => $servicePrice,
-                    'total_amount' => $servicePrice * $quantity,
-                    'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
-                    'meta' => [
-                        'service_id' => $service->id,
-                        'service_name' => $service->name ?? $service->service_name,
-                    ],
-                ]);
-            }
+            $this->createShootChargeItems($invoice, $shoot, $isCancellationFeeOnly);
 
             return $invoice->fresh(['shoot', 'client', 'photographer', 'items']);
         });
@@ -1141,6 +1070,113 @@ class InvoiceService
 
             return $invoice->fresh(['shoot', 'client', 'items']);
         });
+    }
+
+    protected function createShootChargeItems(Invoice $invoice, Shoot $shoot, bool $isCancellationFeeOnly = false): void
+    {
+        foreach ($shoot->services as $service) {
+            $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
+            $quantity = (int) ($service->pivot->quantity ?? 1);
+            $originalAmount = $servicePrice * $quantity;
+
+            $meta = [
+                'service_id' => $service->id,
+                'service_name' => $service->name ?? $service->service_name,
+            ];
+
+            if ($isCancellationFeeOnly) {
+                $meta['cancelled_service_charge'] = true;
+                $meta['waived_due_to_cancellation'] = true;
+                $meta['original_amount'] = round($originalAmount, 2);
+            }
+
+            $invoice->items()->create([
+                'shoot_id' => $shoot->id,
+                'type' => InvoiceItem::TYPE_CHARGE,
+                'description' => $this->describeShootService($shoot, $service),
+                'quantity' => $quantity,
+                'unit_amount' => $servicePrice,
+                'total_amount' => $isCancellationFeeOnly ? 0 : $originalAmount,
+                'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
+                'meta' => $meta,
+            ]);
+        }
+
+        if (!$isCancellationFeeOnly) {
+            return;
+        }
+
+        $cancellationFee = (float) ($shoot->total_quote ?? 0);
+        if ($cancellationFee <= 0) {
+            return;
+        }
+
+        $invoice->items()->create([
+            'shoot_id' => $shoot->id,
+            'type' => InvoiceItem::TYPE_CHARGE,
+            'description' => 'Cancellation Fee - ' . $shoot->address,
+            'quantity' => 1,
+            'unit_amount' => $cancellationFee,
+            'total_amount' => $cancellationFee,
+            'recorded_at' => now(),
+            'meta' => [
+                'type' => 'cancellation_fee',
+                'cancellation_fee' => true,
+                'shoot_id' => $shoot->id,
+                'shoot_address' => $shoot->address,
+            ],
+        ]);
+    }
+
+    protected function describeShootService(Shoot $shoot, Service $service): string
+    {
+        $description = $service->name ?? $service->service_name ?? 'Service';
+
+        if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
+            return $description . ' (1-2999 SQFT)';
+        }
+
+        if (stripos($description, 'hdr') === false && stripos($description, 'photo') === false) {
+            return $description;
+        }
+
+        $propertyDetails = is_array($shoot->property_details)
+            ? $shoot->property_details
+            : (is_string($shoot->property_details) ? json_decode($shoot->property_details, true) : []);
+        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? 0;
+
+        if ($sqft >= 1501 && $sqft <= 3000) {
+            return $description . ' (1501-3000 SQFT)';
+        }
+        if ($sqft >= 3001 && $sqft <= 5000) {
+            return $description . ' (3001-5000 SQFT)';
+        }
+        if ($sqft >= 5001 && $sqft <= 7000) {
+            return $description . ' (5001-7000 SQFT)';
+        }
+        if ($sqft >= 7001 && $sqft <= 10000) {
+            return $description . ' (7001-10000 SQFT)';
+        }
+
+        return $description . ' (1-1500 SQFT)';
+    }
+
+    protected function usesCancellationFeeOnlyInvoice(Shoot $shoot): bool
+    {
+        $status = strtolower((string) ($shoot->workflow_status ?? $shoot->status));
+        if ($status !== strtolower(Shoot::STATUS_CANCELLED)) {
+            return false;
+        }
+
+        $total = (float) ($shoot->total_quote ?? 0);
+        $originalServiceSubtotal = (float) $shoot->services->sum(function ($service) {
+            $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
+            $quantity = (int) ($service->pivot->quantity ?? 1);
+
+            return $servicePrice * $quantity;
+        });
+
+        return $total > 0 && $originalServiceSubtotal > $total + 0.01;
     }
 
     protected function determineInvoiceUserId(Shoot $shoot): int

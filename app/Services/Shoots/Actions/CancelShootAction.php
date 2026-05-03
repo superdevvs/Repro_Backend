@@ -21,10 +21,23 @@ class CancelShootAction
         $validated = $request->validate([
             'reason' => 'nullable|string|max:1000',
             'notify_client' => 'nullable|boolean',
+            'suppress_notifications' => 'nullable|boolean',
+            'cancellation_fee' => 'nullable|numeric|min:0|max:10000',
         ]);
+        $suppressNotifications =
+            (bool) ($validated['suppress_notifications'] ?? false)
+            || (array_key_exists('notify_client', $validated) && (bool) $validated['notify_client'] === false);
 
-        $this->workflowService->cancel($shoot, $user, $validated['reason'] ?? 'Cancelled by admin');
-        $this->support->sendCancellationSideEffects($shoot, $user);
+        $this->workflowService->cancel(
+            $shoot,
+            $user,
+            $validated['reason'] ?? 'Cancelled by admin',
+            (float) ($validated['cancellation_fee'] ?? 0),
+            $suppressNotifications
+        );
+        if (!$suppressNotifications) {
+            $this->support->sendCancellationSideEffects($shoot, $user);
+        }
 
         return $shoot;
     }

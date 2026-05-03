@@ -9,6 +9,7 @@ use App\Services\MailService;
 use App\Services\SystemEmails\EmailBrandingConfig;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Config;
@@ -24,7 +25,7 @@ class ClientEmailVerificationController extends Controller
     ) {
     }
 
-    public function __invoke(Request $request, User $user, string $hash): Response
+    public function __invoke(Request $request, User $user, string $hash): Response|RedirectResponse
     {
         $verificationResult = null;
         $token = $request->query('token');
@@ -111,11 +112,20 @@ class ClientEmailVerificationController extends Controller
             ]);
         }
 
+        if (($verificationResult?->token?->issued_context ?? null) === 'admin_account_created') {
+            return redirect()->away($this->passwordCreationUrl($user));
+        }
+
         return response()->view('email_verification_result', $this->pageData(
             'Email verified',
             'This account email address is now verified and ready for normal outbound communication.',
             true,
         ));
+    }
+
+    protected function passwordCreationUrl(User $user): string
+    {
+        return $this->mailService->generateStoredPasswordCreationLink($user);
     }
 
     protected function resolveFailureReason(Request $request, ?int $expires, mixed $signatureVersion): string

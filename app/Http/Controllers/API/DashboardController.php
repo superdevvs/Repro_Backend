@@ -839,7 +839,7 @@ class DashboardController extends Controller
 
         // Format and sanitize the activity logs, filtering out logs with deleted shoots
         $formattedShootLogs = $shootActivityLogs
-            ->filter(fn ($log) => $log->shoot !== null)
+            ->filter(fn ($log) => $log->shoot !== null && !($log->metadata['suppress_notifications'] ?? false))
             ->map(function (ShootActivityLog $log) use ($role) {
                 return $this->formatActivityLogForRole($log, $role);
             });

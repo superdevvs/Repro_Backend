@@ -40,6 +40,7 @@ class RequestCancellationAction
 
         $validated = $request->validate([
             'reason' => 'required|string|max:1000',
+            'cancellation_fee_notice_acknowledged' => 'nullable|boolean',
         ]);
 
         $shoot->cancellation_requested_at = now();
@@ -53,6 +54,7 @@ class RequestCancellationAction
             [
                 'by' => $user->name,
                 'reason' => $validated['reason'],
+                'cancellation_fee_notice_acknowledged' => (bool) ($validated['cancellation_fee_notice_acknowledged'] ?? false),
             ],
             $user
         );

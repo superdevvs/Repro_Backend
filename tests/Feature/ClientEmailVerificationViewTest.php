@@ -54,8 +54,9 @@ class ClientEmailVerificationViewTest extends TestCase
 
         $html = view('emails.account_created', [
             'user' => $user,
-            'resetLink' => 'https://reprodashboard.com/reset-password?token=test&email=shubham@example.com',
+            'resetLink' => 'https://reprodashboard.com/reset-password?token=test&email=shubham%40example.com&mode=create',
             'verificationLink' => 'https://api.reprodashboard.com/api/email/verify/1/hash?token=verification-token',
+            'includePasswordCreationLink' => true,
         ])->render();
 
         $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
@@ -63,13 +64,39 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringNotContainsString('/images/repro-logo.png', $html);
-        $this->assertStringNotContainsString('Create Password', $html);
+        $this->assertStringContainsString('Create Password', $html);
         $this->assertStringContainsString('Verify Email', $html);
+        $this->assertStringContainsString('https://reprodashboard.com/reset-password?token=test&amp;email=shubham%40example.com&amp;mode=create', $html);
         $this->assertStringContainsString('https://api.reprodashboard.com/api/email/verify/1/hash?token=verification-token', $html);
         $this->assertTrue(
-            strpos($html, 'Verify Email') < strpos($html, 'Open Dashboard'),
-            'Verify Email CTA should appear before Open Dashboard.'
+            strpos($html, 'Verify Email') < strpos($html, 'Create Password'),
+            'Verify Email CTA should appear before Create Password.'
         );
+        $this->assertTrue(
+            strpos($html, 'Create Password') < strpos($html, 'Open Dashboard'),
+            'Create Password CTA should appear before Open Dashboard.'
+        );
+    }
+
+    public function test_public_signup_account_created_email_does_not_show_create_password_action(): void
+    {
+        $user = (object) [
+            'name' => 'Public Client',
+            'email' => 'public@example.com',
+            'company_name' => 'R/E Pro Photos',
+            'phonenumber' => '202-555-0199',
+        ];
+
+        $html = view('emails.account_created', [
+            'user' => $user,
+            'resetLink' => 'https://reprodashboard.com/reset-password?token=test&email=public%40example.com',
+            'verificationLink' => 'https://api.reprodashboard.com/api/email/verify/1/hash?token=verification-token',
+            'includePasswordCreationLink' => false,
+        ])->render();
+
+        $this->assertStringContainsString('Verify Email', $html);
+        $this->assertStringNotContainsString('Create Password', $html);
+        $this->assertStringNotContainsString('https://reprodashboard.com/reset-password?token=test', $html);
     }
 
     public function test_client_email_verified_confirmation_uses_dashboard_and_settings_actions(): void

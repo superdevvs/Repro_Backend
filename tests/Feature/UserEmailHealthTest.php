@@ -11,6 +11,7 @@ use App\Services\MailService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\Sanctum;
@@ -397,6 +398,51 @@ class UserEmailHealthTest extends TestCase
         $this->assertDatabaseHas('messages', [
             'related_account_id' => $client->id,
             'send_source' => 'CLIENT_EMAIL_VERIFIED',
+        ]);
+        $this->assertDatabaseHas('user_activity_logs', [
+            'user_id' => $client->id,
+            'event_type' => 'email_verified',
+        ]);
+    }
+
+    public function test_admin_created_client_verification_redirects_to_create_password_with_fresh_reset_token(): void
+    {
+        config(['app.frontend_url' => 'https://dashboard.example.test']);
+
+        $admin = User::factory()->admin()->create();
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'admin-created-client@example.com',
+            'email_status' => 'unverified',
+            'email_verified_at' => null,
+        ]);
+
+        $verificationService = app(ClientEmailVerificationLinkService::class);
+        $verificationToken = $verificationService->issueVerificationToken($client, [
+            'issued_context' => 'admin_account_created',
+            'issued_by' => $admin->id,
+        ]);
+        $link = $verificationService->buildUrlForIssuedToken($client, $verificationToken);
+
+        $response = $this->get($this->pathWithQuery($link));
+
+        $response->assertStatus(302);
+
+        $redirectUrl = (string) $response->headers->get('Location');
+        $this->assertStringStartsWith('https://dashboard.example.test/reset-password?', $redirectUrl);
+
+        parse_str((string) parse_url($redirectUrl, PHP_URL_QUERY), $query);
+        $this->assertSame('create', $query['mode'] ?? null);
+        $this->assertSame($client->email, $query['email'] ?? null);
+        $this->assertNotEmpty($query['token'] ?? null);
+
+        $resetRecord = DB::table('password_reset_tokens')->where('email', $client->email)->first();
+        $this->assertNotNull($resetRecord);
+        $this->assertTrue(Hash::check((string) $query['token'], $resetRecord->token));
+
+        $this->assertDatabaseHas('users', [
+            'id' => $client->id,
+            'email_status' => 'verified',
         ]);
         $this->assertDatabaseHas('user_activity_logs', [
             'user_id' => $client->id,

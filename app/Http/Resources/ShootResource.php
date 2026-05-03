@@ -94,6 +94,18 @@ class ShootResource extends JsonResource
                 ->all();
         }
         $serviceItemByServiceId = collect($serviceItemSummaries)->keyBy('service_id');
+        $originalServiceSubtotal = (float) $this->services->sum(function ($service) {
+            $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
+            $quantity = (int) ($service->pivot->quantity ?? 1);
+
+            return $servicePrice * $quantity;
+        });
+        $isCancelled = strtolower((string) ($this->workflow_status ?? $this->status)) === strtolower(\App\Models\Shoot::STATUS_CANCELLED);
+        $cancellationFee = (
+            $isCancelled
+            && (float) ($this->total_quote ?? 0) > 0
+            && $originalServiceSubtotal > (float) ($this->total_quote ?? 0) + 0.01
+        ) ? (float) $this->total_quote : 0.0;
 
         $tourLinks = is_array($this->tour_links) ? $this->tour_links : [];
         $realtorClient = $this->resolveRealtorClient($tourLinks);
@@ -282,6 +294,9 @@ class ShootResource extends JsonResource
                 'totalPaid' => $isEditor ? 0.0 : (float) $this->total_paid,
                 'remainingBalance' => $isEditor ? 0.0 : (float) $this->remaining_balance,
                 'paymentStatus' => $isEditor ? null : $this->payment_status,
+                'originalServiceSubtotal' => $isEditor ? 0.0 : $originalServiceSubtotal,
+                'cancellationFee' => $isEditor ? 0.0 : $cancellationFee,
+                'isCancellationFeeOnly' => !$isEditor && $cancellationFee > 0,
             ],
             'photographerPay' => $this->calculatePhotographerPay(),
             'totalPhotographerPay' => $this->calculatePhotographerPay(),

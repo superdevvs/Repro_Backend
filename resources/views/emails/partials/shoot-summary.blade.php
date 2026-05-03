@@ -206,7 +206,7 @@
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:16px;">
         <tr>
             <td class="note-card-bg" style="border-radius:14px; background-color:#f8fbff; border:1px solid #dbe7f8; padding:18px;">
-                <p class="dark-muted" style="margin:0 0 8px; font-size:13px; line-height:1.5; letter-spacing:1.3px; text-transform:uppercase; color:#60799a; font-weight:800;">Client-facing notes</p>
+                <p class="dark-muted" style="margin:0 0 8px; font-size:13px; line-height:1.5; letter-spacing:1.3px; text-transform:uppercase; color:#60799a; font-weight:800;">Notes</p>
                 <ul class="dark-body" style="margin:0; padding-left:18px; color:#35506f; font-size:14px; line-height:1.7;">
                     @foreach($shoot->notes_lines as $line)
                         <li style="margin-bottom:8px;">{{ $line }}</li>

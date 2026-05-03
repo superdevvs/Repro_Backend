@@ -543,12 +543,14 @@ class AutomationWorkflowExecutor
                     ? (string) $context['equipment_verification_link']
                     : null;
                 $pendingEquipmentCount = (int) ($context['pending_equipment_count'] ?? 0);
+                $includePasswordCreationLink = (bool) ($context['include_password_creation_link'] ?? false);
                 if ($user && $resetLink !== '' && $this->mailService->sendAccountCreatedEmail(
                     $user,
                     $resetLink,
                     $verificationLink,
                     $equipmentVerificationLink,
-                    $pendingEquipmentCount
+                    $pendingEquipmentCount,
+                    $includePasswordCreationLink
                 )) {
                     $sentTo[] = $user->email;
                 }

@@ -13,6 +13,7 @@
     $supportPhone = data_get($brand, 'support_phone', '202-868-1663');
     $dashboardUrl = data_get($brand, 'dashboard_url', 'https://reprodashboard.com');
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
+    $reviewUrl = data_get($brand, 'review_url', 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews');
     $emailLogoGreyUrl = data_get($brand, 'email_logo_grey_url', data_get($brand, 'logo_url', 'https://api.reprodashboard.com/images/repro-email-logo-grey.png'));
     $emailCanvasBackgroundLight = data_get($brand, 'email_canvas_background_light', data_get($brand, 'email_outer_background', '#ffffff'));
     $emailCanvasBackgroundDark = data_get($brand, 'email_canvas_background_dark', data_get($brand, 'email_outer_background_dark', data_get($brand, 'outer_background', '#00141d')));
@@ -235,32 +236,34 @@
                                                         Our team is here to help keep your marketing workflow moving.
                                                         Reach us at <a href="mailto:{{ $supportEmail }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; text-decoration:underline;">{{ $supportEmail }}</a> or call {{ $supportPhone }}.
                                                     </p>
-                                                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
-                                                        <tr>
-                                                            <td style="padding-right:14px;"><a href="{{ $dashboardUrl }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; font-weight:700; font-size:14px; text-decoration:none;">Dashboard</a></td>
-                                                            <td style="padding-right:14px;"><a href="{{ $websiteUrl }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; font-weight:700; font-size:14px; text-decoration:none;">Website</a></td>
-                                                            <td><a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="footer-link-dark" style="color:{{ $headingColorLight }}; font-weight:700; font-size:14px; text-decoration:none;">Leave a Review</a></td>
-                                                        </tr>
-                                                    </table>
-
                                                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px;">
                                                         <tr>
-                                                            <td class="footer-meta-td" width="50%" style="padding-right:6px; vertical-align:top;">
+                                                            <td class="footer-meta-td" width="33.33%" style="padding-right:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
                                                                         <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
-                                                                            <span style="display:block; margin-bottom:4px; color:{{ $mutedColorLight }}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
-                                                                            <span style="color:{{ $headingColorLight }}; font-size:13px; line-height:1.6; font-weight:700;">{{ $supportEmail }}<br>{{ $supportPhone }}</span>
+                                                                            <a href="{{ $dashboardUrl }}" class="footer-link-dark" style="display:block; margin-bottom:6px; color:{{ $headingColorLight }}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Dashboard</a>
+                                                                            <span class="dark-body" style="display:block; color:{{ $bodyColorLight }}; font-size:12px; line-height:1.6; font-weight:600;">Track your shoots, invoices, and delivery updates in one place.</span>
                                                                         </td>
                                                                     </tr>
                                                                 </table>
                                                             </td>
-                                                            <td class="footer-meta-td" width="50%" style="padding-left:6px; vertical-align:top;">
+                                                            <td class="footer-meta-td" width="33.33%" style="padding:0 6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
                                                                         <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
-                                                                            <span style="display:block; margin-bottom:4px; color:{{ $mutedColorLight }}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
-                                                                            <span style="color:{{ $headingColorLight }}; font-size:13px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
+                                                                            <a href="{{ $websiteUrl }}" class="footer-link-dark" style="display:block; margin-bottom:6px; color:{{ $headingColorLight }}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Website</a>
+                                                                            <span class="dark-body" style="display:block; color:{{ $bodyColorLight }}; font-size:12px; line-height:1.6; font-weight:600;">View products and services to order.</span>
+                                                                        </td>
+                                                                    </tr>
+                                                                </table>
+                                                            </td>
+                                                            <td class="footer-meta-td" width="33.33%" style="padding-left:6px; vertical-align:top;">
+                                                                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                                                                    <tr>
+                                                                        <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
+                                                                            <a href="{{ $reviewUrl }}" class="footer-link-dark" style="display:block; margin-bottom:6px; color:{{ $headingColorLight }}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Leave a Review</a>
+                                                                            <span class="dark-body" style="display:block; color:{{ $bodyColorLight }}; font-size:12px; line-height:1.6; font-weight:600;">We are looking for 5 stars and nothing less.</span>
                                                                         </td>
                                                                     </tr>
                                                                 </table>

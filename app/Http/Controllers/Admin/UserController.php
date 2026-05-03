@@ -413,6 +413,7 @@ class UserController extends Controller
             $accountCreatedContext = $automationService->buildUserContext($user);
             $accountCreatedContext['client'] = $user;
             $accountCreatedContext['password_reset_link'] = $resetLink;
+            $accountCreatedContext['include_password_creation_link'] = true;
             $equipmentVerificationLink = $pendingEquipmentCount > 0
                 ? $mailService->equipmentVerificationLink()
                 : null;
@@ -440,7 +441,8 @@ class UserController extends Controller
                     $resetLink,
                     $verificationLink,
                     $equipmentVerificationLink,
-                    $pendingEquipmentCount
+                    $pendingEquipmentCount,
+                    true
                 );
             }
 

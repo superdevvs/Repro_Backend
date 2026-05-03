@@ -19,6 +19,11 @@
                 <a href="{{ $verificationLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Verify Email</a>
             </td>
             @endif
+            @if(!empty($resetLink) && !empty($includePasswordCreationLink))
+            <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
+                <a href="{{ $resetLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Create Password</a>
+            </td>
+            @endif
             @if(!empty($equipmentVerificationUrl))
             <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
                 <a href="{{ $equipmentVerificationUrl }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Verify Equipment</a>
@@ -61,6 +66,10 @@
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#e8edf5; font-weight:800;">Your next step</p>
                 @if(!empty($equipmentVerificationUrl))
                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Open the dashboard to verify {{ ($equipmentCount ?? 0) > 1 ? 'your assigned equipments' : 'your assigned equipment' }} by uploading clear photos from your profile settings. This lets the admin team approve your equipment record before upcoming work.</p>
+                @elseif(!empty($verificationLink) && !empty($resetLink) && !empty($includePasswordCreationLink))
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Verify your email, then create your password to access the dashboard. If you already verified your email and need to return later, use Create Password from this email.</p>
+                @elseif(!empty($resetLink) && !empty($includePasswordCreationLink))
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Create your password to access the dashboard, then open it anytime to manage your account.</p>
                 @else
                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Verify your email to make sure booking updates, delivery notifications, and account alerts reach the right inbox, then open the dashboard anytime to manage your account.</p>
                 @endif

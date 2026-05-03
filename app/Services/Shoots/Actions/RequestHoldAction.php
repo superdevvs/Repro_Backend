@@ -17,6 +17,7 @@ class RequestHoldAction
     {
         $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status));
         $allowedStatuses = [
+            strtolower(Shoot::STATUS_REQUESTED),
             strtolower(Shoot::STATUS_SCHEDULED),
             'booked',
             strtolower(Shoot::STATUS_ON_HOLD),
@@ -28,7 +29,7 @@ class RequestHoldAction
             throw new \InvalidArgumentException('This shoot cannot be placed on hold');
         }
         if (!in_array($currentStatus, $allowedStatuses, true)) {
-            throw new \InvalidArgumentException('Hold requests are only available for scheduled or in-progress shoots');
+            throw new \InvalidArgumentException('Hold requests are only available for requested, scheduled, or in-progress shoots');
         }
 
         if ($shoot->hold_requested_at) {

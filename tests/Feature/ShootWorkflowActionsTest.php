@@ -11,7 +11,9 @@ use App\Models\User;
 use App\Services\BrightMlsService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\InvoiceService;
 use App\Services\Shoots\Actions\ApproveCancellationAction;
+use App\Services\Shoots\Actions\CancelShootAction;
 use App\Services\Shoots\Actions\RequestCancellationAction;
 use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -191,6 +193,104 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     /** @test */
+    public function approved_scheduled_cancellation_applies_fee_only_invoice(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'cancellation_requested_at' => now()->subHour(),
+            'cancellation_requested_by' => $this->client->id,
+            'cancellation_reason' => 'Client request',
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve-cancellation", [
+            'cancellation_fee' => 60,
+        ]);
+
+        $response->assertOk();
+        $shoot->refresh();
+
+        $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->status);
+        $this->assertSame(60.0, (float) $shoot->base_quote);
+        $this->assertSame(0.0, (float) $shoot->tax_amount);
+        $this->assertSame(60.0, (float) $shoot->total_quote);
+
+        $invoice = $this->app->make(InvoiceService::class)
+            ->generateForShoot($shoot->fresh(['services', 'payments']));
+
+        $items = $invoice->items()->get();
+        $serviceItem = $items->first(fn ($item) => ($item->meta['waived_due_to_cancellation'] ?? false) === true);
+        $feeItem = $items->first(fn ($item) => ($item->meta['cancellation_fee'] ?? false) === true);
+
+        $this->assertNotNull($serviceItem);
+        $this->assertSame(0.0, (float) $serviceItem->total_amount);
+        $this->assertSame(180.0, (float) ($serviceItem->meta['original_amount'] ?? 0));
+        $this->assertNotNull($feeItem);
+        $this->assertSame(60.0, (float) $feeItem->total_amount);
+        $this->assertSame(60.0, (float) $invoice->total_amount);
+    }
+
+    /** @test */
+    public function admin_can_cancel_shoot_without_notifications(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->admin);
+
+        $this->app->forgetInstance(MailService::class);
+        $this->app->forgetInstance(AutomationService::class);
+        $this->app->forgetInstance(ShootWorkflowTransitionSupportService::class);
+        $this->app->forgetInstance(CancelShootAction::class);
+        $this->app->forgetInstance(ShootWorkflowController::class);
+
+        $mailService = Mockery::mock(MailService::class);
+        $mailService->shouldIgnoreMissing();
+        $mailService->shouldReceive('sendShootCancelledEmail')->never();
+        $this->app->instance(MailService::class, $mailService);
+
+        $automationService = Mockery::mock(AutomationService::class);
+        $automationService->shouldIgnoreMissing();
+        $automationService->shouldReceive('handleEvent')->never();
+        $this->app->instance(AutomationService::class, $automationService);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/cancel", [
+            'reason' => 'Internal admin cleanup',
+            'suppress_notifications' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Shoot has been cancelled.');
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->status);
+
+        $activity = DB::table('shoot_activity_logs')
+            ->where('shoot_id', $shoot->id)
+            ->where('action', 'shoot_cancelled')
+            ->latest('id')
+            ->first();
+
+        $this->assertNotNull($activity);
+        $metadata = json_decode($activity->metadata ?? '[]', true);
+        $this->assertTrue($metadata['suppress_notifications'] ?? false);
+
+        Event::assertNotDispatched(ShootActivityBroadcast::class);
+
+        $notifications = $this->getJson('/api/notifications')->json('data.activity_log');
+        $this->assertFalse(collect($notifications)->contains(
+            fn (array $notification) => ($notification['shoot_id'] ?? null) === $shoot->id
+                && ($notification['type'] ?? null) === 'shoot_cancelled'
+        ));
+    }
+
+    /** @test */
     public function cancellation_request_side_effects_notify_client_and_photographer(): void
     {
         $requestedRecipientIds = [];
@@ -336,6 +436,35 @@ class ShootWorkflowActionsTest extends TestCase
         Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
             return $event->shoot->id === $shoot->id
                 && in_array($event->activityType, ['hold_requested', 'hold_approved'], true);
+        });
+    }
+
+    /** @test */
+    public function client_can_request_hold_for_requested_shoot(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->client);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/request-hold", [
+            'reason' => 'Waiting for seller approval',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Hold request submitted. Pending approval.');
+
+        $shoot->refresh();
+        $this->assertNotNull($shoot->hold_requested_at);
+        $this->assertSame($this->client->id, $shoot->hold_requested_by);
+        $this->assertSame('Waiting for seller approval', $shoot->hold_reason);
+
+        Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
+            return $event->shoot->id === $shoot->id
+                && $event->activityType === 'hold_requested';
         });
     }
 

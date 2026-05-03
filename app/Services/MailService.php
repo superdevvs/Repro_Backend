@@ -48,15 +48,20 @@ class MailService
         string $resetLink,
         ?string $verificationLink = null,
         ?string $equipmentVerificationLink = null,
-        int $pendingEquipmentCount = 0
+        int $pendingEquipmentCount = 0,
+        bool $includePasswordCreationLink = false
     ): bool
     {
         try {
+            $accountPasswordLink = $includePasswordCreationLink
+                ? $this->passwordCreationLink($resetLink)
+                : $resetLink;
+
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
                 'account' => $this->formatUserData($user),
                 'links' => [
-                    'reset_password' => $resetLink,
+                    'reset_password' => $accountPasswordLink,
                     'verification' => $verificationLink,
                     'equipment_verification' => $equipmentVerificationLink,
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
@@ -64,7 +69,8 @@ class MailService
                 'meta' => [
                     'recipient_type' => $user->role === 'client' ? 'client' : 'other',
                     'pending_equipment_count' => $pendingEquipmentCount,
-                    'event_version' => sha1($resetLink . '|' . ($verificationLink ?? '') . '|' . ($equipmentVerificationLink ?? '') . '|' . $pendingEquipmentCount),
+                    'include_password_creation_link' => $includePasswordCreationLink,
+                    'event_version' => sha1($accountPasswordLink . '|' . ($verificationLink ?? '') . '|' . ($equipmentVerificationLink ?? '') . '|' . $pendingEquipmentCount . '|' . (int) $includePasswordCreationLink),
                 ],
             ]);
 
@@ -1902,6 +1908,34 @@ class MailService
         );
 
         return $this->generatePasswordResetLink($user, $token);
+    }
+
+    public function generateStoredPasswordCreationLink(User $user): string
+    {
+        return $this->passwordCreationLink($this->generateStoredPasswordResetLink($user));
+    }
+
+    public function passwordCreationLink(string $resetLink): string
+    {
+        $fragment = '';
+        $urlWithoutFragment = $resetLink;
+
+        if (str_contains($urlWithoutFragment, '#')) {
+            [$urlWithoutFragment, $fragment] = explode('#', $urlWithoutFragment, 2);
+            $fragment = '#' . $fragment;
+        }
+
+        $baseUrl = $urlWithoutFragment;
+        $queryString = '';
+
+        if (str_contains($urlWithoutFragment, '?')) {
+            [$baseUrl, $queryString] = explode('?', $urlWithoutFragment, 2);
+        }
+
+        parse_str($queryString, $query);
+        $query['mode'] = 'create';
+
+        return $baseUrl . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986) . $fragment;
     }
 
     /**

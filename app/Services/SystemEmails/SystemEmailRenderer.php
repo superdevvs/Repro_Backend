@@ -61,6 +61,7 @@ class SystemEmailRenderer
                 'verificationLink' => $links['verification'] ?? null,
                 'equipmentVerificationUrl' => $links['equipment_verification'] ?? null,
                 'equipmentCount' => (int) ($meta->pending_equipment_count ?? 0),
+                'includePasswordCreationLink' => (bool) ($meta->include_password_creation_link ?? false),
             ],
             'CLIENT_EMAIL_VERIFICATION' => $shared + [
                 'verificationLink' => $links['verification'] ?? null,
