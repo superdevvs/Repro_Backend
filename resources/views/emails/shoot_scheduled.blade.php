@@ -22,8 +22,8 @@
                 <a href="{{ $shoot->dashboard_url }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">{{ !empty($isPhotographer) ? 'Open Dashboard' : 'View Shoot' }}</a>
             </td>
             @if(empty($isPhotographer) && !empty($paymentLink))
-            <td style="border-radius:999px;">
-                <a href="{{ $paymentLink }}" class="btn-secondary-bg" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#ffffff; color:#173963; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; border:1px solid #cfe0f5;">Pay Now</a>
+            <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
+                <a href="{{ $paymentLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Pay Now</a>
             </td>
             @endif
         </tr>
@@ -48,8 +48,8 @@
                     <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#47627f;">A little prep goes a long way. Use our property-prep guide to help the home look polished and consistent across photos, video, and tours.</p>
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
                         <tr>
-                            <td style="border-radius:999px;">
-                                <a href="{{ $shoot->property_prep_url }}" class="btn-secondary-bg" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#ffffff; color:#173963; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; border:1px solid #cfe0f5;">View Prep Guide</a>
+                            <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
+                                <a href="{{ $shoot->property_prep_url }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">View Prep Guide</a>
                             </td>
                         </tr>
                     </table>

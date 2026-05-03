@@ -100,7 +100,7 @@ class TemplateVariableResolver
         $shootChanges = trim((string) ($context['shoot_changes'] ?? ''));
         $derived['shoot_changes'] = $shootChanges !== ''
             ? $shootChanges
-            : 'Please review updated details in the dashboard.';
+            : '';
         $derived['shoot_change_summary'] = $derived['shoot_changes'];
         $derived['shoot_changes_html'] = $this->formatChangeSummaryHtml(
             $context['shoot_changes_html'] ?? null,
@@ -550,7 +550,6 @@ class TemplateVariableResolver
 
         if (
             $normalizedFallback !== ''
-            && $normalizedFallback !== 'Please review updated details in the dashboard.'
             && (
                 $html === ''
                 || str_contains($decodedHtml, '→')
@@ -569,7 +568,7 @@ class TemplateVariableResolver
         $lines = array_values(array_filter(array_map('trim', $lines), fn ($line) => $line !== ''));
 
         if ($lines === []) {
-            return '<p>Please review updated details in the dashboard.</p>';
+            return '';
         }
 
         if (count($lines) === 1) {
@@ -587,7 +586,7 @@ class TemplateVariableResolver
         $lines = array_values(array_filter(array_map('trim', $lines), fn ($line) => $line !== ''));
 
         if ($lines === []) {
-            return '<p>Please review updated details in the dashboard.</p>';
+            return '';
         }
 
         return implode('', array_map(
@@ -613,11 +612,18 @@ class TemplateVariableResolver
             return <<<HTML
 <div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
     <div style="margin:0 0 12px; font-size:15px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
-    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>
-    <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
-    <div style="margin:12px 0; height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</div>
-    <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>
-    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr>
+            <td width="50%" style="padding-right:8px; vertical-align:top;">
+                <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>
+                <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
+            </td>
+            <td width="50%" style="padding-left:8px; vertical-align:top;">
+                <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>
+                <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
+            </td>
+        </tr>
+    </table>
 </div>
 HTML;
         }

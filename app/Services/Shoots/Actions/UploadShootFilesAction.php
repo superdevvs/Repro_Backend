@@ -89,7 +89,7 @@ class UploadShootFilesAction
                 ];
             }
 
-            if ($file->getSize() > (500 * 1024 * 1024)) {
+            if ($file->getSize() > (2000 * 1024 * 1024)) {
                 return [
                     'status' => 422,
                     'payload' => [
@@ -99,7 +99,7 @@ class UploadShootFilesAction
                             $this->buildUploadError(
                                 $file->getClientOriginalName(),
                                 'oversize',
-                                'File exceeds the 500MB upload limit.',
+                                'File exceeds the 2GB upload limit.',
                                 false,
                                 'Split the upload into smaller files or export a smaller version before retrying.',
                             ),
@@ -404,8 +404,8 @@ class UploadShootFilesAction
     protected function buildUploadLimits(): array
     {
         return [
-            'per_file' => '500MB',
-            'per_file_bytes' => 500 * 1024 * 1024,
+            'per_file' => '2GB',
+            'per_file_bytes' => 2000 * 1024 * 1024,
             'total_request' => (string) ini_get('post_max_size'),
             'total_request_bytes' => $this->parseSize((string) ini_get('post_max_size')),
             'max_file_uploads' => (int) ini_get('max_file_uploads'),

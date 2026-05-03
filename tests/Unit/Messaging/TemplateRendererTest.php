@@ -104,4 +104,34 @@ HTML,
         $this->assertStringContainsString('#111c2e', $html);
         $this->assertStringContainsString('linear-gradient(180deg, #17365c 0%, #111c2e 100%)', $html);
     }
+
+    public function test_renderer_removes_top_level_photographer_row_when_services_already_show_assignment(): void
+    {
+        $template = new MessageTemplate([
+            'channel' => 'EMAIL',
+            'category' => 'BOOKING',
+            'slug' => 'shoot-request-approved',
+            'name' => 'Shoot Request Approved',
+            'subject' => 'Scheduled Photo Shoot',
+            'body_html' => <<<HTML
+<div class="info-box">
+    <div class="info-row"><span class="info-label">Location:</span> 6275 Kerrydale Drive</div>
+    <div class="info-row"><span class="info-label">Photographer:</span> Jay Snap</div>
+    <div class="info-row"><span class="info-label">Services:</span><br>[services_provided_html]</div>
+</div>
+HTML,
+            'body_text' => "Location: 6275 Kerrydale Drive\nPhotographer: Jay Snap\n[services_provided]",
+            'variables_json' => ['services_provided_html', 'services_provided'],
+        ]);
+
+        $rendered = (new TemplateRenderer())->render($template, [
+            'services_provided_html' => '<ul><li>HDR Photos <div>Assigned photographer: Jay Snap</div></li></ul>',
+            'services_provided' => '- HDR Photos (Photographer: Jay Snap)',
+        ]);
+
+        $this->assertStringNotContainsString('Photographer:</span> Jay Snap', $rendered['html']);
+        $this->assertStringContainsString('Assigned photographer: Jay Snap', $rendered['html']);
+        $this->assertDoesNotMatchRegularExpression('/^Photographer: Jay Snap$/m', $rendered['text']);
+        $this->assertStringContainsString('(Photographer: Jay Snap)', $rendered['text']);
+    }
 }

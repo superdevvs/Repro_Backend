@@ -48,8 +48,8 @@
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>
-            <td style="border-radius:999px;">
-                <a href="{{ $shoot->dashboard_url }}" class="btn-secondary-bg" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#ffffff; color:#173963; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; border:1px solid #cfe0f5;">Open Dashboard</a>
+            <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
+                <a href="{{ $shoot->dashboard_url }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Open Dashboard</a>
             </td>
         </tr>
     </table>

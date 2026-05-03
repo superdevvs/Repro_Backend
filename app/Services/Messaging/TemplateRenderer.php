@@ -39,6 +39,11 @@ class TemplateRenderer
         $text = $this->replacePlaceholders($template->body_text ?? '', $available->all());
         $subject = $this->replacePlaceholders($template->subject ?? '', $available->all());
 
+        if ($this->serviceDetailsAlreadyNamePhotographer($variables)) {
+            $html = $this->removeDuplicatePhotographerSummaryRows($html);
+            $text = $this->removeDuplicatePhotographerTextRows($text);
+        }
+
         $html = $this->normalizeLegacyUrls($html);
         $text = $this->normalizeLegacyUrls($text);
         $subject = $this->normalizeLegacyUrls($subject);
@@ -97,6 +102,33 @@ class TemplateRenderer
         );
     }
 
+    /**
+     * @param  array<string, mixed>  $variables
+     */
+    protected function serviceDetailsAlreadyNamePhotographer(array $variables): bool
+    {
+        $serviceHtml = strtolower(strip_tags((string) Arr::get($variables, 'services_provided_html', '')));
+        $serviceText = strtolower((string) Arr::get($variables, 'services_provided', ''));
+
+        return str_contains($serviceHtml, 'assigned photographer:')
+            || str_contains($serviceText, '(photographer:');
+    }
+
+    protected function removeDuplicatePhotographerSummaryRows(string $html): string
+    {
+        $patterns = [
+            '/\s*<div\b[^>]*class=(["\'])[^"\']*\binfo-row\b[^"\']*\1[^>]*>\s*<(?:span|div)\b[^>]*class=(["\'])[^"\']*\binfo-label\b[^"\']*\2[^>]*>\s*Photographers?:\s*<\/(?:span|div)>.*?<\/div>\s*/is',
+            '/\s*<div\b[^>]*class=(["\'])[^"\']*\bdetail-row\b[^"\']*\1[^>]*>\s*<(?:span|div)\b[^>]*class=(["\'])[^"\']*\bdetail-label\b[^"\']*\2[^>]*>\s*Photographers?:\s*<\/(?:span|div)>.*?<\/div>\s*/is',
+        ];
+
+        return preg_replace($patterns, '', $html) ?? $html;
+    }
+
+    protected function removeDuplicatePhotographerTextRows(string $text): string
+    {
+        return preg_replace('/^\s*Photographers?:\s*[^\r\n]*(?:\r?\n)?/mi', '', $text) ?? $text;
+    }
+
     protected function wrapWithLayout(MessageTemplate $template, string $bodyHtml, string $subject): string
     {
         $bodyHtml = $this->stripLegacyWrapper($bodyHtml);
@@ -141,6 +173,7 @@ class TemplateRenderer
         $mutedColorDark = $branding['muted_color_dark'] ?? '#8298b4';
         $linkColorLight = $branding['link_color_light'] ?? ($branding['link_color'] ?? '#1463ff');
         $linkColorDark = $branding['link_color_dark'] ?? '#7eb3ff';
+        $reviewUrl = $branding['review_url'] ?? 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews';
         $buttonSecondarySurfaceLight = $branding['button_secondary_surface_light'] ?? '#edf4ff';
         $buttonSecondarySurfaceDark = $branding['button_secondary_surface_dark'] ?? '#16233a';
         $buttonSecondarySurfaceDarkGradient = $branding['button_secondary_surface_dark_gradient'] ?? "linear-gradient(180deg, {$buttonSecondarySurfaceDark} 0%, {$buttonSecondarySurfaceDark} 100%)";
@@ -150,7 +183,7 @@ class TemplateRenderer
         $legalCopyColorDark = $branding['legal_copy_color_dark'] ?? '#8da2be';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
-        $journeyHtml = $this->buildJourneyRail($template);
+        $journeyHtml = '';
 
         return <<<HTML
 <!DOCTYPE html>
@@ -767,29 +800,34 @@ a { color: {$linkColorLight}; text-decoration: none; }
             Our team is here to help keep your marketing workflow moving.
             Reach us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">{$supportEmail}</a> or call {$supportPhone}.
           </p>
-          <p class="footer-copy footer-links dark-panel-copy" style="margin-top:14px; color:{$bodyColorLight};">
-            <a href="{$dashboardUrl}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">Dashboard</a>
-            <a href="{$websiteUrl}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">Website</a>
-            <a href="https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">Leave a Review</a>
-          </p>
           <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
-              <td class="footer-meta-cell" width="50%" style="width:50%; padding-right:12px; vertical-align:top;">
+              <td class="footer-meta-cell" width="33.33%" style="width:33.33%; padding-right:8px; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
                     <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
-                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColorLight}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Support</span>
-                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColorLight}; font-size:14px; line-height:1.6; font-weight:700;">{$supportEmail}<br>{$supportPhone}</span>
+                      <a href="{$dashboardUrl}" class="dark-panel-link" style="display:block; margin-bottom:6px; color:{$headingColorLight}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Dashboard</a>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$bodyColorLight}; font-size:12px; line-height:1.6; font-weight:600;">Track your shoots, invoices, and delivery updates in one place.</span>
                     </td>
                   </tr>
                 </table>
               </td>
-              <td class="footer-meta-cell footer-meta-cell-last" width="50%" style="width:50%; padding-right:0; vertical-align:top;">
+              <td class="footer-meta-cell" width="33.33%" style="width:33.33%; padding:0 4px; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
                     <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
-                      <span class="footer-meta-label dark-meta-label" style="display:block; margin-bottom:4px; color:{$mutedColorLight}; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; font-weight:800;">Portal</span>
-                      <span class="footer-meta-value dark-meta-value" style="color:{$headingColorLight}; font-size:14px; line-height:1.6; font-weight:700;">Track your shoots, invoices, and delivery updates in one place.</span>
+                      <a href="{$websiteUrl}" class="dark-panel-link" style="display:block; margin-bottom:6px; color:{$headingColorLight}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Website</a>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$bodyColorLight}; font-size:12px; line-height:1.6; font-weight:600;">View products and services to order.</span>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+              <td class="footer-meta-cell footer-meta-cell-last" width="33.33%" style="width:33.33%; padding-left:8px; padding-right:0; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                  <tr>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
+                      <a href="{$reviewUrl}" class="dark-panel-link" style="display:block; margin-bottom:6px; color:{$headingColorLight}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Leave a Review</a>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$bodyColorLight}; font-size:12px; line-height:1.6; font-weight:600;">We are looking for 5 stars and nothing less.</span>
                     </td>
                   </tr>
                 </table>
@@ -1136,54 +1174,7 @@ HTML;
 
     protected function buildJourneyRail(MessageTemplate $template): string
     {
-        $definition = match ($template->slug) {
-            'payment-thank-you', 'payment-due-reminder' => [
-                'labels' => ['Payment', 'Editing', 'Quality Check', 'Delivery'],
-                'active' => 0,
-            ],
-            'weekly-invoice-generated' => [
-                'labels' => ['Generated', 'Review', 'Approval', 'Payout'],
-                'active' => 0,
-            ],
-            'shoot-ready', 'shoot-summary', 'shoot-delivered' => [
-                'labels' => ['Payment', 'Editing', 'Quality Check', 'Delivery'],
-                'active' => 3,
-            ],
-            'shoot-scheduled', 'shoot-requested', 'shoot-request-approved', 'shoot-request-modified', 'shoot-reminder', 'shoot-updated' => [
-                'labels' => ['Booking', 'Scheduled', 'Editing', 'Delivery'],
-                'active' => 1,
-            ],
-            default => null,
-        };
-
-        if (!$definition) {
-            return '';
-        }
-
-        $bars = [];
-        $labels = [];
-
-        foreach ($definition['labels'] as $index => $label) {
-            $barClass = 'journey-bar';
-            $labelClass = 'journey-label';
-
-            if ($index <= $definition['active']) {
-                $barClass .= ' journey-bar-complete';
-                $labelClass .= ' journey-label-complete';
-            } elseif ($index === $definition['active'] + 1) {
-                $barClass .= ' journey-bar-next';
-                $labelClass .= ' journey-label-next';
-            }
-
-            $bars[] = sprintf('<span class="%s"></span>', $barClass);
-            $labels[] = sprintf('<td class="%s">%s</td>', $labelClass, $this->escapeHtml($label));
-        }
-
-        return sprintf(
-            '<div class="journey"><div class="journey-bars">%s</div><table class="journey-labels" role="presentation"><tr>%s</tr></table></div>',
-            implode('', $bars),
-            implode('', $labels)
-        );
+        return '';
     }
 
     protected function escapeHtml(string $value): string

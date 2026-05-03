@@ -29,8 +29,8 @@
                 <a href="{{ $equipmentVerificationUrl }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Verify Equipment</a>
             </td>
             @endif
-            <td style="border-radius:999px;">
-                <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" class="btn-secondary-bg" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#16233a; color:#e8edf5; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; border:1px solid #24344d;">Open Dashboard</a>
+            <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
+                <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Open Dashboard</a>
             </td>
         </tr>
     </table>

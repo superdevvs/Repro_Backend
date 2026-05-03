@@ -1156,13 +1156,6 @@ class MailService
 
         $this->addChangeLine(
             $changes,
-            'Workflow',
-            $this->formatStatusValue($before['workflow_status'] ?? null),
-            $this->formatStatusValue($shoot->workflow_status)
-        );
-
-        $this->addChangeLine(
-            $changes,
             'Schedule',
             $this->formatScheduleValue(
                 $before['scheduled_date'] ?? null,
@@ -1315,10 +1308,6 @@ class MailService
             $this->formatBooleanValue($before['is_private_listing'] ?? false),
             $this->formatBooleanValue((bool) ($shoot->is_private_listing ?? false))
         );
-
-        if (empty($changes)) {
-            $changes[] = 'Please review updated details in the dashboard.';
-        }
 
         return [
             'summary' => implode("\n", $changes),
@@ -2606,41 +2595,31 @@ class MailService
         $html = '';
 
         if ($comparisonChanges !== [] || $singleChanges !== []) {
-            $html .= '<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">';
-
-            if ($comparisonChanges !== []) {
-                $html .= '<div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>';
-
-                foreach ($comparisonChanges as $change) {
-                    $label = e((string) ($change['label'] ?? 'Updated Detail'));
-                    $beforeHtml = $this->buildChangeSummaryBeforeHtml(
-                        (string) ($change['label'] ?? ''),
-                        (string) ($change['before'] ?? ''),
-                        (string) ($change['after'] ?? '')
-                    );
-
-                    $html .= <<<HTML
-<div style="margin:0 0 10px;">
-    <div style="margin:0 0 3px; font-size:13px; line-height:1.5; color:#6c84a2; font-weight:700;">{$label}</div>
-    <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
-</div>
-HTML;
-                }
-
-                $html .= '<div style="margin:12px 0; height:1px; background-color:#e7eef7; font-size:0; line-height:0;">&nbsp;</div>';
-            }
-
-            $html .= '<div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>';
-
             foreach ($comparisonChanges as $change) {
                 $label = e((string) ($change['label'] ?? 'Updated Detail'));
+                $beforeHtml = $this->buildChangeSummaryBeforeHtml(
+                    (string) ($change['label'] ?? ''),
+                    (string) ($change['before'] ?? ''),
+                    (string) ($change['after'] ?? '')
+                );
                 $afterValue = trim((string) ($change['after'] ?? ''));
                 $afterHtml = e($afterValue !== '' ? $afterValue : 'Not set');
 
                 $html .= <<<HTML
-<div style="margin:0 0 10px;">
-    <div style="margin:0 0 3px; font-size:13px; line-height:1.5; color:#6c84a2; font-weight:700;">{$label}</div>
-    <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
+<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
+    <div style="margin:0 0 12px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr>
+            <td width="50%" style="padding-right:8px; vertical-align:top;">
+                <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Before</div>
+                <div style="margin:0; font-size:14px; line-height:1.7; color:#2d4769;">{$beforeHtml}</div>
+            </td>
+            <td width="50%" style="padding-left:8px; vertical-align:top;">
+                <div style="margin:0 0 4px; font-size:11px; line-height:1.4; letter-spacing:1.2px; text-transform:uppercase; color:#6c84a2; font-weight:700;">After</div>
+                <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$afterHtml}</div>
+            </td>
+        </tr>
+    </table>
 </div>
 HTML;
             }
@@ -2651,14 +2630,12 @@ HTML;
                 $valueHtml = e($value !== '' ? $value : 'Not set');
 
                 $html .= <<<HTML
-<div style="margin:0 0 10px;">
-    <div style="margin:0 0 3px; font-size:13px; line-height:1.5; color:#6c84a2; font-weight:700;">{$label}</div>
+<div class="change-summary-block" style="margin:0 0 12px; padding:16px 18px; border:1px solid #dbe6f3; border-radius:14px; background-color:#f8fbff;">
+    <div style="margin:0 0 4px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{$label}</div>
     <div style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{$valueHtml}</div>
 </div>
 HTML;
             }
-
-            $html .= '</div>';
         }
 
         foreach ($textChanges as $change) {

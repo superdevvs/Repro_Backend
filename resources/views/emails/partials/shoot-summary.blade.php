@@ -3,6 +3,9 @@
     $showNotes = $showNotes ?? true;
     $isPhotographer = $isPhotographer ?? false;
     $summaryNotice = $summaryNotice ?? null;
+    $recipientType = strtolower((string) (($meta->recipient_type ?? null) ?? ($isPhotographer ? 'photographer' : '')));
+    $isClientRecipient = $recipientType === 'client';
+    $servicesHaveAssignedPhotographers = collect($shoot->services ?? [])->contains(fn ($service) => !empty($service['photographer_name'] ?? null));
 @endphp
 
 {{-- Shoot Overview Section Card --}}
@@ -67,6 +70,7 @@
                         @endif
                     </td>
                 </tr>
+                @unless($isClientRecipient)
                 <tr>
                     <td class="detail-label-td detail-border dark-muted" width="34%" style="padding:10px 14px 10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">Client</td>
                     <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">
@@ -82,6 +86,8 @@
                     <td class="detail-value-td detail-border dark-heading" style="padding:10px 0; border-bottom:1px solid #edf2f7; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">{{ $shoot->rep_name }}</td>
                 </tr>
                 @endif
+                @endunless
+                @if(!$servicesHaveAssignedPhotographers)
                 <tr>
                     <td class="detail-label-td dark-muted" width="34%" style="padding:10px 14px 10px 0; vertical-align:top; font-size:14px; line-height:1.65; color:#6f86a4; font-weight:700;">{{ $isPhotographer ? 'Assigned Team' : 'Photographers' }}</td>
                     <td class="detail-value-td dark-heading" style="padding:10px 0; vertical-align:top; font-size:14px; line-height:1.65; color:#10233b; font-weight:600;">
@@ -91,6 +97,7 @@
                         @endif
                     </td>
                 </tr>
+                @endif
             </table>
         </td>
     </tr>
