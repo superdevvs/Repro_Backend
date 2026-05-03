@@ -302,7 +302,16 @@ class ShootPublicAssetsService
             $chosen = $files->where('workflow_stage', ShootFile::STAGE_TODO);
         }
 
+        // Sort to match the Shoot Details media grid (sort_order asc, then id asc).
+        $chosen = $chosen
+            ->sortBy([
+                ['sort_order', 'asc'],
+                ['id', 'asc'],
+            ])
+            ->values();
+
         $photos = [];
+        $heroPhotos = [];
         $videos = [];
         foreach ($chosen as $file) {
             $url = $this->resolvePublicAssetFileUrl($file);
@@ -311,19 +320,24 @@ class ShootPublicAssetsService
             }
 
             $type = strtolower((string) $file->file_type);
-            if (str_starts_with($type, 'image/')) {
-                $photos[] = $url;
-                continue;
-            }
-            if (str_starts_with($type, 'video/')) {
-                $videos[] = $url;
-                continue;
+            $isImage = str_starts_with($type, 'image/');
+            $isVideo = str_starts_with($type, 'video/');
+
+            if (!$isImage && !$isVideo) {
+                $extension = strtolower(pathinfo($file->filename ?? $file->stored_filename ?? '', PATHINFO_EXTENSION));
+                if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'heic', 'heif'], true)) {
+                    $isImage = true;
+                } elseif (in_array($extension, ['mp4', 'mov', 'avi', 'webm', 'ogg'], true)) {
+                    $isVideo = true;
+                }
             }
 
-            $extension = strtolower(pathinfo($file->filename ?? $file->stored_filename ?? '', PATHINFO_EXTENSION));
-            if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'heic', 'heif'], true)) {
+            if ($isImage) {
                 $photos[] = $url;
-            } elseif (in_array($extension, ['mp4', 'mov', 'avi', 'webm', 'ogg'], true)) {
+                if (!empty($file->is_cover)) {
+                    $heroPhotos[] = $url;
+                }
+            } elseif ($isVideo) {
                 $videos[] = $url;
             }
         }
@@ -340,6 +354,7 @@ class ShootPublicAssetsService
                 'scheduled_date' => optional($shoot->scheduled_date)->toDateString(),
             ],
             'photos' => array_values(array_unique($photos)),
+            'hero_photos' => array_values(array_unique($heroPhotos)),
             'videos' => array_values(array_unique($videos)),
             'tours' => [
                 'matterport' => null,
