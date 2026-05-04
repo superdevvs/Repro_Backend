@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots;
 
+use App\Jobs\GenerateWatermarkedImageJob;
 use App\Jobs\ProcessImageJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -30,6 +31,7 @@ class ShootMediaReadService
     public function previewFileResponse(ShootFile $file, bool $needsWatermark = false)
     {
         if ($needsWatermark) {
+            $file = $this->ensureWatermarkedPreviewAvailable($file);
             $watermarkedPreviewPath = $file->watermarked_web_path
                 ?? $file->watermarked_thumbnail_path
                 ?? $file->watermarked_placeholder_path;
@@ -341,6 +343,7 @@ class ShootMediaReadService
         $placeholderUrl = null;
 
         if ($needsWatermark) {
+            $file = $this->ensureWatermarkedPreviewAvailable($file);
             $thumbUrl = $this->resolvePreviewPath($file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path);
             $mediumUrl = $this->resolvePreviewPath(
                 $file->watermarked_web_path ?? $file->watermarked_thumbnail_path ?? $file->watermarked_placeholder_path
@@ -430,9 +433,9 @@ class ShootMediaReadService
 
         if ($needsWatermark) {
             $fileData['watermarked_storage_path'] = $file->watermarked_storage_path;
-            $fileData['watermarked_thumbnail_path'] = $file->watermarked_thumbnail_path;
-            $fileData['watermarked_web_path'] = $file->watermarked_web_path;
-            $fileData['watermarked_placeholder_path'] = $file->watermarked_placeholder_path;
+            $fileData['watermarked_thumbnail_path'] = $thumbUrl;
+            $fileData['watermarked_web_path'] = $webUrl;
+            $fileData['watermarked_placeholder_path'] = $placeholderUrl;
         }
 
         foreach ([
@@ -470,6 +473,57 @@ class ShootMediaReadService
         }
 
         return $fileData;
+    }
+
+    protected function ensureWatermarkedPreviewAvailable(ShootFile $file): ShootFile
+    {
+        if ($this->hasWatermarkedPreview($file) || !$file->shouldBeWatermarked() || !$this->canGenerateWatermarkedPreview($file)) {
+            return $file;
+        }
+
+        try {
+            $freshFile = $file->fresh();
+            if (!$freshFile) {
+                return $file;
+            }
+
+            $watermarkJob = new GenerateWatermarkedImageJob($freshFile);
+            $watermarkJob->handle($this->dropboxService);
+            $file->refresh();
+        } catch (\Throwable $e) {
+            Log::warning('Failed to generate watermark synchronously for shoot media preview', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return $file;
+    }
+
+    protected function hasWatermarkedPreview(ShootFile $file): bool
+    {
+        return (bool) (
+            $file->watermarked_web_path
+            || $file->watermarked_thumbnail_path
+            || $file->watermarked_placeholder_path
+        );
+    }
+
+    protected function canGenerateWatermarkedPreview(ShootFile $file): bool
+    {
+        $mediaType = strtolower((string) ($file->media_type ?? ''));
+        if (in_array($mediaType, ['image', 'photo', 'edited'], true)) {
+            return true;
+        }
+
+        $mimeType = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        if (Str::startsWith($mimeType, 'image/')) {
+            return true;
+        }
+
+        $filename = strtolower((string) ($file->filename ?? $file->stored_filename ?? $file->path ?? $file->storage_path ?? ''));
+
+        return (bool) preg_match('/\.(jpg|jpeg|png|webp|gif|tif|tiff|heic|heif)$/i', $filename);
     }
 
     protected function isVideoFile(ShootFile $file): bool

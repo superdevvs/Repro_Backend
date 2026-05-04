@@ -6,13 +6,14 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class ShootIssueParsingService
 {
-    protected const REQUEST_STATUS_VALUES = ['open', 'in-progress', 'resolved'];
+    protected const REQUEST_STATUS_VALUES = ['open', 'in-progress', 'resolved', 'dismissed'];
 
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
@@ -56,6 +57,10 @@ class ShootIssueParsingService
                 continue;
             }
 
+            if ($this->isAutoExpiredResolvedRequest($parsedRequest, $shoot)) {
+                continue;
+            }
+
             $raisedByName = $parsedRequest['raisedByName'];
             $mediaIds = $parsedRequest['mediaIds'];
             $noteText = $parsedRequest['note'];
@@ -94,6 +99,8 @@ class ShootIssueParsingService
                 ],
                 'assignedToRole' => $assignedToRole,
                 'status' => $requestStatus,
+                'resolvedAt' => $parsedRequest['resolvedAt'],
+                'dismissedAt' => $parsedRequest['dismissedAt'],
                 'createdAt' => $shoot->updated_at->toISOString(),
                 'updatedAt' => $shoot->updated_at->toISOString(),
             ];
@@ -109,6 +116,9 @@ class ShootIssueParsingService
         foreach ($shoots as $shoot) {
             foreach ($this->parseShootRequests($shoot) as $request) {
                 if (($request['raisedBy']['role'] ?? null) !== 'client') {
+                    continue;
+                }
+                if (($request['status'] ?? null) === 'dismissed') {
                     continue;
                 }
 
@@ -179,6 +189,15 @@ class ShootIssueParsingService
             }
 
             $parsed['status'] = $status;
+            if ($status === 'resolved') {
+                $parsed['resolvedAt'] = $parsed['resolvedAt'] ?: now()->toISOString();
+                $parsed['dismissedAt'] = null;
+            } elseif ($status === 'dismissed') {
+                $parsed['dismissedAt'] = now()->toISOString();
+            } else {
+                $parsed['resolvedAt'] = null;
+                $parsed['dismissedAt'] = null;
+            }
             $entries[$index] = $this->serializeRequestEntry($parsed);
             $updated = true;
             break;
@@ -268,6 +287,8 @@ class ShootIssueParsingService
         $assignedToRole = null;
         $requestId = null;
         $status = null;
+        $resolvedAt = null;
+        $dismissedAt = null;
 
         foreach ($lines as $line) {
             $trimmedLine = trim($line);
@@ -290,8 +311,18 @@ class ShootIssueParsingService
                 continue;
             }
 
-            if (preg_match('/^\[Status:\s*(open|in-progress|resolved)\]$/', $trimmedLine, $statusMatches)) {
+            if (preg_match('/^\[Status:\s*(open|in-progress|resolved|dismissed)\]$/', $trimmedLine, $statusMatches)) {
                 $status = $statusMatches[1];
+                continue;
+            }
+
+            if (preg_match('/^\[ResolvedAt:\s*([^\]]+)\]$/', $trimmedLine, $resolvedAtMatches)) {
+                $resolvedAt = trim($resolvedAtMatches[1]);
+                continue;
+            }
+
+            if (preg_match('/^\[DismissedAt:\s*([^\]]+)\]$/', $trimmedLine, $dismissedAtMatches)) {
+                $dismissedAt = trim($dismissedAtMatches[1]);
                 continue;
             }
 
@@ -309,6 +340,8 @@ class ShootIssueParsingService
             'mediaIds' => $mediaIds,
             'assignedToRole' => $assignedToRole,
             'status' => $status ?: ($shoot->is_flagged ? 'open' : 'resolved'),
+            'resolvedAt' => $resolvedAt,
+            'dismissedAt' => $dismissedAt,
         ];
     }
 
@@ -324,6 +357,14 @@ class ShootIssueParsingService
             $entry .= "\n[Status: " . $request['status'] . ']';
         }
 
+        if (!empty($request['resolvedAt'])) {
+            $entry .= "\n[ResolvedAt: " . $request['resolvedAt'] . ']';
+        }
+
+        if (!empty($request['dismissedAt'])) {
+            $entry .= "\n[DismissedAt: " . $request['dismissedAt'] . ']';
+        }
+
         if (!empty($request['assignedToRole']) && in_array($request['assignedToRole'], ['editor', 'photographer'], true)) {
             $entry .= "\n[Assigned: " . $request['assignedToRole'] . ']';
         }
@@ -335,11 +376,29 @@ class ShootIssueParsingService
         return $entry;
     }
 
+    protected function isAutoExpiredResolvedRequest(array $request, Shoot $shoot): bool
+    {
+        if (($request['status'] ?? null) !== 'resolved') {
+            return false;
+        }
+
+        $resolvedAt = $request['resolvedAt'] ?: $shoot->updated_at?->toISOString();
+        if (!$resolvedAt) {
+            return false;
+        }
+
+        try {
+            return Carbon::parse($resolvedAt)->lte(now()->subHours(24));
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     protected function hasOpenRequestsFromEntries(Shoot $shoot, array $entries): bool
     {
         foreach ($entries as $index => $entry) {
             $parsed = $this->parseRequestEntry($shoot, $entry, $index, null);
-            if ($parsed !== null && $parsed['status'] !== 'resolved') {
+            if ($parsed !== null && !in_array($parsed['status'], ['resolved', 'dismissed'], true)) {
                 return true;
             }
         }

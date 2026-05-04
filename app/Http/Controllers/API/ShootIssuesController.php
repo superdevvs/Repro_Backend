@@ -87,6 +87,11 @@ class ShootIssuesController extends Controller
             'assignedToUserId' => 'nullable|exists:users,id',
         ]);
 
+        $assignedToRole = $validated['assignedToRole'] ?? null;
+        if (strtolower((string) $user->role) === 'client') {
+            $assignedToRole = null;
+        }
+
         $mediaIds = [];
         if (!empty($validated['mediaIds'])) {
             $mediaIds = $validated['mediaIds'];
@@ -103,7 +108,7 @@ class ShootIssuesController extends Controller
                 $mediaIds,
                 $requestId,
                 'open',
-                $validated['assignedToRole'] ?? null,
+                $assignedToRole,
             )
         );
 
@@ -121,7 +126,7 @@ class ShootIssuesController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $validated = $request->validate([
-            'status' => 'nullable|in:open,in-progress,resolved',
+            'status' => 'nullable|in:open,in-progress,resolved,dismissed',
         ]);
 
         $updatedRequest = $this->shootIssueParsingService->updateIssueStatus(

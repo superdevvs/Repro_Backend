@@ -56,6 +56,7 @@ class ShootPublicAssetsService
     {
         $assets = $this->buildPublicAssets($shoot);
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
+        $propertyDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
         $videoUrl = $this->resolveTypedVideoUrl($tourLinks, $type);
         $videoThumbnailUrl = $this->resolveVideoThumbnailUrl($videoUrl);
 
@@ -73,7 +74,7 @@ class ShootPublicAssetsService
         };
 
         $assets['type'] = $type;
-        $assets['property_details'] = $shoot->property_details;
+        $assets['property_details'] = $propertyDetails;
         $assets['iguide_tour_url'] = $iguideUrl;
         $assets['iguide_url'] = $iguideUrl;
         $assets['iguide_floorplans'] = $shoot->iguide_floorplans;
@@ -120,6 +121,91 @@ class ShootPublicAssetsService
         }
 
         return $assets;
+    }
+
+    public function buildPublicTourPropertyDetails(Shoot $shoot, ?array $tourLinks = null): array
+    {
+        $tourLinks = $tourLinks ?? $this->normalizeTourLinks($shoot->tour_links ?? []);
+        $propertyDetails = $shoot->property_details ?? [];
+        if (is_string($propertyDetails)) {
+            $propertyDetails = json_decode($propertyDetails, true) ?? [];
+        }
+        if (!is_array($propertyDetails)) {
+            $propertyDetails = [];
+        }
+
+        $bedrooms = $this->firstFilled(
+            $propertyDetails['bedrooms'] ?? null,
+            $propertyDetails['beds'] ?? null,
+            $propertyDetails['bed'] ?? null
+        );
+        $bathrooms = $this->firstFilled(
+            $propertyDetails['bathrooms'] ?? null,
+            $propertyDetails['baths'] ?? null,
+            $propertyDetails['bath'] ?? null
+        );
+        $sqft = $this->firstFilled(
+            $propertyDetails['sqft'] ?? null,
+            $propertyDetails['squareFeet'] ?? null,
+            $propertyDetails['square_feet'] ?? null,
+            $propertyDetails['livingArea'] ?? null,
+            $propertyDetails['living_area'] ?? null
+        );
+        $mlsId = $this->firstFilled(
+            $tourLinks['property_mls'] ?? null,
+            $shoot->mls_id,
+            $propertyDetails['mls_id'] ?? null,
+            $propertyDetails['mlsId'] ?? null,
+            $propertyDetails['mlsNumber'] ?? null
+        );
+        $price = $this->firstFilled(
+            $tourLinks['property_price'] ?? null,
+            $propertyDetails['price'] ?? null,
+            $propertyDetails['listPrice'] ?? null,
+            $propertyDetails['listingPrice'] ?? null
+        );
+        $lotSize = $this->firstFilled(
+            $tourLinks['property_lot_size'] ?? null,
+            $propertyDetails['lot_size'] ?? null,
+            $propertyDetails['lotSize'] ?? null,
+            $propertyDetails['lotSizeSqft'] ?? null
+        );
+        $description = $this->firstFilled(
+            $tourLinks['property_description'] ?? null,
+            $propertyDetails['description'] ?? null,
+            $propertyDetails['property_description'] ?? null
+        );
+        $listingType = $this->firstFilled(
+            $shoot->listing_type,
+            $propertyDetails['listing_type'] ?? null,
+            $propertyDetails['listingType'] ?? null
+        );
+        $propertyStatus = $this->firstFilled(
+            $shoot->property_status,
+            $propertyDetails['property_status'] ?? null,
+            $propertyDetails['propertyStatus'] ?? null,
+            $propertyDetails['status'] ?? null
+        );
+
+        return array_merge($propertyDetails, [
+            'beds' => $bedrooms,
+            'bedrooms' => $bedrooms,
+            'baths' => $bathrooms,
+            'bathrooms' => $bathrooms,
+            'sqft' => $sqft,
+            'squareFeet' => $sqft,
+            'square_feet' => $sqft,
+            'mls_id' => $mlsId,
+            'mlsId' => $mlsId,
+            'price' => $price,
+            'lot_size' => $lotSize,
+            'lotSize' => $lotSize,
+            'description' => $description,
+            'listing_type' => $listingType,
+            'listingType' => $listingType,
+            'property_status' => $propertyStatus,
+            'propertyStatus' => $propertyStatus,
+        ]);
     }
 
     public function buildClientProfilePayload(User $viewer, User $client): ?array
@@ -172,7 +258,7 @@ class ShootPublicAssetsService
                 ->toArray();
 
             $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
-            $propDetails = $shoot->property_details ?? [];
+            $propDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
 
             return [
                 'id' => $shoot->id,
@@ -191,13 +277,15 @@ class ShootPublicAssetsService
                     ?? $tourLinks['iGuide']
                     ?? null,
                 'tour_links' => $tourLinks,
+                'branded_tour_url' => $this->buildPublicTourUrl($shoot->id, 'branded'),
                 'listing_type' => $shoot->listing_type,
-                'property_status' => $propDetails['property_status'] ?? $propDetails['status'] ?? 'available',
+                'property_status' => $propDetails['property_status'] ?? $propDetails['status'] ?? $shoot->property_status ?? 'available',
                 'bedrooms' => $propDetails['bedrooms'] ?? $propDetails['beds'] ?? null,
                 'bathrooms' => $propDetails['bathrooms'] ?? $propDetails['baths'] ?? null,
                 'sqft' => $propDetails['sqft'] ?? $propDetails['square_feet'] ?? null,
                 'price' => $propDetails['price'] ?? null,
-                'mls_id' => $shoot->mls_id,
+                'lot_size' => $propDetails['lot_size'] ?? $propDetails['lotSize'] ?? null,
+                'mls_id' => $propDetails['mls_id'] ?? $shoot->mls_id,
             ];
         });
 
@@ -270,9 +358,20 @@ class ShootPublicAssetsService
         $imageUrls = [];
         foreach ($selectedFiles as $file) {
             $url = null;
-            foreach ([$file->web_path ?? null, $file->storage_path ?? null, $file->path ?? null] as $candidate) {
+            foreach ([
+                $file->web_path ?? null,
+                $file->thumbnail_path ?? null,
+                $file->storage_path ?? null,
+                $file->path ?? null,
+                $file->url ?? null,
+            ] as $candidate) {
                 if (!$candidate) {
                     continue;
+                }
+
+                if (preg_match('/^https?:\/\//i', $candidate)) {
+                    $url = $candidate;
+                    break;
                 }
 
                 $resolved = $this->resolveLocalPublicUrl($candidate);
@@ -282,12 +381,34 @@ class ShootPublicAssetsService
                 }
             }
 
+            if (!$url && !empty($file->dropbox_path)) {
+                try {
+                    $url = $this->dropboxService->getTemporaryLink($file->dropbox_path);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to resolve Dropbox image for AI property description', [
+                        'file_id' => $file->id,
+                        'dropbox_path' => $file->dropbox_path,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             if ($url) {
                 $imageUrls[] = $url;
             }
         }
 
         return $imageUrls;
+    }
+
+    protected function buildPublicTourUrl(int|string $shootId, string $type): string
+    {
+        $frontendUrl = rtrim((string) config('app.frontend_url', ''), '/');
+        if ($frontendUrl === '') {
+            $frontendUrl = rtrim((string) config('app.url', ''), '/');
+        }
+
+        return $frontendUrl . '/tour/' . $type . '?shootId=' . urlencode((string) $shootId);
     }
 
     protected function buildPublicAssets(Shoot $shoot): array
@@ -605,6 +726,25 @@ class ShootPublicAssetsService
                 }
             }
         );
+    }
+
+    protected function firstFilled(...$values)
+    {
+        foreach ($values as $value) {
+            if (is_string($value)) {
+                $trimmed = trim($value);
+                if ($trimmed !== '') {
+                    return $trimmed;
+                }
+                continue;
+            }
+
+            if ($value !== null && $value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     protected function extractYoutubeVideoId(string $videoUrl): ?string

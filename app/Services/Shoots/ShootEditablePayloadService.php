@@ -22,6 +22,7 @@ class ShootEditablePayloadService
             'scheduled_date' => 'nullable|date',
             'scheduled_at' => 'nullable|date',
             'time' => 'nullable|string',
+            'timezone' => 'nullable|string|timezone',
             'services' => 'nullable|array',
             'services.*.id' => 'required_with:services|integer|exists:services,id',
             'services.*.price' => 'nullable|numeric|min:0',
@@ -55,13 +56,14 @@ class ShootEditablePayloadService
             'tax_amount' => 'nullable|numeric|min:0',
             'total_quote' => 'nullable|numeric|min:0',
             'property_details' => 'nullable|array',
+            'mls_image_width' => 'nullable|integer|min:1|max:10000',
             'bedrooms' => 'nullable|integer|min:0',
             'bathrooms' => 'nullable|numeric|min:0',
             'sqft' => 'nullable|integer|min:0',
             'tour_links' => 'nullable|array',
             'tour_links.*' => 'nullable',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
-            'property_status' => 'nullable|string|in:available,sold,rented',
+            'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
             'is_featured' => 'nullable|boolean',
             'shoot_notes' => 'nullable|string',
             'company_notes' => 'nullable|string',
@@ -100,6 +102,9 @@ class ShootEditablePayloadService
         if (array_key_exists('time', $validated)) {
             $shoot->time = $validated['time'];
         }
+        if (array_key_exists('timezone', $validated)) {
+            $shoot->timezone = $validated['timezone'];
+        }
 
         if (
             array_key_exists('services', $validated)
@@ -127,6 +132,9 @@ class ShootEditablePayloadService
         }
         if (array_key_exists('photographer_id', $validated)) {
             $shoot->photographer_id = $validated['photographer_id'];
+        }
+        if (array_key_exists('mls_image_width', $validated)) {
+            $shoot->mls_image_width = $validated['mls_image_width'];
         }
         if (array_key_exists('base_quote', $validated)) {
             $shoot->base_quote = $validated['base_quote'];

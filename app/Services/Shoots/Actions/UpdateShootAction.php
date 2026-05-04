@@ -52,6 +52,7 @@ class UpdateShootAction
         $onlyFeaturedFlag = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_featured'])) === 0;
         $clientEditableKeys = [
             'is_private_listing',
+            'timezone',
             'listing_type',
             'property_status',
             'bedrooms',
@@ -146,7 +147,7 @@ class UpdateShootAction
             'skip_availability_check' => 'nullable|boolean',
             'is_private_listing' => 'nullable|boolean',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
-            'property_status' => 'nullable|string|in:available,sold,rented',
+            'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
             'ghost_user_ids' => 'nullable|array',
             'ghost_user_ids.*' => [
                 'integer',
@@ -225,6 +226,7 @@ class UpdateShootAction
         $originalScheduledAt = $shoot->scheduled_at?->toISOString();
         $originalScheduledDate = $shoot->scheduled_date?->toDateString();
         $originalTime = $shoot->time;
+        $originalTimezone = $shoot->timezone;
         $originalPhotographerId = $shoot->photographer_id;
         $originalClientId = $shoot->client_id;
         $originalShootNotes = $shoot->shoot_notes;
@@ -335,6 +337,9 @@ class UpdateShootAction
             }
             if ($originalTime !== $shoot->time) {
                 $changes['time'] = ['from' => $originalTime, 'to' => $shoot->time];
+            }
+            if ($originalTimezone !== $shoot->timezone) {
+                $changes['timezone'] = ['from' => $originalTimezone, 'to' => $shoot->timezone];
             }
             if ($originalPhotographerId !== $shoot->photographer_id) {
                 $changes['photographer_id'] = ['from' => $originalPhotographerId, 'to' => $shoot->photographer_id];

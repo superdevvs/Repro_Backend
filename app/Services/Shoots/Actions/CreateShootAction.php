@@ -125,6 +125,21 @@ class CreateShootAction
             $propertyDetailsPayload = is_array($validated['property_details'] ?? null)
                 ? $validated['property_details']
                 : [];
+            $listingType = $validated['listing_type']
+                ?? data_get($propertyDetailsPayload, 'listing_type')
+                ?? data_get($propertyDetailsPayload, 'listingType')
+                ?? 'for_sale';
+            $propertyStatus = $validated['property_status']
+                ?? data_get($propertyDetailsPayload, 'property_status')
+                ?? data_get($propertyDetailsPayload, 'propertyStatus')
+                ?? data_get($propertyDetailsPayload, 'status')
+                ?? 'available';
+            if (!in_array($listingType, ['for_sale', 'for_rent'], true)) {
+                $listingType = 'for_sale';
+            }
+            if (!in_array($propertyStatus, ['available', 'coming_soon', 'pending', 'sold', 'rented'], true)) {
+                $propertyStatus = 'available';
+            }
             $autoPropertyTourLinks = array_filter([
                 'property_mls' => $validated['mls_id']
                     ?? data_get($propertyDetailsPayload, 'mls_id')
@@ -155,6 +170,8 @@ class CreateShootAction
                     ?? data_get($propertyDetailsPayload, 'mlsId'),
                 'listing_source' => $validated['listing_source'] ?? null,
                 'property_details' => $validated['property_details'] ?? null,
+                'listing_type' => $listingType,
+                'property_status' => $propertyStatus,
                 'tour_links' => !empty($initialTourLinks) ? $initialTourLinks : null,
                 'scheduled_at' => $scheduledAt,
                 'scheduled_date' => $scheduledAt ? $scheduledAt->format('Y-m-d') : null,

@@ -30,6 +30,7 @@ class Shoot extends Model
         'dropbox_archive_folder',
         'scheduled_date',
         'scheduled_at',
+        'timezone',
         'completed_at',
         'time',
         'base_quote',
@@ -79,6 +80,7 @@ class Shoot extends Model
         'weather_temperature',
         // Integration fields
         'mls_id',
+        'mls_image_width',
         'listing_source',
         'property_details',
         'integration_flags',
@@ -127,6 +129,7 @@ class Shoot extends Model
     protected $casts = [
         'scheduled_date' => 'date',
         'scheduled_at' => 'datetime',
+        'timezone' => 'string',
         'completed_at' => 'datetime',
         'bypass_paywall' => 'boolean',
         'photos_uploaded_at' => 'datetime',
@@ -153,6 +156,7 @@ class Shoot extends Model
         'package_services_included' => 'array',
         'property_details' => 'array',
         'integration_flags' => 'array',
+        'mls_image_width' => 'integer',
         'iguide_floorplans' => 'array',
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',

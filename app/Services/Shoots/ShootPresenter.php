@@ -2,17 +2,23 @@
 
 namespace App\Services\Shoots;
 
+use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\DropboxWorkflowService;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class ShootPresenter
 {
     public function __construct(
         protected ShootFileAccessService $fileAccessService,
-        protected ShootEditingAssignmentService $editingAssignmentService
+        protected ShootEditingAssignmentService $editingAssignmentService,
+        protected DropboxWorkflowService $dropboxService
     )
     {
     }
@@ -47,29 +53,29 @@ class ShootPresenter
         if (isset($shootArray['files']) && is_array($shootArray['files'])) {
             $serviceUnlockByItemId = collect($shootArray['serviceItems'] ?? $shootArray['service_items'] ?? [])
                 ->keyBy(fn ($item) => (string) ($item['shoot_service_id'] ?? $item['shootServiceId'] ?? ''));
-            $shootArray['files'] = collect($shootArray['files'])->map(function ($file) use ($needsWatermark, $serviceUnlockByItemId) {
-                $resolveUrl = function ($path) {
-                    if (!$path) {
-                        return null;
-                    }
-                    if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-                        return $path;
-                    }
-                    if (str_starts_with($path, 'shoots/') || str_starts_with($path, '/shoots/')) {
-                        return url('storage/' . ltrim($path, '/'));
-                    }
-
-                    return url('storage/' . $path);
-                };
+            $generatedWatermarkForShoot = false;
+            $shootArray['files'] = collect($shootArray['files'])->map(function ($file) use ($transformedShoot, $needsWatermark, $serviceUnlockByItemId, &$generatedWatermarkForShoot) {
+                $resolveUrl = fn ($path) => $this->resolveMediaAssetUrl($path);
                 $shootServiceId = (string) ($file['shoot_service_id'] ?? $file['shootServiceId'] ?? '');
                 $serviceItem = $shootServiceId !== '' ? $serviceUnlockByItemId->get($shootServiceId) : null;
                 $fileNeedsWatermark = $needsWatermark
                     && ($shootServiceId === '' || !($serviceItem['is_unlocked_for_delivery'] ?? $serviceItem['isUnlockedForDelivery'] ?? false));
 
                 if ($fileNeedsWatermark) {
-                    $thumbUrl = $resolveUrl($file['watermarked_thumbnail_path'] ?? $file['thumbnail_path'] ?? null);
-                    $webUrl = $resolveUrl($file['watermarked_web_path'] ?? $file['web_path'] ?? null);
-                    $placeholderUrl = $resolveUrl($file['watermarked_placeholder_path'] ?? $file['placeholder_path'] ?? null);
+                    if (!$generatedWatermarkForShoot && !$this->hasWatermarkedPayload($file)) {
+                        $modelFile = $transformedShoot->files->firstWhere('id', $file['id'] ?? null);
+                        if ($modelFile instanceof ShootFile) {
+                            $this->ensureOperationalWatermarkedPreview($modelFile);
+                            $file['watermarked_thumbnail_path'] = $modelFile->watermarked_thumbnail_path;
+                            $file['watermarked_web_path'] = $modelFile->watermarked_web_path;
+                            $file['watermarked_placeholder_path'] = $modelFile->watermarked_placeholder_path;
+                            $generatedWatermarkForShoot = $this->hasWatermarkedPayload($file);
+                        }
+                    }
+
+                    $thumbUrl = $resolveUrl($file['watermarked_thumbnail_path'] ?? null);
+                    $webUrl = $resolveUrl($file['watermarked_web_path'] ?? null);
+                    $placeholderUrl = $resolveUrl($file['watermarked_placeholder_path'] ?? null);
 
                     $file['thumbnail_url'] = $thumbUrl;
                     $file['thumb_url'] = $thumbUrl;
@@ -87,6 +93,10 @@ class ShootPresenter
                     $file['web_path'] = null;
                     $file['placeholder_path'] = null;
                     $file['path'] = null;
+                    $file['uses_watermark'] = true;
+                    $file['watermarked_thumbnail_path'] = $thumbUrl;
+                    $file['watermarked_web_path'] = $webUrl;
+                    $file['watermarked_placeholder_path'] = $placeholderUrl;
                 } else {
                     $thumbUrl = $resolveUrl($file['thumbnail_path'] ?? null);
                     $webUrl = $resolveUrl($file['web_path'] ?? null);
@@ -107,7 +117,115 @@ class ShootPresenter
             })->toArray();
         }
 
+        if ($needsWatermark) {
+            $watermarkedHeroImage = collect($shootArray['files'] ?? [])
+                ->map(fn ($file) => $file['web_url'] ?? $file['thumbnail_url'] ?? $file['thumb_url'] ?? $file['url'] ?? null)
+                ->filter()
+                ->first();
+
+            $shootArray['hero_image'] = $watermarkedHeroImage;
+            $shootArray['heroImage'] = $watermarkedHeroImage;
+        }
+
         return $shootArray;
+    }
+
+    protected function resolveMediaAssetUrl($path): ?string
+    {
+        if (!$path || !is_string($path)) {
+            return null;
+        }
+
+        $path = trim($path);
+        if ($path === '') {
+            return null;
+        }
+
+        if (preg_match('/^https?:\/\//i', $path)) {
+            return $path;
+        }
+
+        $clean = ltrim($path, '/');
+        if (Str::startsWith($clean, 'storage/')) {
+            $clean = Str::after($clean, 'storage/');
+        }
+
+        if (Storage::disk('public')->exists($clean)) {
+            return $this->fileAccessService->resolvePublicStorageUrl($clean);
+        }
+
+        try {
+            return $this->dropboxService->getTemporaryLink($path);
+        } catch (\Exception $e) {
+            Log::warning('Failed to resolve shoot media asset URL', [
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    protected function hasWatermarkedPayload(array $file): bool
+    {
+        return (bool) (
+            ($file['watermarked_web_path'] ?? null)
+            || ($file['watermarked_thumbnail_path'] ?? null)
+            || ($file['watermarked_placeholder_path'] ?? null)
+        );
+    }
+
+    protected function ensureOperationalWatermarkedPreview(ShootFile $file): void
+    {
+        if (
+            $this->hasWatermarkedModelPreview($file)
+            || !$file->shouldBeWatermarked()
+            || !$this->canGenerateOperationalWatermarkedPreview($file)
+        ) {
+            return;
+        }
+
+        try {
+            $freshFile = $file->fresh();
+            if (!$freshFile) {
+                return;
+            }
+
+            $watermarkJob = new GenerateWatermarkedImageJob($freshFile);
+            $watermarkJob->handle($this->dropboxService);
+            $file->refresh();
+        } catch (\Throwable $e) {
+            Log::warning('Failed to generate watermark synchronously for shoot listing preview', [
+                'file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    protected function hasWatermarkedModelPreview(ShootFile $file): bool
+    {
+        return (bool) (
+            $file->watermarked_web_path
+            || $file->watermarked_thumbnail_path
+            || $file->watermarked_placeholder_path
+        );
+    }
+
+    protected function canGenerateOperationalWatermarkedPreview(ShootFile $file): bool
+    {
+        $mediaType = strtolower((string) ($file->media_type ?? ''));
+        if (in_array($mediaType, ['image', 'photo', 'edited'], true)) {
+            return true;
+        }
+
+        $mimeType = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
+        if (Str::startsWith($mimeType, 'image/')) {
+            return true;
+        }
+
+        $filename = strtolower((string) ($file->filename ?? $file->stored_filename ?? $file->path ?? ''));
+
+        return (bool) preg_match('/\.(jpg|jpeg|png|webp|gif|tif|tiff|heic|heif)$/i', $filename);
     }
 
     public function transformShoot(Shoot $shoot): Shoot
@@ -115,7 +233,31 @@ class ShootPresenter
         $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers']);
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
-                $query->select('id', 'shoot_id', 'shoot_service_id', 'workflow_stage', 'is_favorite', 'is_cover', 'flag_reason', 'url', 'path', 'dropbox_path');
+                $query->select(
+                    'id',
+                    'shoot_id',
+                    'shoot_service_id',
+                    'filename',
+                    'stored_filename',
+                    'workflow_stage',
+                    'is_favorite',
+                    'is_cover',
+                    'is_hidden',
+                    'flag_reason',
+                    'url',
+                    'path',
+                    'dropbox_path',
+                    'file_type',
+                    'mime_type',
+                    'media_type',
+                    'thumbnail_path',
+                    'web_path',
+                    'placeholder_path',
+                    'watermarked_storage_path',
+                    'watermarked_thumbnail_path',
+                    'watermarked_web_path',
+                    'watermarked_placeholder_path'
+                );
             }]);
         }
         if (!$shoot->relationLoaded('payments')) {
@@ -326,6 +468,9 @@ class ShootPresenter
         $shoot->editor_notes = $shoot->editor_notes;
 
         $shoot->mls_id = $shoot->mls_id;
+        $shoot->mls_image_width = $shoot->mls_image_width;
+        $shoot->mlsImageWidth = $shoot->mls_image_width;
+        $shoot->timezone = $shoot->timezone;
         $shoot->listing_source = $shoot->listing_source;
         $shoot->property_details = $shoot->property_details;
         $shoot->integration_flags = $shoot->integration_flags;

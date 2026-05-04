@@ -134,7 +134,11 @@ class ShootPublicAssetsController extends Controller
     public function generatePropertyDescription(Request $request, Shoot $shoot)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        $canGenerateDescription = $user && (
+            in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
+            || ($user->role === 'client' && (string) $shoot->client_id === (string) $user->id)
+        );
+        if (!$canGenerateDescription) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -144,24 +148,23 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'AI service is not configured'], 503);
         }
 
+        $tourLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
+        $propertyDetails = $this->shootPublicAssetsService->buildPublicTourPropertyDetails($shoot, $tourLinks);
         $imageUrls = $this->shootPublicAssetsService->resolvePropertyDescriptionImageUrls($shoot);
-        if (empty($imageUrls)) {
-            return response()->json([
-                'message' => 'No edited images available to generate description',
-            ], 422);
-        }
-
         $address = trim(($shoot->address ?? '') . ', ' . ($shoot->city ?? '') . ', ' . ($shoot->state ?? '') . ' ' . ($shoot->zip ?? ''));
-        $listingType = $shoot->listing_type === 'for_rent' ? 'rent' : 'sale';
-        $propertyDetails = $shoot->property_details ?? [];
+        $listingType = ($propertyDetails['listing_type'] ?? $shoot->listing_type) === 'for_rent' ? 'rent' : 'sale';
         $bedrooms = $propertyDetails['bedrooms'] ?? $propertyDetails['beds'] ?? null;
         $bathrooms = $propertyDetails['bathrooms'] ?? $propertyDetails['baths'] ?? null;
-        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? null;
+        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
+        $price = $propertyDetails['price'] ?? null;
+        $lotSize = $propertyDetails['lot_size'] ?? $propertyDetails['lotSize'] ?? null;
         $detailParts = [];
         foreach ([
             $bedrooms ? $bedrooms . ' bedrooms' : null,
             $bathrooms ? $bathrooms . ' bathrooms' : null,
             $sqft ? $sqft . ' sqft' : null,
+            $price ? 'list price ' . $price : null,
+            $lotSize ? 'lot size ' . $lotSize : null,
         ] as $detailPart) {
             if ($detailPart) {
                 $detailParts[] = $detailPart;
@@ -169,7 +172,8 @@ class ShootPublicAssetsController extends Controller
         }
 
         $detailStr = !empty($detailParts) ? ' Property has ' . implode(', ', $detailParts) . '.' : '';
-        $textPrompt = "\"{$address}\" is being placed for \"{$listingType}\". Attached are images for the property.{$detailStr} Write a compelling description for the property based on where it's located and what you see in the images. In max 50-100 words.";
+        $visualContext = empty($imageUrls) ? 'No images are available, so use the address and property details only.' : 'Attached are images for the property.';
+        $textPrompt = "\"{$address}\" is being placed for \"{$listingType}\". {$visualContext}{$detailStr} Write a compelling description for the property based on where it's located, the property details, and any visible image context. In max 50-100 words.";
 
         $contentParts = [['type' => 'text', 'text' => $textPrompt]];
         foreach ($imageUrls as $url) {

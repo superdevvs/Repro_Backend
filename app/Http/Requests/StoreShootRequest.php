@@ -134,6 +134,8 @@ class StoreShootRequest extends FormRequest
             'listing_source' => 'nullable|string|in:BrightMLS,Other',
             'property_details' => 'nullable|array',
             'is_private_listing' => 'nullable|boolean',
+            'listing_type' => 'nullable|string|in:for_sale,for_rent',
+            'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
         ];
     }
 

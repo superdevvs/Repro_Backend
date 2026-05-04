@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AccountLink;
+use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
@@ -545,28 +546,19 @@ class AccountLinkController extends Controller
             ], 401);
         }
 
-        $hasLinks = AccountLink::query()
-            ->where('linked_account_id', $user->id)
-            ->where('status', 'active')
-            ->exists();
-
-        $linkedAccounts = [];
-
-        if ($hasLinks) {
-            $linkedAccounts = AccountLink::query()
-                ->where('linked_account_id', $user->id)
-                ->active()
-                ->with(['mainAccount', 'linkedAccount'])
-                ->get()
-                ->map(fn (AccountLink $link) => $this->serializeIncomingOwnerForUser($link))
-                ->filter()
-                ->values()
-                ->all();
-        }
+        $linkedAccounts = AccountLink::query()
+            ->where('main_account_id', $user->id)
+            ->active()
+            ->with(['mainAccount', 'linkedAccount'])
+            ->get()
+            ->map(fn (AccountLink $link) => $this->serializeLinkedClientForOwner($link))
+            ->filter()
+            ->values()
+            ->all();
 
         return response()->json([
             'success' => true,
-            'hasLinkedAccounts' => $hasLinks,
+            'hasLinkedAccounts' => count($linkedAccounts) > 0,
             'linkedAccounts' => $linkedAccounts,
         ]);
     }
@@ -583,11 +575,11 @@ class AccountLinkController extends Controller
         }
 
         $linkedAccounts = AccountLink::query()
-            ->where('linked_account_id', $user->id)
+            ->where('main_account_id', $user->id)
             ->active()
             ->with(['mainAccount', 'linkedAccount'])
             ->get()
-            ->map(fn (AccountLink $link) => $this->serializeIncomingOwnerForUser($link))
+            ->map(fn (AccountLink $link) => $this->serializeLinkedClientForOwner($link))
             ->filter()
             ->values()
             ->all();
@@ -611,12 +603,22 @@ class AccountLinkController extends Controller
         }
 
         $validated = $request->validate([
-            'ownerId' => 'required|exists:users,id',
+            'clientId' => 'nullable|exists:users,id',
+            'ownerId' => 'nullable|exists:users,id',
         ]);
 
+        $linkedClientId = $validated['clientId'] ?? $validated['ownerId'] ?? null;
+
+        if (!$linkedClientId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A linked client is required.',
+            ], 422);
+        }
+
         $link = AccountLink::query()
-            ->where('main_account_id', $validated['ownerId'])
-            ->where('linked_account_id', $user->id)
+            ->where('main_account_id', $user->id)
+            ->where('linked_account_id', $linkedClientId)
             ->active()
             ->with(['mainAccount', 'linkedAccount'])
             ->first();
@@ -624,15 +626,15 @@ class AccountLinkController extends Controller
         if (!$link) {
             return response()->json([
                 'success' => false,
-                'message' => 'This owner is not linked to your account.',
+                'message' => 'This client is not linked to your account.',
             ], 403);
         }
 
         return response()->json([
             'success' => true,
-            'owner' => $this->serializeIncomingOwnerForUser($link),
+            'client' => $this->serializeLinkedClientForOwner($link),
             'link' => $this->serializeLink($link),
-            'sharedData' => $this->buildOwnerScopedSharedData($link),
+            'sharedData' => $this->buildLinkedClientScopedSharedData($link),
         ]);
     }
 
@@ -897,14 +899,36 @@ class AccountLinkController extends Controller
         );
     }
 
-    private function buildOwnerScopedSharedData(AccountLink $link): array
+    private function serializeLinkedClientForOwner(AccountLink $link): ?array
     {
-        $ownerId = $link->main_account_id;
+        if (!$link->linkedAccount) {
+            return null;
+        }
+
+        return [
+            'id' => (string) $link->linkedAccount->id,
+            'name' => $link->linkedAccount->name,
+            'email' => $link->linkedAccount->email,
+            'role' => $link->linkedAccount->role,
+            'avatar' => $link->linkedAccount->avatar,
+            'accountStatus' => $link->linkedAccount->account_status ?? 'active',
+            'status' => $link->status,
+            'sharedDetails' => $link->getFormattedSharedDetails(),
+            'linkedAt' => $link->linked_at?->toISOString(),
+            'linkId' => (string) $link->id,
+            'linkDirection' => 'outgoing',
+        ];
+    }
+
+    private function buildLinkedClientScopedSharedData(AccountLink $link): array
+    {
+        $linkedClientId = $link->linked_account_id;
         $sharedData = [
             'totalShoots' => 0,
             'totalSpent' => 0,
             'properties' => [],
             'paymentHistory' => [],
+            'invoiceHistory' => [],
             'lastActivity' => null,
             'sharedShoots' => [],
         ];
@@ -913,7 +937,7 @@ class AccountLinkController extends Controller
 
         if ($link->sharesDetail('shoots')) {
             $shoots = Shoot::query()
-                ->where('client_id', $ownerId)
+                ->where('client_id', $linkedClientId)
                 ->orderByDesc('scheduled_date')
                 ->orderByDesc('updated_at')
                 ->get(['id', 'address', 'city', 'state', 'scheduled_date', 'status', 'workflow_status', 'hero_image', 'updated_at']);
@@ -958,38 +982,58 @@ class AccountLinkController extends Controller
         }
 
         if ($link->sharesDetail('invoices')) {
-            $sharedData['totalSpent'] = (float) (Shoot::query()
-                ->where('client_id', $ownerId)
-                ->sum('total_quote') ?? 0);
-
-            $payments = Payment::query()
-                ->whereHas('shoot', function ($query) use ($ownerId) {
-                    $query->where('client_id', $ownerId);
+            $invoiceScope = fn ($query) => $query
+                ->where('client_id', $linkedClientId)
+                ->orWhereHas('shoot', function ($shootQuery) use ($linkedClientId) {
+                    $shootQuery->where('client_id', $linkedClientId);
                 })
-                ->with('shoot')
+                ->orWhereHas('shoots', function ($shootQuery) use ($linkedClientId) {
+                    $shootQuery->where('client_id', $linkedClientId);
+                });
+
+            $invoiceTotals = Invoice::query()
+                ->where($invoiceScope)
+                ->get(['id', 'total', 'total_amount', 'subtotal', 'tax']);
+
+            $sharedData['totalSpent'] = (float) $invoiceTotals->sum(function (Invoice $invoice) {
+                return (float) ($invoice->total ?? $invoice->total_amount ?? (($invoice->subtotal ?? 0) + ($invoice->tax ?? 0)));
+            });
+
+            $invoices = Invoice::query()
+                ->where($invoiceScope)
+                ->with(['shoot:id,address,client_id', 'shoots:id,address,client_id', 'payments'])
                 ->orderByDesc('created_at')
                 ->take(10)
                 ->get();
 
-            $sharedData['paymentHistory'] = $payments
-                ->map(function (Payment $payment) {
+            $sharedData['invoiceHistory'] = $invoices
+                ->map(function (Invoice $invoice) {
+                    $primaryShoot = $invoice->shoot ?: $invoice->shoots->first();
+                    $total = (float) ($invoice->total ?? $invoice->total_amount ?? (($invoice->subtotal ?? 0) + ($invoice->tax ?? 0)));
+                    $amountPaid = $invoice->totalPaid();
+
                     return [
-                        'id' => (string) $payment->id,
-                        'amount' => (float) $payment->amount,
-                        'status' => $payment->status,
-                        'created_at' => $payment->created_at?->toISOString(),
-                        'shoot' => $payment->shoot ? [
-                            'id' => (string) $payment->shoot->id,
-                            'address' => $payment->shoot->address,
+                        'id' => (string) $invoice->id,
+                        'invoiceNumber' => (string) ($invoice->invoice_number ?? $invoice->id),
+                        'amount' => $total,
+                        'amountPaid' => $amountPaid,
+                        'balanceDue' => $invoice->balanceDue(),
+                        'status' => $invoice->status,
+                        'issueDate' => $invoice->issue_date?->toDateString(),
+                        'dueDate' => $invoice->due_date?->toDateString(),
+                        'created_at' => $invoice->created_at?->toISOString(),
+                        'shoot' => $primaryShoot ? [
+                            'id' => (string) $primaryShoot->id,
+                            'address' => $primaryShoot->address,
                         ] : null,
                     ];
                 })
                 ->values()
                 ->all();
 
-            $paymentLastActivity = $payments->first()?->created_at?->toISOString();
-            if ($paymentLastActivity) {
-                $lastActivityCandidates[] = $paymentLastActivity;
+            $invoiceLastActivity = $invoices->first()?->created_at?->toISOString();
+            if ($invoiceLastActivity) {
+                $lastActivityCandidates[] = $invoiceLastActivity;
             }
         }
 

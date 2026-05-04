@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots;
 
+use App\Models\AccountLink;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
@@ -64,6 +65,10 @@ class ShootAuthorizationSupport
             return true;
         }
 
+        if ($this->canClientAccessLinkedShoot($shoot, $user)) {
+            return true;
+        }
+
         if (!$this->isShootDeliveredForClientAccess($shoot)) {
             return false;
         }
@@ -75,6 +80,20 @@ class ShootAuthorizationSupport
         return $shoot->ghostUsers()
             ->where('users.id', $user->id)
             ->exists();
+    }
+
+    private function canClientAccessLinkedShoot(Shoot $shoot, User $user): bool
+    {
+        if (!$shoot->client_id) {
+            return false;
+        }
+
+        return AccountLink::query()
+            ->where('main_account_id', $user->id)
+            ->where('linked_account_id', $shoot->client_id)
+            ->where('status', 'active')
+            ->get()
+            ->contains(fn (AccountLink $link) => $link->sharesDetail('shoots'));
     }
 
     public function isShootDeliveredForClientAccess(Shoot $shoot): bool

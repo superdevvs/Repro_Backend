@@ -61,14 +61,38 @@ class ShootRouteSplitControllersTest extends TestCase
             'city' => 'Baltimore',
             'state' => 'MD',
             'zip' => '21201',
+            'mls_id' => 'MLS-123',
+            'listing_type' => 'for_sale',
+            'property_status' => 'sold',
+            'property_details' => [
+                'bedrooms' => 3,
+                'bathrooms' => 2.5,
+                'sqft' => 1694,
+            ],
         ]);
+        $shoot->tour_links = [
+            'property_description' => 'Bright and inviting property description.',
+            'property_mls' => 'MLS-456',
+            'property_price' => '$525,000',
+            'property_lot_size' => '0.25 acres',
+        ];
+        $shoot->save();
 
         $response = $this->getJson("/api/public/shoots/{$shoot->id}/branded");
 
         $response->assertOk()
             ->assertJsonPath('type', 'branded')
             ->assertJsonPath('shoot.id', $shoot->id)
-            ->assertJsonPath('shoot.client_name', 'Route Split Client');
+            ->assertJsonPath('shoot.client_name', 'Route Split Client')
+            ->assertJsonPath('property_details.description', 'Bright and inviting property description.')
+            ->assertJsonPath('property_details.mls_id', 'MLS-456')
+            ->assertJsonPath('property_details.price', '$525,000')
+            ->assertJsonPath('property_details.lot_size', '0.25 acres')
+            ->assertJsonPath('property_details.listing_type', 'for_sale')
+            ->assertJsonPath('property_details.property_status', 'sold')
+            ->assertJsonPath('property_details.bedrooms', 3)
+            ->assertJsonPath('property_details.bathrooms', 2.5)
+            ->assertJsonPath('property_details.sqft', 1694);
     }
 
     /** @test */
@@ -466,13 +490,34 @@ class ShootRouteSplitControllersTest extends TestCase
             'service_id' => $this->service->id,
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
+            'listing_type' => 'for_sale',
+            'property_status' => 'coming_soon',
+            'property_details' => [
+                'bedrooms' => 4,
+                'bathrooms' => 3,
+                'sqft' => 2450,
+            ],
         ]);
+        $shoot->tour_links = [
+            'property_mls' => 'COMING-123',
+            'property_price' => '$700,000',
+            'property_lot_size' => '0.4 acres',
+        ];
+        $shoot->save();
 
         $response = $this->getJson("/api/public/clients/{$this->client->id}/profile");
 
         $response->assertOk()
             ->assertJsonPath('client.id', $this->client->id)
-            ->assertJsonPath('shoots.0.id', $shoot->id);
+            ->assertJsonPath('shoots.0.id', $shoot->id)
+            ->assertJsonPath('shoots.0.property_status', 'coming_soon')
+            ->assertJsonPath('shoots.0.listing_type', 'for_sale')
+            ->assertJsonPath('shoots.0.mls_id', 'COMING-123')
+            ->assertJsonPath('shoots.0.price', '$700,000')
+            ->assertJsonPath('shoots.0.lot_size', '0.4 acres')
+            ->assertJsonPath('shoots.0.bedrooms', 4)
+            ->assertJsonPath('shoots.0.bathrooms', 3)
+            ->assertJsonPath('shoots.0.sqft', 2450);
     }
 
     /** @test */
