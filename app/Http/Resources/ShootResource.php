@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\User;
+use App\Models\ShootFile;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -280,6 +281,14 @@ class ShootResource extends JsonResource
             'status' => $this->status,
             'workflowStatus' => $this->workflow_status,
             'deliveryStatus' => $this->delivery_status ?? 'not_started',
+            'rawPhotoCount' => (int) ($this->raw_photo_count ?? 0),
+            'editedPhotoCount' => (int) ($this->edited_photo_count ?? 0),
+            'raw_photo_count' => (int) ($this->raw_photo_count ?? 0),
+            'edited_photo_count' => (int) ($this->edited_photo_count ?? 0),
+            'canSubmitRaw' => $this->computeCanSubmitRaw($requestingUser),
+            'canSubmitEdits' => $this->computeCanSubmitEdits($requestingUser),
+            'can_submit_raw' => $this->computeCanSubmitRaw($requestingUser),
+            'can_submit_edits' => $this->computeCanSubmitEdits($requestingUser),
             'payment' => [
                 'serviceSubtotal' => $isEditor ? 0.0 : (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
                 'baseQuote' => $isEditor ? 0.0 : (float) $this->base_quote,
@@ -329,6 +338,78 @@ class ShootResource extends JsonResource
             'salesRepPaidAt' => $this->sales_rep_paid_at?->toIso8601String(),
             'salesRepPaidInvoiceId' => $this->sales_rep_paid_invoice_id,
         ];
+    }
+
+    /**
+     * Statuses from which a raw-submit is valid. Mirror FinalizeRawUploadAction.
+     */
+    private const SUBMIT_RAW_ALLOWED_STATUSES = [
+        'scheduled',
+        'booked',
+        'raw_upload_pending',
+    ];
+
+    /**
+     * Statuses from which an edited-submit is valid. Mirror FinalizeEditedUploadAction.
+     */
+    private const SUBMIT_EDITED_ALLOWED_STATUSES = [
+        'uploaded',
+        'editing',
+    ];
+
+    protected function computeCanSubmitRaw(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $role = strtolower((string) ($user->role ?? ''));
+        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'photographer'];
+        if (!in_array($role, $allowedRoles, true)) {
+            return false;
+        }
+
+        if ($role === 'photographer') {
+            $isPrimaryPhotographer = (int) $this->photographer_id === (int) $user->id;
+            $isServicePhotographer = $this->serviceItems()
+                ->where('photographer_id', $user->id)
+                ->exists();
+
+            if (!$isPrimaryPhotographer && !$isServicePhotographer) {
+                return false;
+            }
+        }
+
+        $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
+        if (!in_array($status, self::SUBMIT_RAW_ALLOWED_STATUSES, true)) {
+            return false;
+        }
+
+        return (int) ($this->raw_photo_count ?? 0) > 0
+            || $this->files()->where('workflow_stage', ShootFile::STAGE_TODO)->exists();
+    }
+
+    protected function computeCanSubmitEdits(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $role = strtolower((string) ($user->role ?? ''));
+        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'editor'];
+        if (!in_array($role, $allowedRoles, true)) {
+            return false;
+        }
+
+        $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
+        if (!in_array($status, self::SUBMIT_EDITED_ALLOWED_STATUSES, true)) {
+            return false;
+        }
+
+        return (int) ($this->edited_photo_count ?? 0) > 0
+            || $this->files()
+                ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+                ->exists();
     }
 
     protected function resolveRealtorClient(array $tourLinks): ?array

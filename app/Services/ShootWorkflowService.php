@@ -153,7 +153,14 @@ class ShootWorkflowService
      */
     public function startEditing(Shoot $shoot, ?User $user = null): void
     {
-        $this->validateTransition($shoot, self::STATUS_EDITING);
+        $isAlreadyEditing = $this->isAlreadyInStatus($shoot, self::STATUS_EDITING);
+        if (!$isAlreadyEditing) {
+            $this->validateTransition($shoot, self::STATUS_EDITING);
+        }
+
+        if ($isAlreadyEditing) {
+            return;
+        }
 
         $laneAssignments = [];
 
@@ -476,6 +483,31 @@ class ShootWorkflowService
                 "Allowed transitions: " . implode(', ', $allowedTransitions)
             );
         }
+    }
+
+    protected function isAlreadyInStatus(Shoot $shoot, string $targetStatus): bool
+    {
+        $currentStatus = $shoot->workflow_status ?? $shoot->status ?? self::STATUS_ON_HOLD;
+        $legacyMap = [
+            'booked' => self::STATUS_SCHEDULED,
+            'raw_upload_pending' => self::STATUS_SCHEDULED,
+            'raw_uploaded' => self::STATUS_UPLOADED,
+            'photos_uploaded' => self::STATUS_UPLOADED,
+            'in_progress' => self::STATUS_UPLOADED,
+            'raw_issue' => self::STATUS_UPLOADED,
+            'editing_uploaded' => self::STATUS_EDITING,
+            'editing_complete' => self::STATUS_EDITING,
+            'editing_issue' => self::STATUS_EDITING,
+            'pending_review' => self::STATUS_EDITING,
+            'ready_for_review' => self::STATUS_EDITING,
+            'qc' => self::STATUS_EDITING,
+            'review' => self::STATUS_EDITING,
+            'ready_for_client' => self::STATUS_DELIVERED,
+            'admin_verified' => self::STATUS_DELIVERED,
+            'hold_on' => self::STATUS_ON_HOLD,
+        ];
+
+        return ($legacyMap[$currentStatus] ?? $currentStatus) === $targetStatus;
     }
 
     /**

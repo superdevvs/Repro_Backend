@@ -460,44 +460,11 @@ class DropboxWorkflowService
             }
         }
 
-        // When photos are uploaded, auto-transition from scheduled to uploaded
-        if ($stage === ShootFile::STAGE_TODO) {
-            $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-            if (in_array($currentStatus, [Shoot::STATUS_SCHEDULED, 'booked', 'raw_upload_pending'], true)) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
-
-                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-                $automationService = app(AutomationService::class);
-                $context = $automationService->buildShootContext($shoot);
-                if ($shoot->rep) {
-                    $context['rep'] = $shoot->rep;
-                }
-                $automationService->handleEvent('PHOTO_UPLOADED', $context);
-                $automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
-            }
-        } elseif ($stage === ShootFile::STAGE_COMPLETED) {
-            // Edited files uploaded locally - mark shoot as ready (awaiting admin finalize)
-            $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-            $alreadyReadyOrDelivered = [
-                Shoot::STATUS_READY,
-                Shoot::STATUS_DELIVERED,
-                'ready_for_client',
-                'admin_verified',
-                'workflow_completed',
-                'client_delivered',
-            ];
-            if (!in_array($currentStatus, $alreadyReadyOrDelivered, true)) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $userId);
-
-                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-                $automationService = app(AutomationService::class);
-                $context = $automationService->buildShootContext($shoot);
-                if ($shoot->rep) {
-                    $context['rep'] = $shoot->rep;
-                }
-                $automationService->handleEvent('EDITING_COMPLETE', $context);
-            }
-        }
+        // Note: Workflow status transitions are intentionally NOT performed here.
+        // All status changes (scheduled -> uploaded, uploaded/editing -> ready) are
+        // owned by the explicit FinalizeRawUploadAction / FinalizeEditedUploadAction
+        // which are triggered by the user pressing "Submit Raw" / "Submit Edits".
+        // Uploading files only places content; submission is a distinct user action.
 
         Log::info('Stored file locally as Dropbox fallback', [
             'shoot_id' => $shoot->id,
@@ -1051,11 +1018,8 @@ class DropboxWorkflowService
                     ProcessImageJob::dispatch($shootFile)->afterResponse();
                 }
 
-                // Update shoot workflow status if this is the first photo upload
-                $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-                if (in_array($currentStatus, [Shoot::STATUS_SCHEDULED, 'booked', 'raw_upload_pending'], true)) {
-                    $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $userId);
-                }
+                // Workflow status transition is owned by FinalizeRawUploadAction;
+                // copying a file into ToDo no longer auto-advances shoot status.
 
                 Log::info("File copied from Dropbox to ToDo folder", [
                     'shoot_id' => $shoot->id,

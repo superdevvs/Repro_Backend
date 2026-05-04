@@ -324,13 +324,9 @@ class UploadShootFilesAction
             }
             $this->support->clearShootFilesCache($shoot);
 
-            if ($uploadType === 'edited' && count($uploadedFiles) > 0 && $user && in_array($user->role, ['admin', 'superadmin', 'editor', 'editing_manager'], true)) {
-                $hasEditedFiles = $shoot->files()->whereIn('workflow_stage', ['completed', 'verified'])->exists();
-                if ($hasEditedFiles && !in_array($shoot->workflow_status, [Shoot::STATUS_READY, Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified'], true)) {
-                    $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $user->id);
-                    $shoot->save();
-                }
-            }
+            // Note: Auto-transition to STATUS_READY on edited uploads has been removed.
+            // Status changes are now owned exclusively by FinalizeEditedUploadAction
+            // which is triggered by the user pressing "Submit Edits".
 
             DB::commit();
 

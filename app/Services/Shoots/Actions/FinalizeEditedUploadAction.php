@@ -2,7 +2,6 @@
 
 namespace App\Services\Shoots\Actions;
 
-use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
@@ -10,27 +9,24 @@ use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
-class FinalizeRawUploadAction
+class FinalizeEditedUploadAction
 {
     /**
-     * Statuses from which a raw-submit is valid (moves shoot to UPLOADED).
+     * Statuses from which an edited-submit is valid (moves shoot to READY).
      */
     private const ALLOWED_FROM_STATUSES = [
-        Shoot::STATUS_SCHEDULED,
-        'scheduled',
-        'booked',
-        'raw_upload_pending',
-    ];
-
-    /**
-     * Statuses that are considered "already past raw-submit" (idempotent no-op).
-     */
-    private const IDEMPOTENT_STATUSES = [
         Shoot::STATUS_UPLOADED,
         'uploaded',
         Shoot::STATUS_EDITING,
         'editing',
+    ];
+
+    /**
+     * Statuses that are considered "already past edited-submit" (idempotent no-op).
+     */
+    private const IDEMPOTENT_STATUSES = [
         Shoot::STATUS_READY,
         'ready',
         'ready_for_client',
@@ -50,7 +46,7 @@ class FinalizeRawUploadAction
 
     public function execute(Shoot $shoot, ?User $user): array
     {
-        $lock = Cache::lock('shoot:finalize-raw:' . $shoot->id, 15);
+        $lock = Cache::lock('shoot:finalize-edited:' . $shoot->id, 15);
 
         if (!$lock->get()) {
             return [
@@ -66,7 +62,6 @@ class FinalizeRawUploadAction
         try {
             $workflowStatusChanged = false;
             $previousStatus = null;
-            $shouldQueueIguideSync = false;
             $shouldFireAutomations = false;
 
             DB::beginTransaction();
@@ -86,14 +81,12 @@ class FinalizeRawUploadAction
                     ];
                 }
 
-                // Recalculate counters from DB — never trust client-supplied counts.
                 $shoot = $this->support->refreshMediaCounters($locked);
                 $this->support->clearShootFilesCache($shoot);
 
                 $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
                 $previousStatus = $currentStatus;
 
-                // Strict state validation.
                 $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
                 $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
@@ -101,11 +94,10 @@ class FinalizeRawUploadAction
                     DB::commit();
 
                     if (in_array($currentStatus, $idempotent, true)) {
-                        // Already submitted / past this stage — idempotent success.
                         return [
                             'status' => 200,
                             'payload' => [
-                                'message' => 'Shoot has already been submitted.',
+                                'message' => 'Shoot has already been submitted for client review.',
                                 'workflow_status_changed' => false,
                                 'shoot_status' => $shoot->workflow_status,
                                 'raw_photo_count' => $shoot->raw_photo_count,
@@ -114,13 +106,12 @@ class FinalizeRawUploadAction
                         ];
                     }
 
-                    // Terminal / invalid state (cancelled, declined, on_hold, etc.).
                     return [
                         'status' => 409,
                         'payload' => [
                             'error_type' => 'invalid_workflow_state',
                             'message' => sprintf(
-                                'Cannot submit raw files while shoot is in state "%s".',
+                                'Cannot submit edited files while shoot is in state "%s".',
                                 $currentStatus
                             ),
                             'workflow_status_changed' => false,
@@ -129,23 +120,22 @@ class FinalizeRawUploadAction
                     ];
                 }
 
-                if ((int) $shoot->raw_photo_count <= 0) {
+                if ((int) $shoot->edited_photo_count <= 0) {
                     DB::rollBack();
                     return [
                         'status' => 422,
                         'payload' => [
                             'error_type' => 'no_files',
-                            'message' => 'No raw files found for this shoot. Upload at least one file before submitting.',
+                            'message' => 'No edited files found for this shoot. Upload at least one edited file before submitting.',
                             'workflow_status_changed' => false,
                             'shoot_status' => $shoot->workflow_status,
-                            'raw_photo_count' => $shoot->raw_photo_count,
+                            'edited_photo_count' => $shoot->edited_photo_count,
                         ],
                     ];
                 }
 
-                $shoot->updateWorkflowStatus(Shoot::STATUS_UPLOADED, $user?->id ?? auth()->id());
+                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $user?->id ?? auth()->id());
                 $workflowStatusChanged = true;
-                $shouldQueueIguideSync = true;
                 $shouldFireAutomations = true;
 
                 DB::commit();
@@ -156,14 +146,13 @@ class FinalizeRawUploadAction
                     'status' => 500,
                     'payload' => [
                         'error_type' => 'server_error',
-                        'message' => 'Failed to finalize raw upload queue',
+                        'message' => 'Failed to finalize edited upload queue',
                         'error' => $exception->getMessage(),
                         'workflow_status_changed' => false,
                     ],
                 ];
             }
 
-            // Post-commit side effects — only on a real status change.
             if ($shouldFireAutomations) {
                 try {
                     $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
@@ -171,10 +160,9 @@ class FinalizeRawUploadAction
                     if ($shoot->rep) {
                         $context['rep'] = $shoot->rep;
                     }
-                    $this->automationService->handleEvent('PHOTO_UPLOADED', $context);
-                    $this->automationService->handleEvent('MEDIA_UPLOAD_COMPLETE', $context);
+                    $this->automationService->handleEvent('EDITING_COMPLETE', $context);
                 } catch (\Throwable $e) {
-                    \Log::warning('Automation dispatch failed during finalize-raw', [
+                    Log::warning('Automation dispatch failed during finalize-edited', [
                         'shoot_id' => $shoot->id,
                         'error' => $e->getMessage(),
                     ]);
@@ -183,34 +171,30 @@ class FinalizeRawUploadAction
                 try {
                     $this->activityLogger->log(
                         $shoot,
-                        'shoot_submitted_raw',
+                        'shoot_submitted_edited',
                         [
                             'from_status' => $previousStatus,
                             'to_status' => $shoot->workflow_status,
                             'role' => $user?->role,
                             'user_id' => $user?->id,
-                            'raw_photo_count' => (int) $shoot->raw_photo_count,
+                            'edited_photo_count' => (int) $shoot->edited_photo_count,
                         ],
                         $user
                     );
                 } catch (\Throwable $e) {
-                    \Log::warning('Failed to log shoot_submitted_raw activity', [
+                    Log::warning('Failed to log shoot_submitted_edited activity', [
                         'shoot_id' => $shoot->id,
                         'error' => $e->getMessage(),
                     ]);
                 }
             }
 
-            if ($shouldQueueIguideSync) {
-                SyncShootIguideJob::dispatch($shoot->id);
-            }
-
             return [
                 'status' => 200,
                 'payload' => [
                     'message' => $workflowStatusChanged
-                        ? 'Raw files submitted successfully. Shoot is now Uploaded.'
-                        : 'Raw upload queue finalized with no workflow change',
+                        ? 'Edited files submitted successfully. Shoot is now Ready for finalization.'
+                        : 'Edited upload queue finalized with no workflow change',
                     'workflow_status_changed' => $workflowStatusChanged,
                     'shoot_status' => $shoot->workflow_status,
                     'raw_photo_count' => $shoot->raw_photo_count,

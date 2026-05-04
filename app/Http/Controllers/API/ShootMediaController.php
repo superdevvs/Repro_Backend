@@ -73,17 +73,63 @@ class ShootMediaController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $user = $request->user();
-        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
 
-        if (!$isAdmin && !$shoot->canUploadPhotos()) {
+        if (!$user) {
             return response()->json([
-                'error_type' => 'invalid_workflow_stage',
-                'message' => 'Cannot finalize raw uploads at this workflow stage',
-                'current_status' => $shoot->workflow_status,
-            ], 400);
+                'error_type' => 'unauthenticated',
+                'message' => 'Authentication required.',
+            ], 401);
+        }
+
+        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'photographer'];
+        if (!in_array($user->role, $allowedRoles, true)) {
+            return response()->json([
+                'error_type' => 'forbidden',
+                'message' => 'You do not have permission to submit raw uploads for this shoot.',
+            ], 403);
+        }
+
+        // Photographer may only submit their assigned shoot or service item; admin-like roles may submit any.
+        if (
+            $user->role === 'photographer'
+            && (int) $shoot->photographer_id !== (int) $user->id
+            && !$shoot->serviceItems()->where('photographer_id', $user->id)->exists()
+        ) {
+            return response()->json([
+                'error_type' => 'forbidden',
+                'message' => 'This shoot is not assigned to you.',
+            ], 403);
         }
 
         $result = $this->finalizeRawUploadAction->execute($shoot, $user);
+
+        return response()->json($result['payload'], $result['status']);
+    }
+
+    public function finalizeEditedUpload(
+        Request $request,
+        $shootId,
+        \App\Services\Shoots\Actions\FinalizeEditedUploadAction $action
+    ) {
+        $shoot = Shoot::findOrFail($shootId);
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'error_type' => 'unauthenticated',
+                'message' => 'Authentication required.',
+            ], 401);
+        }
+
+        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'editor'];
+        if (!in_array($user->role, $allowedRoles, true)) {
+            return response()->json([
+                'error_type' => 'forbidden',
+                'message' => 'You do not have permission to submit edited uploads for this shoot.',
+            ], 403);
+        }
+
+        $result = $action->execute($shoot, $user);
 
         return response()->json($result['payload'], $result['status']);
     }
@@ -256,6 +302,13 @@ class ShootMediaController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
+        if (
+            $this->shootAuthorizationSupport->hasRole(auth()->user(), ['editor'])
+            && !$this->canEditorDeleteEditedMediaBeforeSubmit($shoot, [$file])
+        ) {
+            return response()->json(['message' => 'Editors can only delete edited uploads before submitting for review.'], 403);
+        }
+
         try {
             return response()->json($this->deleteShootMediaAction->execute($shoot, $file));
         } catch (\Exception $e) {
@@ -349,6 +402,13 @@ class ShootMediaController extends Controller
             || $files->contains(fn (ShootFile $file) => !$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user))
         ) {
             return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (
+            $this->shootAuthorizationSupport->hasRole($user, ['editor'])
+            && !$this->canEditorDeleteEditedMediaBeforeSubmit($shoot, $files)
+        ) {
+            return response()->json(['message' => 'Editors can only delete edited uploads before submitting for review.'], 403);
         }
 
         $result = $this->shootMediaInteractionService->bulkDelete(
@@ -682,5 +742,50 @@ class ShootMediaController extends Controller
             $request->input('file_ids'),
             $request->input('media_type')
         ));
+    }
+
+    private function canEditorDeleteEditedMediaBeforeSubmit(Shoot $shoot, iterable $files): bool
+    {
+        if ($this->isShootSubmittedForReview($shoot)) {
+            return false;
+        }
+
+        foreach ($files as $file) {
+            if (!$this->isEditableUploadedMedia($file) || $this->isFileSubmittedForReview($shoot, $file)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isShootSubmittedForReview(Shoot $shoot): bool
+    {
+        if ($shoot->submitted_for_review_at) {
+            return true;
+        }
+
+        $status = strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: ''));
+
+        return in_array($status, ['pending_review', 'ready_for_review', 'qc', 'review', Shoot::STATUS_READY], true);
+    }
+
+    private function isEditableUploadedMedia(ShootFile $file): bool
+    {
+        return in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)
+            && !$this->shootAuthorizationSupport->isRawCameraFile($file);
+    }
+
+    private function isFileSubmittedForReview(Shoot $shoot, ShootFile $file): bool
+    {
+        if (!$file->shoot_service_id) {
+            return false;
+        }
+
+        $serviceItem = $shoot->serviceItems()
+            ->whereKey($file->shoot_service_id)
+            ->first();
+
+        return (bool) ($serviceItem?->editing_completed_at);
     }
 }

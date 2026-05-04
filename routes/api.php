@@ -561,6 +561,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
     Route::post('/shoots/{shoot}/upload/finalize-raw', [ShootMediaController::class, 'finalizeRawUpload']);
+    Route::post('/shoots/{shoot}/upload/finalize-edited', [ShootMediaController::class, 'finalizeEditedUpload']);
     Route::post('/shoots/{shoot}/upload-extra', [ShootMediaController::class, 'uploadExtra']);
     Route::get('/shoots/{shoot}/files', [ShootMediaController::class, 'getFiles']);
     Route::post('/shoots/{shoot}/files/download', [ShootMediaController::class, 'downloadSelectedFiles']);
