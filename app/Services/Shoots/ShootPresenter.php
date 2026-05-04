@@ -531,7 +531,12 @@ class ShootPresenter
                 $serviceItemByServiceId = collect($serviceItemSummaries)->keyBy('service_id');
 
                 $shootPhotographerId = $shoot->photographer_id;
-                $shootPhotographer = $shoot->photographer;
+                $shootPhotographer = $shoot->relationLoaded('photographer')
+                    ? $shoot->getRelation('photographer')
+                    : null;
+                if (!$shootPhotographer instanceof User) {
+                    $shootPhotographer = null;
+                }
 
                 $servicePhotographerIds = $servicesSource
                     ->filter(fn ($s) => is_object($s))
