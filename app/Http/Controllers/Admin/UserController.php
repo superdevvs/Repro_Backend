@@ -415,7 +415,7 @@ class UserController extends Controller
             $accountCreatedContext['password_reset_link'] = $resetLink;
             $accountCreatedContext['include_password_creation_link'] = true;
             $equipmentVerificationLink = $pendingEquipmentCount > 0
-                ? $mailService->equipmentVerificationLink()
+                ? $mailService->equipmentVerificationLink($user)
                 : null;
             if ($equipmentVerificationLink !== null) {
                 $accountCreatedContext['equipment_verification_link'] = $equipmentVerificationLink;
@@ -816,6 +816,8 @@ class UserController extends Controller
         $existingServiceGroupIds = $this->serviceGroupsFeatureAvailable()
             ? $user->getAssignedServiceGroupIds()
             : [];
+        $oldRoleForNotification = (string) $user->role;
+        $oldSecondaryRolesForNotification = $user->secondary_roles ?? [];
 
         $user->fill($validated);
         $changedFields = collect(array_keys($user->getDirty()))
@@ -842,6 +844,7 @@ class UserController extends Controller
         }
 
         $changedFields = array_values(array_unique($changedFields));
+        $roleChanged = in_array('role', $changedFields, true);
 
         if (strtolower((string) $user->email) === self::PRIMARY_SUPERADMIN_EMAIL && $user->role === 'superadmin') {
             $this->demoteOtherSuperAdmins($user);
@@ -858,6 +861,24 @@ class UserController extends Controller
                     'changed_fields' => $changedFields,
                 ]
             );
+        }
+
+        if ($roleChanged) {
+            try {
+                app(MailService::class)->sendRoleChangedEmail(
+                    $user,
+                    $oldRoleForNotification,
+                    (string) $user->role,
+                    $oldSecondaryRolesForNotification,
+                    $user->secondary_roles ?? []
+                );
+            } catch (\Throwable $exception) {
+                \Log::warning('Failed to send role change email after account update', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
         }
 
         if ($emailHealthMutation['warning_override']) {
@@ -979,6 +1000,24 @@ class UserController extends Controller
                     'new_secondary_roles' => $user->secondary_roles ?? [],
                 ]
             );
+
+            // Send role change email notification
+            try {
+                $mailService = app(MailService::class);
+                $mailService->sendRoleChangedEmail(
+                    $user,
+                    $oldRole,
+                    $user->role,
+                    $oldSecondaryRoles,
+                    $user->secondary_roles ?? []
+                );
+            } catch (\Exception $e) {
+                \Log::warning('Failed to send role change email', [
+                    'user_id' => $user->id,
+                    'email' => $user->email,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         return response()->json([

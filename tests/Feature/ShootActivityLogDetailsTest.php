@@ -82,6 +82,47 @@ class ShootActivityLogDetailsTest extends TestCase
         $this->assertCount(2, $log->metadata['file_ids']);
     }
 
+    public function test_raw_upload_batch_creates_single_visible_media_uploaded_activity(): void
+    {
+        Queue::fake();
+        Storage::fake('public');
+
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $shoot = $this->createShoot([
+            'photographer_id' => $photographer->id,
+            'status' => Shoot::STATUS_UPLOADED,
+            'workflow_status' => Shoot::STATUS_UPLOADED,
+        ]);
+        $this->mockUploadToTodo(3);
+
+        Sanctum::actingAs($photographer);
+
+        foreach (['front.nef', 'kitchen.nef', 'bedroom.nef'] as $index => $filename) {
+            $this->post("/api/shoots/{$shoot->id}/upload", [
+                'upload_type' => 'raw',
+                'upload_batch_id' => 'raw-batch-test',
+                'upload_batch_total' => 3,
+                'upload_batch_index' => $index,
+                'files' => [
+                    UploadedFile::fake()->create($filename, 16, 'application/octet-stream'),
+                ],
+            ], ['Accept' => 'application/json'])->assertOk();
+        }
+
+        $this->assertSame(1, ShootActivityLog::query()
+            ->where('shoot_id', $shoot->id)
+            ->where('action', 'media_uploaded')
+            ->count());
+
+        $log = $this->latestActivity($shoot, 'media_uploaded');
+
+        $this->assertSame('Media uploaded by photographer: 3 files (raw)', $log->description);
+        $this->assertSame('photographer', $log->metadata['uploaded_by_role']);
+        $this->assertSame('raw', $log->metadata['type']);
+        $this->assertSame(3, $log->metadata['file_count']);
+        $this->assertCount(3, $log->metadata['file_ids']);
+    }
+
     public function test_editor_edited_upload_creates_visible_media_uploaded_activity(): void
     {
         Queue::fake();
@@ -110,6 +151,47 @@ class ShootActivityLogDetailsTest extends TestCase
         $this->assertSame('editor', $log->metadata['uploaded_by_role']);
         $this->assertSame('edited', $log->metadata['type']);
         $this->assertSame(1, $log->metadata['file_count']);
+    }
+
+    public function test_edited_upload_batch_creates_single_visible_media_uploaded_activity(): void
+    {
+        Queue::fake();
+        Storage::fake('public');
+
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot = $this->createShoot([
+            'editor_id' => $editor->id,
+            'status' => Shoot::STATUS_READY,
+            'workflow_status' => Shoot::STATUS_READY,
+        ]);
+        $this->mockUploadToCompleted(3);
+
+        Sanctum::actingAs($editor);
+
+        foreach (['front.jpg', 'kitchen.jpg', 'bedroom.jpg'] as $index => $filename) {
+            $this->post("/api/shoots/{$shoot->id}/upload", [
+                'upload_type' => 'edited',
+                'upload_batch_id' => 'edited-batch-test',
+                'upload_batch_total' => 3,
+                'upload_batch_index' => $index,
+                'files' => [
+                    UploadedFile::fake()->create($filename, 16, 'application/octet-stream'),
+                ],
+            ], ['Accept' => 'application/json'])->assertOk();
+        }
+
+        $this->assertSame(1, ShootActivityLog::query()
+            ->where('shoot_id', $shoot->id)
+            ->where('action', 'media_uploaded')
+            ->count());
+
+        $log = $this->latestActivity($shoot, 'media_uploaded');
+
+        $this->assertSame('Media uploaded by editor: 3 files (edited)', $log->description);
+        $this->assertSame('editor', $log->metadata['uploaded_by_role']);
+        $this->assertSame('edited', $log->metadata['type']);
+        $this->assertSame(3, $log->metadata['file_count']);
+        $this->assertCount(3, $log->metadata['file_ids']);
     }
 
     public function test_finalize_job_creates_finalized_delivered_activity(): void
@@ -240,11 +322,11 @@ class ShootActivityLogDetailsTest extends TestCase
             ->firstOrFail();
     }
 
-    private function mockUploadToTodo(): void
+    private function mockUploadToTodo(int $times = 2): void
     {
         $dropbox = Mockery::mock(DropboxWorkflowService::class);
         $dropbox->shouldReceive('uploadToTodo')
-            ->twice()
+            ->times($times)
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null) {
                 return $this->createShootFile($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaTypeOverride ?? 'raw');
             });
@@ -252,11 +334,11 @@ class ShootActivityLogDetailsTest extends TestCase
         $this->app->instance(DropboxWorkflowService::class, $dropbox);
     }
 
-    private function mockUploadToCompleted(): void
+    private function mockUploadToCompleted(int $times = 1): void
     {
         $dropbox = Mockery::mock(DropboxWorkflowService::class);
         $dropbox->shouldReceive('uploadToCompleted')
-            ->once()
+            ->times($times)
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null) {
                 return $this->createShootFile($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaTypeOverride ?? 'edited');
             });

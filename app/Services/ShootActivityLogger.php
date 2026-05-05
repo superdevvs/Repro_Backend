@@ -95,6 +95,76 @@ class ShootActivityLogger
         });
     }
 
+    public function logMediaUploaded(Shoot $shoot, array $metadata = [], ?User $user = null): \App\Models\ShootActivityLog
+    {
+        $batchId = trim((string) ($metadata['upload_batch_id'] ?? ''));
+
+        if ($batchId === '') {
+            return $this->log($shoot, 'media_uploaded', $metadata, $user);
+        }
+
+        return DB::transaction(function () use ($shoot, $metadata, $user, $batchId) {
+            $userId = $user?->id ?? auth()->id();
+            $existingLog = $shoot->activityLogs()
+                ->where('action', 'media_uploaded')
+                ->where('user_id', $userId)
+                ->where('created_at', '>=', now()->subHours(2))
+                ->latest('id')
+                ->get()
+                ->first(function ($log) use ($batchId) {
+                    $existingMetadata = is_array($log->metadata) ? $log->metadata : [];
+
+                    return (string) ($existingMetadata['upload_batch_id'] ?? '') === $batchId;
+                });
+
+            if (!$existingLog) {
+                return $this->log($shoot, 'media_uploaded', $metadata, $user);
+            }
+
+            $mergedMetadata = $this->mergeMediaUploadMetadata(
+                is_array($existingLog->metadata) ? $existingLog->metadata : [],
+                $metadata
+            );
+
+            $existingLog->forceFill([
+                'description' => $this->generateDescription('media_uploaded', $mergedMetadata),
+                'metadata' => $mergedMetadata,
+            ])->save();
+
+            return $existingLog;
+        });
+    }
+
+    protected function mergeMediaUploadMetadata(array $existingMetadata, array $incomingMetadata): array
+    {
+        $existingFileIds = $this->normalizeMetadataList($existingMetadata['file_ids'] ?? []);
+        $incomingFileIds = $this->normalizeMetadataList($incomingMetadata['file_ids'] ?? []);
+        $fileIds = array_values(array_unique(array_merge($existingFileIds, $incomingFileIds)));
+
+        $existingFilenames = $this->normalizeMetadataList($existingMetadata['filenames'] ?? []);
+        $incomingFilenames = $this->normalizeMetadataList($incomingMetadata['filenames'] ?? []);
+        $filenames = array_values(array_unique(array_merge($existingFilenames, $incomingFilenames)));
+
+        $existingCount = (int) ($existingMetadata['file_count'] ?? count($existingFileIds));
+        $incomingCount = (int) ($incomingMetadata['file_count'] ?? count($incomingFileIds));
+        $fileCount = count($fileIds) > 0 ? count($fileIds) : $existingCount + $incomingCount;
+
+        return array_merge($existingMetadata, $incomingMetadata, [
+            'file_count' => $fileCount,
+            'file_ids' => $fileIds,
+            'filenames' => $filenames,
+        ]);
+    }
+
+    protected function normalizeMetadataList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter($value, fn ($item) => $item !== null && $item !== ''));
+    }
+
     /**
      * Generate human-readable description from action and metadata
      */

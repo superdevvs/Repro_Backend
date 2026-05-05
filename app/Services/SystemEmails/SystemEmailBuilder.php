@@ -55,6 +55,7 @@ class SystemEmailBuilder
             'CLIENT_EMAIL_VERIFICATION' => 'Verify Your Email Address',
             'CLIENT_EMAIL_VERIFIED' => 'Your Email Is Verified',
             'PHOTOGRAPHER_EQUIPMENT_VERIFICATION' => 'Equipment Verification Required',
+            'ROLE_CHANGED' => 'Your Account Role Was Updated',
             'PASSWORD_RESET' => 'Reset Your Password - R/E Pro Photos',
             'SHOOT_SCHEDULED' => 'New Shoot Scheduled',
             'SHOOT_UPDATED' => 'Scheduled Photo Shoot Updated',

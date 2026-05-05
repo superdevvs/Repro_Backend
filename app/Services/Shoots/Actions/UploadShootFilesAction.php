@@ -332,18 +332,34 @@ class UploadShootFilesAction
 
             if (count($uploadedFiles) > 0) {
                 try {
-                    $this->activityLogger->log(
+                    $activityMetadata = [
+                        'uploaded_by_role' => $user?->role,
+                        'uploaded_by_name' => $user?->name,
+                        'type' => $uploadType === 'edited' ? 'edited' : 'raw',
+                        'shoot_service_id' => $shootServiceId,
+                        'file_count' => count($uploadedFiles),
+                        'file_ids' => array_values(array_filter(array_column($uploadedFiles, 'id'))),
+                        'filenames' => array_values(array_filter(array_column($uploadedFiles, 'filename'))),
+                    ];
+
+                    $uploadBatchId = trim((string) $request->input('upload_batch_id', ''));
+                    if ($uploadBatchId !== '') {
+                        $activityMetadata['upload_batch_id'] = mb_substr($uploadBatchId, 0, 120);
+
+                        $uploadBatchTotal = (int) $request->input('upload_batch_total', 0);
+                        if ($uploadBatchTotal > 0) {
+                            $activityMetadata['upload_batch_total'] = $uploadBatchTotal;
+                        }
+
+                        $uploadBatchIndex = $request->input('upload_batch_index');
+                        if ($uploadBatchIndex !== null && $uploadBatchIndex !== '') {
+                            $activityMetadata['upload_batch_index'] = (int) $uploadBatchIndex;
+                        }
+                    }
+
+                    $this->activityLogger->logMediaUploaded(
                         $shoot,
-                        'media_uploaded',
-                        [
-                            'uploaded_by_role' => $user?->role,
-                            'uploaded_by_name' => $user?->name,
-                            'type' => $uploadType === 'edited' ? 'edited' : 'raw',
-                            'shoot_service_id' => $shootServiceId,
-                            'file_count' => count($uploadedFiles),
-                            'file_ids' => array_values(array_filter(array_column($uploadedFiles, 'id'))),
-                            'filenames' => array_values(array_filter(array_column($uploadedFiles, 'filename'))),
-                        ],
+                        $activityMetadata,
                         $user
                     );
                 } catch (\Exception $activityException) {

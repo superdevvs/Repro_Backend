@@ -99,7 +99,7 @@ class MailService
     public function sendPhotographerEquipmentVerificationEmail(User $photographer, int $pendingEquipmentCount = 0): bool
     {
         try {
-            $equipmentVerificationLink = $this->equipmentVerificationLink();
+            $equipmentVerificationLink = $this->equipmentVerificationLink($photographer);
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($photographer),
@@ -139,10 +139,16 @@ class MailService
         }
     }
 
-    public function equipmentVerificationLink(): string
+    public function equipmentVerificationLink(?User $photographer = null): string
     {
+        $query = ['tab' => 'equipments', 'verify' => 'equipment'];
+
+        if ($photographer !== null) {
+            $query['photographer_id'] = (string) $photographer->id;
+        }
+
         return rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
-            . '/photographer-account?tab=equipments';
+            . '/photographer-account?' . http_build_query($query);
     }
 
     private function accountCreatedRecipientType(User $user): string
@@ -2436,6 +2442,66 @@ class MailService
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Send role changed email to user
+     */
+    public function sendRoleChangedEmail(
+        User $user,
+        string $oldRole,
+        string $newRole,
+        array $oldSecondaryRoles = [],
+        array $newSecondaryRoles = []
+    ): bool {
+        try {
+            $oldRoleLabel = $this->formatRoleLabel($oldRole);
+            $newRoleLabel = $this->formatRoleLabel($newRole);
+
+            $secondaryRolesLabels = collect($newSecondaryRoles ?? [])
+                ->map(fn ($role) => $this->formatRoleLabel((string) $role))
+                ->filter()
+                ->values()
+                ->all();
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($user),
+                'meta' => [
+                    'recipient_type' => $newRole,
+                    'old_role_label' => $oldRoleLabel,
+                    'new_role_label' => $newRoleLabel,
+                    'secondary_roles' => $secondaryRolesLabels,
+                    'event_version' => sha1($oldRole . '|' . $newRole . '|' . implode(',', $oldSecondaryRoles) . '|' . implode(',', $newSecondaryRoles)),
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('ROLE_CHANGED', $payload, $user->email, [], [], [
+                'related_account_id' => $user->id,
+                'enforce_email_health_gate' => false,
+            ], [
+                'idempotency_key' => sprintf('ROLE_CHANGED:%d:%s', $user->id, sha1($oldRole . '|' . $newRole)),
+            ]);
+
+            Log::info('Role changed email sent', [
+                'user_id' => $user->id,
+                'email' => $user->email,
+                'old_role' => $oldRole,
+                'new_role' => $newRole,
+            ]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send role changed email', [
+                'user_id' => $user->id,
+                'email' => $user->email ?? null,
+                'old_role' => $oldRole,
+                'new_role' => $newRole,
                 'error' => $e->getMessage(),
             ]);
 
