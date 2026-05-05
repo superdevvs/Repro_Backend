@@ -6,6 +6,7 @@ use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageChannel;
 use App\Models\MessageTemplate;
+use App\Models\PhotographerEquipment;
 use App\Models\SystemEmailDispatch;
 use App\Models\User;
 use App\Services\MailService;
@@ -15,6 +16,7 @@ use App\Services\SystemEmails\EmailContextBuilder;
 use App\Services\SystemEmails\SystemEmailOrchestrator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Mail;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class SystemEmailPlatformTest extends TestCase
@@ -103,6 +105,45 @@ class SystemEmailPlatformTest extends TestCase
         $dispatch = SystemEmailDispatch::query()->where('message_id', $message->id)->first();
         $this->assertNotNull($dispatch);
         $this->assertSame('ACCOUNT_CREATED_V1', $dispatch->email_type);
+    }
+
+    public function test_account_created_protected_automation_uses_account_context_as_recipient(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $user = User::factory()->photographer()->create([
+            'email' => 'created-photographer@example.com',
+            'name' => 'Created Photographer',
+        ]);
+
+        AutomationRule::create([
+            'name' => 'Protected Account Created Rule',
+            'trigger_type' => 'ACCOUNT_CREATED',
+            'is_active' => true,
+            'scope' => 'GLOBAL',
+            'recipients_json' => ['client'],
+        ]);
+
+        $executor = $this->app->make(AutomationWorkflowExecutor::class);
+        $resetLink = 'https://reprodashboard.com/reset-password?token=account-context&email=' . urlencode($user->email);
+
+        $summary = $executor->executeEventTrigger('ACCOUNT_CREATED', [
+            'account_id' => $user->id,
+            'account' => $user,
+            'password_reset_link' => $resetLink,
+            'include_password_creation_link' => true,
+        ]);
+
+        $this->assertContains(strtolower($user->email), $summary['email_sent_to']);
+
+        $message = Message::query()
+            ->where('related_account_id', $user->id)
+            ->where('send_source', 'ACCOUNT_CREATED')
+            ->first();
+
+        $this->assertNotNull($message);
+        $this->assertSame($user->email, $message->to_address);
     }
 
     public function test_mail_service_no_longer_renders_protected_email_blade_views_directly(): void
@@ -309,6 +350,42 @@ class SystemEmailPlatformTest extends TestCase
         $this->assertSame('CLIENT_EMAIL_VERIFIED_V1', $message->metadata['canonical_email']['email_type'] ?? null);
         $this->assertSame(42, $message->metadata['canonical_email']['verification_token_id'] ?? null);
         $this->assertSame('CLIENT_EMAIL_VERIFIED_V1', $dispatch->email_type);
+    }
+
+    public function test_equipment_assignment_email_is_sent_to_secondary_role_photographer_clients(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->create([
+            'role' => 'client',
+            'secondary_roles' => ['photographer'],
+            'email' => 'secondary-photographer@example.com',
+            'email_status' => 'unverified',
+            'email_verified_at' => null,
+        ]);
+        $equipment = PhotographerEquipment::create([
+            'name' => 'Camera Kit',
+            'status' => PhotographerEquipment::STATUS_PENDING,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->putJson("/api/admin/photographer-equipments/{$equipment->id}", [
+            'photographer_id' => $photographer->id,
+        ]);
+
+        $response->assertOk();
+
+        $message = Message::query()
+            ->where('related_account_id', $photographer->id)
+            ->where('send_source', 'PHOTOGRAPHER_EQUIPMENT_VERIFICATION')
+            ->first();
+
+        $this->assertNotNull($message);
+        $this->assertSame($photographer->email, $message->to_address);
+        $this->assertNotNull($equipment->fresh()->verification_requested_at);
     }
 
     private function createDefaultEmailChannel(): MessageChannel

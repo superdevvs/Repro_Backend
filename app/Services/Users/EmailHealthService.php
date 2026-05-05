@@ -93,6 +93,7 @@ class EmailHealthService
     protected const TRANSACTIONAL_SEND_SOURCES = [
         'ACCOUNT_CREATED',
         'CLIENT_EMAIL_VERIFICATION',
+        'PHOTOGRAPHER_EQUIPMENT_VERIFICATION',
         'PASSWORD_RESET',
         'TERMS_ACCEPTED',
         'SHOOT_SCHEDULED',

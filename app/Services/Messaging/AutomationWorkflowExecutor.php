@@ -536,7 +536,7 @@ class AutomationWorkflowExecutor
 
         switch ($triggerType) {
             case 'ACCOUNT_CREATED':
-                $user = $client ?? $rep ?? $this->contextUser($context, 'photographer');
+                $user = $this->contextUser($context, 'account') ?? $client ?? $rep ?? $this->contextUser($context, 'photographer');
                 $resetLink = (string) ($context['password_reset_link'] ?? '');
                 $verificationLink = isset($context['verification_link']) ? (string) $context['verification_link'] : null;
                 $equipmentVerificationLink = isset($context['equipment_verification_link'])
@@ -1162,7 +1162,11 @@ class AutomationWorkflowExecutor
             }
 
             $context = is_array($run->context_json) ? $run->context_json : [];
-            $clientEmails = array_merge($clientEmails, $this->extractContextEmails($context['client'] ?? null));
+            $clientEmails = array_merge(
+                $clientEmails,
+                $this->extractContextEmails($context['account'] ?? null),
+                $this->extractContextEmails($context['client'] ?? null)
+            );
             $photographerEmails = array_merge(
                 $photographerEmails,
                 $this->extractContextEmails($context['photographer'] ?? null),

@@ -434,8 +434,9 @@ class UserController extends Controller
             }
 
             $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-            $accountCreatedEmailSent = !empty($accountCreatedDispatch['email_sent_to'] ?? []);
-            if ($automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
+            $accountCreatedEmailSent = collect($accountCreatedDispatch['email_sent_to'] ?? [])
+                ->contains(fn ($email) => strtolower(trim((string) $email)) === strtolower(trim((string) $user->email)));
+            if (!$accountCreatedEmailSent || $automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
                 $accountCreatedEmailSent = $mailService->sendAccountCreatedEmail(
                     $user,
                     $resetLink,

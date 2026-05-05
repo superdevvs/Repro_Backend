@@ -538,6 +538,7 @@ class AutomationService
     {
         $context = [
             'account_id' => $user->id,
+            'account' => $user,
         ];
 
         $role = strtolower((string) $user->role);
