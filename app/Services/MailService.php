@@ -67,7 +67,7 @@ class MailService
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
                 'meta' => [
-                    'recipient_type' => $user->role === 'client' ? 'client' : 'other',
+                    'recipient_type' => $this->accountCreatedRecipientType($user),
                     'pending_equipment_count' => $pendingEquipmentCount,
                     'include_password_creation_link' => $includePasswordCreationLink,
                     'event_version' => sha1($accountPasswordLink . '|' . ($verificationLink ?? '') . '|' . ($equipmentVerificationLink ?? '') . '|' . $pendingEquipmentCount . '|' . (int) $includePasswordCreationLink),
@@ -142,7 +142,18 @@ class MailService
     public function equipmentVerificationLink(): string
     {
         return rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
-            . '/profile?tab=equipments';
+            . '/photographer-account?tab=equipments';
+    }
+
+    private function accountCreatedRecipientType(User $user): string
+    {
+        return match ($user->role) {
+            'client' => 'client',
+            'photographer' => 'photographer',
+            'salesRep' => 'rep',
+            'admin', 'superadmin', 'editing_manager' => 'admin',
+            default => 'other',
+        };
     }
 
     public function generateClientEmailVerificationLink(User $user, array $context = []): string

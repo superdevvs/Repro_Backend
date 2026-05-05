@@ -798,8 +798,13 @@ class PhotographerAvailabilityController extends Controller
 
         $services = $shoot->services;
         if ($services && $services->isNotEmpty()) {
-            $maxDurationHours = $services->max('delivery_time') ?? ($defaultDurationMinutes / 60);
-            $calculatedDurationMinutes = (int)($maxDurationHours * 60);
+            $calculatedDurationMinutes = (int) $services
+                ->map(function ($service) use ($defaultDurationMinutes) {
+                    return method_exists($service, 'getShootDurationMinutes')
+                        ? $service->getShootDurationMinutes()
+                        : $defaultDurationMinutes;
+                })
+                ->max();
             return min(max($calculatedDurationMinutes, $minDurationMinutes), $maxDurationMinutes);
         }
 

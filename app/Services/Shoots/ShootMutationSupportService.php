@@ -149,8 +149,13 @@ class ShootMutationSupportService
             return $defaultDurationMinutes;
         }
 
-        $maxHours = $serviceModels->max('delivery_time') ?? ($defaultDurationMinutes / 60);
-        $durationMinutes = (int) ($maxHours * 60);
+        $durationMinutes = (int) $serviceModels
+            ->map(function ($service) use ($defaultDurationMinutes) {
+                return method_exists($service, 'getShootDurationMinutes')
+                    ? $service->getShootDurationMinutes()
+                    : $defaultDurationMinutes;
+            })
+            ->max();
 
         return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
     }
@@ -158,16 +163,11 @@ class ShootMutationSupportService
     public function calculateServiceItemDuration(?Service $service): int
     {
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-
-        if (!$service || !$service->delivery_time) {
+        if (!$service || !method_exists($service, 'getShootDurationMinutes')) {
             return $defaultDurationMinutes;
         }
 
-        $durationMinutes = (int) ((float) $service->delivery_time * 60);
-
-        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+        return $service->getShootDurationMinutes();
     }
 
     public function calculateShootDurationFromShoot(Shoot $shoot): int
@@ -181,8 +181,13 @@ class ShootMutationSupportService
             return $defaultDurationMinutes;
         }
 
-        $maxHours = $services->max('delivery_time') ?? ($defaultDurationMinutes / 60);
-        $durationMinutes = (int) ($maxHours * 60);
+        $durationMinutes = (int) $services
+            ->map(function ($service) use ($defaultDurationMinutes) {
+                return method_exists($service, 'getShootDurationMinutes')
+                    ? $service->getShootDurationMinutes()
+                    : $defaultDurationMinutes;
+            })
+            ->max();
 
         return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
     }

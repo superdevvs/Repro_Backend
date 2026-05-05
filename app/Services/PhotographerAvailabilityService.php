@@ -575,18 +575,18 @@ class PhotographerAvailabilityService
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
         $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
         $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-        
+
         // Try to calculate from services
         $services = $shoot->services;
         if ($services && $services->isNotEmpty()) {
-            // Sum up service durations (assuming delivery_time represents shoot duration in hours)
-            // Note: delivery_time might be editing time, not shoot time, so we use max instead of sum
-            $maxDurationHours = $services->max('delivery_time') ?? ($defaultDurationMinutes / 60);
-            
-            // Convert hours to minutes
-            $calculatedDurationMinutes = (int)($maxDurationHours * 60);
-            
-            // Ensure within min/max bounds
+            $calculatedDurationMinutes = (int) $services
+                ->map(function ($service) use ($defaultDurationMinutes) {
+                    return method_exists($service, 'getShootDurationMinutes')
+                        ? $service->getShootDurationMinutes()
+                        : $defaultDurationMinutes;
+                })
+                ->max();
+
             return min(max($calculatedDurationMinutes, $minDurationMinutes), $maxDurationMinutes);
         }
         
@@ -596,17 +596,12 @@ class PhotographerAvailabilityService
     protected function calculateServiceItemDuration(ShootService $item): int
     {
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-
         $service = $item->relationLoaded('service') ? $item->service : $item->service()->first();
-        if (!$service || !$service->delivery_time) {
+        if (!$service || !method_exists($service, 'getShootDurationMinutes')) {
             return $defaultDurationMinutes;
         }
 
-        $durationMinutes = (int) ((float) $service->delivery_time * 60);
-
-        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+        return $service->getShootDurationMinutes();
     }
 
     /**

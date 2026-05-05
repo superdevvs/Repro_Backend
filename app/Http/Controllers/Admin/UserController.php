@@ -446,7 +446,12 @@ class UserController extends Controller
                 );
             }
 
-            if ($equipmentVerificationLink !== null && $accountCreatedEmailSent) {
+            $equipmentVerificationEmailSent = false;
+            if ($pendingEquipmentCount > 0 && $user->role === 'photographer') {
+                $equipmentVerificationEmailSent = $mailService->sendPhotographerEquipmentVerificationEmail($user, $pendingEquipmentCount);
+            }
+
+            if ($pendingEquipmentCount > 0 && ($equipmentVerificationEmailSent || ($equipmentVerificationLink !== null && $accountCreatedEmailSent))) {
                 PhotographerEquipment::query()
                     ->where('photographer_id', $user->id)
                     ->whereIn('status', [PhotographerEquipment::STATUS_PENDING, PhotographerEquipment::STATUS_REJECTED])

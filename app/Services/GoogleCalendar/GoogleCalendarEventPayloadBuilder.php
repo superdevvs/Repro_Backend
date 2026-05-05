@@ -162,12 +162,13 @@ class GoogleCalendarEventPayloadBuilder
     protected function calculateServiceItemDuration(ShootService $serviceItem): int
     {
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
-        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
-        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
-        $durationHours = $serviceItem->service?->delivery_time ?? ($defaultDurationMinutes / 60);
-        $durationMinutes = (int) ($durationHours * 60);
+        $service = $serviceItem->relationLoaded('service') ? $serviceItem->service : $serviceItem->service()->first();
 
-        return min(max($durationMinutes, $minDurationMinutes), $maxDurationMinutes);
+        if (!$service || !method_exists($service, 'getShootDurationMinutes')) {
+            return $defaultDurationMinutes;
+        }
+
+        return $service->getShootDurationMinutes();
     }
 
     protected function formatServiceLabel(string $value): string

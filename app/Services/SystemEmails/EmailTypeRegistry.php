@@ -54,7 +54,7 @@ class EmailTypeRegistry
         $invoice = ['recipient', 'invoice', 'branding', 'meta'];
 
         return $this->definitions = [
-            'ACCOUNT_CREATED' => new EmailTypeDefinition('ACCOUNT_CREATED', 1, 'account', 'emails.account_created', 'v1', $account, ['client']),
+            'ACCOUNT_CREATED' => new EmailTypeDefinition('ACCOUNT_CREATED', 1, 'account', 'emails.account_created', 'v1', $account, ['client', 'photographer', 'rep', 'admin']),
             'CLIENT_EMAIL_VERIFICATION' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFICATION', 1, 'account', 'emails.client_email_verification', 'v1', $account, ['client']),
             'CLIENT_EMAIL_VERIFIED' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFIED', 1, 'account', 'emails.client_email_verified', 'v1', $account, ['client']),
             'PHOTOGRAPHER_EQUIPMENT_VERIFICATION' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_VERIFICATION', 1, 'account', 'emails.photographer_equipment_verification', 'v1', $account, ['photographer']),

@@ -170,4 +170,34 @@ class Service extends Model
 
         return $range && $range->duration ? $range->duration : $this->delivery_time;
     }
+
+    /**
+     * Resolve the expected on-site shoot duration in minutes.
+     * Falls back to the booking default unless a dedicated duration is configured.
+     */
+    public function getShootDurationMinutes(?int $sqft = null): int
+    {
+        $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
+        $minDurationMinutes = config('availability.min_shoot_duration_minutes', 60);
+        $maxDurationMinutes = config('availability.max_shoot_duration_minutes', 240);
+
+        $explicitDuration = $this->getAttribute('shoot_duration_minutes')
+            ?? $this->getAttribute('duration_minutes');
+        if (is_numeric($explicitDuration) && (int) $explicitDuration > 0) {
+            return min(max((int) $explicitDuration, $minDurationMinutes), $maxDurationMinutes);
+        }
+
+        if ($this->pricing_type === 'variable' && $sqft !== null) {
+            $range = $this->sqftRanges()
+                ->where('sqft_from', '<=', $sqft)
+                ->where('sqft_to', '>=', $sqft)
+                ->first();
+
+            if ($range && $range->duration) {
+                return min(max((int) $range->duration, $minDurationMinutes), $maxDurationMinutes);
+            }
+        }
+
+        return $defaultDurationMinutes;
+    }
 }
