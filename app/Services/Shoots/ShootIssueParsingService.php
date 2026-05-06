@@ -109,16 +109,17 @@ class ShootIssueParsingService
         return $requests;
     }
 
-    public function parseClientRequests(iterable $shoots): array
+    public function parseClientRequests(iterable $shoots, ?User $viewer = null): array
     {
         $requests = [];
+        $viewerRole = strtolower((string) ($viewer?->role ?? ''));
 
         foreach ($shoots as $shoot) {
-            foreach ($this->parseShootRequests($shoot) as $request) {
-                if (($request['raisedBy']['role'] ?? null) !== 'client') {
+            foreach ($this->parseShootRequests($shoot, $viewer) as $request) {
+                if (($request['status'] ?? null) === 'dismissed') {
                     continue;
                 }
-                if (($request['status'] ?? null) === 'dismissed') {
+                if (!$this->shouldIncludeDashboardRequest($request, $viewerRole)) {
                     continue;
                 }
 
@@ -135,6 +136,21 @@ class ShootIssueParsingService
         }
 
         return $requests;
+    }
+
+    protected function shouldIncludeDashboardRequest(array $request, string $viewerRole): bool
+    {
+        $assignedToRole = $request['assignedToRole'] ?? null;
+
+        if ($viewerRole === 'photographer') {
+            return $assignedToRole === 'photographer';
+        }
+
+        if ($viewerRole === 'editor') {
+            return $assignedToRole === null || $assignedToRole === 'editor';
+        }
+
+        return true;
     }
 
     public function generateRequestId(Shoot $shoot): string

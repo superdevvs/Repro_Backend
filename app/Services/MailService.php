@@ -11,6 +11,7 @@ use Carbon\CarbonInterface;
 use App\Models\ClientEmailVerificationToken;
 use App\Models\MessageTemplate;
 use App\Models\Invoice;
+use App\Models\PhotographerEquipment;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
@@ -132,6 +133,109 @@ class MailService
             Log::error('Failed to send photographer equipment verification email', [
                 'user_id' => $photographer->id,
                 'email' => $photographer->email,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    public function sendPhotographerEquipmentApprovedEmail(User $photographer, PhotographerEquipment $equipment): bool
+    {
+        try {
+            $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
+            $equipmentUrl = $this->equipmentVerificationLink($photographer);
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($photographer),
+                'account' => $this->formatUserData($photographer),
+                'links' => [
+                    'dashboard' => $dashboardUrl,
+                    'equipment' => $equipmentUrl,
+                ],
+                'meta' => [
+                    'recipient_type' => 'photographer',
+                    'equipment_id' => $equipment->id,
+                    'equipment_name' => $equipment->name,
+                    'equipment_serial_number' => $equipment->serial_number,
+                    'verified_at' => $equipment->verified_at,
+                    'event_version' => sha1($equipment->id . '|' . optional($equipment->verified_at)->timestamp),
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('PHOTOGRAPHER_EQUIPMENT_APPROVED', $payload, $photographer->email, [], [], [
+                'related_account_id' => $photographer->id,
+            ], [
+                'idempotency_key' => 'photographer-equipment-approved-' . $equipment->id . '-' . optional($equipment->verified_at)->timestamp,
+                'canonical_metadata' => [
+                    'equipment_id' => $equipment->id,
+                ],
+            ]);
+
+            Log::info('Photographer equipment approved email sent', [
+                'user_id' => $photographer->id,
+                'email' => $photographer->email,
+                'equipment_id' => $equipment->id,
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send photographer equipment approved email', [
+                'user_id' => $photographer->id,
+                'email' => $photographer->email,
+                'equipment_id' => $equipment->id,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    public function sendPhotographerEquipmentRejectedEmail(User $photographer, PhotographerEquipment $equipment): bool
+    {
+        try {
+            $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
+            $equipmentUrl = $this->equipmentVerificationLink($photographer);
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($photographer),
+                'account' => $this->formatUserData($photographer),
+                'links' => [
+                    'dashboard' => $dashboardUrl,
+                    'equipment' => $equipmentUrl,
+                ],
+                'meta' => [
+                    'recipient_type' => 'photographer',
+                    'equipment_id' => $equipment->id,
+                    'equipment_name' => $equipment->name,
+                    'equipment_serial_number' => $equipment->serial_number,
+                    'rejected_at' => $equipment->rejected_at,
+                    'rejection_reason' => $equipment->rejection_reason,
+                    'event_version' => sha1($equipment->id . '|' . optional($equipment->rejected_at)->timestamp . '|' . ($equipment->rejection_reason ?? '')),
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('PHOTOGRAPHER_EQUIPMENT_REJECTED', $payload, $photographer->email, [], [], [
+                'related_account_id' => $photographer->id,
+            ], [
+                'idempotency_key' => 'photographer-equipment-rejected-' . $equipment->id . '-' . optional($equipment->rejected_at)->timestamp,
+                'canonical_metadata' => [
+                    'equipment_id' => $equipment->id,
+                ],
+            ]);
+
+            Log::info('Photographer equipment rejected email sent', [
+                'user_id' => $photographer->id,
+                'email' => $photographer->email,
+                'equipment_id' => $equipment->id,
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send photographer equipment rejected email', [
+                'user_id' => $photographer->id,
+                'email' => $photographer->email,
+                'equipment_id' => $equipment->id,
                 'error' => $exception->getMessage(),
             ]);
 

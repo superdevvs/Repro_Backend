@@ -222,13 +222,29 @@ class ShootPublicAssetsService
         $portfolioClientIds = $this->resolvePortfolioClientIds($client);
         $shootsQuery = Shoot::with(['files'])->whereIn('client_id', $portfolioClientIds);
 
+        $visibleStatuses = [
+            Shoot::STATUS_REQUESTED,
+            Shoot::STATUS_SCHEDULED,
+            Shoot::STATUS_UPLOADED,
+            Shoot::STATUS_EDITING,
+            Shoot::STATUS_READY,
+            Shoot::STATUS_DELIVERED,
+            'booked',
+            'completed',
+            'ready_for_client',
+            'admin_verified',
+            'workflow_completed',
+            'client_delivered',
+            'finalized',
+            'finalised',
+        ];
+
         $shoots = $shootsQuery
-            ->whereIn('status', [
-                Shoot::STATUS_COMPLETED,
-                Shoot::STATUS_DELIVERED,
-                Shoot::STATUS_SCHEDULED,
-                Shoot::STATUS_REQUESTED,
-            ])
+            ->where(function ($query) use ($visibleStatuses) {
+                $query->whereIn('status', $visibleStatuses)
+                    ->orWhereIn('workflow_status', $visibleStatuses)
+                    ->orWhereNotNull('admin_verified_at');
+            })
             ->orderByDesc('scheduled_date')
             ->get();
 
@@ -259,6 +275,18 @@ class ShootPublicAssetsService
 
             $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
             $propDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
+            $deliveredStatuses = [
+                Shoot::STATUS_DELIVERED,
+                'ready_for_client',
+                'admin_verified',
+                'workflow_completed',
+                'client_delivered',
+                'finalized',
+                'finalised',
+            ];
+            $isDelivered = in_array(strtolower((string) $shoot->status), $deliveredStatuses, true)
+                || in_array(strtolower((string) $shoot->workflow_status), $deliveredStatuses, true)
+                || $shoot->admin_verified_at !== null;
 
             return [
                 'id' => $shoot->id,
@@ -268,6 +296,8 @@ class ShootPublicAssetsService
                 'zip' => $shoot->zip,
                 'scheduled_date' => optional($shoot->scheduled_date)->toDateString(),
                 'status' => $shoot->status,
+                'workflow_status' => $shoot->workflow_status,
+                'is_delivered' => $isDelivered,
                 'files_count' => $files->count(),
                 'preview_image' => $preview,
                 'gallery' => $gallery,

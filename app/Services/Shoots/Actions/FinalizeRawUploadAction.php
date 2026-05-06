@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
@@ -97,7 +98,10 @@ class FinalizeRawUploadAction
                 $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
                 $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
-                if (!in_array($currentStatus, $allowed, true)) {
+                $canResubmitUploaded = in_array($currentStatus, [Shoot::STATUS_UPLOADED, 'uploaded'], true)
+                    && $this->hasNewRawFilesSinceSubmit($shoot);
+
+                if (!in_array($currentStatus, $allowed, true) && !$canResubmitUploaded) {
                     DB::commit();
 
                     if (in_array($currentStatus, $idempotent, true)) {
@@ -224,5 +228,17 @@ class FinalizeRawUploadAction
         } finally {
             optional($lock)->release();
         }
+    }
+
+    private function hasNewRawFilesSinceSubmit(Shoot $shoot): bool
+    {
+        if (!$shoot->photos_uploaded_at) {
+            return true;
+        }
+
+        return $shoot->files()
+            ->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->where('created_at', '>', $shoot->photos_uploaded_at)
+            ->exists();
     }
 }

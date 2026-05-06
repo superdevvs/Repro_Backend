@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Models\AccountLink;
 use App\Models\Shoot;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootAuthorizationSupport;
@@ -179,7 +180,7 @@ class ShootIssuesController extends Controller
     public function getClientRequests(Request $request)
     {
         $user = $request->user();
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true)) {
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'client'], true)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -189,12 +190,32 @@ class ShootIssuesController extends Controller
 
         if ($user->role === 'editor') {
             $this->shootEditingAssignmentService->scopeAssignedToEditor($shootsQuery, $user->id);
+        } elseif ($user->role === 'photographer') {
+            $shootsQuery->where(function ($query) use ($user) {
+                $query->where('photographer_id', $user->id)
+                    ->orWhereHas('services', function ($serviceQuery) use ($user) {
+                        $serviceQuery->where('shoot_service.photographer_id', $user->id);
+                    });
+            });
+        } elseif ($user->role === 'client') {
+            $linkedClientIds = AccountLink::query()
+                ->where('main_account_id', $user->id)
+                ->where('status', 'active')
+                ->get()
+                ->filter(fn ($link) => $link->sharesDetail('shoots'))
+                ->pluck('linked_account_id')
+                ->all();
+
+            $shootsQuery->whereIn('client_id', array_values(array_unique([
+                $user->id,
+                ...$linkedClientIds,
+            ])));
         }
 
         $shoots = $shootsQuery->get();
 
         return response()->json([
-            'data' => $this->shootIssueParsingService->parseClientRequests($shoots),
+            'data' => $this->shootIssueParsingService->parseClientRequests($shoots, $user),
         ]);
     }
 }

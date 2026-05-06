@@ -3,6 +3,7 @@
 namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
@@ -90,7 +91,10 @@ class FinalizeEditedUploadAction
                 $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
                 $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
-                if (!in_array($currentStatus, $allowed, true)) {
+                $canResubmitReady = in_array($currentStatus, [Shoot::STATUS_READY, 'ready'], true)
+                    && $this->hasNewEditedFilesSinceSubmit($shoot);
+
+                if (!in_array($currentStatus, $allowed, true) && !$canResubmitReady) {
                     DB::commit();
 
                     if (in_array($currentStatus, $idempotent, true)) {
@@ -208,5 +212,17 @@ class FinalizeEditedUploadAction
         } finally {
             optional($lock)->release();
         }
+    }
+
+    private function hasNewEditedFilesSinceSubmit(Shoot $shoot): bool
+    {
+        if (!$shoot->editing_completed_at) {
+            return true;
+        }
+
+        return $shoot->files()
+            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where('created_at', '>', $shoot->editing_completed_at)
+            ->exists();
     }
 }

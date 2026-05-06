@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
+use App\Models\AccountLink;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootEmailDelivery;
@@ -1327,6 +1328,51 @@ class ShootMutationActionsTest extends TestCase
 
         $response->assertForbidden();
         $this->assertFalse((bool) $shoot->fresh()->is_featured);
+    }
+
+    public function test_linked_client_owner_can_mark_shared_delivered_shoot_private_exclusive(): void
+    {
+        $ownerClient = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Listing Owner Client',
+            'email' => 'listing-owner-client@test.com',
+        ]);
+
+        AccountLink::create([
+            'main_account_id' => $ownerClient->id,
+            'linked_account_id' => $this->client->id,
+            'shared_details' => ['shoots' => true],
+            'status' => 'active',
+            'linked_at' => now(),
+            'created_by' => $ownerClient->id,
+        ]);
+
+        Sanctum::actingAs($ownerClient);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'is_private_listing' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_private_listing' => true,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.is_private_listing', true);
+
+        $this->assertTrue((bool) $shoot->fresh()->is_private_listing);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'private_listing_marked',
+            'user_id' => $ownerClient->id,
+        ]);
     }
 
     /** @test */

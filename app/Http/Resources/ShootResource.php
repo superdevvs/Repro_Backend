@@ -384,12 +384,29 @@ class ShootResource extends JsonResource
         }
 
         $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
-        if (!in_array($status, self::SUBMIT_RAW_ALLOWED_STATUSES, true)) {
+        $hasRawFiles = (int) ($this->raw_photo_count ?? 0) > 0
+            || $this->files()->where('workflow_stage', ShootFile::STAGE_TODO)->exists();
+
+        if (!$hasRawFiles) {
             return false;
         }
 
-        return (int) ($this->raw_photo_count ?? 0) > 0
-            || $this->files()->where('workflow_stage', ShootFile::STAGE_TODO)->exists();
+        if (in_array($status, self::SUBMIT_RAW_ALLOWED_STATUSES, true)) {
+            return true;
+        }
+
+        if ($status !== 'uploaded') {
+            return false;
+        }
+
+        if (!$this->photos_uploaded_at) {
+            return true;
+        }
+
+        return $this->files()
+            ->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->where('created_at', '>', $this->photos_uploaded_at)
+            ->exists();
     }
 
     protected function computeCanSubmitEdits(?User $user): bool
@@ -405,14 +422,31 @@ class ShootResource extends JsonResource
         }
 
         $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
-        if (!in_array($status, self::SUBMIT_EDITED_ALLOWED_STATUSES, true)) {
-            return false;
-        }
-
-        return (int) ($this->edited_photo_count ?? 0) > 0
+        $hasEditedFiles = (int) ($this->edited_photo_count ?? 0) > 0
             || $this->files()
                 ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
                 ->exists();
+
+        if (!$hasEditedFiles) {
+            return false;
+        }
+
+        if (in_array($status, self::SUBMIT_EDITED_ALLOWED_STATUSES, true)) {
+            return true;
+        }
+
+        if ($status !== 'ready') {
+            return false;
+        }
+
+        if (!$this->editing_completed_at) {
+            return true;
+        }
+
+        return $this->files()
+            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where('created_at', '>', $this->editing_completed_at)
+            ->exists();
     }
 
     protected function resolveRealtorClient(array $tourLinks): ?array

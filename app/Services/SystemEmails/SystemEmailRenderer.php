@@ -75,6 +75,13 @@ class SystemEmailRenderer
                 'equipmentVerificationUrl' => $links['equipment_verification'] ?? null,
                 'equipmentCount' => (int) ($meta->pending_equipment_count ?? 0),
             ],
+            'PHOTOGRAPHER_EQUIPMENT_APPROVED' => $shared + [
+                'dashboardUrl' => $links['dashboard'] ?? $branding->dashboard_url ?? null,
+                'equipmentUrl' => $links['equipment'] ?? null,
+                'equipmentName' => $meta->equipment_name ?? null,
+                'equipmentSerialNumber' => $meta->equipment_serial_number ?? null,
+                'verifiedAt' => $this->hydrateCarbon($meta->verified_at ?? null),
+            ],
             'ROLE_CHANGED' => $shared + [
                 'oldRoleLabel' => $meta->old_role_label ?? null,
                 'newRoleLabel' => $meta->new_role_label ?? null,

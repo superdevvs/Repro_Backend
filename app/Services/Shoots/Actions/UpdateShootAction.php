@@ -9,6 +9,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootEditingAssignmentService;
@@ -25,6 +26,7 @@ class UpdateShootAction
         protected ShootMutationSupportService $support,
         protected InvoiceService $invoiceService,
         protected ShootEditablePayloadService $editablePayloadService,
+        protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootEditingAssignmentService $editingAssignmentService,
         protected ShootActivityLogger $activityLogger,
         protected MailService $mailService,
@@ -83,7 +85,10 @@ class UpdateShootAction
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
             $assignedPhotographer = $isPhotographer
-                && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->isPhotographerAssignedToShoot($shoot, $user);
+                && $this->authorizationSupport->isPhotographerAssignedToShoot($shoot, $user);
+            $clientCanTogglePrivateListing = $isClient
+                && $onlyPrivateListing
+                && $this->authorizationSupport->canClientAccessShoot($shoot, $user);
 
             if ($ownsShoot) {
                 $onlyClientEditableFields = count($requestKeys) > 0 && count(array_diff($requestKeys, $clientEditableKeys)) === 0;
@@ -121,6 +126,7 @@ class UpdateShootAction
                         $this->abortJson('Forbidden', 403);
                     }
                 }
+            } elseif ($clientCanTogglePrivateListing) {
             } elseif ($assignedPhotographer) {
                 $onlyPhotographerEditableFields = count($requestKeys) > 0
                     && count(array_diff($requestKeys, $photographerEditableKeys)) === 0;
@@ -134,7 +140,7 @@ class UpdateShootAction
                 }
             }
 
-            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer) {
+            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer && !$clientCanTogglePrivateListing) {
                 $this->abortJson('Forbidden', 403);
             }
         }

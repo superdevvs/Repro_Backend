@@ -15,6 +15,7 @@ use App\Services\InvoiceService;
 use App\Services\Shoots\Actions\ApproveCancellationAction;
 use App\Services\Shoots\Actions\CancelShootAction;
 use App\Services\Shoots\Actions\RequestCancellationAction;
+use App\Services\Shoots\Actions\WithdrawRequestedShootAction;
 use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -116,7 +117,7 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     /** @test */
-    public function client_can_request_cancellation_and_emit_a_refresh_worthy_activity(): void
+    public function client_cannot_request_cancellation_for_scheduled_shoot(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->client);
@@ -130,25 +131,51 @@ class ShootWorkflowActionsTest extends TestCase
             'reason' => 'Seller postponed listing',
         ]);
 
-        $response->assertOk()
-            ->assertJsonPath('message', 'Cancellation request submitted. Pending approval.');
+        $response->assertForbidden();
 
         $shoot->refresh();
 
-        $this->assertNotNull($shoot->cancellation_requested_at);
-        $this->assertSame($this->client->id, $shoot->cancellation_requested_by);
-        $this->assertSame('Seller postponed listing', $shoot->cancellation_reason);
+        $this->assertNull($shoot->cancellation_requested_at);
+        $this->assertNull($shoot->cancellation_requested_by);
+        $this->assertNull($shoot->cancellation_reason);
+        Event::assertNotDispatched(ShootActivityBroadcast::class);
+    }
 
-        $this->assertDatabaseHas('shoot_activity_logs', [
-            'shoot_id' => $shoot->id,
-            'action' => 'cancellation_requested',
-            'user_id' => $this->client->id,
+    /** @test */
+    public function client_withdrawing_requested_shoot_sends_cancellation_confirmation_email(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->client);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'photographer_id' => null,
         ]);
 
-        Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
-            return $event->shoot->id === $shoot->id
-                && $event->activityType === 'cancellation_requested';
-        });
+        $this->app->forgetInstance(WithdrawRequestedShootAction::class);
+        $this->app->forgetInstance(ShootWorkflowController::class);
+
+        $support = Mockery::mock(ShootWorkflowTransitionSupportService::class);
+        $support->shouldReceive('sendCancellationSideEffects')
+            ->once()
+            ->withArgs(function (Shoot $cancelledShoot, User $user) use ($shoot): bool {
+                return (int) $cancelledShoot->id === (int) $shoot->id
+                    && (int) $user->id === (int) $this->client->id
+                    && $cancelledShoot->fresh()->status === Shoot::STATUS_CANCELLED;
+            });
+        $this->app->instance(ShootWorkflowTransitionSupportService::class, $support);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/withdraw-request", [
+            'reason' => 'Client withdrew requested shoot',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('message', 'Shoot request cancelled.');
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->workflow_status);
     }
 
     /** @test */
@@ -761,6 +788,7 @@ class ShootWorkflowActionsTest extends TestCase
         $this->app->forgetInstance(ShootWorkflowTransitionSupportService::class);
         $this->app->forgetInstance(RequestCancellationAction::class);
         $this->app->forgetInstance(ApproveCancellationAction::class);
+        $this->app->forgetInstance(WithdrawRequestedShootAction::class);
         $this->app->forgetInstance(ShootWorkflowController::class);
 
         $mailService = Mockery::mock(MailService::class);

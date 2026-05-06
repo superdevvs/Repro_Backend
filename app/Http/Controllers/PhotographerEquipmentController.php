@@ -229,13 +229,14 @@ class PhotographerEquipmentController extends Controller
         ]);
     }
 
-    public function approve(Request $request, int $equipmentId)
+    public function approve(Request $request, int $equipmentId, MailService $mailService)
     {
         if (!$this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
         }
 
         $equipment = PhotographerEquipment::query()->findOrFail($equipmentId);
+        $previousStatus = $equipment->status;
 
         $equipment->forceFill([
             'status' => PhotographerEquipment::STATUS_VERIFIED,
@@ -245,13 +246,18 @@ class PhotographerEquipmentController extends Controller
             'rejection_reason' => null,
         ])->save();
 
+        $updatedEquipment = $equipment->fresh(['photographer', 'photos', 'verifier']);
+        if ($previousStatus !== PhotographerEquipment::STATUS_VERIFIED && $updatedEquipment->photographer) {
+            $mailService->sendPhotographerEquipmentApprovedEmail($updatedEquipment->photographer, $updatedEquipment);
+        }
+
         return response()->json([
             'message' => 'Equipment verified successfully.',
-            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier'])),
+            'data' => $this->presentEquipment($updatedEquipment),
         ]);
     }
 
-    public function reject(Request $request, int $equipmentId)
+    public function reject(Request $request, int $equipmentId, MailService $mailService)
     {
         if (!$this->equipmentTablesReady()) {
             return $this->equipmentTablesMissingResponse();
@@ -271,9 +277,14 @@ class PhotographerEquipmentController extends Controller
             'rejection_reason' => $validated['rejection_reason'] ?? null,
         ])->save();
 
+        $updatedEquipment = $equipment->fresh(['photographer', 'photos', 'verifier']);
+        if ($updatedEquipment->photographer) {
+            $mailService->sendPhotographerEquipmentRejectedEmail($updatedEquipment->photographer, $updatedEquipment);
+        }
+
         return response()->json([
             'message' => 'Equipment verification rejected.',
-            'data' => $this->presentEquipment($equipment->fresh(['photographer', 'photos', 'verifier'])),
+            'data' => $this->presentEquipment($updatedEquipment),
         ]);
     }
 

@@ -610,7 +610,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/issues/{issue}/assign', [ShootIssuesController::class, 'assignIssue']);
     
     // Client requests for admin dashboard
-    Route::get('/client-requests', [ShootIssuesController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager,editor');
+    Route::get('/client-requests', [ShootIssuesController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager,editor,photographer,client');
 
     // Media uploads
     Route::post('/uploads/image', [MediaUploadController::class, 'uploadImage']);
