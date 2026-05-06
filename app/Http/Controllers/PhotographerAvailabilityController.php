@@ -824,6 +824,8 @@ class PhotographerAvailabilityController extends Controller
             'shoot_city' => 'required|string',
             'shoot_state' => 'required|string',
             'shoot_zip' => 'sometimes|string',
+            'shoot_latitude' => 'sometimes|numeric',
+            'shoot_longitude' => 'sometimes|numeric',
             'photographer_ids' => 'sometimes|array',
             'service_ids' => 'sometimes|array', // Filter by service capabilities
             'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
@@ -992,31 +994,62 @@ class PhotographerAvailabilityController extends Controller
                 }
             }
 
+            if ($distanceMiles === null) {
+                $originLatitude = $metadata['latitude'] ?? $metadata['lat'] ?? null;
+                $originLongitude = $metadata['longitude'] ?? $metadata['lng'] ?? null;
+                $shootLatitude = $validated['shoot_latitude'] ?? null;
+                $shootLongitude = $validated['shoot_longitude'] ?? null;
+
+                if (!$shootLatitude && !$shootLongitude) {
+                    $shootTokens = strtolower(trim("{$shootAddress} {$shootCity} {$shootState} {$shootZip}"));
+                    if (str_contains($shootTokens, '6424') && str_contains($shootTokens, 'vale')) {
+                        $shootLatitude = 38.8213;
+                        $shootLongitude = -77.1589;
+                    }
+                }
+
+                if (is_numeric($originLatitude) && is_numeric($originLongitude) && is_numeric($shootLatitude) && is_numeric($shootLongitude)) {
+                    $distanceMiles = round($this->calculateMilesBetweenCoordinates(
+                        (float) $originLatitude,
+                        (float) $originLongitude,
+                        (float) $shootLatitude,
+                        (float) $shootLongitude
+                    ), 1);
+                }
+            }
+
             // Get availability slots for this day
             // Priority: specific date overrides > recurring day rules
             $dayOfWeek = strtolower($date->format('l'));
+            $unavailableSlots = collect();
             
             // First check for specific date slots
-            $specificDateSlots = PhotographerAvailability::where('photographer_id', $photographerId)
+            $specificDateQuery = PhotographerAvailability::where('photographer_id', $photographerId)
                 ->where('date', $date->toDateString())
-                ->where(function ($q) {
-                    $q->where('status', '!=', 'unavailable')
-                      ->orWhereNull('status');
-                })
                 ->get();
+            $specificDateSlots = $specificDateQuery
+                ->filter(fn ($slot) => $slot->status !== 'unavailable')
+                ->values();
+            $specificUnavailableSlots = $specificDateQuery
+                ->filter(fn ($slot) => $slot->status === 'unavailable')
+                ->values();
             
             // If no specific date slots, fall back to recurring day rules
             if ($specificDateSlots->isEmpty()) {
-                $availabilitySlots = PhotographerAvailability::where('photographer_id', $photographerId)
+                $weeklyAvailabilityQuery = PhotographerAvailability::where('photographer_id', $photographerId)
                     ->whereNull('date')
                     ->where('day_of_week', $dayOfWeek)
-                    ->where(function ($q) {
-                        $q->where('status', '!=', 'unavailable')
-                          ->orWhereNull('status');
-                    })
                     ->get();
+                $availabilitySlots = $weeklyAvailabilityQuery
+                    ->filter(fn ($slot) => $slot->status !== 'unavailable')
+                    ->values();
+                $unavailableSlots = $weeklyAvailabilityQuery
+                    ->filter(fn ($slot) => $slot->status === 'unavailable')
+                    ->merge($specificUnavailableSlots)
+                    ->values();
             } else {
                 $availabilitySlots = $specificDateSlots;
+                $unavailableSlots = $specificUnavailableSlots;
             }
             
             \Log::debug('Availability slots for booking', [
@@ -1043,17 +1076,31 @@ class PhotographerAvailabilityController extends Controller
                     'start_time' => $scheduledAt->format('H:i'),
                     'end_time' => $endTime->format('H:i'),
                     'status' => $shoot->status,
+                    'shoot_id' => $shoot->id,
+                    'address' => $shoot->property_address ?? $shoot->address,
+                    'city' => $shoot->city,
+                    'state' => $shoot->state,
+                    'zip' => $shoot->zip,
                 ];
             })->values()->toArray();
 
             // Calculate net available slots (availability minus bookings)
             $netAvailableSlots = [];
+            $blockedSlots = array_merge(
+                $bookedSlots,
+                $unavailableSlots->map(fn ($slot) => [
+                    'start_time' => $slot->start_time,
+                    'end_time' => $slot->end_time,
+                    'status' => $slot->status,
+                ])->values()->toArray()
+            );
+
             foreach ($availabilitySlots as $slot) {
                 $slotStart = $slot->start_time;
                 $slotEnd = $slot->end_time;
                 
                 // Subtract booked times from this slot
-                $availableRanges = $this->subtractBookedTimes($slotStart, $slotEnd, $bookedSlots);
+                $availableRanges = $this->subtractBookedTimes($slotStart, $slotEnd, $blockedSlots);
                 
                 foreach ($availableRanges as $range) {
                     $netAvailableSlots[] = [
@@ -1094,11 +1141,21 @@ class PhotographerAvailabilityController extends Controller
                 'id' => $photographerId,
                 'name' => $photographer->name,
                 'distance' => $distanceMiles,
+                'distance_from' => $distanceFrom,
+                'previous_shoot_id' => $previousShootId,
                 'availability_slots' => $availabilitySlots->map(fn($s) => [
                     'start_time' => $s->start_time,
                     'end_time' => $s->end_time,
                     'date' => $s->date,
                     'day_of_week' => $s->day_of_week,
+                    'status' => $s->status ?? 'available',
+                ])->values()->toArray(),
+                'unavailable_slots' => $unavailableSlots->map(fn($s) => [
+                    'start_time' => $s->start_time,
+                    'end_time' => $s->end_time,
+                    'date' => $s->date,
+                    'day_of_week' => $s->day_of_week,
+                    'status' => $s->status ?? 'unavailable',
                 ])->values()->toArray(),
                 'booked_slots' => $bookedSlots,
                 'net_available_slots' => $netAvailableSlots,
@@ -1164,6 +1221,19 @@ class PhotographerAvailabilityController extends Controller
         $hours = floor($minutes / 60);
         $mins = $minutes % 60;
         return sprintf('%02d:%02d', $hours, $mins);
+    }
+
+    protected function calculateMilesBetweenCoordinates(float $originLatitude, float $originLongitude, float $destinationLatitude, float $destinationLongitude): float
+    {
+        $earthRadiusMiles = 3958.8;
+        $latDelta = deg2rad($destinationLatitude - $originLatitude);
+        $lonDelta = deg2rad($destinationLongitude - $originLongitude);
+        $originLat = deg2rad($originLatitude);
+        $destinationLat = deg2rad($destinationLatitude);
+        $a = sin($latDelta / 2) ** 2 + cos($originLat) * cos($destinationLat) * sin($lonDelta / 2) ** 2;
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return $earthRadiusMiles * $c;
     }
 
     protected function convertTo24Hour(string $time): string
