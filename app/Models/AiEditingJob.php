@@ -14,7 +14,12 @@ class AiEditingJob extends Model
         'shoot_id',
         'shoot_file_id',
         'user_id',
-        'fotello_job_id',
+        'provider',
+        'provider_job_id',
+        'provider_order_id',
+        'autoenhance_image_id',
+        'provider_payload',
+        'provider_result',
         'status',
         'editing_type',
         'editing_params',
@@ -28,6 +33,8 @@ class AiEditingJob extends Model
 
     protected $casts = [
         'editing_params' => 'array',
+        'provider_payload' => 'array',
+        'provider_result' => 'array',
         'ai_editing_metadata' => 'array',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
@@ -40,9 +47,12 @@ class AiEditingJob extends Model
     const STATUS_FAILED = 'failed';
     const STATUS_CANCELLED = 'cancelled';
 
-    // Editing type constants (will be expanded based on Fotello API)
+    // Editing type constants
     const TYPE_ENHANCE = 'enhance';
     const TYPE_SKY_REPLACE = 'sky_replace';
+    const TYPE_HDR_MERGE = 'hdr_merge';
+    const TYPE_VERTICAL_CORRECTION = 'vertical_correction';
+    const TYPE_WINDOW_PULL = 'window_pull';
     const TYPE_REMOVE_OBJECT = 'remove_object';
     const TYPE_COLOR_CORRECTION = 'color_correction';
     const TYPE_EXPOSURE_FIX = 'exposure_fix';
@@ -131,6 +141,7 @@ class AiEditingJob extends Model
                 $shootFile->is_ai_edited = true;
                 $shootFile->ai_editing_job_id = $this->id;
                 $shootFile->ai_editing_metadata = [
+                    'provider' => $this->provider ?? 'autoenhance',
                     'editing_type' => $this->editing_type,
                     'completed_at' => $this->completed_at->toIso8601String(),
                 ];

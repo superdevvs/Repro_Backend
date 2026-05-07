@@ -87,8 +87,9 @@ class AiChatController extends Controller
             // Load or create session
             $session = null;
             try {
-                $session = $validated['sessionId']
-                    ? AiChatSession::where('id', $validated['sessionId'])
+                $sessionId = $validated['sessionId'] ?? null;
+                $session = $sessionId
+                    ? AiChatSession::where('id', $sessionId)
                         ->where('user_id', $user->id)
                         ->first()
                     : null;

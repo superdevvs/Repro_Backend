@@ -150,12 +150,13 @@ return [
         'webhook_url' => env('IGUIDE_WEBHOOK_URL', env('APP_URL') . '/iguide_webhook.php'),
     ],
 
-    // Fotello AI Photo Editing Integration
-    'fotello' => [
-        'api_key' => env('FOTELLO_API_KEY'),
-        'base_url' => env('FOTELLO_BASE_URL', 'https://app.fotello.co/api'),
-        'timeout' => env('FOTELLO_TIMEOUT', 120),
-        'retry_attempts' => env('FOTELLO_RETRY_ATTEMPTS', 3),
+    // Autoenhance AI Photo Editing Integration
+    'autoenhance' => [
+        'api_key' => env('AUTOENHANCE_API_KEY'),
+        'base_url' => env('AUTOENHANCE_BASE_URL', 'https://api.autoenhance.ai'),
+        'timeout' => env('AUTOENHANCE_TIMEOUT', 120),
+        'retry_attempts' => env('AUTOENHANCE_RETRY_ATTEMPTS', 3),
+        'dev_mode' => env('AUTOENHANCE_DEV_MODE', false),
     ],
 
     // Higgsfield AI Video Generation Integration

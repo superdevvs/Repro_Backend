@@ -377,7 +377,7 @@ class ShootMediaReadService
             $largeUrl = $webUrl;
             $placeholderUrl = $this->resolvePreviewPath($file->placeholder_path);
 
-            if (!$webUrl && $this->canGenerateOptimizedPreview($file)) {
+            if (!$webUrl && $this->shouldGenerateOptimizedPreview($file)) {
                 $generated = $this->shootFileAccessService->generateOptimizedVersions($file);
                 if (!empty($generated)) {
                     $file->refresh();

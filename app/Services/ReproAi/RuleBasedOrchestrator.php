@@ -398,7 +398,7 @@ class RuleBasedOrchestrator
     /**
      * Check if the user wants to switch to a different flow
      */
-    protected function detectFlowSwitch(string $message): ?string
+    protected function detectFlowSwitch(string $message): string|null|false
     {
         $m = strtolower(trim($message));
         

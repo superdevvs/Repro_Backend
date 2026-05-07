@@ -5,6 +5,7 @@ namespace App\Services\ReproAi\Flows;
 use App\Models\AiChatSession;
 use App\Models\Shoot;
 use App\Models\Service;
+use App\Models\User;
 use App\Services\ReproAi\FlowEngine\FlowEngine;
 use App\Services\ReproAi\FlowEngine\FlowHandlerInterface;
 use App\Services\ReproAi\FlowEngine\FlowState;
@@ -44,12 +45,13 @@ class BookShootFlow implements FlowHandlerInterface
 
     public function defaultStep(): string
     {
-        return 'ask_property';
+        return 'ask_client';
     }
 
     public function handleStep(string $step, FlowState $state): FlowTransition
     {
         return match ($step) {
+            'ask_client'     => $this->askClient($state),
             'ask_property'   => $this->askProperty($state),
             'ask_date'       => $this->askDate($state),
             'ask_time'       => $this->askTime($state),
@@ -62,6 +64,16 @@ class BookShootFlow implements FlowHandlerInterface
 
     protected function reset(FlowState $state): FlowTransition
     {
+        if ($this->requiresClientSelection($state)) {
+            return FlowTransition::next('ask_client', [
+                'assistant_messages' => [[
+                    'content' => "Great! Let's book a new shoot. Which client is this for?",
+                    'metadata' => ['step' => 'ask_client'],
+                ]],
+                'suggestions' => $this->clientSuggestions(),
+            ], []);
+        }
+
         $suggestions = $this->recentPropertySuggestions($state->session->user_id);
         if (empty($suggestions)) {
             $suggestions = ['Enter new address'];
@@ -76,12 +88,101 @@ class BookShootFlow implements FlowHandlerInterface
         ], []);
     }
 
+    protected function askClient(FlowState $state): FlowTransition
+    {
+        $data = $state->data;
+        $context = $state->context;
+        $message = trim($state->message);
+
+        if (!$this->requiresClientSelection($state)) {
+            $data['client_id'] = $state->session->user_id;
+
+            $intentTriggers = [
+                'book a new shoot', 'book a shoot', 'book new shoot', 'book another shoot',
+                'book shoot', 'new shoot', 'schedule a shoot', 'schedule shoot',
+                'let\'s book', 'i want to book',
+            ];
+            $messageLower = strtolower($message);
+            if ($message === '' || in_array($messageLower, $intentTriggers, true)) {
+                $suggestions = $this->recentPropertySuggestions($state->session->user_id);
+
+                return FlowTransition::next('ask_property', [
+                    'assistant_messages' => [[
+                        'content' => "Great! Let's book a new shoot. Which property is this for?",
+                        'metadata' => ['step' => 'ask_property'],
+                    ]],
+                    'suggestions' => $suggestions,
+                ], $data);
+            }
+
+            return $this->askProperty($state->withData($data));
+        }
+
+        if (!empty($context['client_id']) || !empty($context['clientId'])) {
+            $clientId = (int) ($context['client_id'] ?? $context['clientId']);
+            $client = User::whereKey($clientId)->where('role', 'client')->first();
+            if ($client) {
+                $data['client_id'] = $client->id;
+                $data['client_label'] = $client->company_name ?: $client->name;
+
+                return FlowTransition::next('ask_property', [
+                    'assistant_messages' => [[
+                        'content' => "Great, booking for **{$data['client_label']}**. Which property is this for?",
+                        'metadata' => ['step' => 'ask_property'],
+                    ]],
+                    'suggestions' => ['Enter new address'],
+                ], $data);
+            }
+        }
+
+        $intentTriggers = [
+            'book a new shoot', 'book a shoot', 'book new shoot', 'book another shoot',
+            'book shoot', 'new shoot', 'schedule a shoot', 'schedule shoot',
+            'let\'s book', 'i want to book',
+        ];
+        $messageLower = strtolower($message);
+        $isIntentTrigger = $message === '' || in_array($messageLower, $intentTriggers, true);
+
+        if (!$isIntentTrigger) {
+            $client = $this->findClientFromMessage($message);
+            if ($client) {
+                $data['client_id'] = $client->id;
+                $data['client_label'] = $client->company_name ?: $client->name;
+
+                return FlowTransition::next('ask_property', [
+                    'assistant_messages' => [[
+                        'content' => "Great, booking for **{$data['client_label']}**. Which property is this for?",
+                        'metadata' => ['step' => 'ask_property'],
+                    ]],
+                    'suggestions' => ['Enter new address'],
+                ], $data);
+            }
+
+            return FlowTransition::stay([
+                'assistant_messages' => [[
+                    'content' => "I couldn't find a client matching **{$message}**. Which client should I book this for?",
+                    'metadata' => ['step' => 'ask_client', 'error' => 'client_not_found'],
+                ]],
+                'suggestions' => $this->clientSuggestions(),
+            ], $data);
+        }
+
+        return FlowTransition::stay([
+            'assistant_messages' => [[
+                'content' => "Great! Let's book a new shoot. Which client is this for?",
+                'metadata' => ['step' => 'ask_client'],
+            ]],
+            'suggestions' => $this->clientSuggestions(),
+        ], $data);
+    }
+
     protected function askProperty(FlowState $state): FlowTransition
     {
         $data = $state->data;
         $context = $state->context;
         $message = $state->message;
         $session = $state->session;
+        $suggestionClientId = (int) ($data['client_id'] ?? $session->user_id);
 
         // if UI sends property info in context (button click)
         if (!empty($context['propertyAddress']) || !empty($context['property_id'])) {
@@ -119,7 +220,7 @@ class BookShootFlow implements FlowHandlerInterface
             $isIntentTrigger = in_array($messageLower, $intentTriggers, true);
             
             if ($isIntentTrigger) {
-                $suggestions = $this->recentPropertySuggestions($session->user_id);
+                $suggestions = $this->recentPropertySuggestions($suggestionClientId);
                 if (empty($suggestions)) {
                     $suggestions = ['Enter new address'];
                 }
@@ -133,15 +234,15 @@ class BookShootFlow implements FlowHandlerInterface
             }
 
             // Check if message matches a suggested address
-            $suggestions = $this->recentPropertySuggestions($session->user_id);
+            $suggestions = $this->recentPropertySuggestions($suggestionClientId);
             $matchedAddress = null;
             
             foreach ($suggestions as $suggestion) {
                 if (strtolower(trim($message)) === strtolower(trim($suggestion))) {
                     // User selected a suggested address, try to find it in shoots
-                    $matchedShoot = Shoot::where(function ($query) use ($session) {
-                        $query->where('client_id', $session->user_id)
-                              ->orWhere('rep_id', $session->user_id);
+                    $matchedShoot = Shoot::where(function ($query) use ($suggestionClientId) {
+                        $query->where('client_id', $suggestionClientId)
+                              ->orWhere('rep_id', $suggestionClientId);
                     })
                     ->where(function ($query) use ($message) {
                         $parts = explode(',', $message);
@@ -201,7 +302,7 @@ class BookShootFlow implements FlowHandlerInterface
                 'content'  => "Sure, let's book a new shoot. Which property is this for?",
                 'metadata' => ['step' => 'ask_property'],
             ]],
-            'suggestions' => $this->recentPropertySuggestions($session->user_id),
+            'suggestions' => $this->recentPropertySuggestions($suggestionClientId),
         ], $data);
     }
 
@@ -620,6 +721,47 @@ class BookShootFlow implements FlowHandlerInterface
         }
 
         return $suggestions;
+    }
+
+    protected function requiresClientSelection(FlowState $state): bool
+    {
+        $user = User::find($state->session->user_id);
+
+        return in_array($user?->role, ['admin', 'superadmin', 'salesRep'], true);
+    }
+
+    protected function findClientFromMessage(string $message): ?User
+    {
+        $search = trim($message);
+        if ($search === '') {
+            return null;
+        }
+
+        return User::where('role', 'client')
+            ->where(function ($query) use ($search) {
+                $query->where('name', 'like', '%' . $search . '%')
+                    ->orWhere('email', 'like', '%' . $search . '%')
+                    ->orWhere('company_name', 'like', '%' . $search . '%');
+            })
+            ->orderByRaw('CASE WHEN name = ? OR company_name = ? OR email = ? THEN 0 ELSE 1 END', [$search, $search, $search])
+            ->orderBy('name')
+            ->first();
+    }
+
+    protected function clientSuggestions(): array
+    {
+        $clients = User::where('role', 'client')
+            ->orderBy('updated_at', 'desc')
+            ->limit(8)
+            ->get(['name', 'company_name', 'email']);
+
+        $suggestions = $clients
+            ->map(fn (User $client) => $client->company_name ?: $client->name ?: $client->email)
+            ->filter()
+            ->values()
+            ->all();
+
+        return !empty($suggestions) ? $suggestions : ['Enter client name'];
     }
 
     protected function inferServiceIdsFromText(string $text): array

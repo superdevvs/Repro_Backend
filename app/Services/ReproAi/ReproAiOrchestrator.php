@@ -38,11 +38,17 @@ class ReproAiOrchestrator
             'content' => $this->buildSystemPrompt($session, $context),
         ]);
 
-        // Add user message
-        $messages[] = [
-            'role' => 'user',
-            'content' => $userMessage,
-        ];
+        $lastMessage = end($messages);
+        if (
+            !is_array($lastMessage)
+            || ($lastMessage['role'] ?? null) !== 'user'
+            || trim((string) ($lastMessage['content'] ?? '')) !== trim($userMessage)
+        ) {
+            $messages[] = [
+                'role' => 'user',
+                'content' => $userMessage,
+            ];
+        }
 
         // Get available tools
         $tools = $this->getAvailableTools($context);
@@ -201,8 +207,8 @@ class ReproAiOrchestrator
         $prompt .= "   - Get dashboard statistics (revenue, shoot counts, pending items)\n";
         $prompt .= "   - Show upcoming shoots and items needing attention\n\n";
         
-        $prompt .= "5. AI PHOTO EDITING:\n";
-        $prompt .= "   - Submit images for AI-powered editing (enhance, sky replacement, object removal, etc.)\n";
+        $prompt .= "5. AUTOENHANCE AI PHOTO EDITING:\n";
+        $prompt .= "   - Submit images for Autoenhance editing (enhance, sky replacement, HDR merge, vertical correction, window pull, etc.)\n";
         $prompt .= "   - Check status of editing jobs\n";
         $prompt .= "   - Get available editing types\n";
         $prompt .= "   - Use submit_ai_editing when user wants to enhance or edit photos\n";
@@ -505,12 +511,12 @@ class ReproAiOrchestrator
                 'type' => 'function',
                 'function' => [
                     'name' => 'submit_ai_editing',
-                    'description' => 'Submit images from a shoot for AI-powered photo editing. Use this when user wants to enhance, improve, or edit photos using AI.',
+                    'description' => 'Submit images from a shoot for Autoenhance AI photo editing. Use this when user wants to enhance, improve, run HDR brackets, apply sky replacement, vertical correction, or window pull.',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => [
                             'shoot_id' => ['type' => 'integer', 'description' => 'The shoot ID containing images to edit'],
-                            'editing_type' => ['type' => 'string', 'description' => 'Type of editing: enhance, sky_replace, remove_object, color_correction, exposure_fix, white_balance (default: enhance)'],
+                            'editing_type' => ['type' => 'string', 'description' => 'Type of Autoenhance editing: enhance, sky_replace, hdr_merge, vertical_correction, window_pull, color_correction, exposure_fix, white_balance (default: enhance)'],
                             'file_ids' => ['type' => 'array', 'description' => 'Array of file IDs to edit (optional, if not provided, will edit all images in shoot)', 'items' => ['type' => 'integer']],
                             'params' => ['type' => 'object', 'description' => 'Additional parameters for specific editing types'],
                         ],
@@ -522,7 +528,7 @@ class ReproAiOrchestrator
                 'type' => 'function',
                 'function' => [
                     'name' => 'get_ai_editing_status',
-                    'description' => 'Get status of AI editing jobs. Use this to check progress of submitted editing jobs.',
+                    'description' => 'Get status of Autoenhance AI editing jobs. Use this to check progress of submitted editing jobs.',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => [
@@ -536,7 +542,7 @@ class ReproAiOrchestrator
                 'type' => 'function',
                 'function' => [
                     'name' => 'get_editing_types',
-                    'description' => 'Get list of available AI editing types and their descriptions',
+                    'description' => 'Get list of available Autoenhance editing types and their descriptions',
                     'parameters' => (object) [
                         'type' => 'object',
                         'properties' => (object) [],

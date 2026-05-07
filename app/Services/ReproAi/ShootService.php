@@ -10,6 +10,7 @@ use App\Services\ShootWorkflowService;
 use App\Services\ShootTaxService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ShootService
 {
@@ -33,6 +34,11 @@ class ShootService
     {
         return DB::transaction(function () use ($userId, $data) {
             $user = User::findOrFail($userId);
+            $clientId = (int) ($data['client_id'] ?? $userId);
+            $client = User::whereKey($clientId)->where('role', 'client')->first();
+            if (!$client) {
+                throw new \Exception('A valid client is required before booking a shoot');
+            }
 
             // Parse services
             $serviceIds = $data['service_ids'] ?? [];
@@ -74,7 +80,7 @@ class ShootService
 
             // Create shoot
             $shoot = Shoot::create([
-                'client_id' => $userId, // Assuming user is the client for now
+                'client_id' => $client->id,
                 'rep_id' => null, // Can be enhanced later
                 'photographer_id' => null, // Can be selected in flow later
                 'service_id' => $services->first()->id, // Legacy support
@@ -131,7 +137,14 @@ class ShootService
 
             // Create Dropbox folders if scheduled
             if ($scheduledAt) {
-                $this->dropboxService->createShootFolders($shoot);
+                try {
+                    $this->dropboxService->createShootFolders($shoot);
+                } catch (\Throwable $dropboxError) {
+                    Log::warning('Robbie booking Dropbox folder creation failed', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $dropboxError->getMessage(),
+                    ]);
+                }
             }
 
             return $shoot->load(['client', 'services']);

@@ -45,7 +45,7 @@ use App\Http\Controllers\API\AiChatController;
 use App\Http\Controllers\API\CubiCasaController;
 use App\Http\Controllers\API\ImageDownloadController;
 use App\Http\Controllers\API\ImageProcessingController;
-use App\Http\Controllers\API\FotelloController;
+use App\Http\Controllers\API\AutoenhanceController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
@@ -670,13 +670,13 @@ Route::middleware('auth:sanctum')->group(function () {
         });
     });
 
-    // Fotello AI Photo Editing endpoints (Admin/Super Admin only)
-    Route::prefix('fotello')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
-        Route::get('/editing-types', [FotelloController::class, 'getEditingTypes']);
-        Route::post('/edit', [FotelloController::class, 'submitEditing']);
-        Route::get('/jobs', [FotelloController::class, 'listJobs']);
-        Route::get('/jobs/{jobId}', [FotelloController::class, 'getJobStatus']);
-        Route::post('/jobs/{jobId}/cancel', [FotelloController::class, 'cancelJob']);
+    // Autoenhance AI Photo Editing endpoints (Admin/Super Admin only)
+    Route::prefix('autoenhance')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
+        Route::get('/editing-types', [AutoenhanceController::class, 'getEditingTypes']);
+        Route::post('/edit', [AutoenhanceController::class, 'submitEditing']);
+        Route::get('/jobs', [AutoenhanceController::class, 'listJobs']);
+        Route::get('/jobs/{jobId}', [AutoenhanceController::class, 'getJobStatus']);
+        Route::post('/jobs/{jobId}/cancel', [AutoenhanceController::class, 'cancelJob']);
     });
 
     // Higgsfield AI Video Generation endpoints

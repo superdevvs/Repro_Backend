@@ -3,53 +3,42 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProcessAutoenhanceEditingJob;
+use App\Models\AiEditingJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
-use App\Models\AiEditingJob;
-use App\Services\FotelloService;
-use App\Jobs\ProcessFotelloEditingJob;
+use App\Services\AutoenhanceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
-class FotelloController extends Controller
+class AutoenhanceController extends Controller
 {
-    public function __construct(private FotelloService $fotelloService)
+    public function __construct(private AutoenhanceService $autoenhanceService)
     {
     }
 
-    /**
-     * GET /api/fotello/editing-types
-     * List available editing types
-     */
     public function getEditingTypes()
     {
         try {
-            $types = $this->fotelloService->getEditingTypes();
-
             return response()->json([
                 'success' => true,
-                'data' => $types,
+                'data' => $this->autoenhanceService->getEditingTypes(),
             ]);
         } catch (\Exception $e) {
-            Log::error('FotelloController: Error getting editing types', [
+            Log::error('AutoenhanceController: Error getting editing types', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
-            // Return default types even on error to prevent UI breakage
             return response()->json([
                 'success' => true,
-                'data' => $this->fotelloService->getDefaultEditingTypes(),
-                'message' => 'Using default editing types',
+                'data' => $this->autoenhanceService->getDefaultEditingTypes(),
+                'message' => 'Using default Autoenhance editing types',
             ]);
         }
     }
 
-    /**
-     * POST /api/fotello/edit
-     * Submit image(s) for AI editing
-     */
     public function submitEditing(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -70,11 +59,6 @@ class FotelloController extends Controller
 
         try {
             $shoot = Shoot::findOrFail($request->shoot_id);
-            $fileIds = $request->file_ids;
-            $editingType = $request->editing_type;
-            $params = $request->params ?? [];
-
-            // Verify user has access to this shoot
             $user = $request->user();
             if (!$this->canEditShoot($user, $shoot)) {
                 return response()->json([
@@ -83,109 +67,83 @@ class FotelloController extends Controller
                 ], 403);
             }
 
-            $jobs = [];
-
-            foreach ($fileIds as $fileId) {
+            $jobs = collect();
+            foreach ($request->file_ids as $fileId) {
                 $shootFile = ShootFile::findOrFail($fileId);
-
-                // Verify file belongs to the shoot
-                if ($shootFile->shoot_id !== $shoot->id) {
+                if ((int) $shootFile->shoot_id !== (int) $shoot->id) {
                     continue;
                 }
 
-                // Get image URL
                 $imageUrl = $this->getImageUrl($shootFile);
                 if (!$imageUrl) {
-                    Log::warning('FotelloController: Could not get image URL', [
+                    Log::warning('AutoenhanceController: Could not get image URL', [
                         'file_id' => $fileId,
                     ]);
                     continue;
                 }
 
-                // Create AI editing job
                 $editingJob = AiEditingJob::create([
                     'shoot_id' => $shoot->id,
                     'shoot_file_id' => $shootFile->id,
                     'user_id' => $user->id,
+                    'provider' => 'autoenhance',
                     'status' => AiEditingJob::STATUS_PENDING,
-                    'editing_type' => $editingType,
-                    'editing_params' => $params,
+                    'editing_type' => $request->editing_type,
+                    'editing_params' => $request->params ?? [],
                     'original_image_url' => $imageUrl,
                 ]);
 
-                // Dispatch queue job
-                ProcessFotelloEditingJob::dispatch($editingJob);
-
-                $jobs[] = $editingJob;
+                ProcessAutoenhanceEditingJob::dispatch($editingJob);
+                $jobs->push($editingJob);
             }
 
-            if (empty($jobs)) {
+            if ($jobs->isEmpty()) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No valid files found for editing',
+                    'message' => 'No valid files found for Autoenhance editing',
                 ], 400);
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Editing jobs submitted successfully',
-                'data' => $jobs->map(function ($job) {
-                    return [
-                        'id' => $job->id,
-                        'shoot_id' => $job->shoot_id,
-                        'shoot_file_id' => $job->shoot_file_id,
-                        'status' => $job->status,
-                        'editing_type' => $job->editing_type,
-                        'created_at' => $job->created_at,
-                    ];
-                }),
+                'message' => 'Autoenhance editing jobs submitted successfully',
+                'data' => $jobs->map(fn (AiEditingJob $job) => $this->presentJob($job))->values(),
             ], 201);
-
         } catch (\Exception $e) {
-            Log::error('FotelloController: Error submitting editing', [
+            Log::error('AutoenhanceController: Error submitting editing', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to submit editing job',
+                'message' => 'Failed to submit Autoenhance editing job',
                 'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-    /**
-     * GET /api/fotello/jobs
-     * List all jobs for a shoot/user
-     */
     public function listJobs(Request $request)
     {
         try {
             $user = $request->user();
-            $query = AiEditingJob::with(['shoot', 'shootFile', 'user']);
+            $query = AiEditingJob::with(['shoot', 'shootFile', 'user'])->where('provider', 'autoenhance');
 
-            // Filter by shoot if provided
             if ($request->has('shoot_id')) {
                 $query->where('shoot_id', $request->shoot_id);
             }
-
-            // Filter by status if provided
             if ($request->has('status')) {
                 $query->where('status', $request->status);
             }
-
-            // For non-admin users, only show their own jobs
-            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
                 $query->where('user_id', $user->id);
             }
 
-            $jobs = $query->orderBy('created_at', 'desc')
-                ->paginate($request->get('per_page', 20));
+            $jobs = $query->orderBy('created_at', 'desc')->paginate($request->get('per_page', 20));
 
             return response()->json([
                 'success' => true,
-                'data' => $jobs->items(),
+                'data' => collect($jobs->items())->map(fn (AiEditingJob $job) => $this->presentJob($job))->values(),
                 'meta' => [
                     'current_page' => $jobs->currentPage(),
                     'last_page' => $jobs->lastPage(),
@@ -193,189 +151,151 @@ class FotelloController extends Controller
                     'total' => $jobs->total(),
                 ],
             ]);
-
         } catch (\Exception $e) {
-            Log::error('FotelloController: Error listing jobs', [
+            Log::error('AutoenhanceController: Error listing jobs', [
                 'error' => $e->getMessage(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to retrieve jobs',
+                'message' => 'Failed to retrieve Autoenhance jobs',
                 'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-    /**
-     * GET /api/fotello/jobs/{jobId}
-     * Get job status
-     */
     public function getJobStatus($jobId)
     {
         try {
             $job = AiEditingJob::with(['shoot', 'shootFile', 'user'])->findOrFail($jobId);
-
-            // Check permissions
             $user = request()->user();
-            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager']) && $job->user_id !== $user->id) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true) && $job->user_id !== $user->id) {
                 return response()->json([
                     'success' => false,
                     'message' => 'You do not have permission to view this job',
                 ], 403);
             }
 
-            // If job is processing and has Fotello job ID, check status
-            if ($job->isProcessing() && $job->fotello_job_id) {
-                $status = $this->fotelloService->getJobStatus($job->fotello_job_id);
-                if ($status) {
-                    // Update job status if needed
-                    $fotelloStatus = $status['status'] ?? $status['state'] ?? null;
-                    if ($fotelloStatus === 'completed') {
-                        // Job might be completed, trigger a refresh
-                        ProcessFotelloEditingJob::dispatch($job);
-                    }
+            if ($job->isProcessing() && $job->autoenhance_image_id) {
+                $status = $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
+                if (($status['status'] ?? null) === 'completed') {
+                    ProcessAutoenhanceEditingJob::dispatch($job);
                 }
             }
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'id' => $job->id,
-                    'shoot_id' => $job->shoot_id,
-                    'shoot_file_id' => $job->shoot_file_id,
-                    'fotello_job_id' => $job->fotello_job_id,
-                    'status' => $job->status,
-                    'editing_type' => $job->editing_type,
-                    'editing_params' => $job->editing_params,
-                    'original_image_url' => $job->original_image_url,
-                    'edited_image_url' => $job->edited_image_url,
-                    'error_message' => $job->error_message,
-                    'retry_count' => $job->retry_count,
-                    'started_at' => $job->started_at,
-                    'completed_at' => $job->completed_at,
-                    'created_at' => $job->created_at,
-                    'updated_at' => $job->updated_at,
-                ],
+                'data' => $this->presentJob($job),
             ]);
-
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Job not found',
             ], 404);
         } catch (\Exception $e) {
-            Log::error('FotelloController: Error getting job status', [
+            Log::error('AutoenhanceController: Error getting job status', [
                 'job_id' => $jobId,
                 'error' => $e->getMessage(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to retrieve job status',
+                'message' => 'Failed to retrieve Autoenhance job status',
                 'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-    /**
-     * POST /api/fotello/jobs/{jobId}/cancel
-     * Cancel a pending job
-     */
     public function cancelJob($jobId)
     {
         try {
             $job = AiEditingJob::findOrFail($jobId);
-
-            // Check permissions
             $user = request()->user();
-            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager']) && $job->user_id !== $user->id) {
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true) && $job->user_id !== $user->id) {
                 return response()->json([
                     'success' => false,
                     'message' => 'You do not have permission to cancel this job',
                 ], 403);
             }
 
-            // Only pending or processing jobs can be cancelled
-            if (!in_array($job->status, [AiEditingJob::STATUS_PENDING, AiEditingJob::STATUS_PROCESSING])) {
+            if (!in_array($job->status, [AiEditingJob::STATUS_PENDING, AiEditingJob::STATUS_PROCESSING], true)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only pending or processing jobs can be cancelled',
                 ], 400);
             }
 
-            // Cancel in Fotello if job ID exists
-            if ($job->fotello_job_id) {
-                $this->fotelloService->cancelJob($job->fotello_job_id);
+            if ($job->autoenhance_image_id) {
+                $this->autoenhanceService->cancelJob($job->autoenhance_image_id);
             }
 
-            // Update job status
             $job->status = AiEditingJob::STATUS_CANCELLED;
             $job->save();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Job cancelled successfully',
-                'data' => $job,
+                'message' => 'Autoenhance job cancelled successfully',
+                'data' => $this->presentJob($job),
             ]);
-
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Job not found',
             ], 404);
         } catch (\Exception $e) {
-            Log::error('FotelloController: Error cancelling job', [
+            Log::error('AutoenhanceController: Error cancelling job', [
                 'job_id' => $jobId,
                 'error' => $e->getMessage(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to cancel job',
+                'message' => 'Failed to cancel Autoenhance job',
                 'error' => $e->getMessage(),
             ], 500);
         }
     }
 
-    /**
-     * Check if user can edit this shoot
-     */
     private function canEditShoot($user, Shoot $shoot): bool
     {
-        // Admins and superadmins can edit any shoot
-        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'])) {
-            return true;
-        }
-
-        return false;
+        return in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true);
     }
 
-    /**
-     * Get image URL for a shoot file
-     */
     private function getImageUrl(ShootFile $shootFile): ?string
     {
-        // Try to get from storage path or dropbox path
         $url = $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
-
         if (!$url) {
             return null;
         }
-
-        // If it's already a full URL, return it
         if (filter_var($url, FILTER_VALIDATE_URL)) {
             return $url;
         }
 
-        // Otherwise, construct full URL
-        // This might need adjustment based on your storage setup
-        $baseUrl = config('app.url');
-        if (str_starts_with($url, '/')) {
-            return $baseUrl . $url;
-        }
+        $baseUrl = rtrim(config('app.url'), '/');
+        return $baseUrl . '/' . ltrim($url, '/');
+    }
 
-        return $baseUrl . '/' . $url;
+    private function presentJob(AiEditingJob $job): array
+    {
+        return [
+            'id' => $job->id,
+            'shoot_id' => $job->shoot_id,
+            'shoot_file_id' => $job->shoot_file_id,
+            'provider' => $job->provider,
+            'provider_job_id' => $job->provider_job_id,
+            'provider_order_id' => $job->provider_order_id,
+            'autoenhance_image_id' => $job->autoenhance_image_id,
+            'status' => $job->status,
+            'editing_type' => $job->editing_type,
+            'editing_params' => $job->editing_params,
+            'original_image_url' => $job->original_image_url,
+            'edited_image_url' => $job->edited_image_url,
+            'error_message' => $job->error_message,
+            'retry_count' => $job->retry_count,
+            'started_at' => $job->started_at,
+            'completed_at' => $job->completed_at,
+            'created_at' => $job->created_at,
+            'updated_at' => $job->updated_at,
+        ];
     }
 }
-

@@ -5,17 +5,17 @@ namespace App\Services\ReproAi\Tools;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\AiEditingJob;
-use App\Services\FotelloService;
-use App\Jobs\ProcessFotelloEditingJob;
+use App\Services\AutoenhanceService;
+use App\Jobs\ProcessAutoenhanceEditingJob;
 use Illuminate\Support\Facades\Log;
 
 class AiEditingTools
 {
-    private FotelloService $fotelloService;
+    private AutoenhanceService $autoenhanceService;
 
     public function __construct()
     {
-        $this->fotelloService = app(FotelloService::class);
+        $this->autoenhanceService = app(AutoenhanceService::class);
     }
 
     /**
@@ -109,6 +109,7 @@ class AiEditingTools
                     'shoot_id' => $shoot->id,
                     'shoot_file_id' => $file->id,
                     'user_id' => $userId,
+                    'provider' => 'autoenhance',
                     'status' => AiEditingJob::STATUS_PENDING,
                     'editing_type' => $editingType,
                     'editing_params' => $params['params'] ?? [],
@@ -116,7 +117,7 @@ class AiEditingTools
                 ]);
 
                 // Dispatch queue job
-                ProcessFotelloEditingJob::dispatch($editingJob);
+                ProcessAutoenhanceEditingJob::dispatch($editingJob);
 
                 $jobs[] = [
                     'job_id' => $editingJob->id,
@@ -127,7 +128,7 @@ class AiEditingTools
 
             return [
                 'success' => true,
-                'message' => "Submitted {$validFiles->count()} image(s) for AI editing",
+                'message' => "Submitted {$validFiles->count()} image(s) to Autoenhance",
                 'jobs' => $jobs,
                 'editing_type' => $editingType,
             ];
@@ -196,7 +197,7 @@ class AiEditingTools
             }
 
             if ($shootId) {
-                $query = AiEditingJob::where('shoot_id', $shootId);
+                $query = AiEditingJob::where('shoot_id', $shootId)->where('provider', 'autoenhance');
                 
                 if ($userId && !in_array($context['user_role'] ?? '', ['admin', 'superadmin'])) {
                     $query->where('user_id', $userId);
@@ -249,7 +250,7 @@ class AiEditingTools
     public function getEditingTypes(array $params = [], array $context = []): array
     {
         try {
-            $types = $this->fotelloService->getEditingTypes();
+            $types = $this->autoenhanceService->getEditingTypes();
 
             return [
                 'success' => true,
