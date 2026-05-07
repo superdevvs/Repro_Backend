@@ -985,12 +985,12 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('cakemail')
 
 // RAW image preview routes
 Route::middleware(['auth:sanctum'])->prefix('raw-preview')->group(function () {
-    Route::post('/generate', [App\Http\Controllers\Api\RawPreviewController::class, 'generate']);
-    Route::post('/generate-async', [App\Http\Controllers\Api\RawPreviewController::class, 'generateAsync']);
-    Route::post('/batch', [App\Http\Controllers\Api\RawPreviewController::class, 'generateBatch']);
-    Route::get('/check', [App\Http\Controllers\Api\RawPreviewController::class, 'check']);
-    Route::get('/formats', [App\Http\Controllers\Api\RawPreviewController::class, 'formats']);
-    Route::delete('/delete', [App\Http\Controllers\Api\RawPreviewController::class, 'delete']);
+    Route::post('/generate', [App\Http\Controllers\API\RawPreviewController::class, 'generate']);
+    Route::post('/generate-async', [App\Http\Controllers\API\RawPreviewController::class, 'generateAsync']);
+    Route::post('/batch', [App\Http\Controllers\API\RawPreviewController::class, 'generateBatch']);
+    Route::get('/check', [App\Http\Controllers\API\RawPreviewController::class, 'check']);
+    Route::get('/formats', [App\Http\Controllers\API\RawPreviewController::class, 'formats']);
+    Route::delete('/delete', [App\Http\Controllers\API\RawPreviewController::class, 'delete']);
 });
 
 // Import routes (admin only)
