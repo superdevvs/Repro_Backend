@@ -635,6 +635,10 @@ class ShootMediaReadService
             return false;
         }
 
+        if ($file->processing_failed_at?->gt(now()->subMinutes(30))) {
+            return false;
+        }
+
         return empty($file->web_path) || empty($file->thumbnail_path);
     }
 

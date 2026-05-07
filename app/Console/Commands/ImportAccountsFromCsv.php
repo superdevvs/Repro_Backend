@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use App\Models\User;
+use App\Services\Users\ClientDashboardOnboardingService;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
@@ -149,6 +150,10 @@ class ImportAccountsFromCsv extends Command
                 'password' => Hash::make(Str::random(16)), // Random password, user will reset
                 'created_by_name' => $createdBy ?: null,
             ];
+
+            if ($role === 'client') {
+                $userData['metadata'] = app(ClientDashboardOnboardingService::class)->applyEligibility([], 'artisan_import');
+            }
 
             if (!$dryRun) {
                 try {

@@ -15,6 +15,7 @@ use Illuminate\Validation\ValidationException;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Users\ClientEmailVerificationLinkService;
+use App\Services\Users\ClientDashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 
 class AuthController extends Controller
@@ -72,6 +73,7 @@ class AuthController extends Controller
             'avatar' => $validated['avatar'] ?? null,
             'bio' => $validated['bio'] ?? null,
             'account_status' => 'active',
+            'metadata' => app(ClientDashboardOnboardingService::class)->applyEligibility([], 'registration'),
             ...$emailHealthMutation['attributes'],
         ]);
 
@@ -246,6 +248,15 @@ class AuthController extends Controller
             'preferences.notifications.shootReminders' => 'nullable|boolean',
             'preferences.notifications.paymentReminders' => 'nullable|boolean',
             'preferences.notifications.weeklySummaries' => 'nullable|boolean',
+            'preferences.clientDashboardOnboarding' => 'nullable|array',
+            'preferences.clientDashboardOnboarding.eligible' => 'nullable|boolean',
+            'preferences.clientDashboardOnboarding.version' => 'nullable|integer|min:1|max:100',
+            'preferences.clientDashboardOnboarding.createdAt' => 'nullable|string|max:100',
+            'preferences.clientDashboardOnboarding.startedAt' => 'nullable|string|max:100',
+            'preferences.clientDashboardOnboarding.completedAt' => 'nullable|string|max:100',
+            'preferences.clientDashboardOnboarding.dismissedAt' => 'nullable|string|max:100',
+            'preferences.clientDashboardOnboarding.lastStep' => 'nullable|integer|min:0|max:100',
+            'preferences.clientDashboardOnboarding.source' => 'nullable|string|max:100',
             'email_warning_override' => 'sometimes|boolean',
         ]);
 

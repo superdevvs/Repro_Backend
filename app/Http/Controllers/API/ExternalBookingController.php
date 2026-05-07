@@ -15,6 +15,7 @@ use App\Services\ShootWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootMutationSupportService;
+use App\Services\Users\ClientDashboardOnboardingService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -291,6 +292,7 @@ class ExternalBookingController extends Controller
             'company_notes' => $data['client_company'] ?? null,
             'role' => 'client',
             'password' => Hash::make(Str::random(32)),
+            'metadata' => app(ClientDashboardOnboardingService::class)->applyEligibility([], 'external_booking'),
         ]);
     }
 

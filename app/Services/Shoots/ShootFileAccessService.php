@@ -153,7 +153,14 @@ class ShootFileAccessService
             }
             if (!empty($updates)) {
                 $updates['processed_at'] = now();
+                $updates['processing_failed_at'] = null;
+                $updates['processing_error'] = null;
                 $file->update($updates);
+            } else {
+                $file->update([
+                    'processing_failed_at' => now(),
+                    'processing_error' => 'Unable to generate optimized preview.',
+                ]);
             }
 
             return $generated;

@@ -7,6 +7,7 @@ use App\Models\Category;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Users\ClientDashboardOnboardingService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -146,6 +147,10 @@ class ImportController extends Controller
                     'password' => Hash::make(Str::random(16)),
                     'created_by_name' => $createdBy ?: auth()->user()->name ?? null,
                 ];
+
+                if ($role === 'client') {
+                    $userData['metadata'] = app(ClientDashboardOnboardingService::class)->applyEligibility([], 'api_import');
+                }
 
                 if (!$dryRun) {
                     try {

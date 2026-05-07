@@ -11,6 +11,7 @@ use App\Models\AccountLink;
 use App\Models\UserActivityLog;
 use App\Services\Messaging\AutomationService;
 use App\Services\MailService;
+use App\Services\Users\ClientDashboardOnboardingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Http\Request;
@@ -358,6 +359,13 @@ class UserController extends Controller
                     ->values()
                     ->all(),
             ]);
+        }
+
+        if (($validated['role'] ?? null) === 'client') {
+            $validated['metadata'] = app(ClientDashboardOnboardingService::class)->applyEligibility(
+                $validated['metadata'] ?? [],
+                'admin_account_created'
+            );
         }
 
         $user = User::create($validated);
