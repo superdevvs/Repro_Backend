@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Events\ShootActivityBroadcast;
 use App\Http\Controllers\API\ShootWorkflowController;
 use App\Jobs\GenerateShootMediaArchiveJob;
+use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
@@ -117,7 +119,7 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     /** @test */
-    public function client_cannot_request_cancellation_for_scheduled_shoot(): void
+    public function client_can_request_cancellation_for_scheduled_shoot(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->client);
@@ -131,13 +133,45 @@ class ShootWorkflowActionsTest extends TestCase
             'reason' => 'Seller postponed listing',
         ]);
 
-        $response->assertForbidden();
+        $response->assertOk()
+            ->assertJsonPath('message', 'Cancellation request submitted. Pending approval.');
 
         $shoot->refresh();
 
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertNotNull($shoot->cancellation_requested_at);
+        $this->assertSame($this->client->id, $shoot->cancellation_requested_by);
+        $this->assertSame('Seller postponed listing', $shoot->cancellation_reason);
+        Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
+            return $event->shoot->id === $shoot->id
+                && $event->activityType === 'cancellation_requested';
+        });
+    }
+
+    /** @test */
+    public function client_must_acknowledge_fee_notice_for_scheduled_cancellation_within_four_hours(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->client);
+
+        $scheduledAt = now()->addHours(2);
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => $scheduledAt,
+            'scheduled_date' => $scheduledAt->toDateString(),
+            'time' => $scheduledAt->format('H:i'),
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/request-cancellation", [
+            'reason' => 'Seller postponed listing',
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('message', 'Please acknowledge the cancellation fee notice before submitting this request.');
+
+        $shoot->refresh();
         $this->assertNull($shoot->cancellation_requested_at);
-        $this->assertNull($shoot->cancellation_requested_by);
-        $this->assertNull($shoot->cancellation_reason);
         Event::assertNotDispatched(ShootActivityBroadcast::class);
     }
 
@@ -258,6 +292,99 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertNotNull($feeItem);
         $this->assertSame(60.0, (float) $feeItem->total_amount);
         $this->assertSame(60.0, (float) $invoice->total_amount);
+    }
+
+    /** @test */
+    public function approved_scheduled_cancellation_splits_photographer_payout_equally(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->admin);
+
+        $secondPhotographer = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Second Photographer',
+            'email' => 'second-photographer@test.com',
+        ]);
+        $secondService = Service::factory()->create([
+            'name' => 'Workflow Video',
+            'price' => 220.00,
+        ]);
+        $scheduledAt = now()->addHours(2);
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => $scheduledAt,
+            'scheduled_date' => $scheduledAt->toDateString(),
+            'time' => $scheduledAt->format('H:i'),
+            'cancellation_requested_at' => now()->subMinute(),
+            'cancellation_requested_by' => $this->client->id,
+            'cancellation_reason' => 'Client request',
+        ]);
+        $shoot->services()->attach($secondService->id, [
+            'price' => 220,
+            'quantity' => 1,
+            'photographer_pay' => 70,
+            'photographer_id' => $secondPhotographer->id,
+            'scheduled_at' => $scheduledAt,
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve-cancellation", [
+            'decision' => 'charge_fee',
+            'cancellation_fee' => 60,
+        ]);
+
+        $response->assertOk();
+
+        $payoutItems = InvoiceItem::query()
+            ->where('shoot_id', $shoot->id)
+            ->where('type', InvoiceItem::TYPE_CHARGE)
+            ->get()
+            ->filter(fn (InvoiceItem $item) => ($item->meta['type'] ?? null) === 'cancellation_photographer_payout')
+            ->values();
+
+        $this->assertCount(2, $payoutItems);
+        $this->assertSame(50.0, round((float) $payoutItems->sum('total_amount'), 2));
+        $this->assertEqualsCanonicalizing(
+            [$this->photographer->id, $secondPhotographer->id],
+            $payoutItems->pluck('meta.photographer_id')->map(fn ($id) => (int) $id)->all()
+        );
+        $this->assertSame([25.0, 25.0], $payoutItems->pluck('total_amount')->map(fn ($amount) => (float) $amount)->sort()->values()->all());
+        $this->assertSame(2, Invoice::query()->where('role', Invoice::ROLE_PHOTOGRAPHER)->count());
+    }
+
+    /** @test */
+    public function approved_scheduled_cancellation_with_waived_fee_does_not_create_fee_or_payout(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'cancellation_requested_at' => now()->subHour(),
+            'cancellation_requested_by' => $this->client->id,
+            'cancellation_reason' => 'Client request',
+        ]);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve-cancellation", [
+            'decision' => 'waive_fee',
+        ]);
+
+        $response->assertOk();
+        $shoot->refresh();
+
+        $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->status);
+        $this->assertSame(180.0, (float) $shoot->base_quote);
+        $this->assertSame(190.8, (float) $shoot->total_quote);
+        $this->assertFalse(
+            InvoiceItem::query()
+                ->where('shoot_id', $shoot->id)
+                ->get()
+                ->contains(fn (InvoiceItem $item) => in_array($item->meta['type'] ?? null, [
+                    'cancellation_fee',
+                    'cancellation_photographer_payout',
+                ], true))
+        );
     }
 
     /** @test */
@@ -744,6 +871,7 @@ class ShootWorkflowActionsTest extends TestCase
         $mailService->shouldIgnoreMissing();
         $mailService->shouldReceive('sendShootCancellationRequestedEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('sendShootCancelledEmail')->zeroOrMoreTimes()->andReturnTrue();
+        $mailService->shouldReceive('sendCancellationFeeInvoiceEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('sendShootRemovedEmail')->zeroOrMoreTimes()->andReturnTrue();
         $mailService->shouldReceive('sendShootReadyEmail')->zeroOrMoreTimes()->andReturnTrue();
         $this->app->instance(MailService::class, $mailService);

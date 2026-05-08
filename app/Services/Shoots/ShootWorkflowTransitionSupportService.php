@@ -8,6 +8,7 @@ use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class ShootWorkflowTransitionSupportService
 {
@@ -19,7 +20,27 @@ class ShootWorkflowTransitionSupportService
 
     public function sendCancellationRequestSideEffects(Shoot $shoot, User $user): void
     {
-        $shoot->loadMissing(['client', 'photographer', 'services']);
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
+        $this->notifyCancellationStakeholders(
+            $shoot,
+            'cancellation_request',
+            'Cancellation request needs review',
+            sprintf('%s requested cancellation for shoot #%d (%s).', $user->name, $shoot->id, $shoot->address ?? 'No address'),
+            [
+                'requested_by' => $user->id,
+                'reason' => $shoot->cancellation_reason,
+            ]
+        );
+
+        try {
+            $this->automationService->handleEvent('SHOOT_CANCELLATION_REQUESTED', [
+                'shoot' => $shoot->fresh(['client', 'photographer', 'rep', 'services']),
+                'user' => $user,
+                'reason' => $shoot->cancellation_reason,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to trigger SHOOT_CANCELLATION_REQUESTED automation: ' . $e->getMessage());
+        }
 
         if ($shoot->client && $shoot->client->email) {
             try {
@@ -92,6 +113,61 @@ class ShootWorkflowTransitionSupportService
         }
     }
 
+    public function sendCancellationApprovalSideEffects(Shoot $shoot, User $user, bool $feeCharged, float $cancellationFee): void
+    {
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
+        $this->notifyUser(
+            $shoot->client,
+            $feeCharged ? 'cancellation_approved_fee' : 'cancellation_approved_waived',
+            'Cancellation approved',
+            $feeCharged
+                ? sprintf('Your cancellation was approved and a $%.2f cancellation fee was applied.', $cancellationFee)
+                : 'Your cancellation was approved and no cancellation fee was applied.',
+            [
+                'shoot_id' => $shoot->id,
+                'approved_by' => $user->id,
+                'cancellation_fee' => round($cancellationFee, 2),
+            ]
+        );
+
+        try {
+            $this->automationService->handleEvent('SHOOT_CANCELLATION_APPROVED', [
+                'shoot' => $shoot->fresh(['client', 'photographer', 'rep', 'services']),
+                'user' => $user,
+                'fee_charged' => $feeCharged,
+                'cancellation_fee' => round($cancellationFee, 2),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to trigger SHOOT_CANCELLATION_APPROVED automation: ' . $e->getMessage());
+        }
+    }
+
+    public function sendCancellationRejectionSideEffects(Shoot $shoot, User $user, ?string $reason = null): void
+    {
+        $shoot->loadMissing(['client', 'photographer', 'rep', 'services']);
+        $this->notifyUser(
+            $shoot->client,
+            'cancellation_rejected',
+            'Cancellation request rejected',
+            'Your cancellation request was rejected. The shoot remains scheduled.',
+            [
+                'shoot_id' => $shoot->id,
+                'rejected_by' => $user->id,
+                'reason' => $reason,
+            ]
+        );
+
+        try {
+            $this->automationService->handleEvent('SHOOT_CANCELLATION_REJECTED', [
+                'shoot' => $shoot->fresh(['client', 'photographer', 'rep', 'services']),
+                'user' => $user,
+                'reason' => $reason,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to trigger SHOOT_CANCELLATION_REJECTED automation: ' . $e->getMessage());
+        }
+    }
+
     public function sendCompletionSideEffects(Shoot $shoot, User $user): void
     {
         $systemEmailAlreadySent = false;
@@ -144,6 +220,51 @@ class ShootWorkflowTransitionSupportService
             }
         } catch (\Exception $e) {
             Log::warning('Failed to trigger SHOOT_REQUEST_DECLINED automation: ' . $e->getMessage());
+        }
+    }
+
+    protected function notifyCancellationStakeholders(Shoot $shoot, string $type, string $title, string $message, array $data = []): void
+    {
+        $recipients = User::query()
+            ->whereIn('role', ['admin', 'superadmin'])
+            ->get()
+            ->push($shoot->rep)
+            ->filter()
+            ->unique('id');
+
+        foreach ($recipients as $recipient) {
+            $this->notifyUser($recipient, $type, $title, $message, array_merge([
+                'shoot_id' => $shoot->id,
+                'client_id' => $shoot->client_id,
+            ], $data));
+        }
+    }
+
+    protected function notifyUser(?User $user, string $type, string $title, string $message, array $data = []): void
+    {
+        if (!$user) {
+            return;
+        }
+
+        try {
+            if (!class_exists('App\\Models\\Notification') || !Schema::hasTable('notifications')) {
+                return;
+            }
+
+            \App\Models\Notification::create([
+                'user_id' => $user->id,
+                'type' => $type,
+                'title' => $title,
+                'message' => $message,
+                'data' => $data,
+                'read' => false,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to create cancellation workflow notification', [
+                'user_id' => $user->id,
+                'type' => $type,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

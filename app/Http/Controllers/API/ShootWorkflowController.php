@@ -84,7 +84,8 @@ class ShootWorkflowController extends Controller
     {
         $user = $request->user();
         $isPrivilegedUser = in_array($user->role, ['admin', 'superadmin', 'salesRep', 'rep', 'representative'], true);
-        if (!$isPrivilegedUser) {
+        $isOwningClient = $user->role === 'client' && (string) $shoot->client_id === (string) $user->id;
+        if (!$isPrivilegedUser && !$isOwningClient) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

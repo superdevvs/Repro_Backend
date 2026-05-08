@@ -4,6 +4,8 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\InvoiceService;
+use App\Services\MailService;
 use App\Services\ShootWorkflowService;
 use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Illuminate\Http\Request;
@@ -12,7 +14,9 @@ class ApproveCancellationAction
 {
     public function __construct(
         protected ShootWorkflowService $workflowService,
-        protected ShootWorkflowTransitionSupportService $support
+        protected ShootWorkflowTransitionSupportService $support,
+        protected InvoiceService $invoiceService,
+        protected MailService $mailService
     ) {
     }
 
@@ -23,22 +27,33 @@ class ApproveCancellationAction
         }
 
         $validated = $request->validate([
+            'decision' => 'nullable|string|in:charge_fee,waive_fee',
             'cancellation_fee' => 'nullable|numeric|min:0|max:10000',
             'waive_cancellation_fee' => 'nullable|boolean',
         ]);
-        $cancellationFee = $validated['waive_cancellation_fee'] ?? false
-            ? 0.0
-            : (float) ($validated['cancellation_fee'] ?? $this->defaultCancellationFeeFor($shoot));
+        $decision = $validated['decision'] ?? null;
+        if (!$decision) {
+            $decision = ($validated['waive_cancellation_fee'] ?? false) ? 'waive_fee' : 'charge_fee';
+        }
+        $cancellationFee = $decision === 'charge_fee'
+            ? (float) ($validated['cancellation_fee'] ?? $this->defaultCancellationFeeFor($shoot))
+            : 0.0;
 
         $this->workflowService->cancel($shoot, $user, $shoot->cancellation_reason, $cancellationFee);
 
-        $shoot->cancellation_requested_at = null;
-        $shoot->cancellation_requested_by = null;
-        $shoot->save();
+        $cancelledShoot = $shoot->fresh(['client', 'photographer', 'services', 'payments']) ?? $shoot;
+        if ($cancellationFee > 0) {
+            $invoice = $this->invoiceService->generateForShoot($cancelledShoot);
+            $this->invoiceService->createCancellationPhotographerPayouts($cancelledShoot, 50.00);
+            if ($invoice && $cancelledShoot->client) {
+                $this->mailService->sendCancellationFeeInvoiceEmail($cancelledShoot->client, $invoice);
+            }
+        }
 
-        $this->support->sendCancellationSideEffects($shoot, $user);
+        $this->support->sendCancellationSideEffects($cancelledShoot, $user);
+        $this->support->sendCancellationApprovalSideEffects($cancelledShoot, $user, $cancellationFee > 0, $cancellationFee);
 
-        return $shoot;
+        return $cancelledShoot;
     }
 
     protected function defaultCancellationFeeFor(Shoot $shoot): float

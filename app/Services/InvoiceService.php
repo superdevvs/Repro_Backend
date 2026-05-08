@@ -1072,6 +1072,154 @@ class InvoiceService
         });
     }
 
+    public function createCancellationPhotographerPayouts(Shoot $shoot, float $payoutTotal = 50.00): Collection
+    {
+        return DB::transaction(function () use ($shoot, $payoutTotal) {
+            $photographerIds = $this->eligibleCancellationPayoutPhotographerIds($shoot);
+            if ($photographerIds->isEmpty() || $payoutTotal <= 0) {
+                return collect();
+            }
+
+            $shares = $this->splitAmountEqually($payoutTotal, $photographerIds->count());
+            $scheduledAt = $this->resolveShootScheduledAt($shoot) ?? now();
+            $periodStart = $scheduledAt->copy()->startOfDay()->toDateString();
+            $periodEnd = $scheduledAt->copy()->endOfDay()->toDateString();
+            $created = collect();
+
+            foreach ($photographerIds->values() as $index => $photographerId) {
+                $existingItem = InvoiceItem::query()
+                    ->where('shoot_id', $shoot->id)
+                    ->where('type', InvoiceItem::TYPE_CHARGE)
+                    ->get()
+                    ->first(function (InvoiceItem $item) use ($photographerId) {
+                        $meta = is_array($item->meta) ? $item->meta : [];
+
+                        return ($meta['type'] ?? null) === 'cancellation_photographer_payout'
+                            && (int) ($meta['photographer_id'] ?? 0) === (int) $photographerId;
+                    });
+
+                if ($existingItem) {
+                    $created->push($existingItem->invoice()->first());
+                    continue;
+                }
+
+                $invoice = Invoice::firstOrCreate(
+                    [
+                        'user_id' => $photographerId,
+                        'role' => Invoice::ROLE_PHOTOGRAPHER,
+                        'photographer_id' => $photographerId,
+                        'period_start' => $periodStart,
+                        'period_end' => $periodEnd,
+                    ],
+                    [
+                        'billing_period_start' => $periodStart,
+                        'billing_period_end' => $periodEnd,
+                        'status' => Invoice::STATUS_DRAFT,
+                        'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
+                        'total_amount' => 0,
+                        'amount_paid' => 0,
+                        'is_sent' => false,
+                        'is_paid' => false,
+                    ]
+                );
+
+                $invoice->items()->create([
+                    'shoot_id' => $shoot->id,
+                    'type' => InvoiceItem::TYPE_CHARGE,
+                    'description' => 'Cancellation Payout - ' . ($shoot->address ?: 'Shoot #' . $shoot->id),
+                    'quantity' => 1,
+                    'unit_amount' => $shares[$index],
+                    'total_amount' => $shares[$index],
+                    'recorded_at' => now(),
+                    'meta' => [
+                        'type' => 'cancellation_photographer_payout',
+                        'shoot_id' => $shoot->id,
+                        'photographer_id' => $photographerId,
+                        'payout_total' => round($payoutTotal, 2),
+                        'eligible_photographer_count' => $photographerIds->count(),
+                    ],
+                ]);
+
+                $invoice->shoots()->syncWithoutDetaching([$shoot->id]);
+                $invoice->refreshTotals();
+                $invoice->recordAuditEvent('cancellation_payout_added', null, 'Cancellation payout added.', [
+                    'shoot_id' => $shoot->id,
+                    'payout_amount' => $shares[$index],
+                ]);
+                $created->push($invoice->fresh(['photographer', 'items', 'shoots']));
+            }
+
+            return $created->filter()->values();
+        });
+    }
+
+    protected function eligibleCancellationPayoutPhotographerIds(Shoot $shoot): Collection
+    {
+        $shoot->loadMissing(['services' => fn ($query) => $query->withPivot(['photographer_id', 'scheduled_at'])]);
+        $shootScheduledAt = $this->resolveShootScheduledAt($shoot);
+
+        $photographerIds = collect();
+
+        foreach ($shoot->services as $service) {
+            $serviceScheduledAt = $service->pivot?->scheduled_at
+                ? Carbon::parse($service->pivot->scheduled_at, $shoot->timezone ?: null)
+                : $shootScheduledAt;
+
+            if ($serviceScheduledAt && !$this->isWithinCancellationFeeWindow($serviceScheduledAt)) {
+                continue;
+            }
+
+            $photographerId = $service->pivot?->photographer_id ?? $shoot->photographer_id;
+            if ($photographerId) {
+                $photographerIds->push((int) $photographerId);
+            }
+        }
+
+        if ($photographerIds->isEmpty() && $shoot->photographer_id && $shootScheduledAt && $this->isWithinCancellationFeeWindow($shootScheduledAt)) {
+            $photographerIds->push((int) $shoot->photographer_id);
+        }
+
+        return $photographerIds->unique()->values();
+    }
+
+    protected function splitAmountEqually(float $amount, int $recipientCount): array
+    {
+        $totalCents = (int) round($amount * 100);
+        $baseCents = intdiv($totalCents, $recipientCount);
+        $remainder = $totalCents % $recipientCount;
+        $shares = [];
+
+        for ($index = 0; $index < $recipientCount; $index++) {
+            $shares[] = ($baseCents + ($index < $remainder ? 1 : 0)) / 100;
+        }
+
+        return $shares;
+    }
+
+    protected function resolveShootScheduledAt(Shoot $shoot): ?Carbon
+    {
+        if ($shoot->scheduled_at) {
+            return Carbon::parse($shoot->scheduled_at, $shoot->timezone ?: null);
+        }
+
+        if (!$shoot->scheduled_date || !$shoot->time) {
+            return null;
+        }
+
+        $date = $shoot->scheduled_date instanceof Carbon
+            ? $shoot->scheduled_date->format('Y-m-d')
+            : Carbon::parse($shoot->scheduled_date)->format('Y-m-d');
+
+        return Carbon::parse($date . ' ' . $shoot->time, $shoot->timezone ?: null);
+    }
+
+    protected function isWithinCancellationFeeWindow(Carbon $scheduledAt): bool
+    {
+        $hoursUntilShoot = now($scheduledAt->timezone)->diffInMinutes($scheduledAt, false) / 60;
+
+        return $hoursUntilShoot >= 0 && $hoursUntilShoot <= 4;
+    }
+
     protected function createShootChargeItems(Invoice $invoice, Shoot $shoot, bool $isCancellationFeeOnly = false): void
     {
         foreach ($shoot->services as $service) {
