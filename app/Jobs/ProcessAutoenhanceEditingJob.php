@@ -39,7 +39,9 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
             }
 
             if (!$this->editingJob->autoenhance_image_id) {
-                $this->editingJob->markAsFailed('Failed to submit job to Autoenhance');
+                if (!$this->editingJob->isFailed()) {
+                    $this->editingJob->markAsFailed($this->editingJob->error_message ?: 'Failed to submit job to Autoenhance');
+                }
                 return;
             }
 
@@ -91,11 +93,41 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
                 'autoenhance_image_id' => $this->editingJob->autoenhance_image_id,
             ]);
         } else {
+            $this->editingJob->provider_result = $result;
+            $this->editingJob->save();
+            $this->editingJob->markAsFailed($this->formatSubmissionFailure($result));
+
             Log::error('ProcessAutoenhanceEditingJob: Failed to submit to Autoenhance', [
                 'job_id' => $this->editingJob->id,
                 'result' => $result,
             ]);
         }
+    }
+
+    private function formatSubmissionFailure(?array $result): string
+    {
+        if (!$result) {
+            return 'Failed to submit job to Autoenhance';
+        }
+
+        $stage = $result['stage'] ?? 'submit';
+        $status = $result['status'] ?? null;
+        $error = $result['error'] ?? $result['message'] ?? null;
+
+        $parts = ['Autoenhance submission failed'];
+        if ($stage) {
+            $parts[] = "during {$stage}";
+        }
+        if ($status) {
+            $parts[] = "(HTTP {$status})";
+        }
+
+        $message = implode(' ', $parts);
+        if ($error) {
+            $message .= ': ' . $error;
+        }
+
+        return mb_substr($message, 0, 1000);
     }
 
     private function pollForCompletion(AutoenhanceService $autoenhanceService): void

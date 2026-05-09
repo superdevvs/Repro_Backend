@@ -82,12 +82,16 @@ class AutoenhanceService
                 ->post($this->baseUrl . '/v3/images/', $createPayload);
 
             if (!$createResponse->successful()) {
+                $failure = $this->failureFromResponse('create_image', $createResponse, [
+                    'editing_type' => $editingType,
+                ]);
                 Log::error('Autoenhance: Image creation failed', [
                     'status' => $createResponse->status(),
                     'body' => $createResponse->body(),
                     'editing_type' => $editingType,
+                    'error' => $failure['error'],
                 ]);
-                return null;
+                return $failure;
             }
 
             $data = $createResponse->json() ?? [];
@@ -97,8 +101,8 @@ class AutoenhanceService
 
             if ($uploadUrl) {
                 $uploaded = $this->uploadSourceImage($imageUrl, $uploadUrl, $usesLegacyUpload ? $contentType : 'application/octet-stream', !$usesLegacyUpload);
-                if (!$uploaded) {
-                    return null;
+                if (!($uploaded['success'] ?? false)) {
+                    return $uploaded;
                 }
             }
 
@@ -346,15 +350,19 @@ class AutoenhanceService
         return $payload;
     }
 
-    private function uploadSourceImage(string $imageUrl, string $uploadUrl, string $contentType, bool $includeApiKey = true): bool
+    private function uploadSourceImage(string $imageUrl, string $uploadUrl, string $contentType, bool $includeApiKey = true): array
     {
         $sourceResponse = Http::timeout($this->timeout)->get($imageUrl);
         if (!$sourceResponse->successful()) {
+            $failure = $this->failureFromResponse('fetch_source_image', $sourceResponse, [
+                'image_url' => $imageUrl,
+            ]);
             Log::error('Autoenhance: Failed to fetch source image for upload', [
                 'image_url' => $imageUrl,
                 'status' => $sourceResponse->status(),
+                'error' => $failure['error'],
             ]);
-            return false;
+            return $failure;
         }
 
         $headers = ['Content-Type' => $contentType];
@@ -368,14 +376,48 @@ class AutoenhanceService
             ->put($uploadUrl);
 
         if (!$uploadResponse->successful()) {
+            $failure = $this->failureFromResponse('upload_source_image', $uploadResponse);
             Log::error('Autoenhance: Upload to signed URL failed', [
                 'status' => $uploadResponse->status(),
                 'body' => $uploadResponse->body(),
+                'error' => $failure['error'],
             ]);
-            return false;
+            return $failure;
         }
 
-        return true;
+        return ['success' => true];
+    }
+
+    private function failureFromResponse(string $stage, $response, array $context = []): array
+    {
+        $body = $response->body();
+        $data = null;
+        try {
+            $data = $response->json();
+        } catch (\Throwable $e) {
+            $data = null;
+        }
+
+        $message = null;
+        if (is_array($data)) {
+            $message = $data['message'] ?? $data['error'] ?? $data['detail'] ?? $data['status_reason'] ?? null;
+            if (is_array($message) || is_object($message)) {
+                $message = json_encode($message);
+            }
+        }
+
+        if (!$message && $body) {
+            $message = trim((string) $body);
+        }
+
+        return array_merge($context, [
+            'success' => false,
+            'stage' => $stage,
+            'status' => $response->status(),
+            'error' => $message ?: 'Autoenhance request failed',
+            'body' => $body,
+            'data' => $data,
+        ]);
     }
 
     private function normalizeStatus(string $status): string
