@@ -681,9 +681,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/jobs/{jobId}/retry', [AutoenhanceController::class, 'retryJob']);
     });
 
-// Autoenhance Webhook (no auth - signature verified in controller if needed)
-Route::match(['get', 'post'], 'webhooks/autoenhance', [AutoenhanceController::class, 'handleWebhook'])
-    ->name('webhooks.autoenhance');
+    Route::match(['get', 'post'], 'webhooks/autoenhance', [AutoenhanceController::class, 'handleWebhook'])
+        ->withoutMiddleware('auth:sanctum')
+        ->name('webhooks.autoenhance');
 
     // Higgsfield AI Video Generation endpoints
     Route::prefix('higgsfield')->group(function () {

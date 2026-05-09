@@ -14,6 +14,7 @@ class AutoenhanceService
     private int $retryAttempts;
     private bool $enabled;
     private bool $devMode;
+    private ?string $apiVersion;
 
     public function __construct()
     {
@@ -25,6 +26,7 @@ class AutoenhanceService
             $this->enabled = (bool) ($settings['enabled'] ?? env('AUTOENHANCE_ENABLED', true));
             $this->retryAttempts = (int) ($settings['retryAttempts'] ?? config('services.autoenhance.retry_attempts', 3) ?? 3);
             $this->devMode = (bool) ($settings['devMode'] ?? config('services.autoenhance.dev_mode', false) ?? false);
+            $this->apiVersion = $settings['apiVersion'] ?? config('services.autoenhance.api_version', env('AUTOENHANCE_API_VERSION', '2025-05-05'));
         } catch (\Exception $e) {
             Log::warning('AutoenhanceService constructor error, using defaults', [
                 'error' => $e->getMessage(),
@@ -35,6 +37,7 @@ class AutoenhanceService
             $this->enabled = (bool) env('AUTOENHANCE_ENABLED', true);
             $this->retryAttempts = (int) config('services.autoenhance.retry_attempts', 3);
             $this->devMode = (bool) config('services.autoenhance.dev_mode', false);
+            $this->apiVersion = config('services.autoenhance.api_version', env('AUTOENHANCE_API_VERSION', '2025-05-05'));
         }
     }
 
@@ -67,7 +70,7 @@ class AutoenhanceService
 
             $imageName = $params['image_name'] ?? basename(parse_url($imageUrl, PHP_URL_PATH) ?: 'image.jpg');
             $contentType = $params['content_type'] ?? $params['mime_type'] ?? $this->guessContentType($imageName);
-            $createPayload = $this->buildCreateImagePayload($imageName, $editingType, $params, $contentType);
+            $createPayload = $this->buildCreateImagePayload($imageName, $editingType, $params);
 
             Log::info('Autoenhance: Creating image job', [
                 'editing_type' => $editingType,
@@ -90,9 +93,10 @@ class AutoenhanceService
             $data = $createResponse->json() ?? [];
             $imageId = $data['image_id'] ?? $data['id'] ?? null;
             $uploadUrl = $data['upload_url'] ?? $data['s3PutObjectUrl'] ?? null;
+            $usesLegacyUpload = !isset($data['upload_url']) && isset($data['s3PutObjectUrl']);
 
             if ($uploadUrl) {
-                $uploaded = $this->uploadSourceImage($imageUrl, $uploadUrl, $contentType);
+                $uploaded = $this->uploadSourceImage($imageUrl, $uploadUrl, $usesLegacyUpload ? $contentType : 'application/octet-stream', !$usesLegacyUpload);
                 if (!$uploaded) {
                     return null;
                 }
@@ -209,26 +213,26 @@ class AutoenhanceService
             [
                 'id' => 'enhance',
                 'name' => 'Enhance',
-                'description' => 'Autoenhance property photo enhancement',
+                'description' => 'Core Autoenhance property photo enhancement',
                 'params' => [
-                    'enhance_type' => ['warm', 'neutral', 'modern'],
+                    'enhance_type' => ['neutral'],
                     'vertical_correction' => 'boolean',
                     'lens_correction' => 'boolean',
-                    'window_pull_type' => ['NONE', 'ONLY_WINDOWS', 'WINDOWS_WITH_SKIES'],
+                    'window_pull_type' => ['NONE', 'ONLY_WINDOWS', 'WITH_SKIES'],
                 ],
             ],
             [
                 'id' => 'sky_replace',
                 'name' => 'Sky Replacement',
-                'description' => 'Enhance the image and replace sky using Autoenhance',
+                'description' => 'Replace grey skies and keep enhancement enabled',
                 'params' => [
-                    'cloud_type' => ['CLEAR', 'LOW_CLOUD', 'HIGH_CLOUD'],
+                    'cloud_type' => ['CLEAR', 'LOW_CLOUD', 'LOW_CLOUD_LOW_SAT', 'HIGH_CLOUD'],
                 ],
             ],
             [
                 'id' => 'hdr_merge',
                 'name' => 'HDR Bracket Merge',
-                'description' => 'Group bracketed exposures and process HDR output',
+                'description' => 'Bracket merge workflow for exposure stacks',
                 'params' => [
                     'hdr' => 'boolean',
                     'bracket_count' => 'integer',
@@ -237,7 +241,7 @@ class AutoenhanceService
             [
                 'id' => 'vertical_correction',
                 'name' => 'Vertical Correction',
-                'description' => 'Correct vertical distortion and enhance property imagery',
+                'description' => 'Correct wonky vertical lines',
                 'params' => [],
             ],
             [
@@ -245,7 +249,7 @@ class AutoenhanceService
                 'name' => 'Window Pull',
                 'description' => 'Apply Autoenhance window pull processing',
                 'params' => [
-                    'window_pull_type' => ['ONLY_WINDOWS', 'WINDOWS_WITH_SKIES'],
+                    'window_pull_type' => ['ONLY_WINDOWS', 'WITH_SKIES'],
                 ],
             ],
         ];
@@ -285,6 +289,10 @@ class AutoenhanceService
             'Content-Type' => 'application/json',
         ];
 
+        if ($this->apiVersion) {
+            $headers['x-api-version'] = $this->apiVersion;
+        }
+
         if ($includeDevMode) {
             $headers['x-dev-mode'] = 'true';
         }
@@ -292,19 +300,25 @@ class AutoenhanceService
         return $headers;
     }
 
-    private function buildCreateImagePayload(string $imageName, string $editingType, array $params, string $contentType): array
+    private function buildCreateImagePayload(string $imageName, string $editingType, array $params): array
     {
         $payload = [
-            'ai_version' => $params['ai_version'] ?? '5.x',
             'image_name' => $imageName,
-            'content_type' => $contentType,
             'enhance' => $params['enhance'] ?? true,
-            'enhance_type' => $params['enhance_type'] ?? $this->mapEnhanceType($editingType, $params),
             'lens_correction' => $params['lens_correction'] ?? true,
             'vertical_correction' => $params['vertical_correction'] ?? true,
             'privacy' => $params['privacy'] ?? true,
             'metadata' => $params['metadata'] ?? [],
         ];
+
+        if (!empty($params['ai_version'])) {
+            $payload['ai_version'] = $params['ai_version'];
+        }
+
+        $enhanceType = $params['enhance_type'] ?? $this->mapEnhanceType($editingType, $params);
+        if ($enhanceType) {
+            $payload['enhance_type'] = $enhanceType;
+        }
 
         if (!empty($params['order_id'])) {
             $payload['order_id'] = $params['order_id'];
@@ -332,7 +346,7 @@ class AutoenhanceService
         return $payload;
     }
 
-    private function uploadSourceImage(string $imageUrl, string $uploadUrl, string $contentType): bool
+    private function uploadSourceImage(string $imageUrl, string $uploadUrl, string $contentType, bool $includeApiKey = true): bool
     {
         $sourceResponse = Http::timeout($this->timeout)->get($imageUrl);
         if (!$sourceResponse->successful()) {
@@ -343,8 +357,13 @@ class AutoenhanceService
             return false;
         }
 
+        $headers = ['Content-Type' => $contentType];
+        if ($includeApiKey) {
+            $headers['x-api-key'] = $this->apiKey;
+        }
+
         $uploadResponse = Http::timeout($this->timeout)
-            ->withHeaders(['Content-Type' => $contentType])
+            ->withHeaders($headers)
             ->withBody($sourceResponse->body(), $contentType)
             ->put($uploadUrl);
 
@@ -363,23 +382,19 @@ class AutoenhanceService
     {
         $status = strtolower($status);
         return match (true) {
-            in_array($status, ['completed', 'done', 'finished', 'success', 'ready', 'downloaded'], true) => 'completed',
+            in_array($status, ['completed', 'done', 'finished', 'success', 'ready', 'downloaded', 'processed'], true) => 'completed',
             in_array($status, ['failed', 'error', 'cancelled', 'rejected'], true) => 'failed',
             default => 'processing',
         };
     }
 
-    private function mapEnhanceType(string $editingType, array $params): string
+    private function mapEnhanceType(string $editingType, array $params): ?string
     {
         if (!empty($params['enhance_type'])) {
             return $params['enhance_type'];
         }
 
-        return match ($editingType) {
-            'color_correction', 'white_balance' => 'neutral',
-            'exposure_fix' => 'warm',
-            default => 'property',
-        };
+        return null;
     }
 
     private function guessContentType(string $filename): string

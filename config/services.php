@@ -154,9 +154,11 @@ return [
     'autoenhance' => [
         'api_key' => env('AUTOENHANCE_API_KEY'),
         'base_url' => env('AUTOENHANCE_BASE_URL', 'https://api.autoenhance.ai'),
+        'api_version' => env('AUTOENHANCE_API_VERSION', '2025-05-05'),
         'timeout' => env('AUTOENHANCE_TIMEOUT', 120),
         'retry_attempts' => env('AUTOENHANCE_RETRY_ATTEMPTS', 3),
         'dev_mode' => env('AUTOENHANCE_DEV_MODE', false),
+        'webhook_secret' => env('AUTOENHANCE_WEBHOOK_SECRET'),
     ],
 
     // Higgsfield AI Video Generation Integration
