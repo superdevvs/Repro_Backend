@@ -352,6 +352,70 @@ class AutoenhanceController extends Controller
         }
     }
 
+    public function handleWebhook(Request $request)
+    {
+        try {
+            Log::info('Autoenhance: Webhook received', [
+                'payload' => $request->all(),
+            ]);
+
+            $imageId = $request->input('image_id') ?? $request->input('id');
+            $status = $request->input('status') ?? $request->input('state');
+            $enhancedUrl = $request->input('enhanced_image_url') ?? $request->input('result_url');
+
+            if (!$imageId) {
+                Log::warning('Autoenhance: Webhook missing image_id');
+                return response()->json(['success' => false, 'message' => 'Missing image_id'], 400);
+            }
+
+            $job = AiEditingJob::where('autoenhance_image_id', $imageId)->first();
+            if (!$job) {
+                Log::warning('Autoenhance: Webhook for unknown job', ['image_id' => $imageId]);
+                return response()->json(['success' => false, 'message' => 'Job not found'], 404);
+            }
+
+            $normalizedStatus = $this->normalizeWebhookStatus($status);
+            $job->status = $normalizedStatus;
+
+            if ($normalizedStatus === AiEditingJob::STATUS_COMPLETED && $enhancedUrl) {
+                $job->edited_image_url = $enhancedUrl;
+                $job->completed_at = now();
+            } elseif ($normalizedStatus === AiEditingJob::STATUS_FAILED) {
+                $job->error_message = $request->input('error') ?? $request->input('status_reason') ?? 'Webhook indicated failure';
+            }
+
+            $job->save();
+
+            Log::info('Autoenhance: Webhook processed successfully', [
+                'job_id' => $job->id,
+                'image_id' => $imageId,
+                'status' => $normalizedStatus,
+            ]);
+
+            return response()->json(['success' => true, 'message' => 'Webhook processed']);
+        } catch (\Exception $e) {
+            Log::error('Autoenhance: Webhook processing error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json(['success' => false, 'message' => 'Webhook processing failed'], 500);
+        }
+    }
+
+    private function normalizeWebhookStatus(?string $status): string
+    {
+        if (!$status) {
+            return AiEditingJob::STATUS_FAILED;
+        }
+
+        $status = strtolower($status);
+        return match (true) {
+            in_array($status, ['completed', 'done', 'finished', 'success', 'ready', 'downloaded'], true) => AiEditingJob::STATUS_COMPLETED,
+            in_array($status, ['failed', 'error', 'cancelled', 'rejected'], true) => AiEditingJob::STATUS_FAILED,
+            default => AiEditingJob::STATUS_PROCESSING,
+        };
+    }
+
     private function canEditShoot($user, Shoot $shoot): bool
     {
         return in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true);
