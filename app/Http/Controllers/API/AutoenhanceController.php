@@ -8,14 +8,40 @@ use App\Models\AiEditingJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\AutoenhanceService;
+use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
 class AutoenhanceController extends Controller
 {
-    public function __construct(private AutoenhanceService $autoenhanceService)
+    public function __construct(
+        private AutoenhanceService $autoenhanceService,
+        private ShootFileAccessService $shootFileAccessService,
+    ) {
+    }
+
+    public function connectionStatus()
     {
+        try {
+            return response()->json([
+                'success' => true,
+                'data' => $this->autoenhanceService->testConnection(),
+            ]);
+        } catch (\Exception $e) {
+            Log::warning('AutoenhanceController: connection status error', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'data' => [
+                    'success' => false,
+                    'status' => 503,
+                    'message' => 'Autoenhance status unavailable',
+                ],
+            ]);
+        }
     }
 
     public function getEditingTypes()
@@ -68,9 +94,15 @@ class AutoenhanceController extends Controller
             }
 
             $jobs = collect();
+            $skipped = [];
             foreach ($request->file_ids as $fileId) {
-                $shootFile = ShootFile::findOrFail($fileId);
+                $shootFile = ShootFile::find($fileId);
+                if (!$shootFile) {
+                    $skipped[] = ['file_id' => $fileId, 'reason' => 'File not found'];
+                    continue;
+                }
                 if ((int) $shootFile->shoot_id !== (int) $shoot->id) {
+                    $skipped[] = ['file_id' => $fileId, 'reason' => 'File does not belong to shoot'];
                     continue;
                 }
 
@@ -79,6 +111,7 @@ class AutoenhanceController extends Controller
                     Log::warning('AutoenhanceController: Could not get image URL', [
                         'file_id' => $fileId,
                     ]);
+                    $skipped[] = ['file_id' => $fileId, 'reason' => 'Source image URL unavailable'];
                     continue;
                 }
 
@@ -100,7 +133,8 @@ class AutoenhanceController extends Controller
             if ($jobs->isEmpty()) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No valid files found for Autoenhance editing',
+                    'message' => 'No valid files could be queued for Autoenhance editing',
+                    'skipped' => $skipped,
                 ], 400);
             }
 
@@ -108,6 +142,7 @@ class AutoenhanceController extends Controller
                 'success' => true,
                 'message' => 'Autoenhance editing jobs submitted successfully',
                 'data' => $jobs->map(fn (AiEditingJob $job) => $this->presentJob($job))->values(),
+                'skipped' => $skipped,
             ], 201);
         } catch (\Exception $e) {
             Log::error('AutoenhanceController: Error submitting editing', [
@@ -127,7 +162,7 @@ class AutoenhanceController extends Controller
     {
         try {
             $user = $request->user();
-            $query = AiEditingJob::with(['shoot', 'shootFile', 'user'])->where('provider', 'autoenhance');
+            $query = AiEditingJob::with(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])->where('provider', 'autoenhance');
 
             if ($request->has('shoot_id')) {
                 $query->where('shoot_id', $request->shoot_id);
@@ -167,7 +202,7 @@ class AutoenhanceController extends Controller
     public function getJobStatus($jobId)
     {
         try {
-            $job = AiEditingJob::with(['shoot', 'shootFile', 'user'])->findOrFail($jobId);
+            $job = AiEditingJob::with(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])->findOrFail($jobId);
             $user = request()->user();
             if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true) && $job->user_id !== $user->id) {
                 return response()->json([
@@ -201,6 +236,67 @@ class AutoenhanceController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to retrieve Autoenhance job status',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    public function retryJob($jobId)
+    {
+        try {
+            $job = AiEditingJob::with(['shoot', 'shootFile', 'user'])->findOrFail($jobId);
+            $user = request()->user();
+            if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true) && $job->user_id !== $user->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to retry this job',
+                ], 403);
+            }
+
+            if (!in_array($job->status, [AiEditingJob::STATUS_FAILED, AiEditingJob::STATUS_CANCELLED], true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only failed or cancelled jobs can be retried',
+                ], 400);
+            }
+
+            if ($job->shootFile) {
+                $resolvedUrl = $this->getImageUrl($job->shootFile);
+                if ($resolvedUrl) {
+                    $job->original_image_url = $resolvedUrl;
+                }
+            }
+            $job->status = AiEditingJob::STATUS_PENDING;
+            $job->error_message = null;
+            $job->edited_image_url = null;
+            $job->autoenhance_image_id = null;
+            $job->provider_job_id = null;
+            $job->started_at = null;
+            $job->completed_at = null;
+            $job->retry_count = 0;
+            $job->save();
+
+            ProcessAutoenhanceEditingJob::dispatch($job);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Autoenhance job re-queued for processing',
+                'data' => $this->presentJob($job->refresh()->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])),
+            ]);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Job not found',
+            ], 404);
+        } catch (\Exception $e) {
+            Log::error('AutoenhanceController: Error retrying job', [
+                'job_id' => $jobId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retry Autoenhance job',
                 'error' => $e->getMessage(),
             ], 500);
         }
@@ -263,7 +359,19 @@ class AutoenhanceController extends Controller
 
     private function getImageUrl(ShootFile $shootFile): ?string
     {
-        $url = $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
+        try {
+            $resolved = $this->shootFileAccessService->resolveFileUrl($shootFile, true);
+            if ($resolved) {
+                return $resolved;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AutoenhanceController: ShootFileAccessService failed, using fallback', [
+                'file_id' => $shootFile->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $url = $shootFile->url ?? $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
         if (!$url) {
             return null;
         }
@@ -275,8 +383,33 @@ class AutoenhanceController extends Controller
         return $baseUrl . '/' . ltrim($url, '/');
     }
 
+    private function resolveSourceThumb(?ShootFile $file): ?string
+    {
+        if (!$file) {
+            return null;
+        }
+
+        try {
+            $optimized = $this->shootFileAccessService->resolveOptimizedFileUrl($file);
+            if ($optimized) {
+                return $optimized;
+            }
+        } catch (\Throwable $e) {
+        }
+
+        try {
+            return $this->shootFileAccessService->resolveFileUrl($file, false);
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     private function presentJob(AiEditingJob $job): array
     {
+        $shoot = $job->relationLoaded('shoot') ? $job->shoot : null;
+        $sourceFile = $job->relationLoaded('shootFile') ? $job->shootFile : $job->shootFile;
+        $sourceThumb = $this->resolveSourceThumb($sourceFile);
+
         return [
             'id' => $job->id,
             'shoot_id' => $job->shoot_id,
@@ -296,6 +429,18 @@ class AutoenhanceController extends Controller
             'completed_at' => $job->completed_at,
             'created_at' => $job->created_at,
             'updated_at' => $job->updated_at,
+            'shoot' => $shoot ? [
+                'id' => $shoot->id,
+                'address' => $shoot->address,
+                'city' => $shoot->city ?? null,
+                'state' => $shoot->state ?? null,
+                'zip' => $shoot->zip ?? null,
+            ] : null,
+            'source_file' => $sourceFile ? [
+                'id' => $sourceFile->id,
+                'filename' => $sourceFile->filename,
+                'thumb_url' => $sourceThumb,
+            ] : null,
         ];
     }
 }

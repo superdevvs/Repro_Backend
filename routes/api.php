@@ -672,11 +672,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Autoenhance AI Photo Editing endpoints (Admin/Super Admin only)
     Route::prefix('autoenhance')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
+        Route::get('/connection-status', [AutoenhanceController::class, 'connectionStatus']);
         Route::get('/editing-types', [AutoenhanceController::class, 'getEditingTypes']);
         Route::post('/edit', [AutoenhanceController::class, 'submitEditing']);
         Route::get('/jobs', [AutoenhanceController::class, 'listJobs']);
         Route::get('/jobs/{jobId}', [AutoenhanceController::class, 'getJobStatus']);
         Route::post('/jobs/{jobId}/cancel', [AutoenhanceController::class, 'cancelJob']);
+        Route::post('/jobs/{jobId}/retry', [AutoenhanceController::class, 'retryJob']);
     });
 
     // Higgsfield AI Video Generation endpoints
