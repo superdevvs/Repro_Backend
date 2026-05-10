@@ -33,6 +33,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(0, '05:00');
+        $schedule->command('cubicasa:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
         $schedule->command('system-overview:prune')->hourly();
         $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')
             ->everyFiveMinutes()
