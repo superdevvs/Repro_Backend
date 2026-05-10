@@ -50,6 +50,7 @@ return Application::configure(basePath: dirname(__DIR__))
         );
         $middleware->validateCsrfTokens(except: [
             'iguide_webhook.php',
+            'cubicasa_webhook.php',
         ]);
 
         // Append impersonation middleware to run after auth

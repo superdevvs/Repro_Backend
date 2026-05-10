@@ -94,6 +94,15 @@ class Shoot extends Model
         'iguide_property_id',
         'iguide_work_order_id',
         'iguide_data',
+        'cubicasa_order_id',
+        'cubicasa_external_id',
+        'cubicasa_status',
+        'cubicasa_product_type',
+        'cubicasa_tour_url',
+        'cubicasa_floorplans',
+        'cubicasa_data',
+        'cubicasa_last_synced_at',
+        'cubicasa_last_status_at',
         'is_private_listing',
         'is_featured',
         'listing_type',
@@ -161,6 +170,10 @@ class Shoot extends Model
         'mls_image_width' => 'integer',
         'iguide_floorplans' => 'array',
         'iguide_data' => 'array',
+        'cubicasa_floorplans' => 'array',
+        'cubicasa_data' => 'array',
+        'cubicasa_last_synced_at' => 'datetime',
+        'cubicasa_last_status_at' => 'datetime',
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
@@ -265,6 +278,52 @@ class Shoot extends Model
             }
             $categoryName = $service->category?->name;
             if ($matches($categoryName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether this shoot has at least one booked service that produces CubiCasa
+     * deliverables (CubiCasa scans, GLA, 2D/3D floor plans). Used to gate auto
+     * sync & ingestion so we don't pull CubiCasa data for shoots that didn't
+     * book a relevant service.
+     */
+    public function hasCubiCasaEligibleService(): bool
+    {
+        $needles = ['cubicasa', 'cubi casa', 'cubi-casa', 'scan', 'floorplan', 'floor plan', 'gla', '2d floor', '3d floor'];
+
+        $matches = static function (?string $value) use ($needles): bool {
+            if (!is_string($value) || $value === '') {
+                return false;
+            }
+            $haystack = strtolower($value);
+            foreach ($needles as $needle) {
+                if (str_contains($haystack, $needle)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if ($matches($this->service_category)) {
+            return true;
+        }
+        if ($this->service && $matches($this->service->name)) {
+            return true;
+        }
+
+        $services = $this->relationLoaded('services')
+            ? $this->services
+            : $this->services()->with('category')->get();
+
+        foreach ($services as $service) {
+            if ($matches($service->name)) {
+                return true;
+            }
+            if ($matches($service->category?->name)) {
                 return true;
             }
         }

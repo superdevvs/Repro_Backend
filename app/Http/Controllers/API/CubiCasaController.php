@@ -44,9 +44,12 @@ class CubiCasaController extends Controller
                 'url' => $url
             ]);
 
+            // CubiCasa Integrate API v3 requires `api-key:` header (NOT Authorization: Bearer).
+            // See https://integrate.docs.cubi.casa/get-started-1362307m0
             $response = Http::timeout(30)->withHeaders([
-                'Authorization' => 'Bearer ' . $this->apiKey,
+                'api-key' => (string) $this->apiKey,
                 'Content-Type' => 'application/json',
+                'Accept' => 'application/json',
             ])->{strtolower($method)}($url, $data);
 
             if ($response->successful()) {
@@ -99,50 +102,20 @@ class CubiCasaController extends Controller
     }
 
     /**
-     * Create a new scan order
+     * Create a new scan order — DEPRECATED in this codebase.
+     *
+     * The old implementation POSTed to `/orders` (which doesn't exist in v3) and
+     * used the wrong auth header. CubiCasa v3 expects `POST /orders/draft`
+     * with `api-key:` auth. Order creation is intentionally out of scope for
+     * the current passive-ingestion phase. Returns 410 Gone with guidance.
      */
     public function createOrder(Request $request)
     {
-        $validated = $request->validate([
-            'address' => 'required|string',
-            'property_type' => 'nullable|string',
-            'shoot_id' => 'nullable|exists:shoots,id',
-            'notes' => 'nullable|string',
-            'customer_name' => 'nullable|string',
-            'customer_email' => 'nullable|email',
-        ]);
-
-        $user = $request->user();
-
-        $orderData = [
-            'address' => $validated['address'],
-            'property_type' => $validated['property_type'] ?? 'residential',
-            'notes' => $validated['notes'] ?? '',
-        ];
-
-        if (isset($validated['customer_name'])) {
-            $orderData['customer_name'] = $validated['customer_name'];
-        }
-
-        if (isset($validated['customer_email'])) {
-            $orderData['customer_email'] = $validated['customer_email'];
-        }
-
-        $response = $this->makeRequest('POST', '/orders', $orderData);
-
-        if ($response->getStatusCode() === 200 || $response->getStatusCode() === 201) {
-            $orderResponse = json_decode($response->getContent(), true);
-            $orderId = $orderResponse['id'] ?? $orderResponse['order_id'] ?? null;
-
-            // Link to shoot if provided
-            if (isset($validated['shoot_id']) && $orderId) {
-                $this->linkToShootInternal($orderId, $validated['shoot_id'], $user->id);
-            }
-
-            return $response;
-        }
-
-        return $response;
+        return response()->json([
+            'error' => 'Order creation is disabled',
+            'message' => 'CubiCasa orders must be created in the CubiCasa portal/app for now. Paste the resulting order UUID into the shoot Tour tab. Programmatic order creation will be added in a later phase.',
+            'docs' => 'https://integrate.docs.cubi.casa/create-a-draft-order-20093452e0',
+        ], 410);
     }
 
     /**
@@ -193,59 +166,17 @@ class CubiCasaController extends Controller
     }
 
     /**
-     * Upload photos for an order
+     * Upload photos for an order — DEPRECATED.
+     *
+     * CubiCasa v3 does not expose a `/orders/{id}/photos` endpoint; scans are
+     * captured via the CubiCasa mobile app or GoToScan invite. Returns 410.
      */
     public function uploadPhotos(Request $request, $orderId)
     {
-        $validated = $request->validate([
-            'photos' => 'required|array',
-            'photos.*' => 'required|image|max:10240', // 10MB max per photo
-        ]);
-
-        $photos = $request->file('photos');
-        $uploadedFiles = [];
-
-        foreach ($photos as $photo) {
-            // Upload to CubiCasa API
-            // Note: CubiCasa API may require multipart form data
-            try {
-                $response = Http::withHeaders([
-                    'Authorization' => 'Bearer ' . $this->apiKey,
-                ])->attach('photo', file_get_contents($photo->getRealPath()), $photo->getClientOriginalName())
-                  ->post(rtrim($this->baseUrl, '/') . "/orders/{$orderId}/photos");
-
-                if ($response->successful()) {
-                    $uploadedFiles[] = [
-                        'filename' => $photo->getClientOriginalName(),
-                        'status' => 'uploaded',
-                        'response' => $response->json()
-                    ];
-                } else {
-                    $uploadedFiles[] = [
-                        'filename' => $photo->getClientOriginalName(),
-                        'status' => 'failed',
-                        'error' => $response->json()
-                    ];
-                }
-            } catch (\Exception $e) {
-                Log::error('CubiCasa photo upload error', [
-                    'order_id' => $orderId,
-                    'filename' => $photo->getClientOriginalName(),
-                    'error' => $e->getMessage()
-                ]);
-
-                $uploadedFiles[] = [
-                    'filename' => $photo->getClientOriginalName(),
-                    'status' => 'failed',
-                    'error' => $e->getMessage()
-                ];
-            }
-        }
-
         return response()->json([
-            'order_id' => $orderId,
-            'uploads' => $uploadedFiles
-        ]);
+            'error' => 'Photo upload via API is not supported',
+            'message' => 'CubiCasa scans are captured by the CubiCasa mobile app or GoToScan invite. Photos cannot be uploaded via the API.',
+        ], 410);
     }
 
     /**

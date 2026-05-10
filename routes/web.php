@@ -14,3 +14,6 @@ Route::get('/login', function () {
 
 // iGUIDE webhook endpoint (public, no auth required)
 Route::match(['get', 'post'], '/iguide_webhook.php', [App\Http\Controllers\IguideWebhookController::class, 'handle']);
+
+// CubiCasa webhook endpoint (public, no auth required)
+Route::match(['get', 'post'], '/cubicasa_webhook.php', [App\Http\Controllers\CubiCasaWebhookController::class, 'handle']);

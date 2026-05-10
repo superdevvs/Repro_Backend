@@ -724,6 +724,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('shoots/{shoot}')->group(function () {
             Route::post('/property/refresh', [IntegrationController::class, 'refreshPropertyDetails']);
             Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide']);
+            Route::post('/cubicasa/sync', [IntegrationController::class, 'syncCubicasa']);
+            Route::post('/cubicasa/identifiers', [IntegrationController::class, 'saveCubicasaIdentifiers']);
             Route::post('/bright-mls/publish', [IntegrationController::class, 'publishToBrightMls']);
             Route::post('/mmm/punchout', [IntegrationController::class, 'mmmPunchout']);
             Route::get('/mmm/sessions', [IntegrationController::class, 'mmmSessions']);

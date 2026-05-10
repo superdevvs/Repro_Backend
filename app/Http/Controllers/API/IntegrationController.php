@@ -7,9 +7,11 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\MmmPunchoutSession;
 use App\Jobs\IngestIguideAssetsJob;
+use App\Jobs\IngestCubiCasaAssetsJob;
 use App\Services\ZillowPropertyService;
 use App\Services\BrightMlsService;
 use App\Services\IguideService;
+use App\Services\CubiCasaService;
 use App\Services\DropboxWorkflowService;
 use App\Services\MmmService;
 use App\Services\ShootActivityLogger;
@@ -24,6 +26,7 @@ class IntegrationController extends Controller
     protected $zillowService;
     protected $brightMlsService;
     protected $iguideService;
+    protected $cubicasaService;
     protected $dropboxService;
     protected $mmmService;
     protected $activityLogger;
@@ -32,6 +35,7 @@ class IntegrationController extends Controller
         ZillowPropertyService $zillowService,
         BrightMlsService $brightMlsService,
         IguideService $iguideService,
+        CubiCasaService $cubicasaService,
         DropboxWorkflowService $dropboxService,
         MmmService $mmmService,
         ShootActivityLogger $activityLogger
@@ -39,6 +43,7 @@ class IntegrationController extends Controller
         $this->zillowService = $zillowService;
         $this->brightMlsService = $brightMlsService;
         $this->iguideService = $iguideService;
+        $this->cubicasaService = $cubicasaService;
         $this->dropboxService = $dropboxService;
         $this->mmmService = $mmmService;
         $this->activityLogger = $activityLogger;
@@ -475,6 +480,126 @@ class IntegrationController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to sync iGUIDE data',
+            ], 500);
+        }
+    }
+
+    /**
+     * Sync CubiCasa data for a shoot. Mirrors syncIguide() but reads work
+     * fully (no webhook-only mode), so success is the common case.
+     */
+    public function syncCubicasa(Request $request, $shootId)
+    {
+        try {
+            $shoot = Shoot::findOrFail($shootId);
+
+            // If the shoot has neither order_id nor external_id, there's nothing
+            // to sync against. Surface a 409 with guidance instead of 500.
+            if (empty($shoot->cubicasa_order_id) && empty($shoot->cubicasa_external_id)) {
+                return response()->json([
+                    'success' => false,
+                    'mode' => 'not-linked',
+                    'message' => 'No CubiCasa order linked to this shoot. Paste the CubiCasa Order ID in the Tour tab and try again.',
+                ], 409);
+            }
+
+            $parsed = $this->cubicasaService->syncShoot($shoot);
+            if (!$parsed) {
+                $reason = $this->cubicasaService->getLastFailureReason();
+                $status = match ($reason) {
+                    \App\Services\CubiCasaService::FAILURE_AUTH => 401,
+                    \App\Services\CubiCasaService::FAILURE_NOT_FOUND => 404,
+                    \App\Services\CubiCasaService::FAILURE_NOT_LINKED => 409,
+                    default => 502,
+                };
+                $messages = [
+                    \App\Services\CubiCasaService::FAILURE_AUTH => 'CubiCasa API key invalid or missing.',
+                    \App\Services\CubiCasaService::FAILURE_NOT_FOUND => 'CubiCasa order not found.',
+                    \App\Services\CubiCasaService::FAILURE_NOT_LINKED => 'No CubiCasa order linked to this shoot.',
+                ];
+                return response()->json([
+                    'success' => false,
+                    'mode' => $reason ?? 'error',
+                    'message' => $messages[$reason] ?? 'Failed to fetch CubiCasa order.',
+                ], $status);
+            }
+
+            $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
+            $shouldIngest = !empty($floorplans) && $shoot->hasCubiCasaEligibleService();
+            if ($shouldIngest) {
+                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+            }
+
+            $shoot->refresh();
+
+            return response()->json([
+                'success' => true,
+                'data' => $parsed,
+                'shoot' => [
+                    'id' => $shoot->id,
+                    'cubicasa_order_id' => $shoot->cubicasa_order_id,
+                    'cubicasa_external_id' => $shoot->cubicasa_external_id,
+                    'cubicasa_status' => $shoot->cubicasa_status,
+                    'cubicasa_product_type' => $shoot->cubicasa_product_type,
+                    'cubicasa_tour_url' => $shoot->cubicasa_tour_url,
+                    'cubicasa_floorplans' => $shoot->cubicasa_floorplans,
+                    'cubicasa_data' => $shoot->cubicasa_data,
+                    'cubicasa_last_synced_at' => optional($shoot->cubicasa_last_synced_at)->toIso8601String(),
+                ],
+                'queued_assets' => $shouldIngest ? count($floorplans) : 0,
+                'ingested' => $shouldIngest,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('CubiCasa sync failed', [
+                'shoot_id' => $shootId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to sync CubiCasa data',
+            ], 500);
+        }
+    }
+
+    /**
+     * Save admin-editable CubiCasa identifiers (order id + external id).
+     * Used by the Tour tab "Save identifiers" button. Triggers a sync attempt.
+     */
+    public function saveCubicasaIdentifiers(Request $request, $shootId)
+    {
+        $validated = $request->validate([
+            'cubicasa_order_id' => 'nullable|string|max:255',
+            'cubicasa_external_id' => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $shoot = Shoot::findOrFail($shootId);
+            if (array_key_exists('cubicasa_order_id', $validated)) {
+                $shoot->cubicasa_order_id = $validated['cubicasa_order_id'] ?: null;
+            }
+            if (array_key_exists('cubicasa_external_id', $validated)) {
+                $shoot->cubicasa_external_id = $validated['cubicasa_external_id'] ?: null;
+            }
+            $shoot->save();
+
+            return response()->json([
+                'success' => true,
+                'shoot' => [
+                    'id' => $shoot->id,
+                    'cubicasa_order_id' => $shoot->cubicasa_order_id,
+                    'cubicasa_external_id' => $shoot->cubicasa_external_id,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('CubiCasa saveCubicasaIdentifiers failed', [
+                'shoot_id' => $shootId,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to save CubiCasa identifiers',
             ], 500);
         }
     }

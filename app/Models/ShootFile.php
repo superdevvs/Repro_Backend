@@ -54,6 +54,7 @@ class ShootFile extends Model
     ];
 
     protected $casts = [
+        'uploaded_at' => 'datetime',
         'moved_to_completed_at' => 'datetime',
         'verified_at' => 'datetime',
         'processed_at' => 'datetime',
