@@ -424,8 +424,17 @@ class IntegrationController extends Controller
             $iguideData = $this->iguideService->syncShoot($shoot);
 
             if (!$iguideData) {
+                $reason = $this->iguideService->getLastFailureReason();
+                if ($reason === \App\Services\IguideService::FAILURE_WEBHOOK_ONLY) {
+                    return response()->json([
+                        'success' => false,
+                        'mode' => 'webhook-only',
+                        'message' => 'iGUIDE App Tokens cannot fetch data on demand. The shoot will be auto-populated when the iGuide is published and the ready webhook fires.',
+                    ], 409);
+                }
                 return response()->json([
                     'success' => false,
+                    'mode' => 'not-found',
                     'message' => 'iGUIDE property not found',
                 ], 404);
             }

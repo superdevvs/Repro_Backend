@@ -12,6 +12,12 @@ use Illuminate\Support\Facades\Schema;
 
 class IguideService
 {
+    public const FAILURE_NONE = null;
+    public const FAILURE_WEBHOOK_ONLY = 'webhook_only';
+    public const FAILURE_NOT_FOUND = 'not_found';
+    public const FAILURE_AUTH = 'auth';
+    public const FAILURE_OTHER = 'other';
+
     private ?string $apiUsername;
     private ?string $apiPassword;
     private ?string $apiKey;
@@ -20,6 +26,12 @@ class IguideService
     private string $baseUrl;
     private string $legacyBaseUrl;
     private ?string $webhookUrl;
+    private ?string $lastFailureReason = null;
+
+    public function getLastFailureReason(): ?string
+    {
+        return $this->lastFailureReason;
+    }
 
     public function __construct()
     {
@@ -53,6 +65,7 @@ class IguideService
 
     public function syncShoot(Shoot $shoot): ?array
     {
+        $this->lastFailureReason = null;
         $iguideData = null;
 
         if ($shoot->iguide_property_id) {
@@ -67,6 +80,9 @@ class IguideService
         }
 
         if (!$iguideData) {
+            if ($this->lastFailureReason === null) {
+                $this->lastFailureReason = self::FAILURE_NOT_FOUND;
+            }
             return null;
         }
 
@@ -85,6 +101,11 @@ class IguideService
                 $response = $this->portalRequest('get', '/iguides/' . rawurlencode($propertyId));
                 if ($response?->successful()) {
                     return $this->parsePropertyData($response->json());
+                }
+                if ($this->isSignedAppForbidden($response)) {
+                    // Token authenticates fine but the Portal blocks signed apps from
+                    // reading iGuides on demand. Caller must rely on webhook delivery.
+                    $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
                 }
             }
 
@@ -313,16 +334,57 @@ class IguideService
             });
     }
 
+    /**
+     * Whether the current credentials only support inbound webhook delivery
+     * (i.e. iGUIDE App Tokens / "signed apps" which the Portal blocks from
+     * reading iGuide data on demand).
+     */
+    public function isWebhookOnlyMode(): bool
+    {
+        // Legacy basic-auth supports outbound reads.
+        if (!empty($this->apiUsername) && !empty($this->apiPassword)) {
+            return false;
+        }
+        // App Tokens are signed apps — outbound reads of iGuides are blocked
+        // by the Portal regardless of scope. Webhooks still deliver everything.
+        return $this->hasPortalCredentials();
+    }
+
+    /**
+     * Detect the iGuide Portal's specific "signed apps are not allowed on
+     * this endpoint" 403 reply, which means the token type can't read iGuide
+     * data on demand and must rely on the webhook flow instead.
+     */
+    private function isSignedAppForbidden(?Response $response): bool
+    {
+        if (!$response || $response->status() !== 403) {
+            return false;
+        }
+        $payload = $response->json();
+        $debug = is_array($payload) ? ($payload['debugInfo'] ?? '') : '';
+        return is_string($debug) && stripos($debug, 'signed apps are not allowed') !== false;
+    }
+
     public function testConnection(): array
     {
         try {
             if ($this->hasPortalCredentials()) {
                 $response = $this->portalRequest('post', '/integrations/test');
+                $payload = $response?->json();
+                $appIdEcho = is_array($payload) ? ($payload['appId'] ?? null) : null;
+                $authVerified = $response?->successful() && $appIdEcho === $this->appId;
+
+                $message = $authVerified
+                    ? 'Connection successful (webhook-only mode — iGuide data flows via webhook).'
+                    : 'Connection failed';
 
                 return [
-                    'success' => (bool) $response?->successful(),
+                    'success' => $authVerified,
                     'status' => $response?->status() ?? 0,
-                    'message' => $response?->successful() ? 'Connection successful' : 'Connection failed',
+                    'message' => $message,
+                    'mode' => 'webhook-only',
+                    'app_id_verified' => $authVerified,
+                    'webhook_url' => $this->webhookUrl,
                 ];
             }
 
@@ -360,6 +422,10 @@ class IguideService
 
         foreach ($queries as $query) {
             $response = $this->portalRequest('get', '/iguides', $query);
+            if ($this->isSignedAppForbidden($response)) {
+                $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
+                return null;
+            }
             $match = $this->findAddressMatchInPayload($response, $normalizedAddress);
             if ($match) {
                 return $match;
@@ -367,6 +433,10 @@ class IguideService
         }
 
         $fallbackResponse = $this->portalRequest('get', '/iguides', ['limit' => 100]);
+        if ($this->isSignedAppForbidden($fallbackResponse)) {
+            $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
+            return null;
+        }
 
         return $this->findAddressMatchInPayload($fallbackResponse, $normalizedAddress);
     }
