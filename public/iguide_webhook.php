@@ -1,5 +1,6 @@
 <?php
 
+http_response_code(200);
 $_SERVER['SCRIPT_NAME'] = '/index.php';
 $_SERVER['SCRIPT_FILENAME'] = __DIR__.'/index.php';
 $_SERVER['PHP_SELF'] = '/index.php/iguide_webhook.php';
