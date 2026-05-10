@@ -40,20 +40,18 @@ class CubiCasaWebhookController extends Controller
                 $this->loadCubicasaSetting('webhookSecret')
                 ?? config('services.cubicasa.webhook_secret', '')
             );
-            if ($secret !== '') {
-                $signature = (string) (
-                    $request->header('X-Cubicasa-Signature')
-                    ?: $request->header('X-Hub-Signature-256')
-                    ?: $request->header('X-Signature')
-                    ?: ''
-                );
-                if (!$this->verifySignature($rawBody, $signature, $secret)) {
-                    Log::warning('CubiCasa webhook: invalid signature');
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Invalid signature',
-                    ], 401);
-                }
+            $signature = (string) (
+                $request->header('X-Cubicasa-Signature')
+                ?: $request->header('X-Hub-Signature-256')
+                ?: $request->header('X-Signature')
+                ?: ''
+            );
+            if ($secret !== '' && $signature !== '' && !$this->verifySignature($rawBody, $signature, $secret)) {
+                Log::warning('CubiCasa webhook: invalid signature');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid signature',
+                ], 401);
             }
 
             $orderId = $data['id'] ?? $data['order_id'] ?? null;
