@@ -48,6 +48,9 @@ return Application::configure(basePath: dirname(__DIR__))
             at: '*',
             headers: Request::HEADER_X_FORWARDED_TRAEFIK,
         );
+        $middleware->validateCsrfTokens(except: [
+            'iguide_webhook.php',
+        ]);
 
         // Append impersonation middleware to run after auth
         $middleware->api(append: [
