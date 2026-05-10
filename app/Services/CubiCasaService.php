@@ -41,14 +41,11 @@ class CubiCasaService
 
         $this->apiKey = $settings['apiKey'] ?? config('services.cubicasa.api_key');
         $this->environment = $settings['environment'] ?? config('services.cubicasa.environment', 'production');
-        $this->baseUrl = rtrim(
-            $settings['baseUrl']
-                ?? config('services.cubicasa.base_url')
-                ?? ($this->environment === 'production'
-                    ? 'https://app.cubi.casa/api/integrate/v3'
-                    : 'https://qa-customers.cubi.casa/api/integrate/v3'),
-            '/'
-        );
+        $configuredBaseUrl = $settings['baseUrl'] ?? config('services.cubicasa.base_url');
+        $defaultBaseUrl = $this->environment === 'production'
+            ? 'https://app.cubi.casa/api/integrate/v3'
+            : 'https://qa-customers.cubi.casa/api/integrate/v3';
+        $this->baseUrl = rtrim(trim((string) ($configuredBaseUrl ?: $defaultBaseUrl)), '/');
         $this->webhookUrl = $settings['webhookUrl'] ?? config('services.cubicasa.webhook_url');
         $this->webhookSecret = $settings['webhookSecret'] ?? config('services.cubicasa.webhook_secret');
     }
