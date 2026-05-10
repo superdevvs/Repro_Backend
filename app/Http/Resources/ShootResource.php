@@ -332,6 +332,8 @@ class ShootResource extends JsonResource
             'iguide_floorplans' => $this->iguide_floorplans ?? [],
             'iguide_last_synced_at' => $this->iguide_last_synced_at?->toIso8601String(),
             'iguide_property_id' => $this->iguide_property_id,
+            'iguide_work_order_id' => $this->iguide_work_order_id ?? null,
+            'iguide_data' => is_array($this->iguide_data) ? $this->iguide_data : null,
             'is_private_listing' => (bool) ($this->is_private_listing ?? false),
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
             'is_featured' => (bool) ($this->is_featured ?? false),

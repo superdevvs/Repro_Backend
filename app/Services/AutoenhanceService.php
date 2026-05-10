@@ -84,11 +84,13 @@ class AutoenhanceService
             if (!$createResponse->successful()) {
                 $failure = $this->failureFromResponse('create_image', $createResponse, [
                     'editing_type' => $editingType,
+                    'request_payload' => $createPayload,
                 ]);
                 Log::error('Autoenhance: Image creation failed', [
                     'status' => $createResponse->status(),
                     'body' => $createResponse->body(),
                     'editing_type' => $editingType,
+                    'request_payload' => $createPayload,
                     'error' => $failure['error'],
                 ]);
                 return $failure;
@@ -307,13 +309,20 @@ class AutoenhanceService
     private function buildCreateImagePayload(string $imageName, string $editingType, array $params): array
     {
         $payload = [
-            'image_name' => $imageName,
+            'image_name' => $this->sanitizeImageName($imageName),
             'enhance' => $params['enhance'] ?? true,
             'lens_correction' => $params['lens_correction'] ?? true,
             'vertical_correction' => $params['vertical_correction'] ?? true,
-            'privacy' => $params['privacy'] ?? true,
-            'metadata' => $params['metadata'] ?? [],
         ];
+
+        if (array_key_exists('privacy', $params)) {
+            $payload['privacy'] = (bool) $params['privacy'];
+        }
+
+        if (!empty($params['metadata']) && is_array($params['metadata'])) {
+            // Force JSON object encoding even when associative array is empty.
+            $payload['metadata'] = (object) $params['metadata'];
+        }
 
         if (!empty($params['ai_version'])) {
             $payload['ai_version'] = $params['ai_version'];
@@ -386,6 +395,24 @@ class AutoenhanceService
         }
 
         return ['success' => true];
+    }
+
+    private function sanitizeImageName(string $name): string
+    {
+        $name = trim($name);
+        if ($name === '') {
+            return 'image-' . uniqid() . '.jpg';
+        }
+        // Replace whitespace and disallowed chars with '-' to avoid provider-side validation errors.
+        $clean = preg_replace('/[^A-Za-z0-9._-]+/', '-', $name);
+        $clean = trim($clean, '-_.');
+        if ($clean === '') {
+            $clean = 'image-' . uniqid() . '.jpg';
+        }
+        if (mb_strlen($clean) > 180) {
+            $clean = mb_substr($clean, -180);
+        }
+        return $clean;
     }
 
     private function failureFromResponse(string $stage, $response, array $context = []): array

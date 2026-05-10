@@ -64,6 +64,10 @@ class Kernel extends ConsoleKernel
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(1, '05:00');
         $schedule->command('reports:sales:weekly')->weeklyOn(1, '05:30');
+
+        // Re-attempt iGUIDE sync for shoots whose iguide may have been
+        // created on youriguide.com after raw upload (no webhook reached us).
+        $schedule->command('iguide:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
     }
 
     /**

@@ -92,6 +92,8 @@ class Shoot extends Model
         'iguide_floorplans',
         'iguide_last_synced_at',
         'iguide_property_id',
+        'iguide_work_order_id',
+        'iguide_data',
         'is_private_listing',
         'is_featured',
         'listing_type',
@@ -158,6 +160,7 @@ class Shoot extends Model
         'integration_flags' => 'array',
         'mls_image_width' => 'integer',
         'iguide_floorplans' => 'array',
+        'iguide_data' => 'array',
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
@@ -218,6 +221,55 @@ class Shoot extends Model
     public function service()
     {
         return $this->belongsTo(Service::class);
+    }
+
+    /**
+     * Whether this shoot has at least one booked service that produces iGUIDE
+     * deliverables (floor plans / iGuide tours). Used to gate auto sync &
+     * ingestion so we don't pull iGuide data for shoots that didn't book
+     * floorplan / 2D floorplan / 3D floorplan / iGuide services.
+     */
+    public function hasIguideEligibleService(): bool
+    {
+        $needles = ['iguide', 'floorplan', 'floor plan'];
+
+        $matches = static function (?string $value) use ($needles): bool {
+            if (!is_string($value) || $value === '') {
+                return false;
+            }
+            $haystack = strtolower($value);
+            foreach ($needles as $needle) {
+                if (str_contains($haystack, $needle)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // Fast check on the legacy single-service columns.
+        if ($matches($this->service_category)) {
+            return true;
+        }
+        if ($this->service && $matches($this->service->name)) {
+            return true;
+        }
+
+        // Per-service rows in the shoot_service pivot.
+        $services = $this->relationLoaded('services')
+            ? $this->services
+            : $this->services()->with('category')->get();
+
+        foreach ($services as $service) {
+            if ($matches($service->name)) {
+                return true;
+            }
+            $categoryName = $service->category?->name;
+            if ($matches($categoryName)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function services()

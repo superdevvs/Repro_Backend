@@ -24,8 +24,17 @@ class SyncShootIguideJob implements ShouldQueue
 
     public function handle(IguideService $iguideService): void
     {
-        $shoot = Shoot::find($this->shootId);
+        $shoot = Shoot::with('services.category')->find($this->shootId);
         if (!$shoot) {
+            return;
+        }
+
+        // Only auto-sync iGUIDE when the shoot booked a floorplan / iGuide
+        // service. Otherwise this is just unnecessary external traffic.
+        if (!$shoot->hasIguideEligibleService()) {
+            Log::info('Auto iGUIDE sync skipped (no floorplan/iGuide service booked)', [
+                'shoot_id' => $shoot->id,
+            ]);
             return;
         }
 
@@ -39,10 +48,16 @@ class SyncShootIguideJob implements ShouldQueue
                 return;
             }
 
+            $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
+            if (!empty($floorplans)) {
+                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans);
+            }
+
             Log::info('Auto iGUIDE sync completed', [
                 'shoot_id' => $shoot->id,
                 'iguide_property_id' => $iguideData['property_id'] ?? null,
                 'tour_url' => $iguideData['tour_url'] ?? null,
+                'asset_count' => count($floorplans),
             ]);
         } catch (\Throwable $e) {
             Log::error('Auto iGUIDE sync failed', [

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\MmmPunchoutSession;
+use App\Jobs\IngestIguideAssetsJob;
 use App\Services\ZillowPropertyService;
 use App\Services\BrightMlsService;
 use App\Services\IguideService;
@@ -429,9 +430,31 @@ class IntegrationController extends Controller
                 ], 404);
             }
 
+            $floorplans = is_array($iguideData['floorplans'] ?? null) ? $iguideData['floorplans'] : [];
+            // Only download deliverables when this shoot booked a floorplan /
+            // iGuide service; otherwise just refresh metadata + auto-link slots.
+            $shouldIngest = !empty($floorplans) && $shoot->hasIguideEligibleService();
+            if ($shouldIngest) {
+                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans);
+            }
+
+            // Refresh model to expose newly persisted iguide_data / iguide_work_order_id.
+            $shoot->refresh();
+
             return response()->json([
                 'success' => true,
                 'data' => $iguideData,
+                'shoot' => [
+                    'id' => $shoot->id,
+                    'iguide_tour_url' => $shoot->iguide_tour_url,
+                    'iguide_property_id' => $shoot->iguide_property_id,
+                    'iguide_work_order_id' => $shoot->iguide_work_order_id,
+                    'iguide_floorplans' => $shoot->iguide_floorplans,
+                    'iguide_data' => $shoot->iguide_data,
+                    'iguide_last_synced_at' => optional($shoot->iguide_last_synced_at)->toIso8601String(),
+                ],
+                'queued_assets' => $shouldIngest ? count($floorplans) : 0,
+                'ingested' => $shouldIngest,
             ]);
 
         } catch (\Exception $e) {

@@ -62,6 +62,8 @@ class ShootEditablePayloadService
             'sqft' => 'nullable|integer|min:0',
             'tour_links' => 'nullable|array',
             'tour_links.*' => 'nullable',
+            'iguide_property_id' => 'nullable|string|max:128',
+            'iguide_work_order_id' => 'nullable|string|max:128',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
             'is_featured' => 'nullable|boolean',
@@ -220,6 +222,14 @@ class ShootEditablePayloadService
 
         if (array_key_exists('listing_type', $validated)) {
             $shoot->listing_type = $validated['listing_type'];
+        }
+        if (array_key_exists('iguide_property_id', $validated)) {
+            $value = $validated['iguide_property_id'];
+            $shoot->iguide_property_id = is_string($value) && trim($value) !== '' ? trim($value) : null;
+        }
+        if (array_key_exists('iguide_work_order_id', $validated)) {
+            $value = $validated['iguide_work_order_id'];
+            $shoot->iguide_work_order_id = is_string($value) && trim($value) !== '' ? trim($value) : null;
         }
         if (array_key_exists('property_status', $validated)) {
             $shoot->property_status = $validated['property_status'];

@@ -286,7 +286,7 @@ class ShootMediaActionsTest extends TestCase
         $shoot = $this->createShoot();
 
         $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
-            'files' => [UploadedFile::fake()->create('oversized.nef', 600000)],
+            'files' => [UploadedFile::fake()->create('oversized.nef', 2100000)],
             'upload_type' => 'raw',
         ], ['Accept' => 'application/json']);
 
@@ -548,9 +548,10 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
+            '/storage/shoots/' . $shoot->id . '/archives/',
             (string) $response->json('url')
         );
+        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
     /** @test */
@@ -617,9 +618,10 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/service-' . $firstServiceItemId . '/edited-small.zip',
+            '/storage/shoots/' . $shoot->id . '/archives/service-' . $firstServiceItemId . '/',
             (string) $response->json('url')
         );
+        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
     /** @test */
@@ -1116,9 +1118,10 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
+            '/storage/shoots/' . $shoot->id . '/archives/',
             (string) $response->json('url')
         );
+        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
     /** @test */
@@ -1397,9 +1400,10 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/edited-small.zip',
+            '/storage/shoots/' . $shoot->id . '/archives/',
             (string) $response->json('url')
         );
+        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
     /** @test */
