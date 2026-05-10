@@ -251,8 +251,9 @@ class ShootMediaArchiveService
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
         $scope = $shootServiceId ? "service-{$shootServiceId}/" : '';
+        $slug = $this->buildArchiveFilenameSlug($shoot);
 
-        return "shoots/{$shoot->id}/archives/{$scope}{$type}-{$size}.zip";
+        return "shoots/{$shoot->id}/archives/{$scope}{$slug}-{$type}-{$size}.zip";
     }
 
     public function getManifestPath(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
@@ -260,8 +261,32 @@ class ShootMediaArchiveService
         $type = $this->normalizeType($type);
         $size = $this->normalizeSize($size);
         $scope = $shootServiceId ? "service-{$shootServiceId}/" : '';
+        $slug = $this->buildArchiveFilenameSlug($shoot);
 
-        return "shoots/{$shoot->id}/archives/{$scope}{$type}-{$size}.json";
+        return "shoots/{$shoot->id}/archives/{$scope}{$slug}-{$type}-{$size}.json";
+    }
+
+    /**
+     * Build a URL-safe slug from the shoot's property address so generated archive
+     * downloads carry a human-readable filename (e.g., "123-main-st-mclean-va").
+     */
+    public function buildArchiveFilenameSlug(Shoot $shoot): string
+    {
+        $parts = array_filter([
+            $shoot->address,
+            $shoot->city,
+            $shoot->state,
+            $shoot->zip,
+        ], fn ($value) => is_string($value) ? trim($value) !== '' : !empty($value));
+
+        $candidate = trim((string) implode(' ', array_map('strval', $parts)));
+        if ($candidate === '') {
+            return "shoot-{$shoot->id}";
+        }
+
+        $slug = \Illuminate\Support\Str::slug($candidate, '-');
+
+        return $slug !== '' ? $slug : "shoot-{$shoot->id}";
     }
 
     public function getArchiveUrl(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string

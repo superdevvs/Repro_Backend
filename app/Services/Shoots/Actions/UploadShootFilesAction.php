@@ -11,6 +11,7 @@ use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -21,7 +22,8 @@ class UploadShootFilesAction
         protected DropboxWorkflowService $dropboxService,
         protected ShootMediaMutationSupportService $support,
         protected ShootAuthorizationSupport $authorizationSupport,
-        protected ShootActivityLogger $activityLogger
+        protected ShootActivityLogger $activityLogger,
+        protected AutoStackRawFilesAction $autoStackRawFilesAction
     ) {
     }
 
@@ -224,6 +226,31 @@ class UploadShootFilesAction
             $mediaTypeOverride = $request->input('media_type');
             $serviceCategory = $request->input('service_category');
             $rawBracketMode = $uploadType === 'raw' ? (int) ($request->input('bracket_mode') ?? $shoot->bracket_mode ?? 0) : 0;
+
+            // Deterministic batch ordering for raw bracket grouping.
+            // Each frontend upload sends one file per XHR but all files in a batch share
+            // an upload_batch_id and an upload_batch_index. Without using the batch index,
+            // parallel XHRs would all read the same pre-batch raw count and assign duplicate
+            // bracket_group/sequence pairs. We claim a stable batch_offset on the first
+            // request of a batch via Cache::add (atomic), then derive bracket_group and
+            // sequence from (batch_offset + upload_batch_index).
+            $rawBatchId = $uploadType === 'raw' ? trim((string) $request->input('upload_batch_id', '')) : '';
+            $rawBatchIndex = $request->has('upload_batch_index') && is_numeric($request->input('upload_batch_index'))
+                ? (int) $request->input('upload_batch_index')
+                : null;
+            $rawBatchOffset = null;
+            if ($rawBracketMode > 1 && $rawBatchId !== '' && $rawBatchIndex !== null) {
+                $batchOffsetCacheKey = "shoot:{$shoot->id}:raw_upload_batch:{$rawBatchId}:offset";
+                $preBatchCount = $shoot->files()
+                    ->where('workflow_stage', ShootFile::STAGE_TODO)
+                    ->where('media_type', 'raw')
+                    ->count();
+                // Cache::add is atomic: only the first concurrent request wins,
+                // subsequent requests read the value the winner stored.
+                Cache::add($batchOffsetCacheKey, $preBatchCount, now()->addHours(2));
+                $rawBatchOffset = (int) Cache::get($batchOffsetCacheKey, $preBatchCount);
+            }
+
             $rawSequenceIndex = $rawBracketMode > 1
                 ? $shoot->files()
                     ->where('workflow_stage', ShootFile::STAGE_TODO)
@@ -274,9 +301,17 @@ class UploadShootFilesAction
                     }
 
                     if ($uploadType === 'raw' && $rawBracketMode > 1 && $shootFile->media_type === 'raw') {
+                        // Prefer the deterministic (batch_offset + batch_index) ordering when
+                        // the frontend provides it (single source of truth across parallel XHRs).
+                        // Fall back to the per-request count when the legacy single-request
+                        // multi-file path is used (no batch metadata).
+                        $orderingIndex = ($rawBatchOffset !== null && $rawBatchIndex !== null)
+                            ? $rawBatchOffset + $rawBatchIndex
+                            : $rawSequenceIndex;
+
                         $shootFile->update([
-                            'bracket_group' => intdiv($rawSequenceIndex, $rawBracketMode) + 1,
-                            'sequence' => ($rawSequenceIndex % $rawBracketMode) + 1,
+                            'bracket_group' => intdiv($orderingIndex, $rawBracketMode) + 1,
+                            'sequence' => ($orderingIndex % $rawBracketMode) + 1,
                         ]);
                         $rawSequenceIndex++;
                     }
@@ -329,6 +364,23 @@ class UploadShootFilesAction
             // which is triggered by the user pressing "Submit Edits".
 
             DB::commit();
+
+            // Auto-detect bracket groups from EXIF captured_at clustering. This runs
+            // after each raw upload so the gallery reflects accurate stacks even mid-batch.
+            // Errors here are non-fatal — they only impact the visual stacking heuristic.
+            if ($uploadType === 'raw' && count($uploadedFiles) > 0) {
+                try {
+                    $autoStackResult = $this->autoStackRawFilesAction->execute($shoot);
+                    if (($autoStackResult['updated_files'] ?? 0) > 0) {
+                        $this->support->clearShootFilesCache($shoot->fresh());
+                    }
+                } catch (\Throwable $autoStackException) {
+                    Log::warning('Auto-stacking raw files after upload failed', [
+                        'shoot_id' => $shoot->id,
+                        'error' => $autoStackException->getMessage(),
+                    ]);
+                }
+            }
 
             if (count($uploadedFiles) > 0) {
                 try {

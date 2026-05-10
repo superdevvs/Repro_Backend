@@ -176,4 +176,24 @@ class AccountLink extends Model
             ->values()
             ->all();
     }
+
+    /**
+     * Get linked (managed) account IDs visible to a main/owner account for a detail.
+     * Direction-aware: only returns linked_account_id when the supplied account
+     * is the main_account_id. Linked clients do NOT receive owner data via this method.
+     *
+     * @return int[]
+     */
+    public static function getLinkedClientIdsForOwner(int $ownerAccountId, string $detail): array
+    {
+        return self::query()
+            ->where('main_account_id', $ownerAccountId)
+            ->active()
+            ->get()
+            ->filter(fn (self $link) => $link->sharesDetail($detail))
+            ->map(fn (self $link) => (int) $link->linked_account_id)
+            ->unique()
+            ->values()
+            ->all();
+    }
 }

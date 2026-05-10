@@ -10,7 +10,12 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class ShootResource extends JsonResource
 {
     /**
-     * Calculate total photographer pay from services
+     * Calculate total photographer pay from services.
+     *
+     * Mirrors {@see \App\Models\Shoot::getTotalPhotographerPayAttribute()} so the
+     * API-serialized totalPhotographerPay matches the model accessor: when the
+     * shoot_service pivot row has no override, fall back to the catalog
+     * service's default photographer_pay before treating it as $0.
      */
     protected function calculatePhotographerPay(): float
     {
@@ -20,17 +25,16 @@ class ShootResource extends JsonResource
         } elseif ($this->services->isNotEmpty() && !$this->services->first()->relationLoaded('category')) {
             $this->services->load('category');
         }
-        
-        // Calculate total photographer pay from services
+
         return (float) $this->services->sum(function ($service) {
-            $photographerPay = $service->pivot->photographer_pay ?? null;
-            $quantity = $service->pivot->quantity ?? 1;
-            
-            if ($photographerPay === null) {
-                return 0;
-            }
-            
-            return (float) $photographerPay * $quantity;
+            $pivotPay = $service->pivot->photographer_pay ?? null;
+            $quantity = (int) ($service->pivot->quantity ?? 1);
+
+            $pay = ($pivotPay !== null && $pivotPay !== '')
+                ? (float) $pivotPay
+                : (float) ($service->photographer_pay ?? 0);
+
+            return $pay * max(1, $quantity);
         });
     }
 

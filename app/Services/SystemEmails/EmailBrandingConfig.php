@@ -14,6 +14,7 @@ class EmailBrandingConfig
         $appUrl = rtrim((string) config('app.url', 'https://api.reprodashboard.com'), '/');
         $emailLogoGreyUrl = $appUrl . '/images/repro-email-logo-grey.png';
         $verificationLogoLightUrl = $appUrl . '/images/repro-email-logo-light.png';
+        $socialIconBase = $appUrl . '/images/social';
 
         return array_replace_recursive([
             'product_name' => 'R/E Pro Photos',
@@ -25,6 +26,12 @@ class EmailBrandingConfig
             'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
             'email_logo_grey_url' => $emailLogoGreyUrl,
             'verification_logo_light_url' => $verificationLogoLightUrl,
+            'social_facebook_url' => 'https://www.facebook.com/reprophotos',
+            'social_instagram_url' => 'https://www.instagram.com/reprophotos',
+            'social_linkedin_url' => 'https://www.linkedin.com/company/reprophotos',
+            'social_facebook_icon_url' => $socialIconBase . '/facebook.png',
+            'social_instagram_icon_url' => $socialIconBase . '/instagram.png',
+            'social_linkedin_icon_url' => $socialIconBase . '/linkedin.png',
             // Temporary aliases for older callers during the branding refactor.
             'logo_url' => $emailLogoGreyUrl,
             'verification_logo_url' => $verificationLogoLightUrl,

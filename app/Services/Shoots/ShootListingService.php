@@ -135,7 +135,14 @@ class ShootListingService
             } elseif ($user && $user->role === 'client') {
                 $canViewAllPrivateListings = $isPrivateListingRequest && $privateListingScope === 'all';
                 if (!$canViewAllPrivateListings) {
-                    $query->where(function (Builder $scope) use ($user) {
+                    // Direction-aware: only owner/main accounts see linked clients' shoots.
+                    // Linked clients do NOT see the owner's shoots solely because they are linked.
+                    $linkedClientIds = \App\Models\AccountLink::getLinkedClientIdsForOwner(
+                        (int) $user->id,
+                        'shoots'
+                    );
+
+                    $query->where(function (Builder $scope) use ($user, $linkedClientIds) {
                         $scope->where('client_id', $user->id)
                             ->orWhere(function (Builder $ghostScope) use ($user) {
                                 $ghostScope->whereHas('ghostUsers', function (Builder $ghostQuery) use ($user) {
@@ -152,6 +159,12 @@ class ShootListingService
                                         ]);
                                 });
                             });
+
+                        // Include shoots from linked client accounts that shared 'shoots' with this user.
+                        // Direction: $user is the main/owner account, linked accounts are the managed clients.
+                        if (!empty($linkedClientIds)) {
+                            $scope->orWhereIn('client_id', $linkedClientIds);
+                        }
                     });
                 }
             } elseif ($user && $user->role === 'editor') {

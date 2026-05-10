@@ -51,6 +51,7 @@ class EditorPayoutService
                 'shoots.completed_at',
                 'shoots.admin_verified_at',
                 'services.name as service_name',
+                'services.photo_count as service_photo_count',
             ])
             ->orderBy('shoot_service.editor_id')
             ->get();
@@ -77,7 +78,11 @@ class EditorPayoutService
 
             $serviceName = trim((string) ($row->service_name ?? 'Editing Service'));
             $rate = $this->resolveRateForService($editor, $serviceName, $row->service_id);
-            $quantity = $this->resolveQuantityForService($serviceName, (int) ($row->quantity ?? 1));
+            $quantity = $this->resolveQuantityForService(
+                $serviceName,
+                (int) ($row->service_photo_count ?? 0),
+                (int) ($row->quantity ?? 1)
+            );
             $amount = round($rate * $quantity, 2);
 
             $payout = EditorPayout::firstOrNew([
@@ -98,11 +103,50 @@ class EditorPayoutService
                 continue;
             }
 
-            if (!$payout->completed_at || !$payout->service_name) {
-                $payout->fill([
-                    'completed_at' => $payout->completed_at ?: $completedAt,
-                    'service_name' => $payout->service_name ?: $serviceName,
-                ]);
+            // Paid records are immutable historical snapshots — only repair missing metadata.
+            if ($payout->is_paid) {
+                if (!$payout->completed_at || !$payout->service_name) {
+                    $payout->fill([
+                        'completed_at' => $payout->completed_at ?: $completedAt,
+                        'service_name' => $payout->service_name ?: $serviceName,
+                    ]);
+                    $payout->save();
+                }
+                continue;
+            }
+
+            // Unpaid records refresh against the editor's current rates and the admin's
+            // current scheduling quantity, so saved rate/quantity changes propagate
+            // without losing the row's identity.
+            $updates = [];
+
+            if (!$payout->completed_at && $completedAt) {
+                $updates['completed_at'] = $completedAt;
+            }
+
+            if (!$payout->service_name && $serviceName !== '') {
+                $updates['service_name'] = $serviceName;
+            }
+
+            $resolvedQuantity = max($quantity, 1);
+            if ((int) $payout->quantity_snapshot !== $resolvedQuantity) {
+                $updates['quantity_snapshot'] = $resolvedQuantity;
+            }
+
+            $resolvedRate = round((float) $rate, 2);
+            if (round((float) $payout->rate_snapshot, 2) !== $resolvedRate) {
+                $updates['rate_snapshot'] = $resolvedRate;
+            }
+
+            $effectiveQuantity = $updates['quantity_snapshot'] ?? (int) $payout->quantity_snapshot;
+            $effectiveRate = $updates['rate_snapshot'] ?? (float) $payout->rate_snapshot;
+            $effectiveAmount = round($effectiveRate * $effectiveQuantity, 2);
+            if (round((float) $payout->payout_amount, 2) !== $effectiveAmount) {
+                $updates['payout_amount'] = $effectiveAmount;
+            }
+
+            if (!empty($updates)) {
+                $payout->fill($updates);
                 $payout->save();
             }
         }
@@ -446,9 +490,17 @@ class EditorPayoutService
         return round((float) ($metadata['other_rate'] ?? 0), 2);
     }
 
-    private function resolveQuantityForService(string $serviceName, int $fallbackQuantity): int
+    private function resolveQuantityForService(string $serviceName, int $servicePhotoCount, int $fallbackQuantity): int
     {
-        if (preg_match('/(\d+)\s*photo/i', $serviceName, $matches)) {
+        // Prefer the admin-configured photo count on the service row when present —
+        // this is the canonical bundle size (e.g. "25 HDR Photos" → 25).
+        if ($servicePhotoCount > 0) {
+            return $servicePhotoCount;
+        }
+
+        // Otherwise try to extract the bundle size embedded in the service name,
+        // covering common forms like "25 HDR Photos", "40 HDR", "30 Images".
+        if (preg_match('/(\d+)\s*(?:[a-z]+\s+){0,3}(?:photo|image|hdr)/i', $serviceName, $matches)) {
             return max((int) $matches[1], 1);
         }
 

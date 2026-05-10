@@ -208,7 +208,8 @@ class DownloadShootMediaZipAction
     {
         $suffix = $size !== 'original' ? '-' . $size : '';
         $scope = $shootServiceId ? "-service-{$shootServiceId}" : '';
+        $slug = $this->shootMediaArchiveService->buildArchiveFilenameSlug($shoot);
 
-        return "shoot-{$shoot->id}{$scope}-{$type}{$suffix}.zip";
+        return "{$slug}{$scope}-{$type}{$suffix}.zip";
     }
 }

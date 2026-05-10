@@ -33,6 +33,8 @@ class ShootActivityLogger
         'hold_rejected',
         'shoot_editing_started',
         'shoot_submitted_for_review',
+        'shoot_submitted_edited',
+        'shoot_submitted_raw',
         'photographer_assigned',
         'editor_assigned',
         'payment_done',
@@ -186,6 +188,16 @@ class ShootActivityLogger
             'shoot_started' => 'Shoot started' . $by,
             'shoot_editing_started' => 'Editing started' . $by,
             'shoot_submitted_for_review' => 'Submitted for review' . $by,
+            'shoot_submitted_edited' => 'Edited files submitted to editing manager'
+                . $by
+                . (isset($metadata['edited_photo_count']) && $metadata['edited_photo_count']
+                    ? " ({$metadata['edited_photo_count']} files)"
+                    : ''),
+            'shoot_submitted_raw' => 'Raw files submitted for editing'
+                . $by
+                . (isset($metadata['raw_photo_count']) && $metadata['raw_photo_count']
+                    ? " ({$metadata['raw_photo_count']} files)"
+                    : ''),
             'shoot_completed' => 'Shoot completed' . $by,
             'shoot_delivered' => 'Shoot delivered to client' . $by,
             'shoot_finalized_delivered' => 'Shoot has been finalized and delivered'

@@ -15,6 +15,17 @@
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $reviewUrl = data_get($brand, 'review_url', 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews');
     $emailLogoGreyUrl = data_get($brand, 'email_logo_grey_url', data_get($brand, 'logo_url', 'https://api.reprodashboard.com/images/repro-email-logo-grey.png'));
+    $socialFacebookUrl = data_get($brand, 'social_facebook_url');
+    $socialInstagramUrl = data_get($brand, 'social_instagram_url');
+    $socialLinkedinUrl = data_get($brand, 'social_linkedin_url');
+    $socialFacebookIconUrl = data_get($brand, 'social_facebook_icon_url', 'https://api.reprodashboard.com/images/social/facebook.png');
+    $socialInstagramIconUrl = data_get($brand, 'social_instagram_icon_url', 'https://api.reprodashboard.com/images/social/instagram.png');
+    $socialLinkedinIconUrl = data_get($brand, 'social_linkedin_icon_url', 'https://api.reprodashboard.com/images/social/linkedin.png');
+    $socialLinks = array_values(array_filter([
+        $socialFacebookUrl ? ['label' => 'Facebook', 'url' => $socialFacebookUrl, 'icon' => $socialFacebookIconUrl] : null,
+        $socialInstagramUrl ? ['label' => 'Instagram', 'url' => $socialInstagramUrl, 'icon' => $socialInstagramIconUrl] : null,
+        $socialLinkedinUrl ? ['label' => 'LinkedIn', 'url' => $socialLinkedinUrl, 'icon' => $socialLinkedinIconUrl] : null,
+    ]));
     $emailCanvasBackgroundLight = data_get($brand, 'email_canvas_background_light', data_get($brand, 'email_outer_background', '#ffffff'));
     $emailCanvasBackgroundDark = data_get($brand, 'email_canvas_background_dark', data_get($brand, 'email_outer_background_dark', data_get($brand, 'outer_background', '#00141d')));
     $heroSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'hero_surface', '#ffffff'));
@@ -282,6 +293,32 @@
                             </table>
                         </td>
                     </tr>
+
+                    <tr>
+                        <td align="center" style="padding:22px 8px 4px; text-align:center;">
+                            <a href="{{ $websiteUrl }}" style="text-decoration:none; border:0;">
+                                <img src="{{ $emailLogoGreyUrl }}" alt="{{ $productName }}" width="120" style="display:inline-block; width:120px; max-width:120px; height:auto; border:0;">
+                            </a>
+                        </td>
+                    </tr>
+
+                    @if (! empty($socialLinks))
+                    <tr>
+                        <td align="center" style="padding:8px 8px 4px; text-align:center;">
+                            <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:0 auto;">
+                                <tr>
+                                    @foreach ($socialLinks as $socialLink)
+                                    <td align="center" style="padding:0 6px;">
+                                        <a href="{{ $socialLink['url'] }}" target="_blank" rel="noopener" aria-label="{{ $socialLink['label'] }}" style="text-decoration:none; border:0;">
+                                            <img src="{{ $socialLink['icon'] }}" alt="{{ $socialLink['label'] }}" width="24" height="24" style="display:block; width:24px; height:24px; border:0;">
+                                        </a>
+                                    </td>
+                                    @endforeach
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    @endif
 
                     <tr>
                         <td class="legal-copy-dark" style="padding:14px 8px 0; text-align:center; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.7;">

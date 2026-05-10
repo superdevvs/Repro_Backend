@@ -156,6 +156,55 @@ class DashboardController extends Controller
     }
 
     /**
+     * Lightweight platform-wide schedule snapshot used by the editor dashboard
+     * to surface incoming work pressure (today / tomorrow / this week).
+     * Only returns counts — no PII or shoot details.
+     */
+    public function scheduleSummary(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $allowed = ['editor', 'admin', 'superadmin', 'editing_manager'];
+        if (!in_array($user->role, $allowed, true)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $today = now()->startOfDay();
+        $tomorrow = $today->copy()->addDay();
+        $weekEnd = $today->copy()->endOfWeek();
+
+        $excluded = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED];
+
+        $todayCount = Shoot::whereDate('scheduled_date', $today->toDateString())
+            ->whereNotIn('status', $excluded)
+            ->count();
+
+        $tomorrowCount = Shoot::whereDate('scheduled_date', $tomorrow->toDateString())
+            ->whereNotIn('status', $excluded)
+            ->count();
+
+        $weekCount = Shoot::whereBetween('scheduled_date', [
+                $today->toDateString(),
+                $weekEnd->toDateString(),
+            ])
+            ->whereNotIn('status', $excluded)
+            ->count();
+
+        return response()->json([
+            'data' => [
+                'reference_date' => $today->toDateString(),
+                'scheduled_today' => $todayCount,
+                'scheduled_tomorrow' => $tomorrowCount,
+                'scheduled_this_week' => $weekCount,
+            ],
+        ]);
+    }
+
+    /**
      * Normalize shoot records for the dashboard cards.
      */
     protected function formatShoots(Collection $shoots, Carbon $today, bool $includeMedia = false): Collection

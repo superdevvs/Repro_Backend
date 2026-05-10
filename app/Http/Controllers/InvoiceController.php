@@ -45,11 +45,21 @@ class InvoiceController extends Controller
         if ($this->hasRole($user, self::ADMIN_ROLES)) {
             // Admins and superadmins can see all invoices
         } elseif ($user->role === 'client') {
-            // Clients can only see invoices for their own shoots
-            $query->where(function ($q) use ($user) {
-                $q->where('client_id', $user->id)
-                  ->orWhereHas('shoots', function ($shootQuery) use ($user) {
-                      $shootQuery->where('client_id', $user->id);
+            // Clients can see invoices for their own shoots, plus invoices from linked
+            // client accounts that have shared 'invoices' with this user (owner direction only).
+            $linkedInvoiceClientIds = \App\Models\AccountLink::getLinkedClientIdsForOwner(
+                (int) $user->id,
+                'invoices'
+            );
+            $clientIds = array_values(array_unique(array_merge(
+                [(int) $user->id],
+                array_map('intval', $linkedInvoiceClientIds)
+            )));
+
+            $query->where(function ($q) use ($clientIds) {
+                $q->whereIn('client_id', $clientIds)
+                  ->orWhereHas('shoots', function ($shootQuery) use ($clientIds) {
+                      $shootQuery->whereIn('client_id', $clientIds);
                   });
             });
         } elseif ($user->role === 'photographer') {
@@ -455,8 +465,17 @@ class InvoiceController extends Controller
         }
 
         if ($user->role === 'client') {
-            return (string) $invoice->client_id === (string) $user->id
-                || $invoice->shoots()->where('client_id', $user->id)->exists();
+            $linkedInvoiceClientIds = \App\Models\AccountLink::getLinkedClientIdsForOwner(
+                (int) $user->id,
+                'invoices'
+            );
+            $clientIds = array_values(array_unique(array_merge(
+                [(int) $user->id],
+                array_map('intval', $linkedInvoiceClientIds)
+            )));
+
+            return in_array((int) $invoice->client_id, $clientIds, true)
+                || $invoice->shoots()->whereIn('client_id', $clientIds)->exists();
         }
 
         if ($user->role === 'photographer') {

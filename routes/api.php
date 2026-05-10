@@ -428,6 +428,13 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->ge
     [DashboardController::class, 'overview']
 );
 
+// Lightweight schedule snapshot used by the editor dashboard to indicate
+// platform-wide incoming work pressure. Counts only — no PII.
+Route::middleware(['auth:sanctum', 'role:editor,admin,superadmin,editing_manager'])->get(
+    '/dashboard/schedule-summary',
+    [DashboardController::class, 'scheduleSummary']
+);
+
 // Role-based notifications endpoint - accessible to all authenticated users
 Route::middleware(['auth:sanctum'])->get(
     '/notifications',
