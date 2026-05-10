@@ -477,6 +477,11 @@ class AutoenhanceController extends Controller
         $shoot = $job->relationLoaded('shoot') ? $job->shoot : null;
         $sourceFile = $job->relationLoaded('shootFile') ? $job->shootFile : $job->shootFile;
         $sourceThumb = $this->resolveSourceThumb($sourceFile);
+        $outputFile = ShootFile::where('ai_editing_job_id', $job->id)
+            ->where('media_type', 'edited')
+            ->orderByDesc('id')
+            ->first();
+        $outputThumb = $this->resolveSourceThumb($outputFile);
 
         return [
             'id' => $job->id,
@@ -508,6 +513,12 @@ class AutoenhanceController extends Controller
                 'id' => $sourceFile->id,
                 'filename' => $sourceFile->filename,
                 'thumb_url' => $sourceThumb,
+            ] : null,
+            'output_file' => $outputFile ? [
+                'id' => $outputFile->id,
+                'filename' => $outputFile->filename,
+                'url' => $this->getImageUrl($outputFile),
+                'thumb_url' => $outputThumb,
             ] : null,
         ];
     }
