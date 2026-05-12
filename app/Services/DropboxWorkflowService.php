@@ -1442,4 +1442,206 @@ class DropboxWorkflowService
     {
         return config('services.dropbox.enabled', false) && !empty(config('services.dropbox.access_token'));
     }
+
+    /**
+     * Comprehensive Dropbox health check with timings for each probe.
+     *
+     * Runs token resolution, account info, optional temporary link + streamed
+     * download against a provided Dropbox path, and an optional folder listing.
+     * Returns structured timings so operators can tell whether slow finalize is
+     * caused by auth, Dropbox latency, or local disk write cost.
+     */
+    public function healthCheck(?string $probePath = null, ?string $probeFolder = null): array
+    {
+        $report = [
+            'overall_success' => false,
+            'enabled' => $this->isEnabled(),
+            'env' => config('app.env'),
+            'verify_ssl' => $this->httpOptions['verify'] ?? null,
+            'http_timeout_seconds' => $this->httpOptions['timeout'] ?? null,
+            'steps' => [],
+        ];
+
+        if (!$report['enabled']) {
+            $report['steps'][] = [
+                'name' => 'enabled_check',
+                'success' => false,
+                'message' => 'Dropbox integration is disabled or access_token is empty.',
+            ];
+            return $report;
+        }
+
+        // Step 1: resolve access token
+        $tokenStart = microtime(true);
+        try {
+            $accessToken = $this->getAccessToken();
+            $report['steps'][] = [
+                'name' => 'resolve_access_token',
+                'success' => (bool) $accessToken,
+                'duration_ms' => (int) round((microtime(true) - $tokenStart) * 1000),
+                'token_preview' => $accessToken ? substr($accessToken, 0, 6) . '…' : null,
+            ];
+            if (!$accessToken) {
+                return $report;
+            }
+        } catch (\Throwable $e) {
+            $report['steps'][] = [
+                'name' => 'resolve_access_token',
+                'success' => false,
+                'duration_ms' => (int) round((microtime(true) - $tokenStart) * 1000),
+                'error' => $e->getMessage(),
+            ];
+            return $report;
+        }
+
+        // Step 2: users/get_current_account
+        $accountStart = microtime(true);
+        try {
+            $response = Http::withToken($accessToken)
+                ->withOptions($this->httpOptions)
+                ->withHeaders(['Content-Type' => 'application/json'])
+                ->withBody('null')
+                ->post($this->dropboxApiUrl . '/users/get_current_account');
+
+            $step = [
+                'name' => 'account_info',
+                'success' => $response->successful(),
+                'duration_ms' => (int) round((microtime(true) - $accountStart) * 1000),
+                'status_code' => $response->status(),
+            ];
+            if ($response->successful()) {
+                $data = $response->json() ?: [];
+                $step['account_email'] = $data['email'] ?? null;
+                $step['account_name'] = $data['name']['display_name'] ?? null;
+                $step['team_member'] = !empty($data['team']);
+            } else {
+                $step['error'] = ($response->json()['error_summary'] ?? null) ?: $response->body();
+            }
+            $report['steps'][] = $step;
+
+            if (!$response->successful()) {
+                return $report;
+            }
+        } catch (\Throwable $e) {
+            $report['steps'][] = [
+                'name' => 'account_info',
+                'success' => false,
+                'duration_ms' => (int) round((microtime(true) - $accountStart) * 1000),
+                'error' => $e->getMessage(),
+            ];
+            return $report;
+        }
+
+        // Step 3 (optional): probe folder listing
+        if ($probeFolder) {
+            $listStart = microtime(true);
+            try {
+                $response = Http::withToken($accessToken)
+                    ->withOptions($this->httpOptions)
+                    ->post($this->dropboxApiUrl . '/files/list_folder', [
+                        'path' => $probeFolder,
+                        'recursive' => false,
+                        'limit' => 10,
+                    ]);
+
+                $step = [
+                    'name' => 'list_folder',
+                    'success' => $response->successful(),
+                    'duration_ms' => (int) round((microtime(true) - $listStart) * 1000),
+                    'status_code' => $response->status(),
+                    'path' => $probeFolder,
+                ];
+                if ($response->successful()) {
+                    $entries = $response->json()['entries'] ?? [];
+                    $step['entry_count'] = count($entries);
+                } else {
+                    $step['error'] = ($response->json()['error_summary'] ?? null) ?: $response->body();
+                }
+                $report['steps'][] = $step;
+            } catch (\Throwable $e) {
+                $report['steps'][] = [
+                    'name' => 'list_folder',
+                    'success' => false,
+                    'duration_ms' => (int) round((microtime(true) - $listStart) * 1000),
+                    'error' => $e->getMessage(),
+                    'path' => $probeFolder,
+                ];
+            }
+        }
+
+        // Step 4 (optional): probe temporary link + streamed download
+        if ($probePath) {
+            // get_temporary_link
+            $linkStart = microtime(true);
+            $tempUrl = null;
+            try {
+                $response = Http::withToken($accessToken)
+                    ->withOptions($this->httpOptions)
+                    ->post($this->dropboxApiUrl . '/files/get_temporary_link', [
+                        'path' => $probePath,
+                    ]);
+                $step = [
+                    'name' => 'get_temporary_link',
+                    'success' => $response->successful(),
+                    'duration_ms' => (int) round((microtime(true) - $linkStart) * 1000),
+                    'status_code' => $response->status(),
+                    'path' => $probePath,
+                ];
+                if ($response->successful()) {
+                    $tempUrl = $response->json()['link'] ?? null;
+                    $step['link_present'] = (bool) $tempUrl;
+                } else {
+                    $step['error'] = ($response->json()['error_summary'] ?? null) ?: $response->body();
+                }
+                $report['steps'][] = $step;
+            } catch (\Throwable $e) {
+                $report['steps'][] = [
+                    'name' => 'get_temporary_link',
+                    'success' => false,
+                    'duration_ms' => (int) round((microtime(true) - $linkStart) * 1000),
+                    'error' => $e->getMessage(),
+                    'path' => $probePath,
+                ];
+            }
+
+            // streamed download via content API (no local write, just measure throughput)
+            $downloadStart = microtime(true);
+            try {
+                $apiArgs = json_encode(['path' => $probePath]);
+                $response = Http::withToken($accessToken)
+                    ->withOptions(array_merge($this->httpOptions, ['timeout' => 120]))
+                    ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
+                    ->get($this->dropboxContentUrl . '/files/download');
+
+                $step = [
+                    'name' => 'download_probe',
+                    'success' => $response->successful(),
+                    'duration_ms' => (int) round((microtime(true) - $downloadStart) * 1000),
+                    'status_code' => $response->status(),
+                    'path' => $probePath,
+                ];
+                if ($response->successful()) {
+                    $bytes = strlen($response->body());
+                    $step['bytes'] = $bytes;
+                    $step['megabytes'] = round($bytes / 1048576, 2);
+                    $durationSec = max(microtime(true) - $downloadStart, 0.001);
+                    $step['throughput_mb_per_sec'] = round(($bytes / 1048576) / $durationSec, 2);
+                } else {
+                    $step['error'] = ($response->json()['error_summary'] ?? null) ?: substr($response->body(), 0, 500);
+                }
+                $report['steps'][] = $step;
+            } catch (\Throwable $e) {
+                $report['steps'][] = [
+                    'name' => 'download_probe',
+                    'success' => false,
+                    'duration_ms' => (int) round((microtime(true) - $downloadStart) * 1000),
+                    'error' => $e->getMessage(),
+                    'path' => $probePath,
+                ];
+            }
+        }
+
+        $report['overall_success'] = collect($report['steps'])->every(fn ($s) => $s['success'] ?? false);
+        return $report;
+    }
 }
