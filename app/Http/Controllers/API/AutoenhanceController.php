@@ -161,6 +161,219 @@ class AutoenhanceController extends Controller
     }
 
     /**
+     * Submit a set of shoot files as Autoenhance HDR brackets.
+     *
+     * Accepts file_ids in the user's intended bracket order. Files are split
+     * into chunks of `bracket_size` (3 or 5). Each chunk is uploaded sharing a
+     * single `bracket_id` UUID and the same Autoenhance `order_id`, which tells
+     * Autoenhance to merge the bracket into a single HDR enhanced output.
+     *
+     * One AiEditingJob is created per bracket — its `autoenhance_image_id` is
+     * the primary (first) image in the bracket; secondary image_ids are tracked
+     * in `provider_payload.bracket_image_ids` for reference.
+     */
+    public function submitBracketEditing(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'shoot_id' => 'required|exists:shoots,id',
+            'file_ids' => 'required|array|min:3',
+            'file_ids.*' => 'required|exists:shoot_files,id',
+            'bracket_size' => 'required|integer|in:3,5',
+            'editing_type' => 'required|string',
+            'params' => 'nullable|array',
+        ]);
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $bracketSize = (int) $request->bracket_size;
+        $fileIds = array_values($request->file_ids);
+        if (count($fileIds) % $bracketSize !== 0) {
+            return response()->json([
+                'success' => false,
+                'message' => "Selected file count must be a multiple of {$bracketSize} for HDR brackets",
+            ], 422);
+        }
+
+        try {
+            $shoot = Shoot::findOrFail($request->shoot_id);
+            $user = $request->user();
+            if (!$this->canEditShoot($user, $shoot)) {
+                return response()->json(['success' => false, 'message' => 'You do not have permission to edit this shoot'], 403);
+            }
+
+            $editingType = (string) $request->editing_type;
+            $rawParams = $request->params ?? [];
+            $jobs = [];
+            $skipped = [];
+
+            foreach (array_chunk($fileIds, $bracketSize) as $bracketIndex => $bracketFileIds) {
+                $bracketId = (string) Str::uuid();
+                $orderId = null;
+                $bracketImageIds = [];
+                $primaryShootFile = null;
+                $bracketEditingJob = null;
+                $bracketFailed = null;
+
+                foreach ($bracketFileIds as $position => $fileId) {
+                    $shootFile = ShootFile::find($fileId);
+                    if (!$shootFile || (int) $shootFile->shoot_id !== (int) $shoot->id) {
+                        $skipped[] = ['file_id' => $fileId, 'reason' => 'File not found or does not belong to shoot'];
+                        $bracketFailed = "File #{$fileId} unavailable";
+                        break;
+                    }
+
+                    [$contents, $contentType] = $this->readShootFileBuffer($shootFile);
+                    if (!$contents) {
+                        $skipped[] = ['file_id' => $fileId, 'reason' => 'Could not read file binary'];
+                        $bracketFailed = "Could not read file #{$fileId}";
+                        break;
+                    }
+
+                    if ($position === 0) {
+                        $primaryShootFile = $shootFile;
+                        $bracketEditingJob = AiEditingJob::create([
+                            'shoot_id' => $shoot->id,
+                            'shoot_file_id' => $shootFile->id,
+                            'user_id' => $user->id,
+                            'provider' => 'autoenhance',
+                            'status' => AiEditingJob::STATUS_PENDING,
+                            'editing_type' => $editingType,
+                            'editing_params' => array_merge($rawParams, [
+                                'bracket_id' => $bracketId,
+                                'bracket_size' => $bracketSize,
+                                'bracket_index' => $bracketIndex,
+                            ]),
+                            'original_image_url' => $this->getImageUrl($shootFile),
+                        ]);
+                    }
+
+                    $providerParams = array_merge($rawParams, [
+                        'image_name' => $shootFile->filename,
+                        'content_type' => $contentType,
+                        'mime_type' => $contentType,
+                        'bracket_id' => $bracketId,
+                    ]);
+                    if ($orderId) {
+                        $providerParams['order_id'] = $orderId;
+                    }
+
+                    $result = $this->autoenhanceService->submitEditingJobFromBuffer(
+                        $contents,
+                        $shootFile->filename ?? "bracket-{$bracketIndex}-{$position}.jpg",
+                        $contentType,
+                        $editingType,
+                        $providerParams
+                    );
+
+                    if (!is_array($result) || !($result['image_id'] ?? null)) {
+                        $errorMessage = is_array($result)
+                            ? ($result['error'] ?? 'Autoenhance submission failed')
+                            : 'Autoenhance submission failed';
+                        $bracketFailed = is_string($errorMessage) ? $errorMessage : 'Autoenhance submission failed';
+                        if ($bracketEditingJob && is_array($result)) {
+                            $bracketEditingJob->provider_payload = $result;
+                            $bracketEditingJob->save();
+                        }
+                        break;
+                    }
+
+                    $bracketImageIds[] = $result['image_id'];
+                    $orderId = $orderId ?: ($result['order_id'] ?? null);
+
+                    if ($position === 0 && $bracketEditingJob) {
+                        $bracketEditingJob->autoenhance_image_id = $result['image_id'];
+                        $bracketEditingJob->provider_job_id = $result['image_id'];
+                        $bracketEditingJob->provider_order_id = $orderId;
+                        $bracketEditingJob->status = AiEditingJob::STATUS_PROCESSING;
+                        $bracketEditingJob->started_at = now();
+                        $bracketEditingJob->save();
+                    }
+                }
+
+                if ($bracketEditingJob) {
+                    if ($bracketFailed) {
+                        $bracketEditingJob->markAsFailed($bracketFailed);
+                    } else {
+                        $bracketEditingJob->provider_payload = array_merge((array) ($bracketEditingJob->provider_payload ?? []), [
+                            'bracket_id' => $bracketId,
+                            'bracket_size' => $bracketSize,
+                            'bracket_index' => $bracketIndex,
+                            'bracket_image_ids' => $bracketImageIds,
+                            'bracket_file_ids' => $bracketFileIds,
+                        ]);
+                        $bracketEditingJob->save();
+                    }
+                    $jobs[] = $bracketEditingJob;
+                }
+            }
+
+            if (empty($jobs)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No bracket jobs could be queued',
+                    'skipped' => $skipped,
+                ], 400);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => count($jobs) . ' bracket job(s) submitted',
+                'data' => collect($jobs)->map(fn (AiEditingJob $job) => $this->presentJob(
+                    $job->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])
+                ))->values(),
+                'skipped' => $skipped,
+            ], 201);
+        } catch (\Exception $e) {
+            Log::error('AutoenhanceController: Error submitting bracket editing', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to submit bracket job',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Read a ShootFile's binary contents from local storage. Returns
+     * [contents, contentType] or [null, null] if unreadable.
+     */
+    private function readShootFileBuffer(ShootFile $shootFile): array
+    {
+        $contentType = $shootFile->mime_type ?? $shootFile->file_type ?? null;
+        $candidates = array_filter([
+            $shootFile->storage_path,
+            $shootFile->path,
+        ]);
+        foreach ($candidates as $candidate) {
+            $relative = ltrim(preg_replace('#^/?storage/#', '', (string) $candidate), '/');
+            if ($relative && Storage::disk('public')->exists($relative)) {
+                return [Storage::disk('public')->get($relative), $contentType];
+            }
+        }
+        // Fallback: try fetching via signed URL accessor (for remote storage).
+        $url = $this->getImageUrl($shootFile);
+        if ($url) {
+            try {
+                $response = \Illuminate\Support\Facades\Http::timeout(120)->get($url);
+                if ($response->successful()) {
+                    return [$response->body(), $contentType ?: $response->header('Content-Type')];
+                }
+            } catch (\Throwable $e) {
+                // fall through
+            }
+        }
+        return [null, null];
+    }
+
+    /**
      * Stage uploaded images for chat-driven Autoenhance flows.
      *
      * The user attaches images in chat → frontend POSTs them here → we persist

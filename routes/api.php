@@ -682,6 +682,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/connection-status', [AutoenhanceController::class, 'connectionStatus']);
         Route::get('/editing-types', [AutoenhanceController::class, 'getEditingTypes']);
         Route::post('/edit', [AutoenhanceController::class, 'submitEditing']);
+        Route::post('/bracket-edit', [AutoenhanceController::class, 'submitBracketEditing']);
         Route::post('/quick-edit', [AutoenhanceController::class, 'quickEdit']);
         Route::post('/quick-edit/stage', [AutoenhanceController::class, 'stageQuickEdit']);
         Route::post('/jobs/poll', [AutoenhanceController::class, 'pollProcessingJobs']);

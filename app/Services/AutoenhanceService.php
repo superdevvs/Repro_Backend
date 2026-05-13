@@ -189,14 +189,22 @@ class AutoenhanceService
             $usesLegacyUpload = !isset($data['upload_url']) && isset($data['s3PutObjectUrl']);
 
             if ($uploadUrl) {
-                $uploadHeaders = ['Content-Type' => $usesLegacyUpload ? $resolvedContentType : 'application/octet-stream'];
+                // For the legacy s3PutObjectUrl path, the signed URL embeds the
+                // exact Content-Type S3 will validate against. Use it verbatim,
+                // otherwise RAW formats (NEF/CR3) get rejected with HTTP 403
+                // SignatureDoesNotMatch.
+                $effectiveContentType = $usesLegacyUpload
+                    ? $this->contentTypeFromSignedUrl($uploadUrl, $resolvedContentType)
+                    : 'application/octet-stream';
+
+                $uploadHeaders = ['Content-Type' => $effectiveContentType];
                 if (!$usesLegacyUpload) {
                     $uploadHeaders['x-api-key'] = $this->apiKey;
                 }
 
                 $uploadResponse = Http::timeout($this->timeout)
                     ->withHeaders($uploadHeaders)
-                    ->withBody($contents, $uploadHeaders['Content-Type'])
+                    ->withBody($contents, $effectiveContentType)
                     ->put($uploadUrl);
 
                 if (!$uploadResponse->successful()) {
@@ -204,6 +212,7 @@ class AutoenhanceService
                     Log::error('Autoenhance: Buffer upload to signed URL failed', [
                         'status' => $uploadResponse->status(),
                         'body' => $uploadResponse->body(),
+                        'sent_content_type' => $effectiveContentType,
                         'error' => $failure['error'],
                     ]);
                     return $failure;
@@ -483,8 +492,8 @@ class AutoenhanceService
             $payload['hdr'] = true;
         }
 
-        foreach (['upscale', 'threesixty', 'tripod_hide', 'preset_id', 'restage', 'finetune_settings'] as $key) {
-            if (array_key_exists($key, $params)) {
+        foreach (['upscale', 'threesixty', 'tripod_hide', 'preset_id', 'restage', 'finetune_settings', 'bracket_id'] as $key) {
+            if (array_key_exists($key, $params) && $params[$key] !== null && $params[$key] !== '') {
                 $payload[$key] = $params[$key];
             }
         }
@@ -507,14 +516,22 @@ class AutoenhanceService
             return $failure;
         }
 
-        $headers = ['Content-Type' => $contentType];
+        // Modern flow uses application/octet-stream; legacy s3PutObjectUrl path
+        // requires the Content-Type that S3 actually signed (typically embedded
+        // as a `content-type` query param). Mismatches cause HTTP 403
+        // SignatureDoesNotMatch — common with RAW formats like NEF/CR3.
+        $effectiveContentType = $includeApiKey
+            ? $contentType
+            : $this->contentTypeFromSignedUrl($uploadUrl, $contentType);
+
+        $headers = ['Content-Type' => $effectiveContentType];
         if ($includeApiKey) {
             $headers['x-api-key'] = $this->apiKey;
         }
 
         $uploadResponse = Http::timeout($this->timeout)
             ->withHeaders($headers)
-            ->withBody($sourceResponse->body(), $contentType)
+            ->withBody($sourceResponse->body(), $effectiveContentType)
             ->put($uploadUrl);
 
         if (!$uploadResponse->successful()) {
@@ -522,12 +539,38 @@ class AutoenhanceService
             Log::error('Autoenhance: Upload to signed URL failed', [
                 'status' => $uploadResponse->status(),
                 'body' => $uploadResponse->body(),
+                'sent_content_type' => $effectiveContentType,
                 'error' => $failure['error'],
             ]);
             return $failure;
         }
 
         return ['success' => true];
+    }
+
+    /**
+     * Extract the exact Content-Type that an S3 signed URL was generated with.
+     *
+     * Autoenhance's legacy `s3PutObjectUrl` embeds the signed Content-Type as a
+     * lowercase `content-type` query parameter. S3 verifies the request's
+     * Content-Type header against this signed value, so we must send it back
+     * verbatim or the upload fails with SignatureDoesNotMatch (HTTP 403).
+     *
+     * Returns the fallback when no Content-Type is found in the URL.
+     */
+    private function contentTypeFromSignedUrl(string $url, string $fallback): string
+    {
+        $query = parse_url($url, PHP_URL_QUERY);
+        if (!$query) {
+            return $fallback;
+        }
+        parse_str($query, $params);
+        foreach (['content-type', 'Content-Type', 'response-content-type'] as $key) {
+            if (!empty($params[$key]) && is_string($params[$key])) {
+                return $params[$key];
+            }
+        }
+        return $fallback;
     }
 
     private function sanitizeImageName(string $name): string
