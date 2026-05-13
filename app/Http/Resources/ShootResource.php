@@ -347,6 +347,8 @@ class ShootResource extends JsonResource
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
             'is_featured' => (bool) ($this->is_featured ?? false),
             'isFeatured' => (bool) ($this->is_featured ?? false),
+            'is_listing_hidden' => (bool) ($this->is_listing_hidden ?? false),
+            'isListingHidden' => (bool) ($this->is_listing_hidden ?? false),
             'listing_type' => $this->listing_type,
             'listingType' => $this->listing_type,
             'property_status' => $this->property_status ?? 'available',

@@ -17,6 +17,9 @@ class IntentPolicy
         'availability' => [
             'min_confidence' => 1.0,
         ],
+        'edit_photos' => [
+            'min_confidence' => 1.0,
+        ],
     ];
 
     public function isRuleBased(string $intent, ?float $confidence = null): bool

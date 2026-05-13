@@ -59,7 +59,7 @@ class ShootListingService
                 'client_id', 'photographer_id', 'services', 'search', 'address',
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
-                'date_from', 'date_to', 'private_listing', 'listing_scope',
+                'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -176,7 +176,7 @@ class ShootListingService
             }
 
             $this->applyTabScope($query, $tab);
-            $this->applyOperationalFilters($query, $request, $tab);
+            $this->applyOperationalFilters($query, $request, $tab, $user);
 
             $maxLimit = 1000;
             $requestLimit = (int) $request->query('limit', $maxLimit);
@@ -295,7 +295,7 @@ class ShootListingService
         $query->whereIn('status', $statuses);
     }
 
-    protected function applyOperationalFilters(Builder $query, Request $request, string $tab): void
+    protected function applyOperationalFilters(Builder $query, Request $request, string $tab, ?User $user = null): void
     {
         $search = trim((string) $request->query('search', ''));
         if ($search !== '') {
@@ -360,7 +360,19 @@ class ShootListingService
 
         $privateListing = $request->query('private_listing');
         if ($privateListing !== null) {
-            $query->where('is_private_listing', filter_var($privateListing, FILTER_VALIDATE_BOOLEAN));
+            $isPrivateListing = filter_var($privateListing, FILTER_VALIDATE_BOOLEAN);
+            $query->where('is_private_listing', $isPrivateListing);
+
+            if ($isPrivateListing) {
+                $isAdminUser = $user && in_array($user->role, ['admin', 'superadmin'], true);
+                $includeHidden = filter_var($request->query('include_hidden', false), FILTER_VALIDATE_BOOLEAN);
+                if (!$isAdminUser || !$includeHidden) {
+                    $query->where(function (Builder $scope) {
+                        $scope->where('is_listing_hidden', false)
+                            ->orWhereNull('is_listing_hidden');
+                    });
+                }
+            }
         }
     }
 

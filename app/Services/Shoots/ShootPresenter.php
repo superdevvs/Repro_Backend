@@ -322,6 +322,7 @@ class ShootPresenter
                 'name' => $shoot->photographer->name,
                 'avatar' => $shoot->photographer->avatar ?? null,
             ]);
+            $shoot->unsetRelation('photographer');
         }
 
         if ($shoot->client && !$isEditorRole) {
@@ -367,8 +368,10 @@ class ShootPresenter
             }
 
             $shoot->setAttribute('client', $clientData);
+            $shoot->unsetRelation('client');
         } elseif ($isEditorRole) {
             $shoot->setAttribute('client', null);
+            $shoot->unsetRelation('client');
         }
 
         if ($isEditorRole) {
@@ -483,6 +486,8 @@ class ShootPresenter
         $shoot->is_private_listing = $shoot->is_private_listing ?? false;
         $shoot->is_featured = $shoot->is_featured ?? false;
         $shoot->isFeatured = (bool) ($shoot->is_featured ?? false);
+        $shoot->is_listing_hidden = $shoot->is_listing_hidden ?? false;
+        $shoot->isListingHidden = (bool) ($shoot->is_listing_hidden ?? false);
         $shoot->mmm_status = $shoot->mmm_status;
         $shoot->mmm_order_number = $shoot->mmm_order_number;
         $shoot->mmm_buyer_cookie = $shoot->mmm_buyer_cookie;

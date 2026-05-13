@@ -137,7 +137,7 @@ class MessagingAutomationTest extends TestCase
         $this->assertNotNull($dueMessage);
         $this->assertSame('AUTOMATION', $dueMessage->send_source);
         $this->assertContains(
-            sprintf('INVOICE_DUE:%s:%s', $dueInvoice->id, now()->toDateString()),
+            sprintf('INVOICE_DUE:%s:due', $dueInvoice->id),
             $dueMessage->tags_json ?? []
         );
 
@@ -145,7 +145,7 @@ class MessagingAutomationTest extends TestCase
         $this->assertNotNull($overdueMessage);
         $this->assertSame('AUTOMATION', $overdueMessage->send_source);
         $this->assertContains(
-            sprintf('INVOICE_OVERDUE:%s:%s', $overdueInvoice->id, now()->toDateString()),
+            sprintf('INVOICE_OVERDUE:%s:1d', $overdueInvoice->id),
             $overdueMessage->tags_json ?? []
         );
 
@@ -153,6 +153,107 @@ class MessagingAutomationTest extends TestCase
 
         $this->assertSame(1, Message::where('related_invoice_id', $dueInvoice->id)->count());
         $this->assertSame(1, Message::where('related_invoice_id', $overdueInvoice->id)->count());
+    }
+
+    public function test_invoice_overdue_only_fires_on_scheduled_offsets(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $client = User::factory()->create(['role' => 'client', 'email' => 'overdue-client@example.com']);
+        $overdueTemplate = $this->createTemplate('Invoice Overdue Cadence');
+        $this->createAutomation('INVOICE_OVERDUE', $overdueTemplate, ['client']);
+
+        $scheduledOffsets = [1, 2, 3, 7, 30, 60, 90];
+        $skippedOffsets = [4, 5, 6, 8, 15, 29, 31, 45, 59, 61];
+
+        $scheduledInvoices = [];
+        foreach ($scheduledOffsets as $offset) {
+            $scheduledInvoices[$offset] = $this->createInvoice([
+                'client_id' => $client->id,
+                'user_id' => $client->id,
+                'role' => Invoice::ROLE_CLIENT,
+                'issue_date' => now()->subDays($offset + 5),
+                'due_date' => now()->subDays($offset),
+                'total' => 200 + $offset,
+                'amount_paid' => 0,
+            ]);
+        }
+
+        $skippedInvoices = [];
+        foreach ($skippedOffsets as $offset) {
+            $skippedInvoices[$offset] = $this->createInvoice([
+                'client_id' => $client->id,
+                'user_id' => $client->id,
+                'role' => Invoice::ROLE_CLIENT,
+                'issue_date' => now()->subDays($offset + 5),
+                'due_date' => now()->subDays($offset),
+                'total' => 200 + $offset,
+                'amount_paid' => 0,
+            ]);
+        }
+
+        Artisan::call('messaging:invoice-reminders');
+
+        foreach ($scheduledInvoices as $offset => $invoice) {
+            $messages = Message::where('related_invoice_id', $invoice->id)->get();
+            $this->assertCount(
+                1,
+                $messages,
+                sprintf('Expected one overdue reminder at offset %d', $offset)
+            );
+            $this->assertContains(
+                sprintf('INVOICE_OVERDUE:%s:%dd', $invoice->id, $offset),
+                $messages->first()->tags_json ?? []
+            );
+        }
+
+        foreach ($skippedInvoices as $offset => $invoice) {
+            $this->assertSame(
+                0,
+                Message::where('related_invoice_id', $invoice->id)->count(),
+                sprintf('Expected no reminder at offset %d', $offset)
+            );
+        }
+
+        Artisan::call('messaging:invoice-reminders');
+
+        foreach ($scheduledInvoices as $offset => $invoice) {
+            $this->assertSame(
+                1,
+                Message::where('related_invoice_id', $invoice->id)->count(),
+                sprintf('Idempotency violated for offset %d', $offset)
+            );
+        }
+    }
+
+    public function test_invoice_reminders_skip_non_client_role_invoices(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $photographer = User::factory()->create(['role' => 'photographer', 'email' => 'photog@example.com']);
+        $overdueTemplate = $this->createTemplate('Invoice Overdue Photog');
+        $this->createAutomation('INVOICE_OVERDUE', $overdueTemplate, ['client']);
+
+        $photographerInvoice = $this->createInvoice([
+            'client_id' => null,
+            'user_id' => $photographer->id,
+            'role' => Invoice::ROLE_PHOTOGRAPHER,
+            'photographer_id' => $photographer->id,
+            'issue_date' => now()->subDays(10),
+            'due_date' => now()->subDay(),
+            'total' => 300,
+            'amount_paid' => 0,
+        ]);
+
+        Artisan::call('messaging:invoice-reminders');
+
+        $this->assertSame(
+            0,
+            Message::where('related_invoice_id', $photographerInvoice->id)->count(),
+            'Photographer payout invoices must not receive client overdue reminders.'
+        );
     }
 
     public function test_weekly_invoice_summaries_send_for_clients_and_reps(): void

@@ -475,6 +475,7 @@ class AiChatController extends Controller
 
         $query = AiChatSession::where('user_id', $user->id)
             ->withCount('messages')
+            ->with(['latestMessage'])
             ->orderBy('updated_at', 'desc');
 
         // Search filter
@@ -509,8 +510,32 @@ class AiChatController extends Controller
         $topicCounts = $allSessions->groupBy('topic')->map->count();
         $topTopic = $topicCounts->sortDesc()->keys()->first() ?? 'general';
 
+        $items = collect($sessions->items())->map(function (AiChatSession $session) {
+            $latest = $session->latestMessage;
+            $preview = null;
+            if ($latest && is_string($latest->content)) {
+                $clean = trim(preg_replace('/\s+/', ' ', $latest->content));
+                if ($clean !== '') {
+                    $preview = \Illuminate\Support\Str::limit($clean, 80);
+                }
+            }
+
+            return [
+                'id' => $session->id,
+                'title' => $session->title,
+                'topic' => $session->topic,
+                'messages_count' => $session->messages_count,
+                'messageCount' => $session->messages_count,
+                'preview' => $preview,
+                'created_at' => optional($session->created_at)->toISOString(),
+                'updated_at' => optional($session->updated_at)->toISOString(),
+                'createdAt' => optional($session->created_at)->toISOString(),
+                'updatedAt' => optional($session->updated_at)->toISOString(),
+            ];
+        })->all();
+
         return response()->json([
-            'data' => $sessions->items(),
+            'data' => $items,
             'meta' => [
                 'pagination' => [
                     'current_page' => $sessions->currentPage(),

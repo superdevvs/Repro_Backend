@@ -2,7 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\CacheShootFinalToLocalJob;
 use App\Jobs\FinalizeShootJob;
+use App\Jobs\PublishShootToBrightMlsJob;
+use App\Jobs\SendShootReadyEmailJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootActivityLog;
@@ -217,24 +220,7 @@ class ShootActivityLogDetailsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
-        $dropbox->shouldReceive('moveToFinal')->once();
-
-        $automation = Mockery::mock(AutomationService::class);
-        $automation->shouldReceive('buildShootContext')->andReturn([]);
-        $automation->shouldReceive('handleEvent')->once();
-
-        $mail = Mockery::mock(MailService::class);
-        $mail->shouldReceive('sendShootReadyEmail')->once();
-
-        $brightMls = Mockery::mock(BrightMlsService::class);
-        $brightMls->shouldReceive('isAutoPublishAvailable')->andReturn(false);
-
         (new FinalizeShootJob($shoot->id, $admin->id, 'completed'))->handle(
-            $dropbox,
-            $automation,
-            $mail,
-            $brightMls,
             app(ShootActivityLogger::class)
         );
 
@@ -242,6 +228,17 @@ class ShootActivityLogDetailsTest extends TestCase
 
         $this->assertSame('Shoot has been finalized and delivered by admin', $log->description);
         $this->assertSame('admin', $log->metadata['finalized_by_role']);
+
+        // Shoot was flipped to delivered via bulk DB commit.
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_DELIVERED, $shoot->workflow_status);
+        $this->assertSame(ShootFile::STAGE_VERIFIED, $shoot->files()->first()->workflow_stage);
+
+        // Heavy side effects are dispatched, not executed inline.
+        Queue::assertPushed(SendShootReadyEmailJob::class, fn (SendShootReadyEmailJob $job) => $job->shootId === $shoot->id);
+        Queue::assertPushed(PublishShootToBrightMlsJob::class, fn (PublishShootToBrightMlsJob $job) => $job->shootId === $shoot->id);
+        // No dropbox_path on the test file, so no cache job is dispatched.
+        Queue::assertNotPushed(CacheShootFinalToLocalJob::class);
     }
 
     public function test_successful_bright_mls_publish_creates_synced_activity(): void

@@ -105,6 +105,7 @@ class Shoot extends Model
         'cubicasa_last_status_at',
         'is_private_listing',
         'is_featured',
+        'is_listing_hidden',
         'listing_type',
         'property_status',
         // MMM Integration
@@ -178,6 +179,7 @@ class Shoot extends Model
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
         'is_featured' => 'boolean',
+        'is_listing_hidden' => 'boolean',
         'listing_type' => 'string',
         'property_status' => 'string',
         'mmm_last_punchout_at' => 'datetime',

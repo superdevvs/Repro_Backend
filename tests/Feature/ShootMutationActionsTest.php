@@ -1375,6 +1375,104 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
+    public function test_admin_can_hide_and_unhide_private_exclusive_listing(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'is_private_listing' => true,
+            'is_listing_hidden' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $hideResponse = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_listing_hidden' => true,
+        ]);
+
+        $hideResponse->assertOk()
+            ->assertJsonPath('data.is_listing_hidden', true)
+            ->assertJsonPath('data.isListingHidden', true);
+        $this->assertTrue((bool) $shoot->fresh()->is_listing_hidden);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'listing_hidden',
+            'user_id' => $this->admin->id,
+        ]);
+
+        $unhideResponse = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_listing_hidden' => false,
+        ]);
+
+        $unhideResponse->assertOk()
+            ->assertJsonPath('data.is_listing_hidden', false)
+            ->assertJsonPath('data.isListingHidden', false);
+        $this->assertFalse((bool) $shoot->fresh()->is_listing_hidden);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'listing_unhidden',
+            'user_id' => $this->admin->id,
+        ]);
+    }
+
+    public function test_client_cannot_hide_private_exclusive_listing(): void
+    {
+        Sanctum::actingAs($this->client);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'is_private_listing' => true,
+            'is_listing_hidden' => false,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'is_listing_hidden' => true,
+        ]);
+
+        $response->assertForbidden();
+        $this->assertFalse((bool) $shoot->fresh()->is_listing_hidden);
+    }
+
+    public function test_hidden_private_exclusive_listings_require_admin_include_hidden_filter(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'is_private_listing' => true,
+            'is_listing_hidden' => true,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        Sanctum::actingAs($this->client);
+        $clientResponse = $this->getJson('/api/shoots?tab=delivered&private_listing=1&include_hidden=1&no_cache=1');
+        $clientResponse->assertOk();
+        $this->assertFalse(collect($clientResponse->json('data') ?? [])->contains('id', $shoot->id));
+
+        Sanctum::actingAs($this->admin);
+        $adminDefaultResponse = $this->getJson('/api/shoots?tab=delivered&private_listing=1&no_cache=1');
+        $adminDefaultResponse->assertOk();
+        $this->assertFalse(collect($adminDefaultResponse->json('data') ?? [])->contains('id', $shoot->id));
+
+        $adminIncludeHiddenResponse = $this->getJson('/api/shoots?tab=delivered&private_listing=1&include_hidden=1&no_cache=1');
+        $adminIncludeHiddenResponse->assertOk();
+        $this->assertTrue(collect($adminIncludeHiddenResponse->json('data') ?? [])->contains('id', $shoot->id));
+    }
+
     /** @test */
     public function unassigned_photographer_cannot_toggle_featured_on_a_shoot(): void
     {

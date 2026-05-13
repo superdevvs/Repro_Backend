@@ -11,7 +11,9 @@ use App\Services\AutoenhanceService;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class AutoenhanceController extends Controller
 {
@@ -158,6 +160,471 @@ class AutoenhanceController extends Controller
         }
     }
 
+    /**
+     * Stage uploaded images for chat-driven Autoenhance flows.
+     *
+     * The user attaches images in chat → frontend POSTs them here → we persist
+     * them to the user's staging directory and return ids the chat flow can use
+     * to commit them to Autoenhance later (after Robbie collects mode + params).
+     */
+    public function stageQuickEdit(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'images' => 'required|array|min:1|max:50',
+            'images.*' => 'required|file|image|max:25600', // 25 MB per image
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        }
+
+        $files = $request->file('images', []);
+        if (!is_array($files)) {
+            $files = [$files];
+        }
+
+        $staged = [];
+        $skipped = [];
+
+        foreach ($files as $index => $upload) {
+            if (!$upload || !$upload->isValid()) {
+                $skipped[] = ['index' => $index, 'reason' => 'Upload was not valid'];
+                continue;
+            }
+
+            try {
+                $originalName = $upload->getClientOriginalName() ?: ('image-' . ($index + 1) . '.jpg');
+                $contentType = $upload->getMimeType() ?: 'image/jpeg';
+                $extension = pathinfo($originalName, PATHINFO_EXTENSION) ?: 'jpg';
+                $stagedId = Str::uuid()->toString();
+                $storedPath = "autoenhance-uploads/{$user->id}/staging/{$stagedId}.{$extension}";
+
+                $contents = file_get_contents($upload->getRealPath());
+                if ($contents === false) {
+                    $skipped[] = ['index' => $index, 'reason' => 'Could not read upload contents'];
+                    continue;
+                }
+
+                Storage::disk('public')->put($storedPath, $contents, 'public');
+
+                $previewUrl = null;
+                try {
+                    $previewUrl = Storage::disk('public')->url($storedPath);
+                } catch (\Throwable $urlError) {
+                    $previewUrl = rtrim((string) config('app.url'), '/') . '/storage/' . ltrim($storedPath, '/');
+                }
+
+                $staged[] = [
+                    'id' => $stagedId,
+                    'name' => $originalName,
+                    'content_type' => $contentType,
+                    'size' => strlen($contents),
+                    'preview_url' => $previewUrl,
+                    'storage_path' => $storedPath,
+                ];
+            } catch (\Throwable $e) {
+                Log::warning('AutoenhanceController: stage upload failed', [
+                    'index' => $index,
+                    'error' => $e->getMessage(),
+                ]);
+                $skipped[] = ['index' => $index, 'reason' => $e->getMessage()];
+            }
+        }
+
+        if (empty($staged)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No images could be staged',
+                'skipped' => $skipped,
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'staged' => $staged,
+            'skipped' => $skipped,
+        ], 201);
+    }
+
+    /**
+     * Quick edit endpoint: accept ad-hoc image uploads (multipart) directly from chat /
+     * AI editing UI, submit each one individually to Autoenhance using a binary buffer
+     * (so we don't need a publicly-reachable URL during local development), and create a
+     * tracked AiEditingJob row per image. The job appears in the existing Activity list
+     * and can be polled / retried via the same endpoints.
+     *
+     * Accepts either:
+     *   images[]      — direct multipart files (legacy / one-shot path)
+     *   staged_ids[]  — ids returned from stageQuickEdit (chat flow path)
+     */
+    public function quickEdit(Request $request)
+    {
+        $hasStaged = $request->has('staged_ids');
+        $validator = Validator::make($request->all(), [
+            'images' => $hasStaged ? 'nullable|array' : 'required|array|min:1|max:25',
+            'images.*' => 'nullable|file|image|max:25600', // 25 MB per image
+            'staged_ids' => 'nullable|array|min:1|max:50',
+            'staged_ids.*' => 'nullable|string',
+            'editing_type' => 'nullable|string|in:enhance,sky_replace,vertical_correction,window_pull,hdr_merge',
+            'params' => 'nullable',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $user = $request->user();
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated',
+            ], 401);
+        }
+
+        $editingType = $request->input('editing_type', 'enhance');
+        $rawParams = $request->input('params');
+        if (is_string($rawParams)) {
+            $decoded = json_decode($rawParams, true);
+            $rawParams = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($rawParams)) {
+            $rawParams = [];
+        }
+
+        // Build a unified list of {name, contentType, contents, publicUrl} sources from
+        // either direct multipart uploads or previously-staged ids.
+        /** @var array<int, array{name:string, contentType:string, contents:string, publicUrl:?string}> $sources */
+        $sources = [];
+        $skipped = [];
+
+        if ($hasStaged) {
+            $stagedIds = array_filter(array_map('strval', (array) $request->input('staged_ids', [])));
+            foreach ($stagedIds as $idx => $stagedId) {
+                $dir = "autoenhance-uploads/{$user->id}/staging";
+                $matches = collect(Storage::disk('public')->files($dir))
+                    ->filter(fn ($p) => str_starts_with(basename($p), $stagedId . '.'))
+                    ->values();
+                if ($matches->isEmpty()) {
+                    $skipped[] = ['staged_id' => $stagedId, 'reason' => 'Staged file not found'];
+                    continue;
+                }
+                $storedPath = $matches->first();
+                try {
+                    $contents = Storage::disk('public')->get($storedPath);
+                } catch (\Throwable $readError) {
+                    $skipped[] = ['staged_id' => $stagedId, 'reason' => $readError->getMessage()];
+                    continue;
+                }
+                $name = basename($storedPath);
+                $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION) ?: 'jpg');
+                $contentType = $extension === 'png' ? 'image/png'
+                    : ($extension === 'webp' ? 'image/webp'
+                    : ($extension === 'avif' ? 'image/avif' : 'image/jpeg'));
+                $publicUrl = null;
+                try { $publicUrl = Storage::disk('public')->url($storedPath); } catch (\Throwable $e) {}
+                $sources[] = [
+                    'name' => $name,
+                    'content_type' => $contentType,
+                    'contents' => (string) $contents,
+                    'public_url' => $publicUrl,
+                ];
+            }
+        } else {
+            $files = $request->file('images', []);
+            if (!is_array($files)) {
+                $files = [$files];
+            }
+            foreach ($files as $index => $upload) {
+                if (!$upload || !$upload->isValid()) {
+                    $skipped[] = ['index' => $index, 'reason' => 'Upload was not valid'];
+                    continue;
+                }
+                $originalName = $upload->getClientOriginalName() ?: ('image-' . ($index + 1) . '.jpg');
+                $contentType = $upload->getMimeType() ?: 'image/jpeg';
+                $contents = file_get_contents($upload->getRealPath());
+                if ($contents === false || $contents === '') {
+                    $skipped[] = ['index' => $index, 'name' => $originalName, 'reason' => 'Could not read file contents'];
+                    continue;
+                }
+                // Persist a copy so we can show it later in Activity.
+                $extension = pathinfo($originalName, PATHINFO_EXTENSION) ?: 'jpg';
+                $storedName = Str::uuid()->toString() . '.' . strtolower($extension);
+                $storedPath = "autoenhance-uploads/{$user->id}/{$storedName}";
+                try {
+                    Storage::disk('public')->put($storedPath, $contents, 'public');
+                } catch (\Throwable $storageError) {
+                    Log::warning('AutoenhanceController: Failed to persist quick-edit upload', [
+                        'error' => $storageError->getMessage(),
+                        'name' => $originalName,
+                    ]);
+                }
+                $publicUrl = null;
+                try { $publicUrl = Storage::disk('public')->url($storedPath); } catch (\Throwable $e) {
+                    $publicUrl = rtrim((string) config('app.url'), '/') . '/storage/' . ltrim($storedPath, '/');
+                }
+                $sources[] = [
+                    'name' => $originalName,
+                    'content_type' => $contentType,
+                    'contents' => $contents,
+                    'public_url' => $publicUrl,
+                ];
+            }
+        }
+
+        $jobs = [];
+
+        foreach ($sources as $index => $src) {
+            $originalName = $src['name'];
+            $contentType = $src['content_type'];
+            $contents = $src['contents'];
+            $publicUrl = $src['public_url'] ?? null;
+
+            try {
+                $editingJob = AiEditingJob::create([
+                    'shoot_id' => null,
+                    'shoot_file_id' => null,
+                    'user_id' => $user->id,
+                    'provider' => 'autoenhance',
+                    'status' => AiEditingJob::STATUS_PENDING,
+                    'editing_type' => $editingType,
+                    'editing_params' => $rawParams,
+                    'original_image_url' => $publicUrl,
+                ]);
+
+                // Submit synchronously using a binary buffer so Autoenhance does not
+                // need to fetch our local URL.
+                $providerParams = array_merge($rawParams, [
+                    'image_name' => $originalName,
+                    'content_type' => $contentType,
+                    'mime_type' => $contentType,
+                ]);
+
+                $result = $this->autoenhanceService->submitEditingJobFromBuffer(
+                    $contents,
+                    $originalName,
+                    $contentType,
+                    $editingType,
+                    $providerParams
+                );
+
+                if (!is_array($result) || !($result['image_id'] ?? null)) {
+                    $errorMessage = is_array($result)
+                        ? ($result['error'] ?? 'Autoenhance submission failed')
+                        : 'Autoenhance submission failed';
+                    $editingJob->markAsFailed(is_string($errorMessage) ? $errorMessage : 'Autoenhance submission failed');
+                    if (is_array($result)) {
+                        $editingJob->provider_payload = $result;
+                        $editingJob->save();
+                    }
+                    $skipped[] = ['index' => $index, 'name' => $originalName, 'reason' => $editingJob->error_message ?? 'submission_failed'];
+                    continue;
+                }
+
+                $editingJob->autoenhance_image_id = $result['image_id'];
+                $editingJob->provider_job_id = $result['image_id'];
+                $editingJob->provider_order_id = $result['order_id'] ?? null;
+                $editingJob->provider_payload = $result['data'] ?? null;
+                $editingJob->status = AiEditingJob::STATUS_PROCESSING;
+                $editingJob->started_at = now();
+                $editingJob->save();
+
+                $jobs[] = $editingJob;
+            } catch (\Throwable $e) {
+                Log::error('AutoenhanceController: quickEdit per-file error', [
+                    'index' => $index,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                ]);
+                $skipped[] = [
+                    'index' => $index,
+                    'name' => $originalName ?? null,
+                    'reason' => $e->getMessage(),
+                ];
+            }
+        }
+
+        if (empty($jobs) && !empty($skipped)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No images could be submitted to Autoenhance',
+                'skipped' => $skipped,
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Quick-edit jobs submitted',
+            'data' => collect($jobs)->map(fn (AiEditingJob $job) => $this->presentJob(
+                $job->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])
+            ))->values(),
+            'skipped' => $skipped,
+        ], 201);
+    }
+
+    /**
+     * Synchronously poll every `processing` job the user owns. For each:
+     *   - call Autoenhance for current status
+     *   - if completed, download the enhanced image, persist it on the public disk,
+     *     and mark the AiEditingJob as completed (so the Activity card flips state)
+     *   - if failed/cancelled, mark accordingly.
+     *
+     * This is the local-dev driver for AI editing progression where webhooks
+     * aren't reachable. Frontend polls this endpoint while any job is in
+     * `processing` state.
+     */
+    public function pollProcessingJobs(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
+        }
+
+        $query = AiEditingJob::where('provider', 'autoenhance')
+            ->where('status', AiEditingJob::STATUS_PROCESSING)
+            ->whereNotNull('autoenhance_image_id');
+        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            $query->where('user_id', $user->id);
+        }
+        $jobs = $query->orderByDesc('id')->limit(50)->get();
+
+        $updated = [];
+        foreach ($jobs as $job) {
+            try {
+                $status = $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
+                if (!$status) continue;
+
+                $normalized = strtolower((string) ($status['status'] ?? 'processing'));
+                $job->provider_result = $status;
+
+                if ($normalized === 'completed') {
+                    $editedImageUrl = $status['enhanced_image_url']
+                        ?? $status['result_url']
+                        ?? $status['image_url']
+                        ?? $status['edited_image_url']
+                        ?? null;
+                    if (!$editedImageUrl) {
+                        $editedImageUrl = $this->autoenhanceService->downloadEditedImage($job->autoenhance_image_id);
+                    }
+                    if (!$editedImageUrl) {
+                        $job->markAsFailed('Enhanced image URL not found in Autoenhance response');
+                        $updated[] = $job->id;
+                        continue;
+                    }
+
+                    $stored = $this->persistEnhancedImageForJob($job, $editedImageUrl);
+                    $job->markAsCompleted($stored ?: $editedImageUrl);
+                    $updated[] = $job->id;
+                } elseif (in_array($normalized, ['failed', 'error', 'cancelled', 'rejected'], true)) {
+                    $errorMessage = $status['error'] ?? $status['message'] ?? $status['status_reason'] ?? 'Autoenhance job failed';
+                    $job->markAsFailed((string) $errorMessage);
+                    $updated[] = $job->id;
+                } else {
+                    // Still processing — just persist provider_result snapshot.
+                    $job->save();
+                }
+            } catch (\Throwable $e) {
+                Log::warning('AutoenhanceController: pollProcessingJobs error', [
+                    'job_id' => $job->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'polled' => $jobs->count(),
+            'updated' => $updated,
+        ]);
+    }
+
+    /**
+     * Download the enhanced image and persist it on the public disk. Also creates
+     * a ShootFile row when the job is tied to a shoot. For ad-hoc / quick-edit
+     * jobs (shoot_id null) we just return the public URL of the stored copy.
+     */
+    private function persistEnhancedImageForJob(AiEditingJob $job, string $editedImageUrl): ?string
+    {
+        try {
+            $binary = null;
+            $mimeType = 'image/jpeg';
+            if (str_starts_with($editedImageUrl, 'data:')) {
+                [$meta, $payload] = explode(',', $editedImageUrl, 2);
+                if (preg_match('/^data:([^;]+)/', $meta, $m)) {
+                    $mimeType = $m[1];
+                }
+                $binary = base64_decode($payload);
+            } else {
+                $response = \Illuminate\Support\Facades\Http::timeout(120)->get($editedImageUrl);
+                if (!$response->successful()) {
+                    return null;
+                }
+                $binary = $response->body();
+                $mimeType = $response->header('Content-Type', $mimeType);
+            }
+
+            if (!$binary) return null;
+
+            $extension = match (strtolower($mimeType)) {
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                default => 'jpg',
+            };
+            $baseName = $job->shoot_id
+                ? ('shoots/' . $job->shoot_id . '/autoenhance')
+                : ('autoenhance-uploads/' . $job->user_id . '/edited');
+            $filename = Str::slug('autoenhance-' . $job->id) . '.' . $extension;
+            $path = $baseName . '/' . $filename;
+            Storage::disk('public')->put($path, $binary, 'public');
+            $publicPath = 'storage/' . $path;
+
+            // Tie back as a ShootFile only when the job belongs to a shoot.
+            if ($job->shoot_id) {
+                ShootFile::create([
+                    'shoot_id' => $job->shoot_id,
+                    'filename' => $filename,
+                    'stored_filename' => $filename,
+                    'path' => $publicPath,
+                    'storage_path' => $publicPath,
+                    'file_type' => $mimeType,
+                    'mime_type' => $mimeType,
+                    'media_type' => 'edited',
+                    'file_size' => strlen($binary),
+                    'uploaded_by' => $job->user_id,
+                    'uploaded_at' => now(),
+                    'workflow_stage' => ShootFile::STAGE_COMPLETED,
+                    'ai_editing_job_id' => $job->id,
+                    'is_ai_edited' => true,
+                    'ai_editing_metadata' => [
+                        'provider' => 'autoenhance',
+                        'editing_type' => $job->editing_type,
+                        'completed_at' => now()->toIso8601String(),
+                    ],
+                ]);
+            }
+
+            return $publicPath;
+        } catch (\Throwable $e) {
+            Log::warning('AutoenhanceController: persistEnhancedImageForJob failed', [
+                'job_id' => $job->id,
+                'error' => $e->getMessage(),
+            ]);
+            return null;
+        }
+    }
+
     public function listJobs(Request $request)
     {
         try {
@@ -258,6 +725,35 @@ class AutoenhanceController extends Controller
                     'success' => false,
                     'message' => 'Only failed or cancelled jobs can be retried',
                 ], 400);
+            }
+
+            // Fast-path: if Autoenhance already has the image and it's processed,
+            // just re-fetch the result instead of re-submitting from scratch. This
+            // covers the "Enhanced image URL not found in Autoenhance response"
+            // failure mode where the upload succeeded but the local download didn't.
+            if ($job->autoenhance_image_id) {
+                $status = $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
+                $normalized = strtolower((string) ($status['status'] ?? ''));
+                if ($status && $normalized === 'completed') {
+                    $editedImageUrl = $status['enhanced_image_url']
+                        ?? $status['result_url']
+                        ?? $status['image_url']
+                        ?? $status['edited_image_url']
+                        ?? null;
+                    if (!$editedImageUrl) {
+                        $editedImageUrl = $this->autoenhanceService->downloadEditedImage($job->autoenhance_image_id);
+                    }
+                    if ($editedImageUrl) {
+                        $stored = $this->persistEnhancedImageForJob($job, $editedImageUrl);
+                        $job->error_message = null;
+                        $job->markAsCompleted($stored ?: $editedImageUrl);
+                        return response()->json([
+                            'success' => true,
+                            'message' => 'Autoenhance result downloaded',
+                            'data' => $this->presentJob($job->refresh()->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])),
+                        ]);
+                    }
+                }
             }
 
             if ($job->shootFile) {

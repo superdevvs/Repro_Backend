@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class AiChatSession extends Model
 {
@@ -45,6 +46,14 @@ class AiChatSession extends Model
     public function messages(): HasMany
     {
         return $this->hasMany(AiMessage::class, 'chat_session_id')->orderBy('created_at', 'asc');
+    }
+
+    /**
+     * Get the most recent message for this session (used to render a chat preview/snippet).
+     */
+    public function latestMessage(): HasOne
+    {
+        return $this->hasOne(AiMessage::class, 'chat_session_id')->latestOfMany();
     }
 
     /**

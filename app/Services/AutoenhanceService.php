@@ -130,6 +130,108 @@ class AutoenhanceService
         }
     }
 
+    /**
+     * Submit an editing job using an already-loaded binary buffer instead of a remote URL.
+     *
+     * This is used for ad-hoc/quick uploads (e.g. images attached directly in chat) where the
+     * source image is local-only and not reachable by Autoenhance over the public internet.
+     *
+     * @param  string  $contents Raw binary contents of the image.
+     * @param  string  $imageName Filename (used for content type guess + provider naming).
+     * @param  string|null  $contentType Optional explicit MIME type.
+     * @param  string  $editingType Editing pipeline (enhance, sky_replace, etc).
+     * @param  array<string, mixed>  $params Extra provider parameters.
+     */
+    public function submitEditingJobFromBuffer(
+        string $contents,
+        string $imageName,
+        ?string $contentType,
+        string $editingType,
+        array $params = []
+    ): ?array {
+        try {
+            if (!$this->apiKey) {
+                Log::error('Autoenhance API key not configured');
+                return null;
+            }
+
+            $resolvedContentType = $contentType ?: $this->guessContentType($imageName);
+            $createPayload = $this->buildCreateImagePayload($imageName, $editingType, $params);
+
+            Log::info('Autoenhance: Creating image job (buffer)', [
+                'editing_type' => $editingType,
+                'image_name' => $imageName,
+                'bytes' => strlen($contents),
+            ]);
+
+            $createResponse = Http::timeout($this->timeout)
+                ->withHeaders($this->headers())
+                ->post($this->baseUrl . '/v3/images/', $createPayload);
+
+            if (!$createResponse->successful()) {
+                $failure = $this->failureFromResponse('create_image', $createResponse, [
+                    'editing_type' => $editingType,
+                    'request_payload' => $createPayload,
+                ]);
+                Log::error('Autoenhance: Image creation failed (buffer)', [
+                    'status' => $createResponse->status(),
+                    'body' => $createResponse->body(),
+                    'editing_type' => $editingType,
+                    'request_payload' => $createPayload,
+                    'error' => $failure['error'],
+                ]);
+                return $failure;
+            }
+
+            $data = $createResponse->json() ?? [];
+            $imageId = $data['image_id'] ?? $data['id'] ?? null;
+            $uploadUrl = $data['upload_url'] ?? $data['s3PutObjectUrl'] ?? null;
+            $usesLegacyUpload = !isset($data['upload_url']) && isset($data['s3PutObjectUrl']);
+
+            if ($uploadUrl) {
+                $uploadHeaders = ['Content-Type' => $usesLegacyUpload ? $resolvedContentType : 'application/octet-stream'];
+                if (!$usesLegacyUpload) {
+                    $uploadHeaders['x-api-key'] = $this->apiKey;
+                }
+
+                $uploadResponse = Http::timeout($this->timeout)
+                    ->withHeaders($uploadHeaders)
+                    ->withBody($contents, $uploadHeaders['Content-Type'])
+                    ->put($uploadUrl);
+
+                if (!$uploadResponse->successful()) {
+                    $failure = $this->failureFromResponse('upload_source_image', $uploadResponse);
+                    Log::error('Autoenhance: Buffer upload to signed URL failed', [
+                        'status' => $uploadResponse->status(),
+                        'body' => $uploadResponse->body(),
+                        'error' => $failure['error'],
+                    ]);
+                    return $failure;
+                }
+            }
+
+            Log::info('Autoenhance: Image job submitted (buffer)', [
+                'image_id' => $imageId,
+                'order_id' => $data['order_id'] ?? null,
+            ]);
+
+            return [
+                'job_id' => $imageId,
+                'image_id' => $imageId,
+                'order_id' => $data['order_id'] ?? null,
+                'status' => $data['status'] ?? 'processing',
+                'data' => $data,
+            ];
+        } catch (\Exception $e) {
+            Log::error('Autoenhance: Exception submitting buffer job', [
+                'error' => $e->getMessage(),
+                'editing_type' => $editingType,
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return null;
+        }
+    }
+
     public function getJobStatus(string $autoenhanceImageId): ?array
     {
         try {
@@ -176,8 +278,23 @@ class AutoenhanceService
                 return null;
             }
 
+            // The /enhanced endpoint returns the image binary (or a redirect to a
+            // signed S3 URL). We must NOT send Accept: application/json — that's
+            // the default in headers() and the API silently refuses to return the
+            // binary. Force Accept: */* so we get raw bytes.
+            $headers = [
+                'x-api-key' => $this->apiKey,
+                'Accept' => '*/*',
+            ];
+            if ($this->apiVersion) {
+                $headers['x-api-version'] = $this->apiVersion;
+            }
+            if ($this->devMode) {
+                $headers['x-dev-mode'] = 'true';
+            }
+
             $response = Http::timeout($this->timeout)
-                ->withHeaders($this->headers($this->devMode))
+                ->withHeaders($headers)
                 ->get($this->baseUrl . '/v3/images/' . $autoenhanceImageId . '/enhanced', [
                     'format' => 'jpeg',
                     'quality' => 90,
@@ -187,18 +304,34 @@ class AutoenhanceService
                 Log::warning('Autoenhance: Failed to download enhanced image', [
                     'image_id' => $autoenhanceImageId,
                     'status' => $response->status(),
-                    'body' => $response->body(),
+                    'body' => mb_substr((string) $response->body(), 0, 500),
                 ]);
                 return null;
             }
 
-            $contentType = $response->header('Content-Type', '');
+            $contentType = (string) $response->header('Content-Type', '');
+            $body = $response->body();
+
+            // JSON path — provider returned a URL pointing at the result.
             if (str_contains($contentType, 'application/json')) {
                 $data = $response->json() ?? [];
-                return $data['url'] ?? $data['download_url'] ?? $data['image_url'] ?? $data['enhanced_image_url'] ?? null;
+                return $data['url']
+                    ?? $data['download_url']
+                    ?? $data['image_url']
+                    ?? $data['enhanced_image_url']
+                    ?? null;
             }
 
-            return 'data:' . ($contentType ?: 'image/jpeg') . ';base64,' . base64_encode($response->body());
+            // Binary path — return as data URI (caller will persist it).
+            if ($body === '' || $body === null) {
+                Log::warning('Autoenhance: enhanced image binary was empty', [
+                    'image_id' => $autoenhanceImageId,
+                    'content_type' => $contentType,
+                ]);
+                return null;
+            }
+
+            return 'data:' . ($contentType ?: 'image/jpeg') . ';base64,' . base64_encode($body);
         } catch (\Exception $e) {
             Log::error('Autoenhance: Exception downloading enhanced image', [
                 'image_id' => $autoenhanceImageId,

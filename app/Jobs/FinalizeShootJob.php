@@ -6,10 +6,6 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
-use App\Services\MailService;
-use App\Services\BrightMlsService;
-use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -17,15 +13,35 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * Fast-path finalize.
+ *
+ * Turns the user-facing delivery transition into a single short DB
+ * transaction:
+ *   - Bulk-flip STAGE_COMPLETED -> STAGE_VERIFIED for the targeted files.
+ *   - Sync service-item rollups.
+ *   - Set shoot workflow_status to DELIVERED when the full order is covered.
+ *   - Write a single finalize_completed workflow log.
+ *
+ * All I/O-heavy / third-party work (Dropbox local cache, Bright MLS auto
+ * publish, ready email, automation event) is handed off to isolated,
+ * retryable jobs so finalize stays sub-second and never blocks on an
+ * unhealthy Dropbox/MLS/mail provider.
+ *
+ * Backwards-compatible with the previous workflow-log vocabulary:
+ * emits finalize_started / finalize_completed / finalize_failed and
+ * shoot_finalized_delivered activity entries.
+ */
 class FinalizeShootJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $tries = 2;
-    public $backoff = [30, 120];
-    public $timeout = 1200;
+    public int $tries = 2;
+    public array $backoff = [15, 60];
+    public int $timeout = 120;
 
     public function __construct(
         public int $shootId,
@@ -36,34 +52,130 @@ class FinalizeShootJob implements ShouldQueue
         $this->onQueue('default');
     }
 
-    public function handle(DropboxWorkflowService $dropboxService, AutomationService $automationService, MailService $mailService, BrightMlsService $brightMlsService, ShootActivityLogger $activityLogger): void
+    public function handle(ShootActivityLogger $activityLogger): void
     {
-        $lock = Cache::lock("shoot:finalize:{$this->shootId}", 300);
+        $lock = Cache::lock("shoot:finalize:{$this->shootId}", 120);
         if (!$lock->get()) {
-            Log::info('Finalize skipped because another job is already running', [
+            Log::info('Finalize skipped: another finalize is already running', [
                 'shoot_id' => $this->shootId,
-                'user_id' => $this->userId,
             ]);
             return;
         }
 
-        $processedFiles = 0;
-        $shoot = null;
-
         try {
-            $shoot = Shoot::with(['files'])->find($this->shootId);
-            if (!$shoot) {
-                Log::warning('Finalize job aborted: shoot not found', [
-                    'shoot_id' => $this->shootId,
-                    'user_id' => $this->userId,
-                ]);
-                return;
+            $result = $this->commit();
+            if (!$result) {
+                return; // commit() already wrote a failure log.
             }
 
-            $serviceItem = null;
+            $shoot = $result['shoot'];
+            $isFullOrderDelivery = $result['is_full_order_delivery'];
+            $processedFileIds = $result['processed_file_ids'];
+            $previousStatus = $result['previous_status'];
+
+            // ------ Side effects (async, non-blocking) ------
+            $this->dispatchLocalCacheJobs($processedFileIds);
+            $this->dispatchMlsPublish($isFullOrderDelivery);
+            $this->dispatchReadyEmail($isFullOrderDelivery);
+
+            // Activity log parity with the previous implementation.
+            try {
+                $actor = User::find($this->userId);
+                $activityLogger->log(
+                    $shoot,
+                    'shoot_finalized_delivered',
+                    [
+                        'finalized_by_role' => $actor?->role,
+                        'finalized_by_name' => $actor?->name,
+                        'processed_files' => count($processedFileIds),
+                        'total_files' => count($processedFileIds),
+                        'result_status' => $isFullOrderDelivery ? Shoot::STATUS_DELIVERED : 'partially_delivered',
+                        'final_status' => $this->finalStatus,
+                        'shoot_service_id' => $this->shootServiceId,
+                        'full_order_delivery' => $isFullOrderDelivery,
+                        'previous_status' => $previousStatus,
+                    ],
+                    $actor
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Failed to log finalize activity', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            $shoot->workflowLogs()->create([
+                'user_id' => $this->userId,
+                'action' => 'finalize_completed',
+                'details' => 'Finalize committed (fast path); side effects queued',
+                'metadata' => [
+                    'processed_files' => count($processedFileIds),
+                    'completed_at' => now()->toISOString(),
+                    'result_status' => $isFullOrderDelivery ? Shoot::STATUS_DELIVERED : 'partially_delivered',
+                    'final_status' => $this->finalStatus,
+                    'shoot_service_id' => $this->shootServiceId,
+                    'full_order_delivery' => $isFullOrderDelivery,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Finalize job failed (fast path)', [
+                'shoot_id' => $this->shootId,
+                'user_id' => $this->userId,
+                'error' => $e->getMessage(),
+            ]);
+
+            try {
+                $shoot = Shoot::query()->find($this->shootId);
+                $shoot?->workflowLogs()->create([
+                    'user_id' => $this->userId,
+                    'action' => 'finalize_failed',
+                    'details' => 'Finalize fast-path failed',
+                    'metadata' => [
+                        'final_status' => $this->finalStatus,
+                        'shoot_service_id' => $this->shootServiceId,
+                        'failed_at' => now()->toISOString(),
+                        'error' => $e->getMessage(),
+                    ],
+                ]);
+            } catch (\Throwable $logEx) {
+                Log::warning('Failed to persist finalize_failed log', [
+                    'shoot_id' => $this->shootId,
+                    'error' => $logEx->getMessage(),
+                ]);
+            }
+
+            throw $e;
+        } finally {
+            optional($lock)->release();
+        }
+    }
+
+    /**
+     * Single short DB transaction that performs the user-visible "finalize"
+     * step. Returns a context array on success, or null on a validated
+     * failure (e.g. no files, invalid status) after writing the appropriate
+     * finalize_failed workflow log.
+     *
+     * @return array{shoot: Shoot, is_full_order_delivery: bool, processed_file_ids: array<int,int>, previous_status: ?string}|null
+     */
+    protected function commit(): ?array
+    {
+        return DB::transaction(function () {
+            /** @var Shoot|null $shoot */
+            $shoot = Shoot::query()->whereKey($this->shootId)->lockForUpdate()->first();
+            if (!$shoot) {
+                Log::warning('Finalize aborted: shoot not found', [
+                    'shoot_id' => $this->shootId,
+                ]);
+                return null;
+            }
+
+            $previousStatus = $shoot->workflow_status;
+
+            // Resolve optional service-item scope.
             if ($this->shootServiceId) {
-                $serviceItem = $shoot->serviceItems()->whereKey($this->shootServiceId)->first();
-                if (!$serviceItem) {
+                $serviceExists = $shoot->serviceItems()->whereKey($this->shootServiceId)->exists();
+                if (!$serviceExists) {
                     $shoot->workflowLogs()->create([
                         'user_id' => $this->userId,
                         'action' => 'finalize_failed',
@@ -73,24 +185,29 @@ class FinalizeShootJob implements ShouldQueue
                             'failed_at' => now()->toISOString(),
                         ],
                     ]);
-                    return;
+                    return null;
                 }
             }
 
-            $completedFiles = $shoot->files()
-                ->where('workflow_stage', ShootFile::STAGE_COMPLETED)
-                ->when($this->shootServiceId, fn ($query) => $query->where('shoot_service_id', $this->shootServiceId))
-                ->get();
-            $rawFiles = $shoot->files()
+            // Fetch file IDs we will flip. Intentionally do NOT hydrate file
+            // contents (no N+1, no byte copy).
+            $fileQuery = ShootFile::query()
+                ->where('shoot_id', $shoot->id)
+                ->where('workflow_stage', ShootFile::STAGE_COMPLETED);
+            if ($this->shootServiceId) {
+                $fileQuery->where('shoot_service_id', $this->shootServiceId);
+            }
+            $completedIds = $fileQuery->pluck('id')->all();
+
+            $rawCount = ShootFile::query()
+                ->where('shoot_id', $shoot->id)
                 ->where('workflow_stage', ShootFile::STAGE_TODO)
-                ->when($this->shootServiceId, fn ($query) => $query->where('shoot_service_id', $this->shootServiceId))
-                ->get();
+                ->when($this->shootServiceId, fn ($q) => $q->where('shoot_service_id', $this->shootServiceId))
+                ->count();
+            $hasEditedWithoutRaw = !empty($completedIds) && $rawCount === 0;
 
-            $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
             $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
-            $isInAllowedStatus = in_array($shoot->workflow_status, $allowedStatuses, true);
-
-            if (!$isInAllowedStatus && !$hasEditedWithoutRaw) {
+            if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
                     'action' => 'finalize_failed',
@@ -101,10 +218,10 @@ class FinalizeShootJob implements ShouldQueue
                         'failed_at' => now()->toISOString(),
                     ],
                 ]);
-                return;
+                return null;
             }
 
-            if ($completedFiles->isEmpty()) {
+            if (empty($completedIds)) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
                     'action' => 'finalize_failed',
@@ -115,51 +232,46 @@ class FinalizeShootJob implements ShouldQueue
                         'failed_at' => now()->toISOString(),
                     ],
                 ]);
-                return;
+                return null;
             }
 
-            $totalFiles = $completedFiles->count();
             $shoot->workflowLogs()->create([
                 'user_id' => $this->userId,
                 'action' => 'finalize_started',
-                'details' => 'Finalize background processing started',
+                'details' => 'Finalize (fast path) started',
                 'metadata' => [
                     'started_at' => now()->toISOString(),
-                    'total_files' => $totalFiles,
+                    'total_files' => count($completedIds),
                     'final_status' => $this->finalStatus,
                     'shoot_service_id' => $this->shootServiceId,
                 ],
             ]);
 
-            foreach ($completedFiles as $file) {
-                $dropboxService->moveToFinal($file, $this->userId);
-                $processedFiles++;
+            // ---- The hot path: one UPDATE instead of N Http downloads + N saves.
+            ShootFile::query()
+                ->whereIn('id', $completedIds)
+                ->update([
+                    'workflow_stage' => ShootFile::STAGE_VERIFIED,
+                    'verified_at' => now(),
+                    'verified_by' => $this->userId,
+                ]);
 
-                if ($processedFiles % 5 === 0 || $processedFiles === $totalFiles) {
-                    $shoot->workflowLogs()->create([
-                        'user_id' => $this->userId,
-                        'action' => 'finalize_progress',
-                        'details' => "Finalize progress: {$processedFiles}/{$totalFiles} files processed",
-                        'metadata' => [
-                            'processed_files' => $processedFiles,
-                            'total_files' => $totalFiles,
-                            'updated_at' => now()->toISOString(),
-                        ],
-                    ]);
-                }
-            }
-
+            // ---- Service-item rollups.
             $isFullOrderDelivery = true;
-            if ($serviceItem) {
-                $serviceItem->forceFill([
-                    'workflow_status' => ShootService::WORKFLOW_DELIVERED,
-                    'delivery_status' => ShootService::DELIVERY_DELIVERED,
-                    'delivered_at' => now(),
-                    'ready_at' => $serviceItem->ready_at ?? now(),
-                ])->save();
+            if ($this->shootServiceId) {
+                $serviceItem = $shoot->serviceItems()->whereKey($this->shootServiceId)->first();
+                if ($serviceItem) {
+                    $serviceItem->forceFill([
+                        'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+                        'delivery_status' => ShootService::DELIVERY_DELIVERED,
+                        'delivered_at' => now(),
+                        'ready_at' => $serviceItem->ready_at ?? now(),
+                    ])->save();
+                }
 
                 $rollups = $shoot->fresh()->syncServiceItemRollups();
                 $isFullOrderDelivery = ($rollups['delivery_status'] ?? null) === 'delivered';
+                $shoot->refresh();
             } else {
                 $deliverableItems = $shoot->serviceItems()
                     ->where('is_deliverable', true)
@@ -178,151 +290,83 @@ class FinalizeShootJob implements ShouldQueue
                     }
 
                     $shoot->fresh()->syncServiceItemRollups();
+                    $shoot->refresh();
                 }
             }
 
             if ($isFullOrderDelivery) {
                 $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
             }
-            $actor = User::find($this->userId);
 
+            return [
+                'shoot' => $shoot,
+                'is_full_order_delivery' => $isFullOrderDelivery,
+                'processed_file_ids' => $completedIds,
+                'previous_status' => $previousStatus,
+            ];
+        });
+    }
+
+    /**
+     * Dispatch per-file best-effort local-cache jobs. These only do meaningful
+     * work for files that have a dropbox_path and no local copy; the job
+     * itself is idempotent.
+     */
+    protected function dispatchLocalCacheJobs(array $fileIds): void
+    {
+        if (empty($fileIds)) {
+            return;
+        }
+
+        $cacheableIds = ShootFile::query()
+            ->whereIn('id', $fileIds)
+            ->whereNotNull('dropbox_path')
+            ->where('dropbox_path', '!=', '')
+            ->pluck('id')
+            ->all();
+
+        foreach ($cacheableIds as $id) {
             try {
-                $activityLogger->log(
-                    $shoot,
-                    'shoot_finalized_delivered',
-                    [
-                        'finalized_by_role' => $actor?->role,
-                        'finalized_by_name' => $actor?->name,
-                        'processed_files' => $processedFiles,
-                        'total_files' => $totalFiles,
-                        'result_status' => Shoot::STATUS_DELIVERED,
-                        'final_status' => $this->finalStatus,
-                        'shoot_service_id' => $this->shootServiceId,
-                        'full_order_delivery' => $isFullOrderDelivery,
-                    ],
-                    $actor
-                );
-            } catch (\Exception $activityException) {
-                Log::warning('Failed to log finalize activity', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $activityException->getMessage(),
+                CacheShootFinalToLocalJob::dispatch((int) $id);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to dispatch CacheShootFinalToLocalJob', [
+                    'shoot_file_id' => $id,
+                    'error' => $e->getMessage(),
                 ]);
             }
+        }
+    }
 
-            // Send shoot ready email to client
-            $client = User::find($shoot->client_id);
-            $systemEmailAlreadySent = false;
-            if ($client && $serviceItem) {
-                try {
-                    $mailService->sendShootReadyEmail($client, $shoot, [$serviceItem->id], $isFullOrderDelivery);
-                    $systemEmailAlreadySent = $isFullOrderDelivery;
-                } catch (\Exception $mailEx) {
-                    Log::warning('Service item ready email failed (non-blocking)', [
-                        'shoot_id' => $shoot->id,
-                        'shoot_service_id' => $serviceItem->id,
-                        'error' => $mailEx->getMessage(),
-                    ]);
-                }
-            } elseif ($client && $isFullOrderDelivery) {
-                try {
-                    $mailService->sendShootReadyEmail($client, $shoot);
-                    $systemEmailAlreadySent = true;
-                } catch (\Exception $mailEx) {
-                    Log::warning('Shoot ready email failed (non-blocking)', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $mailEx->getMessage(),
-                    ]);
-                }
-            }
+    protected function dispatchMlsPublish(bool $isFullOrderDelivery): void
+    {
+        if (!$isFullOrderDelivery) {
+            return;
+        }
 
-            // Auto-publish to Bright MLS when finalized
-            if ($isFullOrderDelivery && $brightMlsService->isAutoPublishAvailable()) {
-                try {
-                    $mlsResult = $brightMlsService->autoPublishForShoot($shoot->fresh());
-                    if ($mlsResult && $mlsResult['success']) {
-                        try {
-                            $activityLogger->log(
-                                $shoot,
-                                'bright_mls_synced',
-                                [
-                                    'manifest_id' => $mlsResult['manifest_id'] ?? null,
-                                    'mls_id' => $mlsResult['mls_id'] ?? $shoot->mls_id,
-                                    'status' => $mlsResult['status'] ?? null,
-                                    'mode' => $mlsResult['mode'] ?? null,
-                                    'environment' => $mlsResult['environment'] ?? null,
-                                    'auto_publish' => true,
-                                ],
-                                $actor
-                            );
-                        } catch (\Exception $activityException) {
-                            Log::warning('Failed to log Bright MLS auto-publish activity', [
-                                'shoot_id' => $shoot->id,
-                                'error' => $activityException->getMessage(),
-                            ]);
-                        }
-
-                        Log::info('Bright MLS auto-published on finalize', [
-                            'shoot_id' => $shoot->id,
-                            'manifest_id' => $mlsResult['manifest_id'] ?? null,
-                        ]);
-                    }
-                } catch (\Exception $mlsEx) {
-                    Log::warning('Bright MLS auto-publish failed (non-blocking)', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $mlsEx->getMessage(),
-                    ]);
-                }
-            }
-
-            if ($isFullOrderDelivery) {
-                $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
-                $context = $automationService->buildShootContext($shoot);
-                if ($shoot->rep) {
-                    $context['rep'] = $shoot->rep;
-                }
-                $context['system_email_already_sent'] = $systemEmailAlreadySent;
-                $automationService->handleEvent('SHOOT_COMPLETED', $context);
-            }
-
-            $shoot->workflowLogs()->create([
-                'user_id' => $this->userId,
-                'action' => 'finalize_completed',
-                'details' => 'Finalize completed successfully',
-                'metadata' => [
-                    'processed_files' => $processedFiles,
-                    'total_files' => $totalFiles,
-                    'completed_at' => now()->toISOString(),
-                    'result_status' => $isFullOrderDelivery ? Shoot::STATUS_DELIVERED : 'partially_delivered',
-                    'final_status' => $this->finalStatus,
-                    'shoot_service_id' => $this->shootServiceId,
-                    'full_order_delivery' => $isFullOrderDelivery,
-                ],
-            ]);
+        try {
+            PublishShootToBrightMlsJob::dispatch($this->shootId, $this->userId);
         } catch (\Throwable $e) {
-            Log::error('Finalize job failed', [
+            Log::warning('Failed to dispatch PublishShootToBrightMlsJob', [
                 'shoot_id' => $this->shootId,
-                'user_id' => $this->userId,
-                'processed_files' => $processedFiles,
                 'error' => $e->getMessage(),
             ]);
+        }
+    }
 
-            if ($shoot) {
-                $shoot->workflowLogs()->create([
-                    'user_id' => $this->userId,
-                    'action' => 'finalize_failed',
-                    'details' => 'Finalize processing failed',
-                    'metadata' => [
-                        'processed_files' => $processedFiles,
-                        'final_status' => $this->finalStatus,
-                        'failed_at' => now()->toISOString(),
-                        'error' => $e->getMessage(),
-                    ],
-                ]);
-            }
-
-            throw $e;
-        } finally {
-            $lock->release();
+    protected function dispatchReadyEmail(bool $isFullOrderDelivery): void
+    {
+        try {
+            SendShootReadyEmailJob::dispatch(
+                $this->shootId,
+                $this->shootServiceId,
+                $isFullOrderDelivery,
+                $isFullOrderDelivery
+            );
+        } catch (\Throwable $e) {
+            Log::warning('Failed to dispatch SendShootReadyEmailJob', [
+                'shoot_id' => $this->shootId,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 }

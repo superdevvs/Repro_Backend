@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\DropboxFolder;
+use App\Models\OauthToken;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Services\Messaging\AutomationService;
@@ -552,7 +553,17 @@ class DropboxWorkflowService
     }
 
     /**
-     * Copy verified files to server storage (keep in Dropbox)
+     * Copy verified files to server storage (keep in Dropbox).
+     *
+     * Hardened behavior:
+     *  - Local-only files: prefer Storage::copy() (rename within disk — no PHP
+     *    memory copy). On any I/O / permission failure, log a warning, leave the
+     *    file path on its original `completed/...` location, and still mark the
+     *    file STAGE_VERIFIED so the read path keeps working.
+     *  - Dropbox-backed files: stream the download to disk via Http::sink so
+     *    large videos/raws don't blow up PHP memory.
+     *  - This method is now non-throwing for benign local-copy failures so a
+     *    single bad file or a permission glitch never blocks finalize.
      */
     public function moveToFinal(ShootFile $shootFile, $userId)
     {
@@ -560,73 +571,177 @@ class DropboxWorkflowService
 
         try {
             if (!empty($shootFile->dropbox_path)) {
-                // Download file from Dropbox and store on server (but keep in Dropbox)
                 $this->downloadAndStoreOnServer($shootFile, $shootFile->dropbox_path);
             } else {
-                // Local fallback: copy existing local file into final directory
-                $serverPath = "shoots/{$shoot->id}/final/{$shootFile->stored_filename}";
-                $currentPath = $shootFile->path; // e.g., shoots/{id}/completed/...
-                if (Storage::disk('public')->exists($currentPath)) {
-                    $contents = Storage::disk('public')->get($currentPath);
-                    Storage::disk('public')->put($serverPath, $contents);
-                    $shootFile->path = $serverPath;
-                } else {
-                    throw new \Exception('Source file missing in local storage');
-                }
+                $this->copyLocalCompletedToFinal($shootFile);
             }
-            
+
             // Update file record - keep dropbox_path but mark as verified
             $shootFile->workflow_stage = ShootFile::STAGE_VERIFIED;
             $shootFile->save();
 
-            Log::info("File copied to server storage (kept in Dropbox)", [
-                'shoot_id' => $shoot->id,
+            Log::info('File marked verified (final cache attempted)', [
+                'shoot_id' => $shoot?->id,
+                'shoot_file_id' => $shootFile->id,
                 'filename' => $shootFile->filename,
                 'dropbox_path' => $shootFile->dropbox_path,
-                'server_path' => $shootFile->path
+                'server_path' => $shootFile->path,
             ]);
 
             return true;
-        } catch (\Exception $e) {
-            Log::error("Exception copying file to server storage", ['error' => $e->getMessage()]);
-            throw $e;
+        } catch (\Throwable $e) {
+            // Last-resort fallback: even if Dropbox download or local copy failed,
+            // mark the file as verified so finalize can complete. The file remains
+            // accessible via its existing path / dropbox_path through the read
+            // services. Caller can re-cache later via CacheShootFinalToLocalJob.
+            Log::warning('moveToFinal degraded: marking verified without final cache', [
+                'shoot_id' => $shoot?->id,
+                'shoot_file_id' => $shootFile->id,
+                'filename' => $shootFile->filename,
+                'error' => $e->getMessage(),
+            ]);
+
+            try {
+                $shootFile->workflow_stage = ShootFile::STAGE_VERIFIED;
+                $shootFile->save();
+            } catch (\Throwable $persistEx) {
+                Log::error('Failed to persist STAGE_VERIFIED in moveToFinal fallback', [
+                    'shoot_file_id' => $shootFile->id,
+                    'error' => $persistEx->getMessage(),
+                ]);
+                throw $persistEx;
+            }
+
+            return false;
         }
     }
 
     /**
-     * Download file from Dropbox and store on server
+     * Best-effort local-disk copy of a completed file into the per-shoot
+     * `final/` directory. Does not throw on permission/mkdir failures — the
+     * read path can still serve the file from its original location.
+     */
+    protected function copyLocalCompletedToFinal(ShootFile $shootFile): void
+    {
+        $shoot = $shootFile->shoot;
+        if (!$shoot) {
+            return;
+        }
+
+        $currentPath = $shootFile->path;
+        if (!$currentPath) {
+            return;
+        }
+
+        $disk = Storage::disk('public');
+        if (!$disk->exists($currentPath)) {
+            // Source missing locally; nothing to copy. Read path will resolve
+            // via existing path / dropbox_path / preview pipelines.
+            Log::info('Skipping local-final copy: source missing on disk', [
+                'shoot_file_id' => $shootFile->id,
+                'path' => $currentPath,
+            ]);
+            return;
+        }
+
+        $serverPath = "shoots/{$shoot->id}/final/{$shootFile->stored_filename}";
+
+        // If already at final/, nothing to do.
+        if ($currentPath === $serverPath) {
+            return;
+        }
+
+        try {
+            // Storage::copy is implemented as a streamed copy in flysystem and
+            // auto-creates parent directories. Avoids reading whole file into
+            // PHP memory.
+            $disk->copy($currentPath, $serverPath);
+            $shootFile->path = $serverPath;
+        } catch (\Throwable $e) {
+            // Permission / disk / mkdir errors must NOT block finalize. Keep
+            // original path; the file still serves correctly from completed/.
+            Log::warning('Local final copy skipped due to I/O error', [
+                'shoot_id' => $shoot->id,
+                'shoot_file_id' => $shootFile->id,
+                'from' => $currentPath,
+                'to' => $serverPath,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Download file from Dropbox and store on server using a streamed sink
+     * (no whole-file PHP memory buffer). Honors Retry-After on 429 once.
      */
     protected function downloadAndStoreOnServer(ShootFile $shootFile, $dropboxPath)
     {
+        $apiArgs = json_encode(['path' => $dropboxPath]);
+        $serverPath = "shoots/{$shootFile->shoot_id}/final/{$shootFile->stored_filename}";
+
+        $tmp = tempnam(sys_get_temp_dir(), 'dbx-final-');
+        if ($tmp === false) {
+            throw new \Exception('Could not allocate temp file for Dropbox download');
+        }
+
+        $attempt = 0;
+        $maxAttempts = 2;
+
         try {
-            $apiArgs = json_encode(['path' => $dropboxPath]);
+            while (true) {
+                $attempt++;
+                $response = Http::withToken($this->getAccessToken())
+                    ->withOptions(array_merge($this->httpOptions, ['timeout' => 300, 'sink' => $tmp]))
+                    ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
+                    ->get($this->dropboxContentUrl . '/files/download');
 
-            $response = Http::withToken($this->getAccessToken())
-                ->withOptions($this->httpOptions)
-                ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                ->get($this->dropboxContentUrl . '/files/download');
+                if ($response->successful()) {
+                    break;
+                }
 
-            if ($response->successful()) {
-                $serverPath = "shoots/{$shootFile->shoot_id}/final/{$shootFile->stored_filename}";
-                
-                // Store file on server
-                \Storage::disk('public')->put($serverPath, $response->body());
-                
-                // Update file path to server location
-                $shootFile->path = $serverPath;
-                $shootFile->save();
+                $shouldRetry = $attempt < $maxAttempts && in_array($response->status(), [429, 500, 502, 503, 504], true);
+                if (!$shouldRetry) {
+                    $bodyPreview = is_file($tmp) ? @file_get_contents($tmp, false, null, 0, 500) : '';
+                    Log::error('Failed to download file from Dropbox', [
+                        'shoot_file_id' => $shootFile->id,
+                        'status' => $response->status(),
+                        'body_preview' => $bodyPreview,
+                    ]);
+                    throw new \Exception('Failed to download file from Dropbox (HTTP ' . $response->status() . ')');
+                }
 
-                Log::info("File downloaded and stored on server", [
-                    'dropbox_path' => $dropboxPath,
-                    'server_path' => $serverPath
-                ]);
-            } else {
-                Log::error("Failed to download file from Dropbox", $response->json() ?: []);
-                throw new \Exception('Failed to download file from Dropbox');
+                $retryAfter = (int) $response->header('Retry-After');
+                $sleepSeconds = $retryAfter > 0 ? min($retryAfter, 30) : (int) pow(2, $attempt);
+                sleep($sleepSeconds);
             }
-        } catch (\Exception $e) {
-            Log::error("Exception downloading file from Dropbox", ['error' => $e->getMessage()]);
-            throw $e;
+
+            // Move tmp file into the public disk (uses streaming under the hood
+            // and auto-creates the destination directory).
+            $stream = fopen($tmp, 'rb');
+            if ($stream === false) {
+                throw new \Exception('Failed to open downloaded temp file for streaming');
+            }
+            try {
+                Storage::disk('public')->put($serverPath, $stream);
+            } finally {
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+            }
+
+            $shootFile->path = $serverPath;
+            $shootFile->save();
+
+            Log::info('File downloaded and stored on server', [
+                'shoot_file_id' => $shootFile->id,
+                'dropbox_path' => $dropboxPath,
+                'server_path' => $serverPath,
+                'attempts' => $attempt,
+            ]);
+        } finally {
+            if (is_string($tmp) && is_file($tmp)) {
+                @unlink($tmp);
+            }
         }
     }
 
@@ -1436,11 +1551,29 @@ class DropboxWorkflowService
     }
 
     /**
-     * Check if Dropbox storage is enabled
+     * Check if Dropbox storage is enabled. A valid access token can come from
+     * env config OR the DB-backed OauthToken record (refresh-token flow).
      */
     public function isEnabled(): bool
     {
-        return config('services.dropbox.enabled', false) && !empty(config('services.dropbox.access_token'));
+        if (!config('services.dropbox.enabled', false)) {
+            return false;
+        }
+
+        if (!empty(config('services.dropbox.access_token'))) {
+            return true;
+        }
+
+        try {
+            $hasDbToken = OauthToken::query()
+                ->where('provider', 'dropbox')
+                ->whereNotNull('access_token')
+                ->where('access_token', '!=', '')
+                ->exists();
+            return $hasDbToken;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

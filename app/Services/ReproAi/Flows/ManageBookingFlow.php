@@ -256,19 +256,24 @@ class ManageBookingFlow implements FlowHandlerInterface
     }
 
     /**
-     * Show today's shoots awaiting delivery.
+     * Show past-due and today's shoots awaiting delivery.
+     *
+     * Mirrors the dashboard "admin-pending-delivery" insight: any shoot whose
+     * scheduled_date is on or before today and whose workflow_status is still
+     * scheduled / uploaded / editing (i.e. not yet ready or delivered).
      */
     protected function showPendingDeliveryShoots(AiChatSession $session, User $user): array
     {
         $today = now()->startOfDay();
 
         $query = $this->getShootsForUser($user)
-            ->whereDate('scheduled_date', $today)
+            ->whereDate('scheduled_date', '<=', $today)
             ->whereIn('workflow_status', [
                 Shoot::STATUS_SCHEDULED,
                 Shoot::STATUS_UPLOADED,
                 Shoot::STATUS_EDITING,
             ])
+            ->orderBy('scheduled_date')
             ->orderBy('time')
             ->limit(15);
 
@@ -277,7 +282,7 @@ class ManageBookingFlow implements FlowHandlerInterface
         if ($shoots->isEmpty()) {
             return [
                 'assistant_messages' => [[
-                    'content' => "✅ All today's shoots have been delivered or are on track!",
+                    'content' => "✅ No shoots are past due. Everything is on track for delivery!",
                     'metadata' => ['type' => 'pending_delivery', 'count' => 0],
                 ]],
                 'suggestions' => ['Show tomorrow\'s shoots', 'Check editing queue', 'View flagged shoots'],
@@ -303,11 +308,14 @@ class ManageBookingFlow implements FlowHandlerInterface
             return $items;
         })->all();
 
-        $content = "📦 **Today's Shoots Pending Delivery** ({$shoots->count()}):\n\n";
+        $content = "📦 **Shoots Pending Delivery** ({$shoots->count()}):\n\n";
         foreach ($shoots as $shoot) {
+            $date = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date)->format('M d, Y') : 'TBD';
             $time = $shoot->time ?? 'TBD';
+            $isPastDue = $shoot->scheduled_date && Carbon::parse($shoot->scheduled_date)->startOfDay()->lt($today);
+            $marker = $isPastDue ? '⚠️ Past due' : '🕐 Today';
             $content .= "• **#{$shoot->id}** - {$shoot->address}, {$shoot->city}\n";
-            $content .= "  🕐 {$time} | Status: {$shoot->workflow_status}\n\n";
+            $content .= "  {$marker} | 📅 {$date} {$time} | Status: {$shoot->workflow_status}\n\n";
         }
 
         return [

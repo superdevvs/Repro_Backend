@@ -7,6 +7,7 @@ use App\Models\AiMessage;
 use App\Services\ReproAi\Flows\BookShootFlow;
 use App\Services\ReproAi\Flows\ManageBookingFlow;
 use App\Services\ReproAi\Flows\AvailabilityFlow;
+use App\Services\ReproAi\Flows\EditPhotosFlow;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -16,6 +17,7 @@ class RuleBasedOrchestrator
         protected BookShootFlow $bookShootFlow,
         protected ManageBookingFlow $manageBookingFlow,
         protected AvailabilityFlow $availabilityFlow,
+        protected EditPhotosFlow $editPhotosFlow,
     ) {}
 
     /**
@@ -142,6 +144,9 @@ class RuleBasedOrchestrator
                     case 'availability':
                         $result = $this->availabilityFlow->handle($session, $message, $context);
                         break;
+                    case 'edit_photos':
+                        $result = $this->editPhotosFlow->handle($session, $message, $context);
+                        break;
                     default:
                         $fallbackUsed = true;
                         $handoffReason = 'intent_not_allowed';
@@ -248,6 +253,7 @@ class RuleBasedOrchestrator
             'book_shoot',
             'manage_booking',
             'availability',
+            'edit_photos',
         ];
     }
 
@@ -270,6 +276,7 @@ class RuleBasedOrchestrator
             'book_shoot' => 'book_shoot',
             'availability' => 'availability',
             'shoot_history', 'shoot_details' => 'manage_booking',
+            'ai_editing' => 'edit_photos',
             default => null,
         };
     }
@@ -390,7 +397,13 @@ class RuleBasedOrchestrator
             str_contains($m, 'availability') && !str_contains($m, 'update') => 'availability',
             str_contains($m, 'available') && str_contains($m, 'slot') => 'availability',
             str_contains($m, 'when') && str_contains($m, 'free') => 'availability',
-            
+
+            // AI editing
+            str_contains($m, 'edit') && (str_contains($m, 'photo') || str_contains($m, 'shoot') || str_contains($m, 'image')) => 'edit_photos',
+            str_contains($m, 'enhance') && (str_contains($m, 'photo') || str_contains($m, 'shoot') || str_contains($m, 'image')) => 'edit_photos',
+            str_contains($m, 'autoenhance') => 'edit_photos',
+            str_contains($m, 'retouch') => 'edit_photos',
+
             default => 'general',
         };
     }

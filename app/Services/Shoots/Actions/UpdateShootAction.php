@@ -152,6 +152,7 @@ class UpdateShootAction
             'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
             'skip_availability_check' => 'nullable|boolean',
             'is_private_listing' => 'nullable|boolean',
+            'is_listing_hidden' => 'nullable|boolean',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
             'ghost_user_ids' => 'nullable|array',
@@ -227,6 +228,7 @@ class UpdateShootAction
 
         $previousPrivateListing = (bool) ($shoot->is_private_listing ?? false);
         $previousFeaturedState = (bool) ($shoot->is_featured ?? false);
+        $previousListingHidden = (bool) ($shoot->is_listing_hidden ?? false);
         $originalStatus = $shoot->status;
         $originalWorkflow = $shoot->workflow_status;
         $originalScheduledAt = $shoot->scheduled_at?->toISOString();
@@ -250,6 +252,13 @@ class UpdateShootAction
                 $this->abortJson('Only delivered/completed shoots can be marked as Private Exclusive', 422);
             }
             $shoot->is_private_listing = (bool) $validated['is_private_listing'];
+        }
+
+        if (array_key_exists('is_listing_hidden', $validated)) {
+            if (!in_array($user->role, ['admin', 'superadmin'], true)) {
+                $this->abortJson('Only administrators can hide or unhide listings', 403);
+            }
+            $shoot->is_listing_hidden = (bool) $validated['is_listing_hidden'];
         }
 
         if (array_key_exists('status', $validated)) {
@@ -455,6 +464,22 @@ class UpdateShootAction
                         'user_id' => $user->id,
                         'user_name' => $user->name,
                         'by' => $user->name,
+                    ],
+                    $user
+                );
+            } catch (\Exception $e) {
+            }
+        }
+
+        if ($previousListingHidden !== (bool) ($shoot->is_listing_hidden ?? false)) {
+            try {
+                $this->activityLogger->log(
+                    $shoot,
+                    $shoot->is_listing_hidden ? 'listing_hidden' : 'listing_unhidden',
+                    [
+                        'is_listing_hidden' => (bool) $shoot->is_listing_hidden,
+                        'user_id' => $user->id,
+                        'user_name' => $user->name,
                     ],
                     $user
                 );
