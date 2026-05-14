@@ -406,14 +406,17 @@ class AuthController extends Controller
                 $metadata = json_decode($metadata, true) ?? [];
             }
 
+            $metadata['first_use_legal_agreement_required'] = false;
+
             if (empty($metadata['terms_accepted_at'])) {
                 $metadata['terms_accepted_at'] = now()->toISOString();
-                $user->metadata = $metadata;
-                $user->save();
 
                 $this->mailService->sendTermsAcceptedEmail($user);
                 $this->automationService->handleEvent('TERMS_ACCEPTED', $this->buildUserContext($user));
             }
+
+            $user->metadata = $metadata;
+            $user->save();
         }
 
         $reauthRequired = $emailChanged || $passwordChanged;

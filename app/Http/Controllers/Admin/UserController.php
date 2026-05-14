@@ -361,6 +361,15 @@ class UserController extends Controller
             ]);
         }
 
+        if (in_array($validated['role'] ?? null, ['client', 'photographer'], true)) {
+            $validated['metadata'] = array_merge($validated['metadata'] ?? [], array_filter([
+                'first_use_legal_agreement_required' => true,
+                'first_use_legal_agreement_source' => 'admin_account_created',
+                'first_use_legal_agreement_created_at' => now()->toISOString(),
+                'first_use_legal_agreement_created_by' => $admin->id,
+            ], fn ($value) => $value !== null));
+        }
+
         if (($validated['role'] ?? null) === 'client') {
             $validated['metadata'] = app(ClientDashboardOnboardingService::class)->applyEligibility(
                 $validated['metadata'] ?? [],

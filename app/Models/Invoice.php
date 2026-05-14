@@ -231,14 +231,20 @@ class Invoice extends Model
     }
 
     /**
-     * Check if invoice can be modified by photographer
+     * Check if invoice can be modified by photographer.
+     *
+     * Approval status is the source of truth for the photographer payout lifecycle:
+     * a pending or rejected weekly invoice may still be edited by the photographer
+     * even if the underlying record happens to be marked sent (e.g. legacy weekly
+     * invoices). We only block once the invoice has actually been paid out, or once
+     * accounts has approved/locked it via approval_status.
      */
     public function canBeModifiedByPhotographer(): bool
     {
         return in_array($this->approval_status, [
             self::APPROVAL_STATUS_PENDING,
             self::APPROVAL_STATUS_REJECTED,
-        ]) && $this->status === self::STATUS_DRAFT;
+        ]) && $this->status !== self::STATUS_PAID;
     }
 
     /**

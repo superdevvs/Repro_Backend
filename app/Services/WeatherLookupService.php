@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -11,9 +12,12 @@ class WeatherLookupService
     private const GEOCODE_API = 'https://maps.googleapis.com/maps/api/geocode/json';
     private const CURRENT_CONDITIONS_API = 'https://weather.googleapis.com/v1/currentConditions:lookup';
     private const HOURLY_FORECAST_API = 'https://weather.googleapis.com/v1/forecast/hours:lookup';
-    private const REQUEST_TIMEOUT_SECONDS = 8;
+    private const REQUEST_TIMEOUT_SECONDS = 3;
     private const DEFAULT_FORECAST_HOURS = 24;
     private const MAX_FORECAST_HOURS = 240;
+    private const RESULT_CACHE_TTL_SECONDS = 900; // 15 minutes
+    private const NEGATIVE_CACHE_TTL_SECONDS = 300; // 5 minutes
+    private const GEOCODE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
     private ?string $googleApiKey;
 
@@ -29,25 +33,66 @@ class WeatherLookupService
             throw new \RuntimeException('Google API key is not configured for weather lookups.');
         }
 
+        $cacheKey = $this->buildResultCacheKey($params);
+
+        $cached = Cache::get($cacheKey);
+        if ($cached !== null) {
+            // Negative cache sentinel
+            if ($cached === '__none__') {
+                return null;
+            }
+            return $cached;
+        }
+
         $target = $this->parseTargetDateTime($params['dateTime'] ?? null);
         $resolved = $this->resolveCoordinates($params);
 
         if (!$resolved) {
+            Cache::put($cacheKey, '__none__', self::NEGATIVE_CACHE_TTL_SECONDS);
             return null;
         }
 
         $weather = $this->resolveWeather($resolved['latitude'], $resolved['longitude'], $target);
 
         if (!$weather) {
+            Cache::put($cacheKey, '__none__', self::NEGATIVE_CACHE_TTL_SECONDS);
             return null;
         }
 
-        return array_merge($weather, [
+        $result = array_merge($weather, [
             'location' => $resolved['location'],
             'latitude' => $resolved['latitude'],
             'longitude' => $resolved['longitude'],
             'provider' => 'google_weather',
         ]);
+
+        Cache::put($cacheKey, $result, self::RESULT_CACHE_TTL_SECONDS);
+
+        return $result;
+    }
+
+    private function buildResultCacheKey(array $params): string
+    {
+        $lat = isset($params['latitude']) ? (float) $params['latitude'] : null;
+        $lon = isset($params['longitude']) ? (float) $params['longitude'] : null;
+        $location = isset($params['location']) ? strtolower(trim((string) $params['location'])) : '';
+        $dateTime = $params['dateTime'] ?? null;
+
+        // Round coordinates to ~100m precision so nearby requests share cache.
+        $latPart = $lat !== null ? number_format($lat, 3, '.', '') : '';
+        $lonPart = $lon !== null ? number_format($lon, 3, '.', '') : '';
+
+        // Bucket dateTime by hour to maximize cache hits.
+        $timeBucket = 'now';
+        if ($dateTime) {
+            try {
+                $timeBucket = CarbonImmutable::parse($dateTime)->utc()->format('Y-m-d-H');
+            } catch (\Throwable $e) {
+                $timeBucket = 'now';
+            }
+        }
+
+        return 'weather:lookup:' . md5(implode('|', [$latPart, $lonPart, $location, $timeBucket]));
     }
 
     private function parseTargetDateTime(?string $value): ?CarbonImmutable
@@ -91,68 +136,76 @@ class WeatherLookupService
 
     private function geocode(string $location): ?array
     {
-        $response = Http::acceptJson()
-            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-            ->get(self::GEOCODE_API, [
-                'address' => $location,
-                'key' => $this->googleApiKey,
-            ]);
+        $cacheKey = 'weather:geocode:fwd:' . md5(strtolower(trim($location)));
 
-        if (!$response->ok()) {
-            Log::warning('Google geocoding request failed', [
-                'location' => $location,
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
+        return Cache::remember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($location) {
+            $response = Http::acceptJson()
+                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                ->get(self::GEOCODE_API, [
+                    'address' => $location,
+                    'key' => $this->googleApiKey,
+                ]);
 
-            return null;
-        }
+            if (!$response->ok()) {
+                Log::warning('Google geocoding request failed', [
+                    'location' => $location,
+                    'status' => $response->status(),
+                    'body' => $response->body(),
+                ]);
 
-        $payload = $response->json();
-        $result = $payload['results'][0] ?? null;
-        $coords = $result['geometry']['location'] ?? null;
+                return null;
+            }
 
-        if (($payload['status'] ?? null) !== 'OK' || !$coords) {
-            Log::warning('Google geocoding returned no results', [
-                'location' => $location,
-                'status' => $payload['status'] ?? null,
-                'error_message' => $payload['error_message'] ?? null,
-            ]);
+            $payload = $response->json();
+            $result = $payload['results'][0] ?? null;
+            $coords = $result['geometry']['location'] ?? null;
 
-            return null;
-        }
+            if (($payload['status'] ?? null) !== 'OK' || !$coords) {
+                Log::warning('Google geocoding returned no results', [
+                    'location' => $location,
+                    'status' => $payload['status'] ?? null,
+                    'error_message' => $payload['error_message'] ?? null,
+                ]);
 
-        return [
-            'latitude' => (float) $coords['lat'],
-            'longitude' => (float) $coords['lng'],
-            'location' => $this->formatLocationLabel($result) ?: ($result['formatted_address'] ?? $location),
-        ];
+                return null;
+            }
+
+            return [
+                'latitude' => (float) $coords['lat'],
+                'longitude' => (float) $coords['lng'],
+                'location' => $this->formatLocationLabel($result) ?: ($result['formatted_address'] ?? $location),
+            ];
+        });
     }
 
     private function reverseGeocode(float $latitude, float $longitude): ?string
     {
-        $response = Http::acceptJson()
-            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-            ->get(self::GEOCODE_API, [
-                'latlng' => sprintf('%s,%s', $latitude, $longitude),
-                'key' => $this->googleApiKey,
-            ]);
+        $cacheKey = 'weather:geocode:rev:' . md5(number_format($latitude, 3, '.', '') . ',' . number_format($longitude, 3, '.', ''));
 
-        if (!$response->ok()) {
-            return null;
-        }
+        return Cache::remember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($latitude, $longitude) {
+            $response = Http::acceptJson()
+                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                ->get(self::GEOCODE_API, [
+                    'latlng' => sprintf('%s,%s', $latitude, $longitude),
+                    'key' => $this->googleApiKey,
+                ]);
 
-        $payload = $response->json();
-        $results = $payload['results'] ?? [];
-        $result = $results[0] ?? null;
+            if (!$response->ok()) {
+                return null;
+            }
 
-        if (($payload['status'] ?? null) !== 'OK' || !$result) {
-            return null;
-        }
+            $payload = $response->json();
+            $results = $payload['results'] ?? [];
+            $result = $results[0] ?? null;
 
-        return $this->formatCoordinateLocationLabel($results)
-            ?: $this->formatLocationLabel($result)
-            ?: ($result['formatted_address'] ?? null);
+            if (($payload['status'] ?? null) !== 'OK' || !$result) {
+                return null;
+            }
+
+            return $this->formatCoordinateLocationLabel($results)
+                ?: $this->formatLocationLabel($result)
+                ?: ($result['formatted_address'] ?? null);
+        });
     }
 
     private function formatLocationLabel(array $result): ?string

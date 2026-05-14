@@ -794,6 +794,9 @@ Route::middleware(['auth:sanctum', 'role:photographer'])->prefix('photographer/i
     Route::get('{invoice}', [App\Http\Controllers\PhotographerInvoiceController::class, 'show']);
     Route::post('{invoice}/expenses', [App\Http\Controllers\PhotographerInvoiceController::class, 'addExpense']);
     Route::delete('{invoice}/expenses/{item}', [App\Http\Controllers\PhotographerInvoiceController::class, 'removeExpense']);
+    Route::post('{invoice}/charges', [App\Http\Controllers\PhotographerInvoiceController::class, 'addCharge']);
+    Route::delete('{invoice}/charges/{item}', [App\Http\Controllers\PhotographerInvoiceController::class, 'removeCharge']);
+    Route::patch('{invoice}/items/{item}', [App\Http\Controllers\PhotographerInvoiceController::class, 'updateItem']);
     Route::post('{invoice}/reject', [App\Http\Controllers\PhotographerInvoiceController::class, 'reject']);
     Route::post('{invoice}/submit-for-approval', [App\Http\Controllers\PhotographerInvoiceController::class, 'submitForApproval']);
 });
