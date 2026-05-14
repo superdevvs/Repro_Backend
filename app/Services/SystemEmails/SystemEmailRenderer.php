@@ -142,6 +142,26 @@ class SystemEmailRenderer
                 'client' => $recipient,
                 'address' => $meta->address ?? null,
             ],
+            'OFFLINE_PAYMENT_INTENT_SUBMITTED' => $shared + [
+                'amount' => $meta->amount ?? null,
+                'paymentMethodLabel' => $meta->payment_method_label ?? 'Cash',
+                'checkNumber' => $meta->check_number ?? null,
+                'paymentDate' => $meta->payment_date ?? null,
+                'notes' => $meta->notes ?? null,
+                'submittedByName' => $meta->submitted_by_name ?? null,
+                'submittedByRole' => $meta->submitted_by_role ?? null,
+                'shootAddress' => $meta->shoot_address ?? null,
+                'reviewUrl' => $links['shoot'] ?? $links['dashboard'] ?? null,
+                'dashboardUrl' => $links['dashboard'] ?? null,
+            ],
+            'OFFLINE_PAYMENT_INTENT_DECLINED' => $shared + [
+                'amount' => $meta->amount ?? null,
+                'paymentMethodLabel' => $meta->payment_method_label ?? 'Cash',
+                'declineReason' => $meta->decline_reason ?? null,
+                'shootAddress' => $meta->shoot_address ?? null,
+                'reviewUrl' => $links['shoot'] ?? $links['dashboard'] ?? null,
+                'dashboardUrl' => $links['dashboard'] ?? null,
+            ],
             default => $shared,
         };
     }

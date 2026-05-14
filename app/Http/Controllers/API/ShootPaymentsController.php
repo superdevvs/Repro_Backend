@@ -13,22 +13,27 @@ use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootPaymentStatusSupport;
 use App\Services\Shoots\ShootServiceItemSupport;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class ShootPaymentsController extends Controller
 {
+    private const INTENT_METHODS = ['cash', 'check'];
+
     public function __construct(
         protected InvoiceService $invoiceService,
         protected MailService $mailService,
         protected ShootActivityLogger $activityLogger,
         protected ShootPaymentStatusSupport $shootPaymentStatusSupport,
         protected StripePaymentMetadataService $stripePaymentMetadataService,
-        protected ShootServiceItemSupport $serviceItemSupport
+        protected ShootServiceItemSupport $serviceItemSupport,
+        protected ShootAuthorizationSupport $authorizationSupport
     ) {
     }
 
@@ -268,68 +273,24 @@ class ShootPaymentsController extends Controller
                 'status' => Payment::STATUS_COMPLETED,
                 'processed_at' => $processedAt,
             ]);
-            $this->serviceItemSupport->allocatePayment($payment, $shoot->fresh(), $validated);
 
-            $oldPaymentStatus = $shoot->payment_status;
-            $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
-                ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
-            $totalPaid = $paymentSummary['total_paid'];
-            $newPaymentStatus = $paymentSummary['payment_status'];
-            $this->syncClientInvoiceFromShootPayment(
-                $invoice,
+            $finalized = $this->finalizeCompletedPayment(
                 $shoot,
+                $invoice,
                 $payment,
-                $totalPaid,
                 $paymentMethod,
                 $paymentDetails,
-                $processedAt
+                $processedAt,
+                $validated,
+                'payment_marked_paid'
             );
-
-            try {
-                $this->activityLogger->log(
-                    $shoot,
-                    'payment_marked_paid',
-                    [
-                        'payment_id' => $payment->id,
-                        'amount' => $amount,
-                        'payment_method' => $paymentMethod,
-                        'total_paid' => $totalPaid,
-                        'total_quote' => $shoot->total_quote,
-                        'old_status' => $oldPaymentStatus,
-                        'new_status' => $newPaymentStatus,
-                        'marked_by' => auth()->user()->name ?? 'Unknown',
-                    ],
-                    auth()->user()
-                );
-            } catch (\Exception $logError) {
-                Log::warning('Failed to log activity for payment', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $logError->getMessage(),
-                ]);
-            }
-
-            $this->shootPaymentStatusSupport->clearShootCachesAfterPayment($shoot);
-            if ($newPaymentStatus === 'paid') {
-                app(PublicPaymentAccessTokenService::class)->revokeTokensForShoot($shoot);
-            }
-
-            try {
-                if ($shoot->client) {
-                    $this->mailService->sendShootPaidEmail($shoot->client, $shoot, $amount);
-                }
-            } catch (\Throwable $emailError) {
-                Log::warning('Failed to send shoot paid email', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $emailError->getMessage(),
-                ]);
-            }
 
             return response()->json([
                 'message' => 'Shoot marked as paid successfully',
                 'data' => [
                     'payment_id' => $payment->id,
-                    'total_paid' => $totalPaid,
-                    'payment_status' => $newPaymentStatus,
+                    'total_paid' => $finalized['total_paid'],
+                    'payment_status' => $finalized['payment_status'],
                     'service_items' => $this->serviceItemSupport->summaries($shoot->fresh()),
                 ],
             ]);
@@ -347,6 +308,435 @@ class ShootPaymentsController extends Controller
                 'message' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Apply post-create side effects for a completed Payment row: allocate to
+     * service items, recompute totals, sync invoice, log activity, clear caches,
+     * and send the shoot-paid email. Used by markAsPaid AND confirmIntent.
+     *
+     * @return array{total_paid: float, payment_status: string}
+     */
+    private function finalizeCompletedPayment(
+        Shoot $shoot,
+        ?Invoice $invoice,
+        Payment $payment,
+        string $paymentMethod,
+        mixed $paymentDetails,
+        Carbon $processedAt,
+        array $allocationContext,
+        string $activityAction
+    ): array {
+        $this->serviceItemSupport->allocatePayment($payment, $shoot->fresh(), $allocationContext);
+
+        $oldPaymentStatus = $shoot->payment_status;
+        $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
+            ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
+        $totalPaid = $paymentSummary['total_paid'];
+        $newPaymentStatus = $paymentSummary['payment_status'];
+
+        $this->syncClientInvoiceFromShootPayment(
+            $invoice,
+            $shoot,
+            $payment,
+            $totalPaid,
+            $paymentMethod,
+            $paymentDetails,
+            $processedAt
+        );
+
+        try {
+            $this->activityLogger->log(
+                $shoot,
+                $activityAction,
+                [
+                    'payment_id' => $payment->id,
+                    'amount' => (float) $payment->amount,
+                    'payment_method' => $paymentMethod,
+                    'total_paid' => $totalPaid,
+                    'total_quote' => $shoot->total_quote,
+                    'old_status' => $oldPaymentStatus,
+                    'new_status' => $newPaymentStatus,
+                    'marked_by' => auth()->user()->name ?? 'Unknown',
+                ],
+                auth()->user()
+            );
+        } catch (\Exception $logError) {
+            Log::warning('Failed to log activity for payment', [
+                'shoot_id' => $shoot->id,
+                'error' => $logError->getMessage(),
+            ]);
+        }
+
+        $this->shootPaymentStatusSupport->clearShootCachesAfterPayment($shoot);
+        if ($newPaymentStatus === 'paid') {
+            app(PublicPaymentAccessTokenService::class)->revokeTokensForShoot($shoot);
+        }
+
+        try {
+            if ($shoot->client) {
+                $this->mailService->sendShootPaidEmail($shoot->client, $shoot, (float) $payment->amount);
+            }
+        } catch (\Throwable $emailError) {
+            Log::warning('Failed to send shoot paid email', [
+                'shoot_id' => $shoot->id,
+                'error' => $emailError->getMessage(),
+            ]);
+        }
+
+        return [
+            'total_paid' => (float) $totalPaid,
+            'payment_status' => (string) $newPaymentStatus,
+        ];
+    }
+
+    /**
+     * Client / admin / rep submits an offline payment intent (cash or cheque).
+     * The shoot is NOT marked paid; admin must later confirm or decline it.
+     */
+    public function createIntent(Request $request, Shoot $shoot)
+    {
+        $user = auth()->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        if ($this->authorizationSupport->isClientUser($user)) {
+            if (!$this->authorizationSupport->canClientAccessShoot($shoot, $user)) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+        } elseif (!$this->authorizationSupport->hasRole($user, [
+            'admin', 'superadmin', 'salesRep', 'rep', 'representative', 'editing_manager',
+        ])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'payment_method' => 'required|string|in:cash,check',
+            'amount' => 'required|numeric|min:0.01',
+            'payment_date' => 'nullable|date',
+            'payment_details' => 'nullable|array',
+            'payment_details.check_number' => 'nullable|string|max:64',
+            'payment_details.notes' => 'nullable|string|max:2000',
+        ]);
+
+        $paymentMethod = $validated['payment_method'];
+        $amount = round((float) $validated['amount'], 2);
+        $paymentDetails = is_array($validated['payment_details'] ?? null) ? $validated['payment_details'] : [];
+        $checkNumber = trim((string) ($paymentDetails['check_number'] ?? ''));
+        $notes = isset($paymentDetails['notes']) ? trim((string) $paymentDetails['notes']) : null;
+
+        if ($paymentMethod === 'check' && $checkNumber === '') {
+            return response()->json(['message' => 'Cheque number is required for cheque payments.'], 422);
+        }
+
+        $paymentDate = $validated['payment_date'] ?? null;
+        if ($paymentMethod === 'check' && !$paymentDate) {
+            return response()->json(['message' => 'Cheque date is required for cheque payments.'], 422);
+        }
+
+        $shoot = $shoot->fresh(['payments']);
+        $totalQuote = (float) ($shoot->total_quote ?? 0);
+        $totalPaid = $shoot->calculateCanonicalTotalPaid();
+        $pendingTotal = $this->pendingIntentTotal($shoot);
+        $maxAllowed = max($totalQuote - $totalPaid - $pendingTotal, 0);
+
+        if ($maxAllowed <= 0.01) {
+            return response()->json([
+                'message' => 'No outstanding balance available. Existing pending intents already cover the remaining amount.',
+            ], 422);
+        }
+
+        if ($amount > ($maxAllowed + 0.01)) {
+            return response()->json([
+                'message' => 'Amount exceeds the available balance after pending intents.',
+                'data' => [
+                    'available_balance' => round($maxAllowed, 2),
+                    'pending_total' => round($pendingTotal, 2),
+                ],
+            ], 422);
+        }
+
+        $detailsToStore = [];
+        if ($checkNumber !== '') {
+            $detailsToStore['check_number'] = $checkNumber;
+        }
+        if ($paymentDate) {
+            $detailsToStore['payment_date'] = (string) $paymentDate;
+        }
+        if ($notes) {
+            $detailsToStore['notes'] = $notes;
+        }
+        $detailsToStore['submitted_by_user_id'] = (int) $user->id;
+        $detailsToStore['submitted_by_role'] = (string) ($user->role ?? '');
+        $detailsToStore['submitted_by_name'] = (string) ($user->name ?? '');
+        $detailsToStore['submitted_at'] = now()->toIso8601String();
+
+        $invoice = $this->findClientInvoiceForShoot($shoot);
+        if (!$invoice) {
+            try {
+                $invoice = $this->invoiceService->generateForShoot($shoot);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to ensure invoice during payment intent creation', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+                $invoice = null;
+            }
+        }
+
+        $payment = Payment::create([
+            'shoot_id' => $shoot->id,
+            'invoice_id' => $invoice?->id,
+            'amount' => $amount,
+            'currency' => 'USD',
+            'payment_method' => $paymentMethod,
+            'payment_details' => $detailsToStore,
+            'status' => Payment::STATUS_PENDING,
+            'processed_at' => null,
+        ]);
+
+        try {
+            $this->activityLogger->log(
+                $shoot,
+                'payment_intent_submitted',
+                [
+                    'payment_id' => $payment->id,
+                    'amount' => $amount,
+                    'payment_method' => $paymentMethod,
+                    'submitted_by' => $user->name ?? '',
+                    'submitted_by_role' => $user->role ?? '',
+                ],
+                $user
+            );
+        } catch (\Throwable $logError) {
+            Log::warning('Failed to log payment intent submission', [
+                'shoot_id' => $shoot->id,
+                'error' => $logError->getMessage(),
+            ]);
+        }
+
+        try {
+            $this->mailService->sendOfflinePaymentIntentSubmittedEmail($shoot, $payment, $user);
+        } catch (\Throwable $emailError) {
+            Log::warning('Failed to send offline payment intent submitted email', [
+                'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
+                'error' => $emailError->getMessage(),
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Payment submitted. Awaiting admin confirmation.',
+            'data' => $this->stripePaymentMetadataService->serializePayment($payment),
+        ], 201);
+    }
+
+    /**
+     * Admin/rep confirms a previously submitted offline payment intent,
+     * promoting it to a completed payment with full side effects.
+     */
+    public function confirmIntent(Request $request, Shoot $shoot, Payment $payment)
+    {
+        $user = auth()->user();
+        if (!$this->authorizationSupport->hasRole($user, [
+            'admin', 'superadmin', 'salesRep', 'rep', 'representative',
+        ])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ((int) $payment->shoot_id !== (int) $shoot->id) {
+            return response()->json(['message' => 'Payment does not belong to this shoot.'], 404);
+        }
+
+        $validated = $request->validate([
+            'payment_date' => 'nullable|date',
+        ]);
+
+        try {
+            return DB::transaction(function () use ($shoot, $payment, $validated) {
+                $locked = Payment::whereKey($payment->id)->lockForUpdate()->first();
+                if (!$locked) {
+                    return response()->json(['message' => 'Payment not found.'], 404);
+                }
+
+                if ($locked->status !== Payment::STATUS_PENDING) {
+                    return response()->json([
+                        'message' => 'Only pending payment intents can be confirmed.',
+                        'data' => $this->stripePaymentMetadataService->serializePayment($locked),
+                    ], 409);
+                }
+
+                if (!in_array((string) $locked->payment_method, self::INTENT_METHODS, true)) {
+                    return response()->json(['message' => 'Unsupported intent payment method.'], 422);
+                }
+
+                $totalQuote = (float) ($shoot->total_quote ?? 0);
+                $currentPaid = $shoot->fresh(['payments'])?->calculateCanonicalTotalPaid() ?? 0;
+                $remainingBalance = max($totalQuote - $currentPaid, 0);
+                $amount = round((float) $locked->amount, 2);
+                if ($remainingBalance > 0 && $amount > ($remainingBalance + 0.01)) {
+                    return response()->json([
+                        'message' => 'Pending payment exceeds remaining balance. Decline and re-record a smaller amount.',
+                        'data' => [
+                            'remaining_balance' => round($remainingBalance, 2),
+                        ],
+                    ], 422);
+                }
+
+                $details = is_array($locked->payment_details) ? $locked->payment_details : [];
+                $details['confirmed_by_user_id'] = (int) auth()->id();
+                $details['confirmed_by_name'] = (string) (auth()->user()?->name ?? '');
+                $details['confirmed_at'] = now()->toIso8601String();
+
+                $processedAt = !empty($validated['payment_date'])
+                    ? Carbon::parse($validated['payment_date'])
+                    : (isset($details['payment_date']) ? Carbon::parse($details['payment_date']) : now());
+
+                $locked->status = Payment::STATUS_COMPLETED;
+                $locked->payment_details = $details;
+                $locked->processed_at = $processedAt;
+                $locked->save();
+
+                $invoice = $this->findClientInvoiceForShoot($shoot);
+                if (!$invoice) {
+                    $invoice = $this->invoiceService->generateForShoot($shoot);
+                }
+
+                $finalized = $this->finalizeCompletedPayment(
+                    $shoot,
+                    $invoice,
+                    $locked,
+                    (string) $locked->payment_method,
+                    $locked->payment_details,
+                    $processedAt,
+                    [],
+                    'payment_intent_confirmed'
+                );
+
+                return response()->json([
+                    'message' => 'Payment confirmed.',
+                    'data' => [
+                        'payment' => $this->stripePaymentMetadataService->serializePayment($locked->fresh()),
+                        'total_paid' => $finalized['total_paid'],
+                        'payment_status' => $finalized['payment_status'],
+                    ],
+                ]);
+            });
+        } catch (ValidationException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            Log::error('Failed to confirm payment intent', [
+                'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to confirm payment intent.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Admin/rep declines a pending intent, marks it failed, and notifies client.
+     */
+    public function declineIntent(Request $request, Shoot $shoot, Payment $payment)
+    {
+        $user = auth()->user();
+        if (!$this->authorizationSupport->hasRole($user, [
+            'admin', 'superadmin', 'salesRep', 'rep', 'representative',
+        ])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if ((int) $payment->shoot_id !== (int) $shoot->id) {
+            return response()->json(['message' => 'Payment does not belong to this shoot.'], 404);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:2000',
+        ]);
+
+        if ($payment->status !== Payment::STATUS_PENDING) {
+            return response()->json([
+                'message' => 'Only pending payment intents can be declined.',
+            ], 409);
+        }
+
+        $details = is_array($payment->payment_details) ? $payment->payment_details : [];
+        $details['decline_reason'] = $validated['reason'] ?? null;
+        $details['declined_by_user_id'] = (int) auth()->id();
+        $details['declined_by_name'] = (string) (auth()->user()?->name ?? '');
+        $details['declined_at'] = now()->toIso8601String();
+
+        $payment->status = Payment::STATUS_FAILED;
+        $payment->payment_details = $details;
+        $payment->save();
+
+        try {
+            $this->activityLogger->log(
+                $shoot,
+                'payment_intent_declined',
+                [
+                    'payment_id' => $payment->id,
+                    'amount' => (float) $payment->amount,
+                    'payment_method' => (string) $payment->payment_method,
+                    'reason' => $details['decline_reason'],
+                    'declined_by' => $details['declined_by_name'],
+                ],
+                $user
+            );
+        } catch (\Throwable $logError) {
+            Log::warning('Failed to log payment intent decline', [
+                'shoot_id' => $shoot->id,
+                'error' => $logError->getMessage(),
+            ]);
+        }
+
+        try {
+            if ($shoot->client) {
+                $this->mailService->sendOfflinePaymentIntentDeclinedEmail($shoot, $payment, $details['decline_reason'] ?? null);
+            }
+        } catch (\Throwable $emailError) {
+            Log::warning('Failed to send offline payment intent declined email', [
+                'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
+                'error' => $emailError->getMessage(),
+            ]);
+        }
+
+        return response()->json([
+            'message' => 'Payment intent declined.',
+            'data' => $this->stripePaymentMetadataService->serializePayment($payment->fresh()),
+        ]);
+    }
+
+    private function pendingIntentTotal(Shoot $shoot): float
+    {
+        $payments = $shoot->relationLoaded('payments')
+            ? $shoot->payments
+            : $shoot->payments()->get();
+
+        return (float) $payments
+            ->filter(fn (Payment $payment) => $payment->status === Payment::STATUS_PENDING
+                && in_array((string) $payment->payment_method, self::INTENT_METHODS, true))
+            ->sum(fn (Payment $payment) => (float) $payment->amount);
+    }
+
+    private function serializePendingIntents(Shoot $shoot): array
+    {
+        $payments = $shoot->relationLoaded('payments')
+            ? $shoot->payments
+            : $shoot->payments()->get();
+
+        return $payments
+            ->filter(fn (Payment $payment) => $payment->status === Payment::STATUS_PENDING
+                && in_array((string) $payment->payment_method, self::INTENT_METHODS, true))
+            ->map(fn (Payment $payment) => $this->stripePaymentMetadataService->serializePayment($payment))
+            ->values()
+            ->all();
     }
 
     private function findClientInvoiceForShoot(Shoot $shoot): ?Invoice
@@ -482,6 +872,8 @@ class ShootPaymentsController extends Controller
                 ->map(fn (Payment $payment) => $this->stripePaymentMetadataService->serializePayment($payment))
                 ->values()
                 ->all(),
+            'pending_payments' => $this->serializePendingIntents($shoot),
+            'pending_total' => round($this->pendingIntentTotal($shoot), 2),
             'payment_status' => $shoot->payment_status,
             'amount_due' => max((float) ($shoot->total_quote ?? 0) - $shoot->calculateCanonicalTotalPaid(), 0),
             'receipt' => $this->stripePaymentMetadataService->buildReceiptPayload($latestReceiptPayment),

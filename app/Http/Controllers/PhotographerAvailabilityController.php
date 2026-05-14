@@ -623,24 +623,27 @@ class PhotographerAvailabilityController extends Controller
         ]);
 
         // Create cache key from request parameters
-        $cacheKey = 'available_photographers_' . md5(json_encode($validated));
+        $cacheKey = 'available_photographers_v2_' . md5(json_encode($validated));
         
         $merged = \Illuminate\Support\Facades\Cache::remember($cacheKey, now()->addSeconds(30), function () use ($validated) {
             $dayOfWeek = strtolower(date('l', strtotime($validated['date'])));
             // Prefer specific overrides for that date; otherwise use recurring
-            $specific = PhotographerAvailability::whereDate('date', $validated['date'])
-                ->where('start_time', '<=', $validated['start_time'])
-                ->where('end_time', '>=', $validated['end_time'])
-                ->where('status', '!=', 'unavailable')
-                ->get();
+            $specificOverrides = PhotographerAvailability::whereDate('date', $validated['date'])->get();
+            $specificPhotographerIds = $specificOverrides->pluck('photographer_id')->unique();
 
-            $specificPhotographerIds = $specific->pluck('photographer_id')->unique();
+            $specific = $specificOverrides
+                ->filter(fn ($slot) => $slot->start_time < $validated['end_time']
+                    && $slot->end_time > $validated['start_time']
+                    && $slot->status !== 'unavailable'
+                    && $slot->status !== 'booked')
+                ->values();
 
-            // Recurring for others who don't have specific overrides
             $recurring = PhotographerAvailability::whereNull('date')
                 ->where('day_of_week', $dayOfWeek)
-                ->where('start_time', '<=', $validated['start_time'])
-                ->where('end_time', '>=', $validated['end_time'])
+                ->where('start_time', '<', $validated['end_time'])
+                ->where('end_time', '>', $validated['start_time'])
+                ->where('status', '!=', 'unavailable')
+                ->where('status', '!=', 'booked')
                 ->whereNotIn('photographer_id', $specificPhotographerIds)
                 ->get();
 

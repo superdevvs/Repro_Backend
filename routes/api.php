@@ -283,6 +283,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('shoots/{shoot}/payment-details', [ShootPaymentsController::class, 'getPaymentDetails'])
         ->name('api.shoots.payment-details');
 
+    // Offline (cash/cheque) payment intents: clients/admins/reps create; admins/reps confirm or decline
+    Route::post('shoots/{shoot}/payment-intents', [ShootPaymentsController::class, 'createIntent'])
+        ->name('api.shoots.payment-intents.create');
+    Route::post('shoots/{shoot}/payment-intents/{payment}/confirm', [ShootPaymentsController::class, 'confirmIntent'])
+        ->name('api.shoots.payment-intents.confirm');
+    Route::post('shoots/{shoot}/payment-intents/{payment}/decline', [ShootPaymentsController::class, 'declineIntent'])
+        ->name('api.shoots.payment-intents.decline');
+
     // Legacy compatibility route for older multi-pay callers.
     Route::post('payments/multiple-shoots', [StripePaymentController::class, 'payMultipleShoots'])
         ->name('api.payments.multiple-shoots');
@@ -569,6 +577,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
     Route::post('/shoots/{shoot}/upload/finalize-raw', [ShootMediaController::class, 'finalizeRawUpload']);
     Route::post('/shoots/{shoot}/upload/finalize-edited', [ShootMediaController::class, 'finalizeEditedUpload']);
+    Route::post('/shoots/{shoot}/approve-editing-review', [ShootMediaController::class, 'approveEditingReview']);
     Route::post('/shoots/{shoot}/upload-extra', [ShootMediaController::class, 'uploadExtra']);
     Route::get('/shoots/{shoot}/files', [ShootMediaController::class, 'getFiles']);
     Route::post('/shoots/{shoot}/files/download', [ShootMediaController::class, 'downloadSelectedFiles']);

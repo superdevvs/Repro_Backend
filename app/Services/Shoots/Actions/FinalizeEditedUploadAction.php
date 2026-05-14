@@ -15,13 +15,27 @@ use Illuminate\Support\Facades\Log;
 class FinalizeEditedUploadAction
 {
     /**
-     * Statuses from which an edited-submit is valid (moves shoot to READY).
+     * Statuses from which an edited-submit is valid.
+     * Editors move shoot to REVIEW, admin/editing_manager/superadmin move shoot to READY.
      */
     private const ALLOWED_FROM_STATUSES = [
         Shoot::STATUS_UPLOADED,
         'uploaded',
         Shoot::STATUS_EDITING,
         'editing',
+    ];
+
+    /**
+     * Statuses from which an editing-manager-style "go-to-ready" submit is also valid
+     * (e.g. resubmitting edits while a shoot is already in review).
+     */
+    private const READY_ALLOWED_FROM_STATUSES = [
+        Shoot::STATUS_UPLOADED,
+        'uploaded',
+        Shoot::STATUS_EDITING,
+        'editing',
+        Shoot::STATUS_REVIEW,
+        'review',
     ];
 
     /**
@@ -36,6 +50,16 @@ class FinalizeEditedUploadAction
         'admin_verified',
         'client_delivered',
         'workflow_completed',
+    ];
+
+    /**
+     * Roles that can immediately mark edits as ready, skipping the editing-manager review step.
+     */
+    private const READY_SUBMIT_ROLES = [
+        'admin',
+        'superadmin',
+        'super_admin',
+        'editing_manager',
     ];
 
     public function __construct(
@@ -88,13 +112,18 @@ class FinalizeEditedUploadAction
                 $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
                 $previousStatus = $currentStatus;
 
-                $allowed = array_map('strtolower', self::ALLOWED_FROM_STATUSES);
+                $userRole = strtolower((string) ($user->role ?? ''));
+                $canSkipReview = in_array($userRole, self::READY_SUBMIT_ROLES, true);
+
+                $allowedFromStatuses = $canSkipReview
+                    ? array_map('strtolower', self::READY_ALLOWED_FROM_STATUSES)
+                    : array_map('strtolower', self::ALLOWED_FROM_STATUSES);
                 $idempotent = array_map('strtolower', self::IDEMPOTENT_STATUSES);
 
                 $canResubmitReady = in_array($currentStatus, [Shoot::STATUS_READY, 'ready'], true)
                     && $this->hasNewEditedFilesSinceSubmit($shoot);
 
-                if (!in_array($currentStatus, $allowed, true) && !$canResubmitReady) {
+                if (!in_array($currentStatus, $allowedFromStatuses, true) && !$canResubmitReady) {
                     DB::commit();
 
                     if (in_array($currentStatus, $idempotent, true)) {
@@ -102,6 +131,19 @@ class FinalizeEditedUploadAction
                             'status' => 200,
                             'payload' => [
                                 'message' => 'Shoot has already been submitted for client review.',
+                                'workflow_status_changed' => false,
+                                'shoot_status' => $shoot->workflow_status,
+                                'raw_photo_count' => $shoot->raw_photo_count,
+                                'edited_photo_count' => $shoot->edited_photo_count,
+                            ],
+                        ];
+                    }
+
+                    if (!$canSkipReview && in_array($currentStatus, [Shoot::STATUS_REVIEW, 'review'], true)) {
+                        return [
+                            'status' => 200,
+                            'payload' => [
+                                'message' => 'Edits already submitted to the editing manager for review.',
                                 'workflow_status_changed' => false,
                                 'shoot_status' => $shoot->workflow_status,
                                 'raw_photo_count' => $shoot->raw_photo_count,
@@ -138,7 +180,8 @@ class FinalizeEditedUploadAction
                     ];
                 }
 
-                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $user?->id ?? auth()->id());
+                $targetStatus = $canSkipReview ? Shoot::STATUS_READY : Shoot::STATUS_REVIEW;
+                $shoot->updateWorkflowStatus($targetStatus, $user?->id ?? auth()->id());
                 $workflowStatusChanged = true;
                 $shouldFireAutomations = true;
 
@@ -157,6 +200,9 @@ class FinalizeEditedUploadAction
                 ];
             }
 
+            $finalStatus = strtolower((string) ($shoot->workflow_status ?? ''));
+            $movedToReview = $finalStatus === Shoot::STATUS_REVIEW;
+
             if ($shouldFireAutomations) {
                 try {
                     $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
@@ -164,7 +210,8 @@ class FinalizeEditedUploadAction
                     if ($shoot->rep) {
                         $context['rep'] = $shoot->rep;
                     }
-                    $this->automationService->handleEvent('EDITING_COMPLETE', $context);
+                    $automationEvent = $movedToReview ? 'EDITING_PENDING_REVIEW' : 'EDITING_COMPLETE';
+                    $this->automationService->handleEvent($automationEvent, $context);
                 } catch (\Throwable $e) {
                     Log::warning('Automation dispatch failed during finalize-edited', [
                         'shoot_id' => $shoot->id,
@@ -175,7 +222,7 @@ class FinalizeEditedUploadAction
                 try {
                     $this->activityLogger->log(
                         $shoot,
-                        'shoot_submitted_edited',
+                        $movedToReview ? 'shoot_submitted_for_editing_review' : 'shoot_submitted_edited',
                         [
                             'from_status' => $previousStatus,
                             'to_status' => $shoot->workflow_status,
@@ -197,7 +244,9 @@ class FinalizeEditedUploadAction
                 'status' => 200,
                 'payload' => [
                     'message' => $workflowStatusChanged
-                        ? 'Edited files submitted successfully. Shoot is now Ready for finalization.'
+                        ? ($movedToReview
+                            ? 'Edits submitted to the editing manager for review.'
+                            : 'Edited files submitted successfully. Shoot is now Ready for finalization.')
                         : 'Edited upload queue finalized with no workflow change',
                     'workflow_status_changed' => $workflowStatusChanged,
                     'shoot_status' => $shoot->workflow_status,

@@ -117,6 +117,8 @@ class EmailHealthService
         'EDITING_REQUEST',
         'CONTACT_CONFIRMATION',
         'CONTACT_NOTIFICATION',
+        'OFFLINE_PAYMENT_INTENT_SUBMITTED',
+        'OFFLINE_PAYMENT_INTENT_DECLINED',
     ];
 
     /**

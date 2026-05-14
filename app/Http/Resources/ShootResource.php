@@ -17,6 +17,54 @@ class ShootResource extends JsonResource
      * shoot_service pivot row has no override, fall back to the catalog
      * service's default photographer_pay before treating it as $0.
      */
+    /**
+     * Pending offline (cash/cheque) payment intents that are awaiting admin
+     * confirmation. Excluded from totalPaid/balance calculations.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function serializePendingPayments(): array
+    {
+        $payments = $this->relationLoaded('payments')
+            ? $this->payments
+            : $this->payments()->get();
+
+        return $payments
+            ->filter(fn ($payment) => (string) $payment->status === \App\Models\Payment::STATUS_PENDING
+                && in_array((string) $payment->payment_method, ['cash', 'check'], true))
+            ->map(function ($payment) {
+                $details = is_array($payment->payment_details) ? $payment->payment_details : [];
+
+                return [
+                    'id' => (int) $payment->id,
+                    'amount' => (float) $payment->amount,
+                    'currency' => strtoupper((string) ($payment->currency ?: 'USD')),
+                    'paymentMethod' => (string) $payment->payment_method,
+                    'status' => (string) $payment->status,
+                    'createdAt' => optional($payment->created_at)->toIso8601String(),
+                    'submittedByName' => $details['submitted_by_name'] ?? null,
+                    'submittedByRole' => $details['submitted_by_role'] ?? null,
+                    'checkNumber' => $details['check_number'] ?? null,
+                    'paymentDate' => $details['payment_date'] ?? null,
+                    'notes' => $details['notes'] ?? null,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function calculatePendingPaymentTotal(): float
+    {
+        $payments = $this->relationLoaded('payments')
+            ? $this->payments
+            : $this->payments()->get();
+
+        return (float) $payments
+            ->filter(fn ($payment) => (string) $payment->status === \App\Models\Payment::STATUS_PENDING
+                && in_array((string) $payment->payment_method, ['cash', 'check'], true))
+            ->sum(fn ($payment) => (float) $payment->amount);
+    }
+
     protected function calculatePhotographerPay(): float
     {
         // Ensure services (with category) are loaded
@@ -291,8 +339,10 @@ class ShootResource extends JsonResource
             'edited_photo_count' => (int) ($this->edited_photo_count ?? 0),
             'canSubmitRaw' => $this->computeCanSubmitRaw($requestingUser),
             'canSubmitEdits' => $this->computeCanSubmitEdits($requestingUser),
+            'canApproveEditingReview' => $this->computeCanApproveEditingReview($requestingUser),
             'can_submit_raw' => $this->computeCanSubmitRaw($requestingUser),
             'can_submit_edits' => $this->computeCanSubmitEdits($requestingUser),
+            'can_approve_editing_review' => $this->computeCanApproveEditingReview($requestingUser),
             'payment' => [
                 'serviceSubtotal' => $isEditor ? 0.0 : (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
                 'baseQuote' => $isEditor ? 0.0 : (float) $this->base_quote,
@@ -310,6 +360,8 @@ class ShootResource extends JsonResource
                 'originalServiceSubtotal' => $isEditor ? 0.0 : $originalServiceSubtotal,
                 'cancellationFee' => $isEditor ? 0.0 : $cancellationFee,
                 'isCancellationFeeOnly' => !$isEditor && $cancellationFee > 0,
+                'pendingPayments' => $isEditor ? [] : $this->serializePendingPayments(),
+                'pendingTotal' => $isEditor ? 0.0 : (float) $this->calculatePendingPaymentTotal(),
             ],
             'photographerPay' => $this->calculatePhotographerPay(),
             'totalPhotographerPay' => $this->calculatePhotographerPay(),
@@ -370,11 +422,31 @@ class ShootResource extends JsonResource
     ];
 
     /**
-     * Statuses from which an edited-submit is valid. Mirror FinalizeEditedUploadAction.
+     * Statuses from which an editor's edited-submit is valid. Mirror FinalizeEditedUploadAction.
      */
     private const SUBMIT_EDITED_ALLOWED_STATUSES = [
         'uploaded',
         'editing',
+    ];
+
+    /**
+     * Roles that can submit edits directly to ready (skipping editing-manager review).
+     */
+    private const SUBMIT_EDITED_SKIP_REVIEW_ROLES = [
+        'admin',
+        'superadmin',
+        'super_admin',
+        'editing_manager',
+    ];
+
+    /**
+     * Roles that can approve editor-submitted edits and promote shoot to ready.
+     */
+    private const APPROVE_EDITING_REVIEW_ROLES = [
+        'admin',
+        'superadmin',
+        'super_admin',
+        'editing_manager',
     ];
 
     protected function computeCanSubmitRaw(?User $user): bool
@@ -452,6 +524,12 @@ class ShootResource extends JsonResource
             return true;
         }
 
+        // While in review, only editing-manager-style roles can resubmit (skip review).
+        $canSkipReview = in_array($role, self::SUBMIT_EDITED_SKIP_REVIEW_ROLES, true);
+        if ($status === 'review') {
+            return $canSkipReview;
+        }
+
         if ($status !== 'ready') {
             return false;
         }
@@ -464,6 +542,30 @@ class ShootResource extends JsonResource
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
             ->where('created_at', '>', $this->editing_completed_at)
             ->exists();
+    }
+
+    protected function computeCanApproveEditingReview(?User $user): bool
+    {
+        if (!$user) {
+            return false;
+        }
+
+        $role = strtolower((string) ($user->role ?? ''));
+        if (!in_array($role, self::APPROVE_EDITING_REVIEW_ROLES, true)) {
+            return false;
+        }
+
+        $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
+        if ($status !== 'review') {
+            return false;
+        }
+
+        $hasEditedFiles = (int) ($this->edited_photo_count ?? 0) > 0
+            || $this->files()
+                ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+                ->exists();
+
+        return $hasEditedFiles;
     }
 
     protected function resolveRealtorClient(array $tourLinks): ?array

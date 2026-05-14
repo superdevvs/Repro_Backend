@@ -20,6 +20,7 @@ class ShootWorkflowService
     const STATUS_COMPLETED = Shoot::STATUS_COMPLETED;
     const STATUS_UPLOADED = Shoot::STATUS_UPLOADED;     // photos uploaded by photographer/admin
     const STATUS_EDITING = Shoot::STATUS_EDITING;       // sent to editor, in progress
+    const STATUS_REVIEW = Shoot::STATUS_REVIEW;         // editor submitted, awaiting editing-manager review
     const STATUS_DELIVERED = Shoot::STATUS_DELIVERED;   // finalized and delivered to client
     const STATUS_READY = Shoot::STATUS_READY;            // edited files uploaded, awaiting finalize
     const STATUS_BOOKED = Shoot::STATUS_SCHEDULED;
@@ -38,11 +39,12 @@ class ShootWorkflowService
         self::STATUS_REQUESTED => [self::STATUS_SCHEDULED, self::STATUS_DECLINED, self::STATUS_CANCELLED, self::STATUS_ON_HOLD],
         self::STATUS_SCHEDULED => [self::STATUS_UPLOADED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_UPLOADED => [self::STATUS_EDITING, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
-        self::STATUS_EDITING => [self::STATUS_READY, self::STATUS_DELIVERED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
+        self::STATUS_EDITING => [self::STATUS_REVIEW, self::STATUS_READY, self::STATUS_DELIVERED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
+        self::STATUS_REVIEW => [self::STATUS_READY, self::STATUS_EDITING, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_READY => [self::STATUS_DELIVERED, self::STATUS_ON_HOLD, self::STATUS_CANCELLED],
         self::STATUS_DELIVERED => [],   // terminal
         // on_hold can resume back into the pipeline
-        self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_READY, self::STATUS_CANCELLED],
+        self::STATUS_ON_HOLD => [self::STATUS_SCHEDULED, self::STATUS_UPLOADED, self::STATUS_EDITING, self::STATUS_REVIEW, self::STATUS_READY, self::STATUS_CANCELLED],
         self::STATUS_CANCELLED => [],   // terminal
         self::STATUS_DECLINED => [],    // terminal
     ];
@@ -461,12 +463,11 @@ class ShootWorkflowService
             'in_progress' => self::STATUS_UPLOADED,
             'raw_issue' => self::STATUS_UPLOADED,
             'editing_uploaded' => self::STATUS_EDITING,
-            'editing_complete' => self::STATUS_EDITING,
+            'editing_complete' => self::STATUS_REVIEW,
             'editing_issue' => self::STATUS_EDITING,
-            'pending_review' => self::STATUS_EDITING,
-            'ready_for_review' => self::STATUS_EDITING,
-            'qc' => self::STATUS_EDITING,
-            'review' => self::STATUS_EDITING,
+            'pending_review' => self::STATUS_REVIEW,
+            'ready_for_review' => self::STATUS_REVIEW,
+            'qc' => self::STATUS_REVIEW,
             'ready_for_client' => self::STATUS_DELIVERED,
             'admin_verified' => self::STATUS_DELIVERED,
             'hold_on' => self::STATUS_ON_HOLD,
@@ -496,12 +497,11 @@ class ShootWorkflowService
             'in_progress' => self::STATUS_UPLOADED,
             'raw_issue' => self::STATUS_UPLOADED,
             'editing_uploaded' => self::STATUS_EDITING,
-            'editing_complete' => self::STATUS_EDITING,
+            'editing_complete' => self::STATUS_REVIEW,
             'editing_issue' => self::STATUS_EDITING,
-            'pending_review' => self::STATUS_EDITING,
-            'ready_for_review' => self::STATUS_EDITING,
-            'qc' => self::STATUS_EDITING,
-            'review' => self::STATUS_EDITING,
+            'pending_review' => self::STATUS_REVIEW,
+            'ready_for_review' => self::STATUS_REVIEW,
+            'qc' => self::STATUS_REVIEW,
             'ready_for_client' => self::STATUS_DELIVERED,
             'admin_verified' => self::STATUS_DELIVERED,
             'hold_on' => self::STATUS_ON_HOLD,

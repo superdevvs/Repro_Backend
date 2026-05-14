@@ -3219,4 +3219,151 @@ HTML;
 
         return $extraPayload;
     }
+
+    /**
+     * Notify admins/sales rep that a client (or staff) submitted an offline
+     * payment intent that needs review.
+     */
+    public function sendOfflinePaymentIntentSubmittedEmail(Shoot $shoot, Payment $payment, ?User $submittedBy = null): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+            $details = is_array($payment->payment_details) ? $payment->payment_details : [];
+            $methodLabel = match ((string) $payment->payment_method) {
+                'check' => 'Cheque',
+                'cash' => 'Cash',
+                default => ucfirst((string) $payment->payment_method),
+            };
+            $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
+            $shootUrl = $dashboardUrl . '/shoots/' . $shoot->id;
+
+            $recipients = collect()
+                ->merge(User::query()->whereIn('role', ['admin', 'superadmin'])->get());
+            if ($shoot->rep instanceof User) {
+                $recipients = $recipients->push($shoot->rep);
+            }
+            $recipients = $recipients
+                ->filter(fn ($u) => $u instanceof User && filter_var($u->email, FILTER_VALIDATE_EMAIL))
+                ->unique(fn (User $u) => strtolower((string) $u->email))
+                ->values();
+
+            if ($recipients->isEmpty()) {
+                Log::warning('No admins/reps available for offline payment intent notification', [
+                    'shoot_id' => $shoot->id,
+                    'payment_id' => $payment->id,
+                ]);
+                return false;
+            }
+
+            $sent = false;
+            foreach ($recipients as $recipient) {
+                $payload = $this->buildProtectedEmailPayload([
+                    'recipient' => $this->formatUserData($recipient),
+                    'account' => $this->formatUserData($shoot->client),
+                    'shoot' => $shootData,
+                    'payment' => $this->formatPaymentData($payment),
+                    'links' => [
+                        'shoot' => $shootUrl,
+                        'dashboard' => $dashboardUrl,
+                    ],
+                    'meta' => [
+                        'recipient_type' => $recipient->role === 'admin' || $recipient->role === 'superadmin' ? 'admin' : 'rep',
+                        'amount' => (float) $payment->amount,
+                        'payment_method_label' => $methodLabel,
+                        'check_number' => $details['check_number'] ?? null,
+                        'payment_date' => $details['payment_date'] ?? null,
+                        'notes' => $details['notes'] ?? null,
+                        'submitted_by_name' => $submittedBy?->name,
+                        'submitted_by_role' => $submittedBy?->role,
+                        'shoot_address' => $shoot->address,
+                        'event_version' => sprintf('intent_%d_submitted', $payment->id),
+                    ],
+                ]);
+                $this->dispatchProtectedEmail('OFFLINE_PAYMENT_INTENT_SUBMITTED', $payload, $recipient->email, [], [], [
+                    'related_shoot_id' => $shoot->id,
+                ], [
+                    'idempotency_key' => sprintf('OFFLINE_PAYMENT_INTENT_SUBMITTED:%d:%d', $payment->id, $recipient->id),
+                ]);
+                $sent = true;
+            }
+
+            Log::info('Offline payment intent submitted email dispatched', [
+                'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
+                'recipient_count' => $recipients->count(),
+            ]);
+
+            return $sent;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send offline payment intent submitted email', [
+                'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Notify the client that an admin declined their offline payment intent.
+     */
+    public function sendOfflinePaymentIntentDeclinedEmail(Shoot $shoot, Payment $payment, ?string $reason = null): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
+            if (!$shoot->client || !filter_var($shoot->client->email, FILTER_VALIDATE_EMAIL)) {
+                Log::warning('Skipping offline payment intent declined email: missing client email', [
+                    'shoot_id' => $shoot->id,
+                    'payment_id' => $payment->id,
+                ]);
+                return false;
+            }
+
+            $shootData = $this->formatShootData($shoot);
+            $methodLabel = match ((string) $payment->payment_method) {
+                'check' => 'Cheque',
+                'cash' => 'Cash',
+                default => ucfirst((string) $payment->payment_method),
+            };
+            $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
+            $shootUrl = $dashboardUrl . '/shoots/' . $shoot->id;
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($shoot->client),
+                'account' => $this->formatUserData($shoot->client),
+                'shoot' => $shootData,
+                'payment' => $this->formatPaymentData($payment),
+                'links' => [
+                    'shoot' => $shootUrl,
+                    'dashboard' => $dashboardUrl,
+                ],
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'amount' => (float) $payment->amount,
+                    'payment_method_label' => $methodLabel,
+                    'decline_reason' => $reason,
+                    'shoot_address' => $shoot->address,
+                    'event_version' => sprintf('intent_%d_declined', $payment->id),
+                ],
+            ]);
+
+            $this->dispatchProtectedEmail('OFFLINE_PAYMENT_INTENT_DECLINED', $payload, $shoot->client->email, [], [], $this->automatedClientPayload($shoot->client, [
+                'related_shoot_id' => $shoot->id,
+            ]), [
+                'idempotency_key' => sprintf('OFFLINE_PAYMENT_INTENT_DECLINED:%d', $payment->id),
+            ]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send offline payment intent declined email', [
+                'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
 }

@@ -134,6 +134,34 @@ class ShootMediaController extends Controller
         return response()->json($result['payload'], $result['status']);
     }
 
+    public function approveEditingReview(
+        Request $request,
+        $shootId,
+        \App\Services\Shoots\Actions\ApproveEditingReviewAction $action
+    ) {
+        $shoot = Shoot::findOrFail($shootId);
+        $user = $request->user();
+
+        if (!$user) {
+            return response()->json([
+                'error_type' => 'unauthenticated',
+                'message' => 'Authentication required.',
+            ], 401);
+        }
+
+        $allowedRoles = ['admin', 'superadmin', 'editing_manager'];
+        if (!in_array($user->role, $allowedRoles, true)) {
+            return response()->json([
+                'error_type' => 'forbidden',
+                'message' => 'You do not have permission to approve edits for this shoot.',
+            ], 403);
+        }
+
+        $result = $action->execute($shoot, $user);
+
+        return response()->json($result['payload'], $result['status']);
+    }
+
     public function moveFileToCompleted(Request $request, $shootId, $fileId)
     {
         $shoot = Shoot::findOrFail($shootId);

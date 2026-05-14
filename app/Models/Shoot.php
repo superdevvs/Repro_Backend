@@ -198,6 +198,7 @@ class Shoot extends Model
     const STATUS_SCHEDULED = 'scheduled'; // shoot is booked/approved
     const STATUS_UPLOADED = 'uploaded';   // photos uploaded by photographer/admin
     const STATUS_EDITING = 'editing';     // sent to editor, in progress
+    const STATUS_REVIEW = 'review';       // editor submitted edits, awaiting editing manager review
     const STATUS_READY = 'ready';         // edited files uploaded, awaiting admin finalize
     const STATUS_DELIVERED = 'delivered'; // finalized and delivered to client
     const STATUS_ON_HOLD = 'on_hold';
@@ -845,6 +846,11 @@ class Shoot extends Model
             case self::STATUS_COMPLETED:
             case self::STATUS_UPLOADED:
                 $this->photos_uploaded_at = now();
+                break;
+            case self::STATUS_REVIEW:
+                if (!$this->submitted_for_review_at) {
+                    $this->submitted_for_review_at = now();
+                }
                 break;
             case self::STATUS_READY:
                 $this->editing_completed_at = now();

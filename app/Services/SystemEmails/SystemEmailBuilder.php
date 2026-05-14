@@ -76,6 +76,8 @@ class SystemEmailBuilder
             'SHOOT_CANCELLED' => 'Your Shoot Has Been Cancelled',
             'PHOTOGRAPHER_CHANGED' => 'Photographer Assignment Updated',
             'CANCELLATION_FEE_INVOICE' => 'Cancellation Fee Invoice - ' . ($meta['address'] ?? 'Property'),
+            'OFFLINE_PAYMENT_INTENT_SUBMITTED' => 'Offline Payment Submitted - ' . (($meta['payment_method_label'] ?? 'Cash') . ' $' . number_format((float) ($meta['amount'] ?? 0), 2)),
+            'OFFLINE_PAYMENT_INTENT_DECLINED' => 'Offline Payment Was Not Accepted',
             default => $definition->alias,
         };
     }
