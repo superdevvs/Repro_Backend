@@ -22,11 +22,17 @@ class Contact extends Model
         'type',
         'user_id',
         'account_id',
+        'sms_opt_out',
+        'sms_opt_out_at',
+        'sms_ai_enabled',
     ];
 
     protected $casts = [
         'phones_json' => 'array',
         'tags_json' => 'array',
+        'sms_opt_out' => 'boolean',
+        'sms_opt_out_at' => 'datetime',
+        'sms_ai_enabled' => 'boolean',
     ];
 
     /**

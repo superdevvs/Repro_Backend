@@ -7,7 +7,9 @@ use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Console\Scheduling\Schedule;
 use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\ImpersonationMiddleware;
+use App\Http\Middleware\PermissionMiddleware;
 use App\Http\Middleware\SystemOverviewTelemetryMiddleware;
+use App\Http\Middleware\TelnyxToolBridgeAuth;
 use App\Http\Middleware\ValidateExternalApiKey;
 use App\Jobs\BackupToDropboxJob;
 use App\Jobs\DispatchScheduledMessages;
@@ -35,6 +37,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('payouts:send')->weeklyOn(0, '05:00');
         $schedule->command('cubicasa:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
         $schedule->command('system-overview:prune')->hourly();
+        $schedule->command('telnyx:prune-webhook-events')->dailyAt('02:30');
         $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')
             ->everyFiveMinutes()
             ->withoutOverlapping()
@@ -63,7 +66,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'role' => RoleMiddleware::class,
             'impersonate' => ImpersonationMiddleware::class,
+            'permission' => PermissionMiddleware::class,
             'external_api_key' => ValidateExternalApiKey::class,
+            'telnyx.toolbridge' => TelnyxToolBridgeAuth::class,
         ]);
     })
     ->withBroadcasting(

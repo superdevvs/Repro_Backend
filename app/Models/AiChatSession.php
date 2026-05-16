@@ -22,6 +22,10 @@ class AiChatSession extends Model
         'state',
         'meta',
         'engine',
+        'channel',
+        'phone_e164',
+        'contact_id',
+        'last_inbound_at',
     ];
 
     protected $casts = [
@@ -30,6 +34,7 @@ class AiChatSession extends Model
         'state_data' => 'array',
         'state' => 'array',
         'meta' => 'array',
+        'last_inbound_at' => 'datetime',
     ];
 
     /**

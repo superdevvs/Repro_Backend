@@ -51,6 +51,8 @@ class SmsContactResource extends JsonResource
             'numbers' => $numbers,
             'comment' => $this->comment,
             'tags' => $this->tags_json ?? [],
+            'smsOptOut' => (bool) ($this->sms_opt_out ?? false),
+            'smsAiEnabled' => (bool) ($this->sms_ai_enabled ?? false),
         ];
     }
 

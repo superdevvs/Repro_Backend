@@ -120,12 +120,57 @@ return [
         'webhook_secret' => env('CUBICASA_WEBHOOK_SECRET'),
     ],
 
-    'twilio' => [
-        'account_sid' => env('TWILIO_ACCOUNT_SID'),
-        'auth_token' => env('TWILIO_AUTH_TOKEN'),
-        'from_number' => env('TWILIO_FROM_NUMBER'),
-        'phone_number_sid' => env('TWILIO_PHONE_NUMBER_SID'),
-        'default_label' => env('TWILIO_DEFAULT_LABEL', 'Twilio SMS'),
+    'telnyx' => [
+        // REST API bearer token (Telnyx Portal -> Keys & Credentials -> API Keys)
+        'api_key' => env('TELNYX_API_KEY'),
+        // Ed25519 base64 public key for webhook signature verification (Telnyx Portal -> Keys & Credentials -> Public Key)
+        'public_key' => env('TELNYX_PUBLIC_KEY'),
+        'messaging_profile_id' => env('TELNYX_MESSAGING_PROFILE_ID'),
+        'from_number' => env('TELNYX_FROM_NUMBER'),
+        // Optional default Telnyx phone_number id (UUID-like string from /v2/phone_numbers)
+        'phone_number_id' => env('TELNYX_PHONE_NUMBER_ID'),
+        'default_label' => env('TELNYX_DEFAULT_LABEL', 'Telnyx SMS'),
+        'api_base' => rtrim(env('TELNYX_API_BASE', 'https://api.telnyx.com/v2'), '/'),
+        'webhook_tolerance_seconds' => (int) env('TELNYX_WEBHOOK_TOLERANCE_SECONDS', 300),
+
+        // AI SMS Agent (Phase B). All flags off-by-default; enable via env on rollout.
+        'ai_sms_enabled' => env('TELNYX_AI_SMS_ENABLED', false),
+        'ai_takeover_pause_minutes' => (int) env('TELNYX_AI_TAKEOVER_PAUSE_MINUTES', 120),
+        'ai_session_idle_ttl_minutes' => (int) env('TELNYX_AI_SESSION_IDLE_TTL_MINUTES', 1440),
+        'ai_pending_action_ttl_minutes' => (int) env('TELNYX_AI_PENDING_ACTION_TTL_MINUTES', 10),
+        'ai_max_segments' => (int) env('TELNYX_AI_SMS_MAX_SEGMENTS', 3),
+        'ai_max_replies_per_hour' => (int) env('TELNYX_AI_SMS_MAX_REPLIES_PER_HOUR', 20),
+        'ai_verification_ttl_minutes' => (int) env('TELNYX_AI_VERIFICATION_TTL_MINUTES', 10),
+        'ai_static_replies' => [
+            'stop' => env('TELNYX_AI_STATIC_STOP', "You're unsubscribed from RepRO SMS. Reply START to resume."),
+            'start' => env('TELNYX_AI_STATIC_START', "You're resubscribed. Standard rates may apply."),
+            'help' => env('TELNYX_AI_STATIC_HELP', 'RepRO support: contact@reprophotos.com. Reply STOP to opt out.'),
+        ],
+        'voice' => [
+            'enabled' => env('TELNYX_VOICE_ENABLED', false),
+            'assistant_id' => env('TELNYX_VOICE_ASSISTANT_ID'),
+            'connection_id' => env('TELNYX_VOICE_CONNECTION_ID'),
+            'webhook_url' => env('TELNYX_VOICE_WEBHOOK_URL'),
+            'recording_enabled' => env('TELNYX_VOICE_RECORDING_ENABLED', true),
+            'support_handoff_number' => env('TELNYX_VOICE_SUPPORT_HANDOFF_NUMBER'),
+            'allow_unverified_transfer' => env('TELNYX_VOICE_ALLOW_UNVERIFIED_TRANSFER', true),
+            'disclosure_text' => env('TELNYX_VOICE_DISCLOSURE_TEXT', "Hi, this is Robbie, RePro's AI assistant. This call may be recorded and transcribed to help manage your booking. Stay on the line to continue, or say 'human' to reach a person."),
+        ],
+        'tool_bridge' => [
+            'secret' => env('TELNYX_TOOL_BRIDGE_SECRET'),
+            'tolerance_seconds' => (int) env('TELNYX_TOOL_BRIDGE_TOLERANCE_SECONDS', 300),
+            'idempotency_ttl_seconds' => (int) env('TELNYX_TOOL_BRIDGE_IDEMPOTENCY_TTL', 86400),
+            'debug_capture' => env('TELNYX_TOOL_BRIDGE_DEBUG_CAPTURE', false),
+            'raw_capture_disk' => env('TELNYX_TOOL_BRIDGE_RAW_DISK', 'local'),
+            'raw_capture_ttl_days' => (int) env('TELNYX_TOOL_BRIDGE_RAW_TTL_DAYS', 7),
+        ],
+        'assistant_sms' => [
+            'enabled' => env('TELNYX_ASSISTANT_SMS_ENABLED', false),
+            'assistant_id' => env('TELNYX_ASSISTANT_SMS_ID'),
+        ],
+        'webhook_events' => [
+            'raw_retention_days' => (int) env('TELNYX_WEBHOOK_RAW_RETENTION_DAYS', 30),
+        ],
     ],
 
     // Bright MLS Integration

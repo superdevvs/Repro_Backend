@@ -4,8 +4,9 @@ namespace App\Http\Controllers\API\Messaging;
 
 use App\Http\Controllers\Controller;
 use App\Models\MessageChannel;
+use App\Models\Setting;
 use App\Models\SmsNumber;
-use App\Services\Messaging\Providers\TwilioSmsProvider;
+use App\Services\Messaging\Providers\TelnyxSmsProvider;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -79,16 +80,18 @@ class MessagingSettingsController extends Controller
             ->get();
 
         if ($numbers->isEmpty()) {
-            $defaultNumber = config('services.twilio.from_number');
-            $defaultLabel = config('services.twilio.default_label', 'Twilio SMS');
-            $defaultPhoneNumberSid = config('services.twilio.phone_number_sid');
+            $defaultNumber = config('services.telnyx.from_number');
+            $defaultLabel = config('services.telnyx.default_label', 'Telnyx SMS');
+            $defaultPhoneNumberId = config('services.telnyx.phone_number_id');
+            $defaultMessagingProfileId = config('services.telnyx.messaging_profile_id');
 
             if (!empty($defaultNumber)) {
                 SmsNumber::create([
-                    'provider' => 'TWILIO',
+                    'provider' => 'TELNYX',
                     'phone_number' => $defaultNumber,
                     'label' => $defaultLabel,
-                    'twilio_phone_number_sid' => $defaultPhoneNumberSid,
+                    'telnyx_phone_number_id' => $defaultPhoneNumberId,
+                    'messaging_profile_id' => $defaultMessagingProfileId,
                     'owner_type' => 'GLOBAL',
                     'is_default' => true,
                 ]);
@@ -105,12 +108,32 @@ class MessagingSettingsController extends Controller
                 'id' => $n->id,
                 'phone' => $n->phone_number,
                 'provider' => $n->provider,
-                'has_phone_number_sid' => !empty($n->twilio_phone_number_sid),
+                'has_phone_number_id' => !empty($n->telnyx_phone_number_id),
+                'has_messaging_profile_id' => !empty($n->messaging_profile_id),
             ]),
         ]);
 
         return response()->json([
             'numbers' => $numbers,
+            'ai' => array_merge([
+                'enabled' => (bool) config('services.telnyx.ai_sms_enabled'),
+                'takeover_pause_minutes' => (int) config('services.telnyx.ai_takeover_pause_minutes'),
+                'idle_ttl_minutes' => (int) config('services.telnyx.ai_session_idle_ttl_minutes'),
+                'pending_action_ttl_minutes' => (int) config('services.telnyx.ai_pending_action_ttl_minutes'),
+                'max_segments' => (int) config('services.telnyx.ai_max_segments'),
+                'max_replies_per_hour' => (int) config('services.telnyx.ai_max_replies_per_hour'),
+                'verification_ttl_minutes' => (int) config('services.telnyx.ai_verification_ttl_minutes'),
+                'static_replies' => config('services.telnyx.ai_static_replies', []),
+                'allowed_tools' => [
+                    'get_shoot_details',
+                    'list_shoots',
+                    'get_payment_status',
+                    'get_availability',
+                    'get_property',
+                    'get_listing',
+                    'get_editing_types',
+                ],
+            ], $this->storedAiSmsSettings()),
         ]);
     }
 
@@ -122,9 +145,18 @@ class MessagingSettingsController extends Controller
                 'numbers.*.id' => ['nullable', 'integer', 'exists:sms_numbers,id'],
                 'numbers.*.phone_number' => ['required', 'string'],
                 'numbers.*.label' => ['nullable', 'string'],
-                'numbers.*.provider' => ['nullable', 'in:TWILIO'],
-                'numbers.*.twilio_phone_number_sid' => ['nullable', 'string'],
+                'numbers.*.provider' => ['nullable', 'in:TELNYX'],
+                'numbers.*.telnyx_phone_number_id' => ['nullable', 'string'],
+                'numbers.*.messaging_profile_id' => ['nullable', 'string'],
                 'numbers.*.is_default' => ['boolean'],
+                'numbers.*.sms_ai_enabled' => ['nullable', 'boolean'],
+                'ai' => ['nullable', 'array'],
+                'ai.static_replies' => ['nullable', 'array'],
+                'ai.static_replies.stop' => ['nullable', 'string', 'max:320'],
+                'ai.static_replies.start' => ['nullable', 'string', 'max:320'],
+                'ai.static_replies.help' => ['nullable', 'string', 'max:320'],
+                'ai.allowed_tools' => ['nullable', 'array'],
+                'ai.allowed_tools.*' => ['string', 'max:80'],
             ]);
 
             $submittedIds = collect($data['numbers'])
@@ -143,12 +175,16 @@ class MessagingSettingsController extends Controller
 
             foreach ($data['numbers'] as $index => $numberData) {
                 $payload = [
-                    'provider' => 'TWILIO',
+                    'provider' => 'TELNYX',
                     'phone_number' => $numberData['phone_number'],
-                    'label' => $numberData['label'] ?? config('services.twilio.default_label', 'Twilio SMS'),
-                    'twilio_phone_number_sid' => $numberData['twilio_phone_number_sid'] ?? config('services.twilio.phone_number_sid'),
+                    'label' => $numberData['label'] ?? config('services.telnyx.default_label', 'Telnyx SMS'),
+                    'telnyx_phone_number_id' => $numberData['telnyx_phone_number_id'] ?? config('services.telnyx.phone_number_id'),
+                    'messaging_profile_id' => $numberData['messaging_profile_id'] ?? config('services.telnyx.messaging_profile_id'),
                     'owner_type' => 'GLOBAL',
                     'is_default' => $numberData['is_default'] ?? $index === 0,
+                    'sms_ai_enabled' => array_key_exists('sms_ai_enabled', $numberData)
+                        ? $numberData['sms_ai_enabled']
+                        : null,
                 ];
 
                 if (!empty($numberData['id'])) {
@@ -163,7 +199,8 @@ class MessagingSettingsController extends Controller
 
             return response()->json([
                 'status' => 'saved',
-                'numbers' => $numbers,
+                'numbers' => SmsNumber::orderByDesc('is_default')->orderBy('created_at')->get(),
+                'ai' => $this->saveAiSmsSettings($data['ai'] ?? []),
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
@@ -267,7 +304,7 @@ class MessagingSettingsController extends Controller
             ? SmsNumber::find($data['sms_number_id'])
             : SmsNumber::where('is_default', true)->first();
 
-        $provider = app(TwilioSmsProvider::class);
+        $provider = app(TelnyxSmsProvider::class);
         $result = $provider->testConnection($smsNumber);
 
         return response()->json($result, $result['success'] ? 200 : 400);
@@ -289,11 +326,11 @@ class MessagingSettingsController extends Controller
             if (!$smsNumber) {
                 return response()->json([
                     'success' => false,
-                    'error' => 'No SMS sender configured. Please add your Twilio number first.',
+                    'error' => 'No SMS sender configured. Please add your Telnyx number first.',
                 ], 400);
             }
 
-            $provider = app(TwilioSmsProvider::class);
+            $provider = app(TelnyxSmsProvider::class);
             $messageId = $provider->send($smsNumber, [
                 'to' => $data['to'],
                 'text' => $data['message'],
@@ -323,5 +360,47 @@ class MessagingSettingsController extends Controller
         $smsNumber->delete();
 
         return response()->json(['status' => 'deleted']);
+    }
+
+    private function storedAiSmsSettings(): array
+    {
+        $setting = Setting::query()->where('key', 'messaging.telnyx_ai_sms')->first();
+        if (!$setting) {
+            return [];
+        }
+
+        $decoded = json_decode((string) $setting->value, true);
+
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function saveAiSmsSettings(array $ai): array
+    {
+        $current = $this->storedAiSmsSettings();
+        $next = array_merge($current, array_filter([
+            'static_replies' => $ai['static_replies'] ?? null,
+            'allowed_tools' => $ai['allowed_tools'] ?? null,
+        ], fn ($value) => $value !== null));
+
+        Setting::query()->updateOrCreate(
+            ['key' => 'messaging.telnyx_ai_sms'],
+            [
+                'value' => json_encode($next),
+                'type' => 'json',
+                'description' => 'Telnyx AI SMS Agent editable settings',
+            ]
+        );
+
+        return array_merge([
+            'enabled' => (bool) config('services.telnyx.ai_sms_enabled'),
+            'takeover_pause_minutes' => (int) config('services.telnyx.ai_takeover_pause_minutes'),
+            'idle_ttl_minutes' => (int) config('services.telnyx.ai_session_idle_ttl_minutes'),
+            'pending_action_ttl_minutes' => (int) config('services.telnyx.ai_pending_action_ttl_minutes'),
+            'max_segments' => (int) config('services.telnyx.ai_max_segments'),
+            'max_replies_per_hour' => (int) config('services.telnyx.ai_max_replies_per_hour'),
+            'verification_ttl_minutes' => (int) config('services.telnyx.ai_verification_ttl_minutes'),
+            'static_replies' => config('services.telnyx.ai_static_replies', []),
+            'allowed_tools' => [],
+        ], $next);
     }
 }

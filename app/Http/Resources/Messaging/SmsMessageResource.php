@@ -14,6 +14,8 @@ class SmsMessageResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $metadata = $this->metadata ?? [];
+
         return [
             'id' => (string) $this->id,
             'threadId' => (string) $this->thread_id,
@@ -24,6 +26,8 @@ class SmsMessageResource extends JsonResource
             'status' => $this->status,
             'sentAt' => optional($this->created_at)->toIso8601String(),
             'providerMessageId' => $this->provider_message_id,
+            'aiGenerated' => (bool) ($metadata['ai_generated'] ?? false),
+            'complianceKeyword' => $metadata['compliance_keyword'] ?? null,
         ];
     }
 }

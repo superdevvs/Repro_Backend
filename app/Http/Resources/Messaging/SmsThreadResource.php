@@ -32,6 +32,11 @@ class SmsThreadResource extends JsonResource
                 'id' => (string) $this->assignedTo->id,
                 'name' => $this->assignedTo->name,
             ] : null,
+            'aiPausedUntil' => optional($this->ai_paused_until)->toIso8601String(),
+            'aiSessionId' => $this->ai_session_id,
+            'aiRateLimitedAt' => $this->metadata['ai_rate_limited_at'] ?? null,
+            'contactAiEnabled' => optional($this->contact)->sms_ai_enabled ?? null,
+            'contactOptedOut' => optional($this->contact)->sms_opt_out ?? null,
         ];
     }
 }

@@ -388,6 +388,13 @@ return [
                     'default_roles' => ['superadmin', 'admin', 'editing_manager', 'salesRep'],
                 ],
                 [
+                    'resource' => 'voice-calls',
+                    'action' => 'view',
+                    'label' => 'Calls',
+                    'description' => 'Open Telnyx AI voice calls, call logs, and voice assistant controls.',
+                    'default_roles' => ['superadmin', 'admin'],
+                ],
+                [
                     'resource' => 'messaging-settings',
                     'action' => 'view',
                     'label' => 'Messaging Settings',

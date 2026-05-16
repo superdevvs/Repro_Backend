@@ -28,7 +28,7 @@ class MessagingService
 {
     public function __construct(
         private readonly TemplateRenderer $renderer,
-        private readonly Providers\TwilioSmsProvider $twilioProvider,
+        private readonly Providers\TelnyxSmsProvider $telnyxProvider,
         private readonly Providers\CakemailProvider $cakemailProvider,
         private readonly Providers\LocalSmtpProvider $localSmtpProvider,
     ) {
@@ -127,17 +127,28 @@ class MessagingService
     {
         $number = $this->resolveSmsNumber($payload);
 
+        // App-level opt-out suppression. Honors bypass_opt_out flag for the single
+        // post-opt-out STOP confirmation reply (set only by SmsAiAgentService/admin tools).
+        $bypassOptOut = (bool) ($payload['bypass_opt_out'] ?? false);
+        if (!$bypassOptOut && $this->isRecipientOptedOut((string) ($payload['to'] ?? ''))) {
+            Log::info('sms_blocked_opt_out', [
+                'to' => $payload['to'] ?? null,
+                'send_source' => $payload['send_source'] ?? 'MANUAL',
+            ]);
+            throw new RuntimeException('Recipient is opted out of SMS.');
+        }
+
         $message = $this->storeMessageRecord(
             array_merge($payload, ['from' => $number->phone_number]),
             null,
             'SMS',
             direction: 'OUTBOUND',
             status: 'QUEUED',
-            providerOverride: 'TWILIO'
+            providerOverride: 'TELNYX'
         );
 
         try {
-            $providerMessageId = $this->twilioProvider->send($number, [
+            $providerMessageId = $this->telnyxProvider->send($number, [
                 'to' => $payload['to'],
                 'text' => $payload['body_text'] ?? '',
             ]);
@@ -701,6 +712,45 @@ class MessagingService
         }
 
         return $number;
+    }
+
+    /**
+     * Check if a recipient phone has opted out (Contact.sms_opt_out or User.sms_opt_out).
+     */
+    protected function isRecipientOptedOut(string $to): bool
+    {
+        $to = trim($to);
+        if ($to === '') {
+            return false;
+        }
+
+        $digits = preg_replace('/\D/', '', $to) ?? '';
+        $suffix = strlen($digits) >= 10 ? substr($digits, -10) : $digits;
+
+        $contactOptOut = Contact::query()
+            ->where(function ($q) use ($to, $suffix) {
+                $q->where('phone', $to);
+                if ($suffix !== '') {
+                    $q->orWhere('phone', 'like', '%' . $suffix);
+                }
+            })
+            ->where('sms_opt_out', true)
+            ->exists();
+
+        if ($contactOptOut) {
+            return true;
+        }
+
+        return User::query()
+            ->where(function ($q) use ($to, $suffix) {
+                $q->where('phonenumber', $to)->orWhere('phone', $to);
+                if ($suffix !== '') {
+                    $q->orWhere('phonenumber', 'like', '%' . $suffix)
+                        ->orWhere('phone', 'like', '%' . $suffix);
+                }
+            })
+            ->where('sms_opt_out', true)
+            ->exists();
     }
 
     protected function getEmailProvider(MessageChannel $channel): EmailProviderInterface

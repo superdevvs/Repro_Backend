@@ -809,7 +809,7 @@ class SystemOverviewTelemetryService
             Str::contains($value, ['account', 'client', 'photographer', 'admin/users']) => 'Accounts',
             Str::contains($value, ['message', 'sms', 'email', 'automation', 'contact-submissions']) => 'Messaging',
             Str::contains($value, ['invoice', 'payment', 'billing', 'accounting']) => 'Billing',
-            Str::contains($value, ['integration', 'dropbox', 'stripe', 'square', 'twilio', 'cakemail', 'mls', 'iguide', 'mmm']) => 'Integrations',
+            Str::contains($value, ['integration', 'dropbox', 'stripe', 'square', 'telnyx', 'cakemail', 'mls', 'iguide', 'mmm']) => 'Integrations',
             Str::contains($value, ['ai', 'robbie', 'cubicasa', 'higgs']) => 'AI',
             Str::contains($value, ['setting', 'permission']) => 'Settings',
             default => 'System',

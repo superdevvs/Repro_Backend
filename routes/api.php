@@ -33,7 +33,14 @@ use App\Http\Controllers\API\Messaging\MessageTemplateController;
 use App\Http\Controllers\API\Messaging\MessagingSettingsController;
 use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
-use App\Http\Controllers\API\Messaging\TwilioWebhookController;
+use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
+use App\Http\Controllers\API\TelnyxAi\TelnyxToolBridgeController;
+use App\Http\Controllers\API\Voice\VoiceCallController;
+use App\Http\Controllers\API\Voice\VoiceHandoffController;
+use App\Http\Controllers\API\Voice\VoiceNumberController;
+use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
+use App\Http\Controllers\API\Voice\VoiceSettingsController;
+use App\Http\Controllers\API\Webhooks\TelnyxVoiceWebhookController;
 use App\Http\Controllers\API\CouponController;
 use App\Http\Controllers\API\GoogleCalendarController;
 use App\Http\Controllers\API\ShootMessageController;
@@ -68,11 +75,37 @@ Route::get('/user', function (Request $request) {
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
 Route::get('/ping', function () {
-    return response()->json([
-        'status' => 'success',
-        'timestamp' => now()->toIso8601String(),
-        'message' => 'API is working V1'
-    ]);
+    return response()->json(['message' => 'pong']);
+});
+
+Route::middleware('telnyx.toolbridge')
+    ->prefix('telnyx-ai/tools')
+    ->group(function () {
+        Route::post('{tool}', [TelnyxToolBridgeController::class, 'invoke'])
+            ->whereIn('tool', \App\Services\TelnyxAi\ToolBridgeRegistry::ALLOWED_TOOLS)
+            ->name('telnyx-ai.tools.invoke');
+    });
+
+Route::post('/webhooks/telnyx/voice', TelnyxVoiceWebhookController::class);
+
+Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->group(function () {
+    Route::get('calls', [VoiceCallController::class, 'index']);
+    Route::get('calls/stats', [VoiceCallController::class, 'stats']);
+    Route::get('calls/{call}', [VoiceCallController::class, 'show']);
+    Route::get('calls/{call}/transcript', [VoiceCallController::class, 'transcript']);
+    Route::get('calls/{call}/recording-url', [VoiceCallController::class, 'recordingUrl']);
+    Route::post('calls/outbound', [VoiceCallController::class, 'outbound']);
+    Route::post('calls/{call}/page-staff', [VoiceCallController::class, 'pageStaff']);
+    Route::get('scheduled-calls', [ScheduledVoiceCallController::class, 'index']);
+    Route::post('scheduled-calls', [ScheduledVoiceCallController::class, 'store']);
+    Route::patch('scheduled-calls/{scheduledCall}', [ScheduledVoiceCallController::class, 'update']);
+    Route::post('scheduled-calls/{scheduledCall}/cancel', [ScheduledVoiceCallController::class, 'cancel']);
+    Route::post('scheduled-calls/{scheduledCall}/retry', [ScheduledVoiceCallController::class, 'retry']);
+    Route::get('numbers', [VoiceNumberController::class, 'index']);
+    Route::patch('numbers/{smsNumber}', [VoiceNumberController::class, 'update']);
+    Route::get('handoffs/recent', [VoiceHandoffController::class, 'index']);
+    Route::get('settings', [VoiceSettingsController::class, 'show']);
+    Route::patch('settings', [VoiceSettingsController::class, 'update']);
 });
 
 Route::get('/weather', [WeatherController::class, 'show'])
@@ -194,11 +227,13 @@ Route::post('public/payments/{token}/checkout', [StripePaymentController::class,
 Route::post('public/payments/{token}/confirm', [StripePaymentController::class, 'confirmPublicCheckoutSession'])
     ->name('api.public.payments.confirm');
 
-// Twilio SMS Webhooks (no auth - webhook verification handled in controller)
-Route::post('webhooks/twilio/messaging', [TwilioWebhookController::class, 'messaging'])
-    ->name('webhooks.twilio.messaging');
-Route::post('webhooks/twilio/status', [TwilioWebhookController::class, 'status'])
-    ->name('webhooks.twilio.status');
+// Telnyx SMS Webhooks (no auth - Ed25519 signature verification handled in controller)
+// Single canonical endpoint configured on the Messaging Profile; routes by data.event_type.
+Route::post('webhooks/telnyx/messaging', [TelnyxWebhookController::class, 'messaging'])
+    ->name('webhooks.telnyx.messaging');
+// Reserved for explicit per-message webhook_url overrides; not configured by default.
+Route::post('webhooks/telnyx/status', [TelnyxWebhookController::class, 'status'])
+    ->name('webhooks.telnyx.status');
 
 // Cakemail Email Webhooks (no auth - webhook verification handled in controller)
 Route::match(['get', 'post'], 'webhooks/cakemail', [App\Http\Controllers\API\CakemailWebhookController::class, 'handle'])
@@ -940,6 +975,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::get('/sms/threads', [SmsMessagingController::class, 'threads']);
         Route::get('/sms/threads/{thread}', [SmsMessagingController::class, 'showThread']);
         Route::post('/sms/threads/{thread}/messages', [SmsMessagingController::class, 'sendToThread']);
+        Route::post('/sms/threads/{thread}/resume-ai', [SmsMessagingController::class, 'resumeAi']);
         Route::post('/sms/send', [SmsMessagingController::class, 'send']);
         Route::post('/sms/threads/{thread}/mark-read', [SmsMessagingController::class, 'markRead']);
     });

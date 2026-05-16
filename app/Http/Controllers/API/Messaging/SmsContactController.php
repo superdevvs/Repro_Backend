@@ -23,6 +23,7 @@ class SmsContactController extends Controller
             'numbers.*.is_primary' => ['nullable', 'boolean'],
             'tags' => ['nullable', 'array'],
             'tags.*' => ['string', 'max:30'],
+            'sms_ai_enabled' => ['nullable', 'boolean'],
         ]);
 
         $numbers = collect($data['numbers'] ?? [])
@@ -56,6 +57,9 @@ class SmsContactController extends Controller
             'type' => $data['type'] ?? $contact->type,
             'phones_json' => !empty($numbers) ? $numbers : null,
             'tags_json' => $data['tags'] ?? $contact->tags_json,
+            'sms_ai_enabled' => array_key_exists('sms_ai_enabled', $data)
+                ? $data['sms_ai_enabled']
+                : $contact->sms_ai_enabled,
         ])->save();
 
         if (!empty($numbers)) {

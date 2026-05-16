@@ -258,6 +258,14 @@ class RolePermissionService
             $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
         }
 
+        foreach (['admin'] as $roleId) {
+            $rolePermissions = $permissions[$roleId] ?? [];
+            if (in_array('voice-calls-view', $catalogIds, true) && !in_array('voice-calls-view', $rolePermissions, true)) {
+                $rolePermissions[] = 'voice-calls-view';
+                $permissions[$roleId] = $this->normalizePermissionIds($rolePermissions, $catalogIds);
+            }
+        }
+
         return $permissions;
     }
 

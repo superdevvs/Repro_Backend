@@ -260,6 +260,17 @@ class ReproAiOrchestrator
             $prompt .= "\nAdditional system instructions:\n" . trim($config['system_prompt']) . "\n";
         }
 
+        if (strtoupper((string) ($context['channel'] ?? '')) === 'SMS') {
+            $prompt .= "\nSMS Channel Constraints:\n";
+            $prompt .= "- Replies MUST be ≤ 800 characters and 1 short paragraph by default.\n";
+            $prompt .= "- Use plain text only. No markdown formatting (no **, _, #, lists, code fences, links). No emoji unless the user used them first.\n";
+            $prompt .= "- Be direct and actionable. Suggest the next step, e.g. 'Reply YES to confirm.'\n";
+            $prompt .= "- Before any destructive action (book, reschedule, cancel, payment link, status update) ALWAYS confirm with the user using a one-line summary and 'Reply YES to confirm.' Do NOT execute the action until the user replies YES.\n";
+            if (empty($context['identified']) || empty($context['verified'])) {
+                $prompt .= "- The sender is NOT verified. Never reveal account-bound data (shoots, payments, listings, photographer or client names). Lead with identity verification or stick to public info / new-booking intake.\n";
+            }
+        }
+
         return $prompt;
     }
 
@@ -506,6 +517,24 @@ class ReproAiOrchestrator
                 ],
             ],
             
+            // Availability
+            [
+                'type' => 'function',
+                'function' => [
+                    'name' => 'get_availability',
+                    'description' => 'Get summarized photographer availability windows for a date or short range.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'date' => ['type' => 'string', 'description' => 'Specific date (YYYY-MM-DD)'],
+                            'date_range' => ['type' => 'string', 'description' => "Range hint: 'today' or 'week' (default: week)"],
+                            'service_id' => ['type' => 'integer', 'description' => 'Optional service filter'],
+                            'photographer_id' => ['type' => 'integer', 'description' => 'Optional specific photographer'],
+                        ],
+                    ],
+                ],
+            ],
+
             // AI Editing Tools
             [
                 'type' => 'function',
@@ -605,6 +634,16 @@ class ReproAiOrchestrator
     private function getToolsConfig(array $context): array
     {
         $config = $context['robbie_config']['tools'] ?? [];
+
+        // SMS channel: apply hard policy regardless of robbie_config tool overrides.
+        if (strtoupper((string) ($context['channel'] ?? '')) === 'SMS') {
+            $policy = app(\App\Services\Messaging\AiSms\SmsToolPolicy::class)->policyFor($context);
+            return [
+                'enabled' => $policy['enabled'],
+                'allow' => $policy['allow'],
+                'deny' => $policy['deny'],
+            ];
+        }
 
         return [
             'enabled' => $config['enabled'] ?? true,
@@ -768,52 +807,26 @@ class ReproAiOrchestrator
             return ['error' => 'Tool access is not permitted for this role.'];
         }
 
-        // Map tool names to their classes and methods
-        $toolMapping = [
-            // Property & Listing Tools
-            'get_property' => ['PropertyTools', 'getProperty'],
-            'get_portfolio_overview' => ['PropertyTools', 'getPortfolioOverview'],
-            'get_listing' => ['ListingTools', 'getListing'],
-            'update_listing_copy' => ['ListingTools', 'updateListingCopy'],
-            
-            // Booking Tools
-            'book_shoot' => ['BookingTools', 'bookShoot'],
-            
-            // Shoot Management Tools
-            'get_shoot_details' => ['ShootManagementTools', 'getShootDetails'],
-            'list_shoots' => ['ShootManagementTools', 'listShoots'],
-            'reschedule_shoot' => ['ShootManagementTools', 'rescheduleShoot'],
-            'cancel_shoot' => ['ShootManagementTools', 'cancelShoot'],
-            
-            // Payment Tools
-            'get_payment_status' => ['PaymentTools', 'getPaymentStatus'],
-            'create_payment_link' => ['PaymentTools', 'createPaymentLink'],
-            
-            // Dashboard Tools
-            'get_dashboard_stats' => ['DashboardTools', 'getDashboardStats'],
-            'update_shoot_status' => ['DashboardTools', 'updateShootStatus'],
-            
-            // AI Editing Tools
-            'submit_ai_editing' => ['AiEditingTools', 'submitAiEditing'],
-            'get_ai_editing_status' => ['AiEditingTools', 'getAiEditingStatus'],
-            'get_editing_types' => ['AiEditingTools', 'getEditingTypes'],
-        ];
+        // SMS confirmation gate: destructive tool calls are queued, not executed,
+        // unless the inbound message was already classified as an affirmative confirmation
+        // of the same pending action by SmsAiAgentService.
+        if (
+            strtoupper((string) ($context['channel'] ?? '')) === 'SMS'
+            && empty($context['confirmation_acknowledged'])
+            && app(\App\Services\Messaging\AiSms\SmsToolPolicy::class)->isConfirmationGated($toolName)
+        ) {
+            $summary = $this->buildPendingActionSummary($toolName, $params);
+            $entry = app(\App\Services\Messaging\AiSms\SmsConfirmationGate::class)
+                ->queue($session, $toolName, $params, $summary);
 
-        if (!isset($toolMapping[$toolName])) {
-            throw new \Exception("Unknown tool: {$toolName}");
-        }
-
-        [$toolClass, $methodName] = $toolMapping[$toolName];
-        $className = "App\\Services\\ReproAi\\Tools\\{$toolClass}";
-        
-        if (!class_exists($className)) {
-            throw new \Exception("Tool class not found: {$className}");
-        }
-
-        $toolHandler = new $className();
-
-        if (!method_exists($toolHandler, $methodName)) {
-            throw new \Exception("Tool method not found: {$methodName} in {$className}");
+            return [
+                'success' => false,
+                'requires_confirmation' => true,
+                'tool' => $toolName,
+                'summary' => $entry['summary'],
+                'expires_at' => $entry['expires_at'],
+                'message' => 'Awaiting user YES/NO confirmation before this action runs.',
+            ];
         }
 
         // Add session user_id and role to context if not present
@@ -825,6 +838,48 @@ class ReproAiOrchestrator
             $context['user_role'] = $user->role ?? 'client';
         }
 
-        return $toolHandler->$methodName($params, $context);
+        return app(ToolDispatcher::class)->dispatch($toolName, $params, $context);
+    }
+
+    /**
+     * Build a one-line human-readable summary used as the SMS YES/NO prompt.
+     *
+     * @param  array<string, mixed>  $params
+     */
+    private function buildPendingActionSummary(string $tool, array $params): string
+    {
+        $shootId = $params['shoot_id'] ?? null;
+        $address = $params['address'] ?? null;
+        $date = $params['new_date'] ?? $params['date'] ?? null;
+        $time = $params['new_time'] ?? $params['time'] ?? null;
+
+        $when = trim((string) ($date ?? '') . ' ' . (string) ($time ?? ''));
+
+        return match ($tool) {
+            'reschedule_shoot' => sprintf(
+                'Reply YES to confirm rescheduling shoot #%s%s.',
+                $shootId ?? '?',
+                $when !== '' ? ' to ' . $when : ''
+            ),
+            'cancel_shoot' => sprintf(
+                'Reply YES to confirm cancelling shoot #%s.',
+                $shootId ?? '?'
+            ),
+            'book_shoot' => sprintf(
+                'Reply YES to confirm booking%s%s.',
+                $address ? ' at ' . $address : '',
+                $when !== '' ? ' on ' . $when : ''
+            ),
+            'create_payment_link' => sprintf(
+                'Reply YES to send a payment link for shoot #%s.',
+                $shootId ?? '?'
+            ),
+            'update_shoot_status' => sprintf(
+                'Reply YES to update shoot #%s status to %s.',
+                $shootId ?? '?',
+                $params['status'] ?? $params['workflow_status'] ?? '?'
+            ),
+            default => 'Reply YES to confirm this action.',
+        };
     }
 }

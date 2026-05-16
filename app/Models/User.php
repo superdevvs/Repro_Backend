@@ -63,6 +63,9 @@ class User extends Authenticatable
         'twitter_url',
         'linkedin_url',
         'pinterest_url',
+        'sms_opt_out',
+        'sms_opt_out_at',
+        'sms_ai_enabled',
     ];
 
     /**
@@ -110,6 +113,9 @@ class User extends Authenticatable
             'secondary_roles' => 'array',
             'shoot_cc_emails' => 'array',
             'client_discount_value' => 'decimal:2',
+            'sms_opt_out' => 'boolean',
+            'sms_opt_out_at' => 'datetime',
+            'sms_ai_enabled' => 'boolean',
         ];
     }
 

@@ -22,12 +22,17 @@ class MessageThread extends Model
         'status',
         'tags_json',
         'unread_for_user_ids_json',
+        'ai_paused_until',
+        'ai_session_id',
+        'metadata',
     ];
 
     protected $casts = [
         'last_message_at' => 'datetime',
         'tags_json' => 'array',
         'unread_for_user_ids_json' => 'array',
+        'ai_paused_until' => 'datetime',
+        'metadata' => 'array',
     ];
 
     public function contact(): BelongsTo

@@ -118,10 +118,29 @@ class SmsMessagingController extends Controller
             'contact_type' => $contact->type,
         ]);
 
+        // Staff manual reply pauses AI on this thread (per-thread takeover).
+        $pauseMinutes = (int) config('services.telnyx.ai_takeover_pause_minutes', 120);
+        $thread->forceFill([
+            'ai_paused_until' => now()->addMinutes(max(1, $pauseMinutes)),
+        ])->save();
+
         $thread->refresh()->load(['contact', 'assignedTo']);
 
         return response()->json([
             'message' => SmsMessageResource::make($message),
+            'thread' => SmsThreadResource::make($thread),
+        ]);
+    }
+
+    public function resumeAi(MessageThread $thread, Request $request): JsonResponse
+    {
+        $this->ensureSmsThread($thread);
+        $this->authorizeThread($thread, $request->user()?->id);
+
+        $thread->forceFill(['ai_paused_until' => null])->save();
+        $thread->refresh()->load(['contact', 'assignedTo']);
+
+        return response()->json([
             'thread' => SmsThreadResource::make($thread),
         ]);
     }
