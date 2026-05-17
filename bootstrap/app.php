@@ -42,6 +42,10 @@ return Application::configure(basePath: dirname(__DIR__))
             ->everyFiveMinutes()
             ->withoutOverlapping()
             ->onOneServer();
+        $schedule->command('voice:dispatch-scheduled-calls')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->onOneServer();
         $schedule->command('messaging:audit-transactional-email --hours=168 --limit=50')
             ->dailyAt('08:00')
             ->onOneServer();

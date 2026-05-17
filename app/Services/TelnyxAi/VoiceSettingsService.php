@@ -36,6 +36,8 @@ class VoiceSettingsService
                 'delivery_follow_up' => false,
                 'unpaid_invoice_reminder' => false,
             ],
+            'tool_allowlist' => ToolBridgeRegistry::ALLOWED_TOOLS,
+            'confirmation_gated_tools' => ToolBridgeRegistry::CONFIRMATION_GATED,
             'debug_capture' => (bool) config('services.telnyx.tool_bridge.debug_capture', false),
         ], $stored);
     }
@@ -54,6 +56,8 @@ class VoiceSettingsService
             'callback_retry_delay_minutes',
             'callback_max_attempts',
             'automation_toggles',
+            'tool_allowlist',
+            'confirmation_gated_tools',
             'debug_capture',
         ]));
 

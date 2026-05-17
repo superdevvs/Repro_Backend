@@ -3,8 +3,12 @@
 namespace App\Services\TelnyxAi;
 
 use App\Models\ScheduledVoiceCall;
+use App\Models\Invoice;
+use App\Models\Shoot;
+use App\Models\User;
 use App\Models\VoiceCall;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 
 class ScheduledVoiceCallService
 {
@@ -64,6 +68,153 @@ class ScheduledVoiceCallService
         $toggles = $this->settings->all()['automation_toggles'] ?? [];
 
         return (bool) ($toggles[$automationType] ?? false);
+    }
+
+    public function createDueProactiveCalls(): array
+    {
+        return [
+            'shoot_reminder' => $this->createShootReminderCalls(),
+            'delivery_follow_up' => $this->createDeliveryFollowUpCalls(),
+            'unpaid_invoice_reminder' => $this->createUnpaidInvoiceReminderCalls(),
+        ];
+    }
+
+    private function createShootReminderCalls(): int
+    {
+        if (!$this->automationEnabled('shoot_reminder')) {
+            return 0;
+        }
+
+        $from = now()->addHours(23);
+        $to = now()->addHours(25);
+        $tomorrow = now()->addDay()->toDateString();
+        $created = 0;
+
+        Shoot::query()
+            ->with('client:id,name,phone,phonenumber')
+            ->where(function (Builder $query) use ($from, $to, $tomorrow): void {
+                $query->whereBetween('scheduled_at', [$from, $to])
+                    ->orWhereDate('scheduled_date', $tomorrow);
+            })
+            ->whereNotIn('workflow_status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
+            ->limit(100)
+            ->get()
+            ->each(function (Shoot $shoot) use (&$created): void {
+                $created += $this->createProactiveCall(
+                    'shoot_reminder',
+                    'shoot_reminder',
+                    $this->userPhone($shoot->client),
+                    "Reminder call for shoot #{$shoot->id}",
+                    ['related_shoot_id' => $shoot->id, 'caller_user_id' => $shoot->client_id],
+                ) ? 1 : 0;
+            });
+
+        return $created;
+    }
+
+    private function createDeliveryFollowUpCalls(): int
+    {
+        if (!$this->automationEnabled('delivery_follow_up')) {
+            return 0;
+        }
+
+        $created = 0;
+        Shoot::query()
+            ->with('client:id,name,phone,phonenumber')
+            ->where(function (Builder $query): void {
+                $query->where('workflow_status', Shoot::STATUS_DELIVERED)
+                    ->orWhere('delivery_status', 'delivered');
+            })
+            ->where('completed_at', '>=', now()->subDays(2))
+            ->where('completed_at', '<=', now()->subHour())
+            ->limit(100)
+            ->get()
+            ->each(function (Shoot $shoot) use (&$created): void {
+                $created += $this->createProactiveCall(
+                    'delivery_follow_up',
+                    'delivery_follow_up',
+                    $this->userPhone($shoot->client),
+                    "Delivery follow-up call for shoot #{$shoot->id}",
+                    ['related_shoot_id' => $shoot->id, 'caller_user_id' => $shoot->client_id],
+                ) ? 1 : 0;
+            });
+
+        return $created;
+    }
+
+    private function createUnpaidInvoiceReminderCalls(): int
+    {
+        if (!$this->automationEnabled('unpaid_invoice_reminder')) {
+            return 0;
+        }
+
+        $created = 0;
+        Invoice::query()
+            ->with('client:id,name,phone,phonenumber')
+            ->where('role', Invoice::ROLE_CLIENT)
+            ->where(function (Builder $query): void {
+                $query->where('status', Invoice::STATUS_SENT)->orWhere('is_sent', true);
+            })
+            ->where(function (Builder $query): void {
+                $query->whereNull('due_date')->orWhereDate('due_date', '<=', now()->addDay()->toDateString());
+            })
+            ->limit(100)
+            ->get()
+            ->filter(fn (Invoice $invoice): bool => !$invoice->is_paid && $invoice->balanceDue() > 0)
+            ->each(function (Invoice $invoice) use (&$created): void {
+                $created += $this->createProactiveCall(
+                    'unpaid_invoice_reminder',
+                    'unpaid_invoice_reminder',
+                    $this->userPhone($invoice->client),
+                    "Payment reminder call for invoice {$invoice->invoice_number}",
+                    ['related_invoice_id' => $invoice->id, 'caller_user_id' => $invoice->client_id],
+                ) ? 1 : 0;
+            });
+
+        return $created;
+    }
+
+    private function createProactiveCall(string $automationType, string $reason, ?string $targetPhone, string $summary, array $attributes): ?ScheduledVoiceCall
+    {
+        if (!$targetPhone) {
+            return null;
+        }
+
+        $identity = array_filter([
+            'automation_type' => $automationType,
+            'related_shoot_id' => $attributes['related_shoot_id'] ?? null,
+            'related_invoice_id' => $attributes['related_invoice_id'] ?? null,
+            'reason' => $reason,
+        ], fn ($value) => $value !== null);
+
+        $exists = ScheduledVoiceCall::query()
+            ->where($identity)
+            ->whereNotIn('status', [ScheduledVoiceCall::STATUS_CANCELLED, ScheduledVoiceCall::STATUS_EXHAUSTED])
+            ->exists();
+
+        if ($exists) {
+            return null;
+        }
+
+        $settings = $this->settings->all();
+
+        return ScheduledVoiceCall::query()->create(array_merge($attributes, [
+            'status' => ScheduledVoiceCall::STATUS_SCHEDULED,
+            'automation_type' => $automationType,
+            'reason' => $reason,
+            'target_phone' => $targetPhone,
+            'scheduled_at' => now(),
+            'next_attempt_at' => now(),
+            'max_attempts' => (int) ($settings['callback_max_attempts'] ?? 3),
+            'quiet_hours' => $settings['quiet_hours'] ?? null,
+            'summary' => $summary,
+            'metadata' => ['source' => 'voice_proactive_automation'],
+        ]));
+    }
+
+    private function userPhone(?User $user): ?string
+    {
+        return $user?->phone ?: $user?->phonenumber;
     }
 
     private function automationTypeFor(string $reason): string

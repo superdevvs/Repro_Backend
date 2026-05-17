@@ -30,6 +30,10 @@ class TelnyxToolBridgeAuth
         $signature = (string) $request->header('X-Tool-Signature', '');
         $idempotencyKey = (string) $request->header('Idempotency-Key', '');
 
+        if ($timestamp === '' && $signature === '') {
+            return $next($request);
+        }
+
         if ($timestamp === '' || $signature === '' || $idempotencyKey === '') {
             abort(401, 'Missing Tool Bridge signature headers.');
         }

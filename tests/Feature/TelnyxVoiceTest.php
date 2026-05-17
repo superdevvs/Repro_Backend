@@ -5,10 +5,12 @@ namespace Tests\Feature;
 use App\Models\Setting;
 use App\Models\ScheduledVoiceCall;
 use App\Models\SmsNumber;
+use App\Models\TelnyxWebhookEvent;
 use App\Models\User;
 use App\Models\VoiceCall;
 use App\Jobs\ScheduledVoiceCallJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -41,12 +43,15 @@ class TelnyxVoiceTest extends TestCase
                 'callback_max_attempts' => 2,
                 'quiet_hours' => ['enabled' => true, 'start' => '20:00', 'end' => '08:00', 'timezone' => 'UTC'],
                 'automation_toggles' => ['missed_call_callback' => true, 'failed_transfer_callback' => true],
+                'tool_allowlist' => ['verify_caller', 'handoff_to_staff'],
+                'confirmation_gated_tools' => ['handoff_to_staff'],
             ])
             ->assertOk()
             ->assertJsonPath('enabled', true)
             ->assertJsonPath('recording_enabled', true)
             ->assertJsonPath('disclosure_text', 'Disclosure test')
-            ->assertJsonPath('callback_max_attempts', 2);
+            ->assertJsonPath('callback_max_attempts', 2)
+            ->assertJsonPath('tool_allowlist.0', 'verify_caller');
 
         $this->assertDatabaseHas('settings', ['key' => 'messaging.telnyx_voice']);
     }
@@ -218,6 +223,58 @@ class TelnyxVoiceTest extends TestCase
             ->postJson("/api/voice/scheduled-calls/{$id}/cancel")
             ->assertOk()
             ->assertJsonPath('status', 'cancelled');
+    }
+
+    public function test_admin_can_read_voice_health(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        $call = VoiceCall::query()->create([
+            'direction' => 'INBOUND',
+            'status' => 'active',
+            'from_phone' => '+12025550123',
+            'to_phone' => '+12025550100',
+            'last_telnyx_command_status' => ['action' => 'transfer', 'ok' => true],
+        ]);
+        TelnyxWebhookEvent::query()->create([
+            'provider' => 'TELNYX',
+            'channel' => 'VOICE',
+            'telnyx_event_id' => 'health-event-1',
+            'event_type' => 'call.initiated',
+            'event_received_at' => now(),
+            'processed_at' => now(),
+            'related_voice_call_id' => $call->id,
+        ]);
+        ScheduledVoiceCall::query()->create([
+            'status' => 'scheduled',
+            'target_phone' => '+12025550123',
+            'reason' => 'manual_callback',
+            'scheduled_at' => now(),
+            'next_attempt_at' => now(),
+        ]);
+
+        $this->actingAs($admin, 'sanctum')
+            ->getJson('/api/voice/health')
+            ->assertOk()
+            ->assertJsonPath('latest_webhook_event.event_type', 'call.initiated')
+            ->assertJsonPath('latest_command_status.action', 'transfer')
+            ->assertJsonPath('scheduler.due_scheduled_calls', 1);
+    }
+
+    public function test_dispatch_scheduled_voice_calls_command_dispatches_due_jobs(): void
+    {
+        Queue::fake();
+        ScheduledVoiceCall::query()->create([
+            'status' => 'scheduled',
+            'target_phone' => '+12025550123',
+            'reason' => 'manual_callback',
+            'scheduled_at' => now(),
+            'next_attempt_at' => now(),
+        ]);
+
+        $this->artisan('voice:dispatch-scheduled-calls')
+            ->assertExitCode(0);
+
+        Queue::assertPushed(ScheduledVoiceCallJob::class);
     }
 
     public function test_scheduled_voice_call_job_places_outbound_call(): void

@@ -36,6 +36,10 @@ class VoiceSettingsController extends Controller
             'automation_toggles.shoot_reminder' => ['sometimes', 'boolean'],
             'automation_toggles.delivery_follow_up' => ['sometimes', 'boolean'],
             'automation_toggles.unpaid_invoice_reminder' => ['sometimes', 'boolean'],
+            'tool_allowlist' => ['sometimes', 'array'],
+            'tool_allowlist.*' => ['string', 'max:255'],
+            'confirmation_gated_tools' => ['sometimes', 'array'],
+            'confirmation_gated_tools.*' => ['string', 'max:255'],
             'debug_capture' => ['sometimes', 'boolean'],
         ]);
 

@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\ToolBridgeInvocation;
+use App\Models\Setting;
 use App\Models\VoiceCall;
 use App\Models\VoiceCallVerification;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -13,6 +14,13 @@ use Tests\TestCase;
 class TelnyxToolBridgeTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config(['services.telnyx.tool_bridge.secret' => null]);
+    }
 
     public function test_missing_auth_headers_are_rejected_when_secret_is_configured(): void
     {
@@ -77,6 +85,25 @@ class TelnyxToolBridgeTest extends TestCase
             ])
             ->assertForbidden()
             ->assertJsonPath('error', 'unverified_caller');
+    }
+
+    public function test_disabled_voice_tool_is_blocked_by_settings_allowlist(): void
+    {
+        Setting::query()->create([
+            'key' => 'messaging.telnyx_voice',
+            'value' => json_encode([
+                'tool_allowlist' => ['verify_caller'],
+                'confirmation_gated_tools' => [],
+            ]),
+            'type' => 'json',
+        ]);
+
+        $this->withHeader('Idempotency-Key', 'disabled-book-1')
+            ->postJson('/api/telnyx-ai/tools/book_shoot', [
+                'params' => ['address' => '123 Main St'],
+                'context' => ['channel' => 'VOICE', 'verified' => true, 'phone_e164' => '+12025550100'],
+            ])
+            ->assertNotFound();
     }
 
     public function test_transfer_to_staff_is_blocked_over_sms(): void

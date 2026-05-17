@@ -37,6 +37,7 @@ use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
 use App\Http\Controllers\API\TelnyxAi\TelnyxToolBridgeController;
 use App\Http\Controllers\API\Voice\VoiceCallController;
 use App\Http\Controllers\API\Voice\VoiceHandoffController;
+use App\Http\Controllers\API\Voice\VoiceHealthController;
 use App\Http\Controllers\API\Voice\VoiceNumberController;
 use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
 use App\Http\Controllers\API\Voice\VoiceSettingsController;
@@ -96,6 +97,7 @@ Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->
     Route::get('calls/{call}/recording-url', [VoiceCallController::class, 'recordingUrl']);
     Route::post('calls/outbound', [VoiceCallController::class, 'outbound']);
     Route::post('calls/{call}/page-staff', [VoiceCallController::class, 'pageStaff']);
+    Route::get('health', VoiceHealthController::class);
     Route::get('scheduled-calls', [ScheduledVoiceCallController::class, 'index']);
     Route::post('scheduled-calls', [ScheduledVoiceCallController::class, 'store']);
     Route::patch('scheduled-calls/{scheduledCall}', [ScheduledVoiceCallController::class, 'update']);
