@@ -68,6 +68,7 @@ class VoiceWebhookProcessor
             'call.transfer.failed' => $this->handleTransferFailed($data),
             'call.hangup', 'call.ended' => $this->handleHangup($data),
             'call.failed', 'call.no_answer' => $this->handleMissed($data),
+            'call.answered' => $this->handleAnswered($data),
             'call.bridged' => $this->updateStatus($data, 'active'),
             'call.transferred' => $this->updateDisposition($data, 'transferred'),
             default => $this->findCall($data),
@@ -209,6 +210,40 @@ class VoiceWebhookProcessor
         }
 
         return $voiceCall;
+    }
+
+    private function handleAnswered(array $data): ?VoiceCall
+    {
+        $voiceCall = $this->findCall($data);
+        if (!$voiceCall) {
+            return null;
+        }
+
+        $voiceCall->forceFill([
+            'status' => 'active',
+            'started_at' => $voiceCall->started_at ?: now(),
+        ])->save();
+
+        // Telnyx's POST /v2/calls does NOT auto-start the AI assistant when
+        // the called party answers an outbound call. Without an explicit
+        // assistant_start the audio leg is silent for the recipient. Trigger
+        // the assistant here for outbound calls that have an assistant
+        // configured. Inbound calls go through VoiceRoutingService at
+        // call.initiated time and do not need this step.
+        if (
+            strtoupper((string) $voiceCall->direction) === 'OUTBOUND'
+            && !empty($voiceCall->assistant_id)
+            && !empty($voiceCall->call_control_id)
+        ) {
+            $resolved = $this->calls->resolveCaller((string) ($voiceCall->to_phone ?: $voiceCall->from_phone));
+            $dynamicVariables = $this->calls->buildDynamicVariables($voiceCall, $resolved);
+            $existing = (array) ($voiceCall->metadata['dynamic_variables'] ?? []);
+            $merged = array_merge($existing, $dynamicVariables);
+
+            $this->calls->startAssistant($voiceCall, $merged);
+        }
+
+        return $voiceCall->fresh();
     }
 
     private function handleTransferFailed(array $data): ?VoiceCall
