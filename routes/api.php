@@ -96,6 +96,7 @@ Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->
     Route::get('calls/{call}/transcript', [VoiceCallController::class, 'transcript']);
     Route::get('calls/{call}/recording-url', [VoiceCallController::class, 'recordingUrl']);
     Route::post('calls/outbound', [VoiceCallController::class, 'outbound']);
+    Route::post('calls/{call}/hangup', [VoiceCallController::class, 'hangup']);
     Route::post('calls/{call}/page-staff', [VoiceCallController::class, 'pageStaff']);
     Route::get('health', VoiceHealthController::class);
     Route::get('scheduled-calls', [ScheduledVoiceCallController::class, 'index']);

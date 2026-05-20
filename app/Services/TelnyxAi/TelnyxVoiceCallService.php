@@ -22,7 +22,10 @@ class TelnyxVoiceCallService
         $assistantId = (string) ($data['assistant_id'] ?? $this->settings->all()['assistant_id'] ?? '');
         $from = (string) ($data['from'] ?? config('services.telnyx.from_number', ''));
         $to = (string) $data['to'];
-        $clientState = Str::uuid()->toString();
+        // Telnyx requires client_state to be a valid base64 string; encode once
+        // and store the encoded value so webhooks (which echo back client_state)
+        // can match the row.
+        $clientState = base64_encode(Str::uuid()->toString());
         $dynamicVariables = $data['dynamic_variables'] ?? [];
 
         $voiceCall = VoiceCall::query()->create([
@@ -40,28 +43,55 @@ class TelnyxVoiceCallService
         $apiKey = (string) config('services.telnyx.api_key', '');
         if ($apiKey !== '') {
             $base = rtrim((string) config('services.telnyx.api_base', 'https://api.telnyx.com/v2'), '/');
-            $response = Http::withToken($apiKey)->post("{$base}/calls", [
-                'connection_id' => config('services.telnyx.voice.connection_id'),
-                'to' => $to,
-                'from' => $from,
-                'webhook_url' => $this->settings->all()['webhook_url'] ?? null,
-                'client_state' => $clientState,
-                'assistant_id' => $assistantId,
-                'dynamic_variables' => $dynamicVariables,
-            ]);
+            try {
+                $response = Http::withToken($apiKey)
+                    ->connectTimeout(5)
+                    ->timeout(15)
+                    ->post("{$base}/calls", [
+                        'connection_id' => config('services.telnyx.voice.connection_id'),
+                        'to' => $to,
+                        'from' => $from,
+                        'webhook_url' => $this->settings->all()['webhook_url'] ?? null,
+                        'client_state' => $clientState,
+                        'assistant_id' => $assistantId,
+                        'dynamic_variables' => $dynamicVariables,
+                    ]);
 
-            $json = $response->json('data') ?? $response->json();
-            $voiceCall->forceFill([
-                'call_control_id' => $json['call_control_id'] ?? $voiceCall->call_control_id,
-                'telnyx_conversation_id' => $json['conversation_id'] ?? $voiceCall->telnyx_conversation_id,
-                'last_telnyx_command_status' => [
-                    'action' => 'dial',
-                    'ok' => $response->successful(),
-                    'status' => $response->status(),
-                    'at' => now()->toIso8601String(),
-                ],
-                'metadata' => array_merge($voiceCall->metadata ?? [], ['dial_response' => $json]),
-            ])->save();
+                $json = $response->json('data') ?? $response->json() ?? [];
+                $voiceCall->forceFill([
+                    'call_control_id' => $json['call_control_id'] ?? $voiceCall->call_control_id,
+                    'telnyx_conversation_id' => $json['conversation_id'] ?? $voiceCall->telnyx_conversation_id,
+                    'status' => $response->successful() ? 'dialing' : 'failed',
+                    'disposition' => $response->successful() ? $voiceCall->disposition : 'dial_failed',
+                    'last_telnyx_command_status' => [
+                        'action' => 'dial',
+                        'ok' => $response->successful(),
+                        'status' => $response->status(),
+                        'at' => now()->toIso8601String(),
+                    ],
+                    'metadata' => array_merge($voiceCall->metadata ?? [], ['dial_response' => $json]),
+                ])->save();
+
+                if (!$response->successful()) {
+                    throw new \RuntimeException(
+                        'Telnyx dial failed (' . $response->status() . '): '
+                        . ($json['errors'][0]['detail'] ?? $json['error'] ?? $response->body() ?: 'unknown error')
+                    );
+                }
+            } catch (Throwable $exception) {
+                $voiceCall->forceFill([
+                    'status' => 'failed',
+                    'disposition' => 'dial_failed',
+                    'last_telnyx_command_status' => [
+                        'action' => 'dial',
+                        'ok' => false,
+                        'error' => $exception->getMessage(),
+                        'at' => now()->toIso8601String(),
+                    ],
+                ])->save();
+
+                throw $exception;
+            }
         }
 
         return $voiceCall->fresh();
@@ -103,6 +133,19 @@ class TelnyxVoiceCallService
     public function answer(VoiceCall $voiceCall): bool
     {
         return $this->callAction($voiceCall, 'answer');
+    }
+
+    public function hangup(VoiceCall $voiceCall): bool
+    {
+        $ok = $this->callAction($voiceCall, 'hangup');
+
+        $voiceCall->forceFill([
+            'status' => $ok ? 'completed' : $voiceCall->status,
+            'disposition' => $voiceCall->disposition ?: ($ok ? 'hung_up_by_agent' : $voiceCall->disposition),
+            'ended_at' => $ok ? now() : $voiceCall->ended_at,
+        ])->save();
+
+        return $ok;
     }
 
     public function transfer(VoiceCall $voiceCall, string $to): bool
@@ -162,7 +205,10 @@ class TelnyxVoiceCallService
 
         $base = rtrim((string) config('services.telnyx.api_base', 'https://api.telnyx.com/v2'), '/');
         try {
-            $response = Http::withToken($apiKey)->post("{$base}/calls/{$callControlId}/actions/{$action}", $payload);
+            $response = Http::withToken($apiKey)
+                ->connectTimeout(5)
+                ->timeout(10)
+                ->post("{$base}/calls/{$callControlId}/actions/{$action}", $payload);
             $this->recordCommandStatus($voiceCall, $action, $response->successful(), $response->status(), $response->json() ?: []);
 
             return $response->successful();

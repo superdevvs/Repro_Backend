@@ -95,9 +95,35 @@ class VoiceCallController extends Controller
             'related_shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
         ]);
 
-        $call = $service->dial($data, (int) $request->user()->id);
+        try {
+            $call = $service->dial($data, (int) $request->user()->id);
+        } catch (\Throwable $exception) {
+            \Log::warning('Telnyx outbound dial failed', [
+                'error' => $exception->getMessage(),
+                'to' => $data['to'] ?? null,
+            ]);
+
+            return response()->json([
+                'message' => 'Unable to start call.',
+                'error' => $exception->getMessage(),
+            ], 502);
+        }
 
         return response()->json($call, 201);
+    }
+
+    public function hangup(VoiceCall $call, TelnyxVoiceCallService $service): JsonResponse
+    {
+        try {
+            $service->hangup($call);
+        } catch (\Throwable $exception) {
+            return response()->json([
+                'message' => 'Unable to hang up call.',
+                'error' => $exception->getMessage(),
+            ], 502);
+        }
+
+        return response()->json($call->fresh());
     }
 
     public function pageStaff(Request $request, VoiceCall $call, ScheduledVoiceCallService $scheduledCalls): JsonResponse
