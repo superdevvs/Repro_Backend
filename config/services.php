@@ -223,6 +223,13 @@ return [
         'image_model' => env('HIGGSFIELD_IMAGE_MODEL', 'higgsfield-ai/soul/reference'),
     ],
 
+    // fal.ai Listing Video Generation Integration
+    'fal' => [
+        'key' => env('FAL_KEY'),
+        'model' => env('FAL_MODEL', 'fal-ai/wan-pro/image-to-video'),
+        'test_mode' => env('FAL_TEST_MODE', false),
+    ],
+
     // MyMarketingMatters (MMM) Punchout/SSO Integration
     'mmm' => [
         'enabled' => env('MMM_ENABLED', true),

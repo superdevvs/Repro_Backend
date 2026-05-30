@@ -649,6 +649,23 @@ class AutoenhanceService
             'png' => 'image/png',
             'webp' => 'image/webp',
             'avif' => 'image/avif',
+            'heic', 'heif' => 'image/heic',
+            'tif', 'tiff' => 'image/tiff',
+            // RAW formats — return their real MIME type rather than pretending
+            // they are JPEG. Mislabeling RAW as image/jpeg hides the true format
+            // from the provider and from our own upload logic.
+            'nef', 'nrw' => 'image/x-nikon-nef',
+            'cr2' => 'image/x-canon-cr2',
+            'cr3' => 'image/x-canon-cr3',
+            'arw', 'srf', 'sr2' => 'image/x-sony-arw',
+            'dng' => 'image/x-adobe-dng',
+            'raf' => 'image/x-fuji-raf',
+            'orf' => 'image/x-olympus-orf',
+            'rw2' => 'image/x-panasonic-rw2',
+            'pef' => 'image/x-pentax-pef',
+            'x3f' => 'image/x-sigma-x3f',
+            '3fr', 'fff' => 'image/x-hasselblad-3fr',
+            'rwl' => 'image/x-leica-rwl',
             default => 'image/jpeg',
         };
     }

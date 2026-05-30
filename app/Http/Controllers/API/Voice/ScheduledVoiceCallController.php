@@ -13,7 +13,7 @@ class ScheduledVoiceCallController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = ScheduledVoiceCall::query()
-            ->with(['callerUser:id,name,email', 'callerContact:id,name,email,phone', 'relatedShoot:id,address,property_address,status', 'originalVoiceCall:id,summary,from_phone,to_phone']);
+            ->with(['callerUser:id,name,email', 'callerContact:id,name,email,phone', 'relatedShoot:id,address,status', 'originalVoiceCall:id,summary,from_phone,to_phone']);
 
         if ($status = $request->query('status')) {
             $query->where('status', $status);

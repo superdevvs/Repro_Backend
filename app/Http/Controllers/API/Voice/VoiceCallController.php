@@ -8,6 +8,7 @@ use App\Models\VoiceCall;
 use App\Services\TelnyxAi\ScheduledVoiceCallService;
 use App\Services\TelnyxAi\TelnyxVoiceCallService;
 use App\Services\TelnyxAi\VoiceCallStatsService;
+use App\Services\TelnyxAi\VoiceIntelligenceService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -16,7 +17,7 @@ class VoiceCallController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = VoiceCall::query()->with(['callerUser:id,name,email', 'callerContact:id,name,email,phone', 'relatedShoot:id,address,property_address,status', 'scheduledCallback']);
+        $query = VoiceCall::query()->with(['callerUser:id,name,email', 'callerContact:id,name,email,phone', 'relatedShoot:id,address,status', 'scheduledCallback']);
 
         if ($status = $request->query('status')) {
             $query->where('status', $status);
@@ -65,6 +66,20 @@ class VoiceCallController extends Controller
     public function transcript(VoiceCall $call): JsonResponse
     {
         return response()->json(['transcript' => $call->transcript ?? '']);
+    }
+
+    /**
+     * Marks the cockpit as opened for this call, firing the (debounced)
+     * cockpit_opened intelligence trigger, and returns the latest insights.
+     */
+    public function cockpitOpened(VoiceCall $call, VoiceIntelligenceService $intelligence): JsonResponse
+    {
+        $insights = $intelligence->onCockpitOpened($call);
+
+        return response()->json([
+            'insights' => $insights,
+            'budget_paused' => $intelligence->budgetPaused(),
+        ]);
     }
 
     public function recordingUrl(VoiceCall $call): JsonResponse

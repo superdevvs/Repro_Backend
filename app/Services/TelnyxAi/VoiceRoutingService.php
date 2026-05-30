@@ -12,16 +12,31 @@ class VoiceRoutingService
         private readonly TelnyxVoiceCallService $calls,
         private readonly VoiceSettingsService $settings,
         private readonly ScheduledVoiceCallService $scheduledCalls,
+        private readonly VoiceMemoryService $memory,
+        private readonly BusinessScheduleService $schedule,
+        private readonly VoiceIntelligenceService $intelligence,
     ) {
     }
 
     public function beginInboundCall(VoiceCall $voiceCall, array $resolved): VoiceCall
     {
+        // Memory Tier 1 — instant context loaded before the greeting.
+        try {
+            $tier1 = $this->memory->loadTier1($voiceCall, $resolved);
+        } catch (\Throwable $e) {
+            $tier1 = [];
+        }
+
+        // Schedule guidance shapes how Robbie phrases human availability.
+        $guidance = $this->schedule->robbieScheduleGuidance();
+
         $voiceCall->forceFill([
             'intent' => $voiceCall->intent ?: 'routing',
             'metadata' => array_merge($voiceCall->metadata ?? [], [
                 'routing_started_at' => now()->toIso8601String(),
                 'caller_identified' => (bool) ($resolved['identified'] ?? false),
+                'schedule_state' => $guidance['state'],
+                'schedule_message' => $guidance['message'],
             ]),
         ])->save();
 
@@ -61,6 +76,13 @@ class VoiceRoutingService
                 'transfer_to' => $to,
             ]),
         ])->save();
+
+        // Layer 2: transfer-requested is an always-on enrichment trigger.
+        try {
+            $this->intelligence->onRealtimeUpdate($voiceCall->fresh(), ['transfer_requested' => true]);
+        } catch (\Throwable $e) {
+            // non-fatal
+        }
 
         $transferred = $to !== '' && $this->calls->transfer($voiceCall, $to);
 

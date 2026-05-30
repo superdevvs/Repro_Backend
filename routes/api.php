@@ -36,9 +36,13 @@ use App\Http\Controllers\API\Messaging\SmsMessagingController;
 use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
 use App\Http\Controllers\API\TelnyxAi\TelnyxToolBridgeController;
 use App\Http\Controllers\API\Voice\VoiceCallController;
+use App\Http\Controllers\API\Voice\VoiceCallStreamController;
 use App\Http\Controllers\API\Voice\VoiceHandoffController;
 use App\Http\Controllers\API\Voice\VoiceHealthController;
+use App\Http\Controllers\API\Voice\VoiceLlmUsageController;
+use App\Http\Controllers\API\Voice\VoiceMemoryController;
 use App\Http\Controllers\API\Voice\VoiceNumberController;
+use App\Http\Controllers\API\Voice\VoiceScheduleController;
 use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
 use App\Http\Controllers\API\Voice\VoiceSettingsController;
 use App\Http\Controllers\API\Webhooks\TelnyxVoiceWebhookController;
@@ -55,6 +59,7 @@ use App\Http\Controllers\API\ImageDownloadController;
 use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\AutoenhanceController;
 use App\Http\Controllers\API\HiggsFieldController;
+use App\Http\Controllers\API\ListingVideoController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
@@ -95,10 +100,19 @@ Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->
     Route::get('calls/{call}', [VoiceCallController::class, 'show']);
     Route::get('calls/{call}/transcript', [VoiceCallController::class, 'transcript']);
     Route::get('calls/{call}/recording-url', [VoiceCallController::class, 'recordingUrl']);
+    Route::get('calls/{call}/stream', VoiceCallStreamController::class);
+    Route::get('calls/{call}/memory', [VoiceMemoryController::class, 'show']);
+    Route::post('calls/{call}/memory/load-full', [VoiceMemoryController::class, 'loadFull']);
+    Route::post('calls/{call}/cockpit-opened', [VoiceCallController::class, 'cockpitOpened']);
     Route::post('calls/outbound', [VoiceCallController::class, 'outbound']);
     Route::post('calls/{call}/hangup', [VoiceCallController::class, 'hangup']);
     Route::post('calls/{call}/page-staff', [VoiceCallController::class, 'pageStaff']);
     Route::get('health', VoiceHealthController::class);
+    Route::get('schedule/state', [VoiceScheduleController::class, 'state']);
+    Route::get('schedule/overrides', [VoiceScheduleController::class, 'index']);
+    Route::post('schedule/overrides', [VoiceScheduleController::class, 'store']);
+    Route::delete('schedule/overrides/{override}', [VoiceScheduleController::class, 'destroy']);
+    Route::get('llm-usage', VoiceLlmUsageController::class);
     Route::get('scheduled-calls', [ScheduledVoiceCallController::class, 'index']);
     Route::post('scheduled-calls', [ScheduledVoiceCallController::class, 'store']);
     Route::patch('scheduled-calls/{scheduledCall}', [ScheduledVoiceCallController::class, 'update']);
@@ -717,6 +731,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Actual AI chat endpoints with role middleware
         Route::middleware('role:client,admin,superadmin,editing_manager')->group(function () {
             Route::post('/chat', [AiChatController::class, 'chat']);
+            Route::post('/shoot-operator/action', [AiChatController::class, 'shootOperatorAction']);
             Route::get('/sessions', [AiChatController::class, 'sessions']);
             Route::get('/sessions/{session}', [AiChatController::class, 'sessionMessages']);
             Route::delete('/sessions/{session}', [AiChatController::class, 'deleteSession']);
@@ -742,6 +757,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::match(['get', 'post'], 'webhooks/autoenhance', [AutoenhanceController::class, 'handleWebhook'])
         ->withoutMiddleware('auth:sanctum')
         ->name('webhooks.autoenhance');
+
+    // fal.ai AI Listing Video endpoints
+    Route::prefix('listing-videos')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
+        Route::post('/generate', [ListingVideoController::class, 'generate']);
+        Route::get('/jobs', [ListingVideoController::class, 'index']);
+        Route::get('/jobs/{job}', [ListingVideoController::class, 'show']);
+        Route::post('/jobs/{job}/cancel', [ListingVideoController::class, 'cancel']);
+    });
 
     // Higgsfield AI Video Generation endpoints
     Route::prefix('higgsfield')->group(function () {

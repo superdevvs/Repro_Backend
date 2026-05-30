@@ -15,6 +15,8 @@ class VoiceWebhookProcessor
     public function __construct(
         private readonly TelnyxVoiceCallService $calls,
         private readonly VoiceRoutingService $routing,
+        private readonly VoiceLiveStreamService $liveStream,
+        private readonly VoiceIntelligenceService $intelligence,
     ) {
     }
 
@@ -145,9 +147,14 @@ class VoiceWebhookProcessor
         $payload = $this->payload($data);
         $line = trim((string) ($payload['transcript'] ?? $payload['text'] ?? ''));
         if ($line !== '') {
-            $voiceCall->forceFill([
-                'transcript' => trim(($voiceCall->transcript ? $voiceCall->transcript . "\n" : '') . $line),
-            ])->save();
+            // Layer 1: persist a structured realtime chunk (also keeps the flat
+            // transcript column in sync) and let intelligence triggers evaluate.
+            $voiceCall = $this->liveStream->recordTranscriptChunk($voiceCall, [
+                'text' => $line,
+                'speaker' => $this->speakerFrom($payload),
+                'confidence' => $payload['confidence'] ?? $payload['telnyx_confidence'] ?? null,
+                'sentiment' => $payload['sentiment'] ?? null,
+            ]);
         }
 
         return $voiceCall;
@@ -209,7 +216,14 @@ class VoiceWebhookProcessor
             ])->save();
         }
 
-        return $voiceCall;
+        // Layer 2: always-on final enrichment when the call ends.
+        try {
+            $this->intelligence->finalize($voiceCall->fresh());
+        } catch (Throwable $e) {
+            \Log::warning('Voice final enrichment failed', ['error' => $e->getMessage(), 'call' => $voiceCall->id]);
+        }
+
+        return $voiceCall->fresh();
     }
 
     private function handleAnswered(array $data): ?VoiceCall
@@ -297,6 +311,15 @@ class VoiceWebhookProcessor
     private function payload(array $data): array
     {
         return Arr::get($data, 'payload', Arr::get($data, 'data.payload', $data));
+    }
+
+    private function speakerFrom(array $payload): string
+    {
+        $role = strtolower((string) ($payload['speaker'] ?? $payload['role'] ?? $payload['participant'] ?? ''));
+        if (str_contains($role, 'assistant') || str_contains($role, 'agent') || str_contains($role, 'bot')) {
+            return 'assistant';
+        }
+        return 'customer';
     }
 
     private function digitFrom(array $data): ?string

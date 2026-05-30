@@ -10,6 +10,7 @@ use App\Services\ReproAi\ReproAiOrchestrator;
 use App\Services\ReproAi\LlmClient;
 use App\Services\ReproAi\IntentScorer;
 use App\Services\ReproAi\IntentPolicy;
+use App\Services\ReproAi\ShootOperatorService;
 use App\Services\RobbieConfigService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -24,6 +25,7 @@ class AiChatController extends Controller
     private RobbieConfigService $robbieConfigService;
     private IntentScorer $intentScorer;
     private IntentPolicy $intentPolicy;
+    private ShootOperatorService $shootOperatorService;
 
     public function __construct(?RuleBasedOrchestrator $ruleOrchestrator = null, ?ReproAiOrchestrator $openAiOrchestrator = null)
     {
@@ -31,6 +33,7 @@ class AiChatController extends Controller
         $this->robbieConfigService = app(RobbieConfigService::class);
         $this->intentScorer = app(IntentScorer::class);
         $this->intentPolicy = app(IntentPolicy::class);
+        $this->shootOperatorService = app(ShootOperatorService::class);
         // Initialize OpenAI orchestrator with LlmClient
         try {
             $llmClient = app(LlmClient::class);
@@ -199,6 +202,21 @@ class AiChatController extends Controller
                     'user_id' => $user->id,
                 ]);
                 $serverContext['robbie_config'] = $this->robbieConfigService->getDefaultConfig();
+            }
+
+            $shootOperatorResult = $this->shootOperatorService->handle(
+                $session,
+                $validated['message'],
+                $serverContext,
+                $user
+            );
+
+            if (is_array($shootOperatorResult)) {
+                return response()->json($this->persistAssistantResult($session, $shootOperatorResult))
+                    ->header('Access-Control-Allow-Origin', $origin ?? $request->headers->get('Origin', '*'))
+                    ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+                    ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+                    ->header('Access-Control-Allow-Credentials', 'true');
             }
 
             $openAiFailed = false;
@@ -676,5 +694,73 @@ class AiChatController extends Controller
             'session' => $session->fresh(),
         ]);
     }
-}
 
+    public function shootOperatorAction(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $validated = $request->validate([
+            'type' => ['required', 'string'],
+            'shootId' => ['nullable'],
+            'shoot_id' => ['nullable'],
+            'payload' => ['nullable', 'array'],
+            'cubicasa_order_id' => ['nullable', 'string'],
+            'cubicasa_external_id' => ['nullable', 'string'],
+        ]);
+
+        try {
+            $result = $this->shootOperatorService->executeAction($validated, $user);
+
+            return response()->json($result['payload'] ?? [], $result['status'] ?? 200);
+        } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            Log::error('Robbie shoot operator action failed', [
+                'error' => $e->getMessage(),
+                'payload' => $validated,
+                'user_id' => $user->id,
+            ]);
+
+            return response()->json([
+                'message' => config('app.debug') ? $e->getMessage() : 'Robbie could not complete that shoot action.',
+            ], 500);
+        }
+    }
+
+    private function persistAssistantResult(AiChatSession $session, array $result): array
+    {
+        DB::transaction(function () use ($session, $result) {
+            foreach ($result['assistant_messages'] ?? [] as $msg) {
+                AiMessage::create([
+                    'chat_session_id' => $session->id,
+                    'sender'          => $msg['sender'] ?? 'assistant',
+                    'content'         => $msg['content'] ?? '',
+                    'metadata'        => $msg['metadata'] ?? null,
+                ]);
+            }
+        });
+
+        $messages = $session->messages()
+            ->orderBy('created_at')
+            ->get()
+            ->map(fn (AiMessage $m) => [
+                'id'        => (string) $m->id,
+                'sender'    => $m->sender,
+                'content'   => $m->content,
+                'createdAt' => $m->created_at->toIso8601String(),
+                'metadata'  => $m->metadata,
+            ])->all();
+
+        return [
+            'sessionId' => (string) $session->id,
+            'messages' => $messages,
+            'meta' => [
+                'suggestions' => $result['suggestions'] ?? [],
+                'actions' => $result['actions'] ?? [],
+            ],
+        ];
+    }
+}

@@ -39,6 +39,130 @@ class RawThumbnailService
     }
 
     /**
+     * Determine whether a RAW file uses a compression variant that Autoenhance
+     * cannot decode and therefore must be substituted with a JPEG before upload.
+     *
+     * Per Autoenhance's published format guidelines, the unsupported variants are:
+     *  - Nikon High Efficiency (HE / HE*) — newer Z-series bodies (Z9, Z8, Zf,
+     *    Z6 III, Z5 II, ...). These come back as partially-decoded / corrupted images.
+     *  - Canon CRAW (lossy CR3).
+     *  - Sony lossless-compressed ARW (processes with a visible border).
+     *
+     * Detection relies on ExifTool. If ExifTool is unavailable we conservatively
+     * return false (treat as supported) so we never block an otherwise-valid upload.
+     */
+    public function autoenhanceNeedsJpegSubstitution(string $sourcePath): bool
+    {
+        if (!file_exists($sourcePath) || !$this->commandExists('exiftool')) {
+            return false;
+        }
+
+        $cmd = sprintf(
+            'exiftool -s3 -NEFCompression -Compression -CompressorVersion -FileType %s',
+            escapeshellarg($sourcePath)
+        );
+        exec($cmd, $output, $code);
+        if ($code !== 0) {
+            return false;
+        }
+
+        $text = strtolower(implode("\n", $output));
+
+        // Nikon High Efficiency (HE / HE*).
+        if (str_contains($text, 'high efficiency')) {
+            return true;
+        }
+        // Canon CRAW (lossy CR3).
+        if (str_contains($text, 'craw')) {
+            return true;
+        }
+        // Sony lossless-compressed ARW.
+        if (str_contains($text, 'lossless')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Extract a FULL-SIZE JPEG from a RAW file for upload to Autoenhance.
+     *
+     * Unlike generateThumbnail(), this does NOT downscale — the goal is the
+     * highest-quality standalone JPEG we can produce. Prefers the embedded
+     * full-size JPEG (JpgFromRaw, then PreviewImage) via ExifTool, then falls
+     * back to a full-resolution ImageMagick conversion.
+     *
+     * Returns an absolute path to a temporary JPEG file (caller must delete it),
+     * or null if extraction failed.
+     */
+    public function extractFullSizeJpeg(string $sourcePath): ?string
+    {
+        if (!file_exists($sourcePath)) {
+            return null;
+        }
+
+        $output = tempnam(sys_get_temp_dir(), 'ae_jpg_');
+        if ($output === false) {
+            return null;
+        }
+
+        // 1. ExifTool embedded JPEG (full-size first, then medium preview).
+        if ($this->commandExists('exiftool')) {
+            foreach (['JpgFromRaw', 'PreviewImage'] as $tag) {
+                $cmd = sprintf('exiftool -b -%s %s', $tag, escapeshellarg($sourcePath));
+                $descriptorspec = [
+                    0 => ['pipe', 'r'],
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ];
+                $process = proc_open($cmd, $descriptorspec, $pipes);
+                if (is_resource($process)) {
+                    $jpegData = stream_get_contents($pipes[1]);
+                    fclose($pipes[0]);
+                    fclose($pipes[1]);
+                    fclose($pipes[2]);
+                    proc_close($process);
+
+                    if ($jpegData && strlen($jpegData) >= self::MIN_THUMBNAIL_SIZE) {
+                        file_put_contents($output, $jpegData);
+                        if ($this->isValidThumbnail($output)) {
+                            Log::info('RawThumbnailService: Extracted full-size JPEG via exiftool', [
+                                'source' => basename($sourcePath),
+                                'tag' => $tag,
+                                'bytes' => strlen($jpegData),
+                            ]);
+                            return $output;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Full-resolution ImageMagick conversion (no downscale).
+        if ($this->commandExists('magick') || $this->isRealImageMagickConvert()) {
+            $convertCmd = $this->commandExists('magick') ? 'magick' : 'convert';
+            $cmd = sprintf(
+                '%s %s -quality 92 %s',
+                $convertCmd,
+                escapeshellarg($sourcePath . '[0]'),
+                escapeshellarg($output)
+            );
+            exec($cmd, $out, $code);
+            if ($code === 0 && $this->isValidThumbnail($output)) {
+                Log::info('RawThumbnailService: Extracted full-size JPEG via ImageMagick', [
+                    'source' => basename($sourcePath),
+                ]);
+                return $output;
+            }
+        }
+
+        if (file_exists($output)) {
+            unlink($output);
+        }
+        return null;
+    }
+
+    /**
      * Generate thumbnail for a RAW file.
      * Returns the relative path to the thumbnail, or null if failed.
      * 
@@ -269,7 +393,7 @@ class RawThumbnailService
     protected function convertPpmToJpeg(string $ppmPath, string $jpegPath): bool
     {
         // Try ImageMagick first
-        if ($this->commandExists('magick') || $this->commandExists('convert')) {
+        if ($this->commandExists('magick') || $this->isRealImageMagickConvert()) {
             $convertCmd = $this->commandExists('magick') ? 'magick' : 'convert';
             $cmd = sprintf(
                 '%s %s -resize 800x800 -quality 85 %s',
@@ -321,7 +445,7 @@ class RawThumbnailService
      */
     protected function extractWithImageMagick(string $source, string $output): bool
     {
-        if (!$this->commandExists('magick') && !$this->commandExists('convert')) {
+        if (!$this->commandExists('magick') && !$this->isRealImageMagickConvert()) {
             Log::debug('RawThumbnailService: ImageMagick not available');
             return false;
         }
@@ -355,6 +479,29 @@ class RawThumbnailService
         $check = PHP_OS_FAMILY === 'Windows' ? 'where' : 'which';
         exec("$check $command 2>&1", $output, $code);
         return $code === 0;
+    }
+
+    /**
+     * Determine whether `convert` resolves to ImageMagick rather than a
+     * different tool of the same name.
+     *
+     * On Windows, `where convert` matches C:\Windows\System32\convert.exe (the
+     * NTFS file-system conversion utility), which is NOT ImageMagick. Treating
+     * that as ImageMagick causes silent failures, so we verify the binary is
+     * actually ImageMagick before relying on it.
+     */
+    protected function isRealImageMagickConvert(): bool
+    {
+        if (!$this->commandExists('convert')) {
+            return false;
+        }
+
+        // `convert -version` prints "Version: ImageMagick ..." for the real tool.
+        // The Windows NTFS convert.exe ignores -version and prints usage text.
+        exec('convert -version 2>&1', $output, $code);
+        $text = strtolower(implode("\n", (array) $output));
+
+        return str_contains($text, 'imagemagick');
     }
 
     /**

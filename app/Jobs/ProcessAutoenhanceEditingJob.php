@@ -5,6 +5,8 @@ namespace App\Jobs;
 use App\Models\AiEditingJob;
 use App\Models\ShootFile;
 use App\Services\AutoenhanceService;
+use App\Services\RawThumbnailService;
+use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -26,8 +28,11 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
     {
     }
 
-    public function handle(AutoenhanceService $autoenhanceService): void
-    {
+    public function handle(
+        AutoenhanceService $autoenhanceService,
+        ShootFileAccessService $fileAccessService,
+        RawThumbnailService $rawThumbnailService
+    ): void {
         try {
             Log::info('ProcessAutoenhanceEditingJob: Starting', [
                 'job_id' => $this->editingJob->id,
@@ -35,7 +40,7 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
             ]);
 
             if (!$this->editingJob->autoenhance_image_id) {
-                $this->submitJob($autoenhanceService);
+                $this->submitJob($autoenhanceService, $fileAccessService, $rawThumbnailService);
             }
 
             if (!$this->editingJob->autoenhance_image_id) {
@@ -62,8 +67,11 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
         }
     }
 
-    private function submitJob(AutoenhanceService $autoenhanceService): void
-    {
+    private function submitJob(
+        AutoenhanceService $autoenhanceService,
+        ShootFileAccessService $fileAccessService,
+        RawThumbnailService $rawThumbnailService
+    ): void {
         $this->editingJob->markAsProcessing();
 
         $params = $this->editingJob->editing_params ?? [];
@@ -73,9 +81,15 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
             $params['mime_type'] = $sourceFile->mime_type ?? $sourceFile->file_type ?? null;
         }
 
-        $result = $autoenhanceService->submitEditingJob(
-            $this->editingJob->original_image_url,
-            $this->editingJob->editing_type,
+        // Autoenhance natively supports most RAW formats, but a few compressed
+        // variants (Nikon HE/HE*, Canon CRAW, Sony lossless) cannot be decoded
+        // and come back as corrupted/partially-rendered images. For ONLY those
+        // files, substitute a full-resolution JPEG before upload.
+        $result = $this->submitWithRawSubstitution(
+            $autoenhanceService,
+            $fileAccessService,
+            $rawThumbnailService,
+            $sourceFile,
             $params
         );
 
@@ -101,6 +115,96 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
                 'job_id' => $this->editingJob->id,
                 'result' => $result,
             ]);
+        }
+    }
+
+    /**
+     * Submit the source to Autoenhance, transparently substituting a full-size
+     * JPEG when the source is a RAW variant Autoenhance cannot decode.
+     *
+     * Supported RAW (standard NEF, CR2, ARW, DNG, TIFF, ...) is uploaded
+     * natively via the existing URL flow to preserve full RAW latitude.
+     *
+     * @param  array<string, mixed>  $params
+     * @return array<string, mixed>|null
+     */
+    private function submitWithRawSubstitution(
+        AutoenhanceService $autoenhanceService,
+        ShootFileAccessService $fileAccessService,
+        RawThumbnailService $rawThumbnailService,
+        ?ShootFile $sourceFile,
+        array $params
+    ): ?array {
+        $filename = $sourceFile->filename ?? null;
+
+        // Only RAW files are candidates for substitution.
+        if (!$sourceFile || !$filename || !$rawThumbnailService->isRawFile($filename)) {
+            return $autoenhanceService->submitEditingJob(
+                $this->editingJob->original_image_url,
+                $this->editingJob->editing_type,
+                $params
+            );
+        }
+
+        $localPath = $fileAccessService->findLocalFilePath($sourceFile);
+        if (!$localPath) {
+            // Fall back to Dropbox if the file isn't present locally.
+            $localPath = $fileAccessService->downloadFromDropbox($sourceFile);
+            $downloadedTemp = $localPath;
+        }
+
+        // If we can't get bytes, or the RAW is a supported variant, upload natively.
+        if (!$localPath || !$rawThumbnailService->autoenhanceNeedsJpegSubstitution($localPath)) {
+            if (!empty($downloadedTemp) && file_exists($downloadedTemp)) {
+                @unlink($downloadedTemp);
+            }
+            return $autoenhanceService->submitEditingJob(
+                $this->editingJob->original_image_url,
+                $this->editingJob->editing_type,
+                $params
+            );
+        }
+
+        Log::info('ProcessAutoenhanceEditingJob: Substituting JPEG for unsupported compressed RAW', [
+            'job_id' => $this->editingJob->id,
+            'filename' => $filename,
+        ]);
+
+        $jpegPath = $rawThumbnailService->extractFullSizeJpeg($localPath);
+        if (!empty($downloadedTemp) && file_exists($downloadedTemp)) {
+            @unlink($downloadedTemp);
+        }
+
+        if (!$jpegPath) {
+            Log::warning('ProcessAutoenhanceEditingJob: JPEG substitution failed; uploading RAW natively', [
+                'job_id' => $this->editingJob->id,
+                'filename' => $filename,
+            ]);
+            return $autoenhanceService->submitEditingJob(
+                $this->editingJob->original_image_url,
+                $this->editingJob->editing_type,
+                $params
+            );
+        }
+
+        try {
+            $jpegName = pathinfo($filename, PATHINFO_FILENAME) . '.jpg';
+            $contents = file_get_contents($jpegPath);
+            $params['image_name'] = $jpegName;
+            $params['content_type'] = 'image/jpeg';
+            $params['mime_type'] = 'image/jpeg';
+
+            return $autoenhanceService->submitEditingJobFromBuffer(
+                $contents,
+                $jpegName,
+                'image/jpeg',
+                $this->editingJob->editing_type,
+                $params
+            );
+        } finally {
+            if (file_exists($jpegPath)) {
+                @unlink($jpegPath);
+            }
         }
     }
 

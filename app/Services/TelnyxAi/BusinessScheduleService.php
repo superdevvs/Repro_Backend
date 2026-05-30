@@ -2,6 +2,7 @@
 
 namespace App\Services\TelnyxAi;
 
+use App\Models\VoiceScheduleOverride;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 
@@ -47,7 +48,7 @@ class BusinessScheduleService
         $now = $now ? $now->copy() : Carbon::now($officeTz);
         $now->setTimezone($officeTz);
 
-        $override = $this->matchOverride($config['schedule_overrides'] ?? [], $now, $officeTz);
+        $override = $this->matchOverride($this->allOverrides($config), $now, $officeTz);
         if ($override) {
             $state = $override['mode'] === 'open' ? self::STATE_OVERRIDE_OPEN : self::STATE_OVERRIDE_CLOSED;
             return $this->payload($state, $override['label'] ?? null, $override['starts_at_dt'], $override['ends_at_dt'], $now, $callerTimezone, $officeTz, $config);
@@ -218,6 +219,73 @@ class BusinessScheduleService
             }
         }
         return null;
+    }
+
+    /**
+     * Merge settings-defined overrides (JSON) with DB-backed overrides from the
+     * voice_schedule_overrides table. DB rows take precedence by being appended
+     * last so an explicit "Add override now" wins recency ties.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    private function allOverrides(array $config): array
+    {
+        $fromSettings = is_array($config['schedule_overrides'] ?? null) ? $config['schedule_overrides'] : [];
+
+        $fromDb = [];
+        try {
+            $fromDb = VoiceScheduleOverride::query()
+                ->orderBy('starts_at')
+                ->get()
+                ->map(fn (VoiceScheduleOverride $o) => [
+                    'starts_at' => optional($o->starts_at)->toIso8601String(),
+                    'ends_at' => optional($o->ends_at)->toIso8601String(),
+                    'mode' => $o->mode,
+                    'label' => $o->label,
+                ])
+                ->all();
+        } catch (\Throwable $e) {
+            $fromDb = [];
+        }
+
+        return array_merge($fromSettings, $fromDb);
+    }
+
+    /**
+     * Provide the message + transfer behaviour Robbie should adopt for the
+     * current schedule state. Used by the voice routing layer.
+     *
+     * @return array{state:string,allow_live_transfer:bool,message:string,label:?string,next_open_at:?string}
+     */
+    public function robbieScheduleGuidance(?Carbon $now = null, ?string $callerTimezone = null): array
+    {
+        $config = $this->settings->all();
+        $snapshot = $this->currentState($now, $callerTimezone);
+        $state = $snapshot['state'];
+        $label = $snapshot['label'];
+
+        $outOfHours = (string) ($config['out_of_hours_message']
+            ?? 'Our team is offline right now, but I can schedule a callback for the next business morning.');
+        $holidayTemplate = (string) ($config['holiday_message']
+            ?? 'Our office is closed today for {holiday_label}. I can help you now or schedule a callback.');
+
+        $message = match ($state) {
+            self::STATE_TEAM_OPEN, self::STATE_OVERRIDE_OPEN => 'I can connect you to the team right now.',
+            self::STATE_HOLIDAY_CLOSED => str_replace('{holiday_label}', (string) ($label ?: 'a holiday'), $holidayTemplate),
+            self::STATE_OVERRIDE_CLOSED => $label
+                ? "We're closed right now ({$label}), but I can help, or schedule a callback."
+                : $outOfHours,
+            self::STATE_QUIET_HOURS, self::STATE_AI_ONLY => $outOfHours,
+            default => $outOfHours,
+        };
+
+        return [
+            'state' => $state,
+            'allow_live_transfer' => in_array($state, [self::STATE_TEAM_OPEN, self::STATE_OVERRIDE_OPEN], true),
+            'message' => $message,
+            'label' => $label,
+            'next_open_at' => $snapshot['next_open_at'] ?? null,
+        ];
     }
 
     /**
