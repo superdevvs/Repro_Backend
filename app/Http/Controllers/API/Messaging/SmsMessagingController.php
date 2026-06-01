@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\API\Messaging;
 
+use App\Exceptions\Messaging\SmsSendException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Messaging\SmsContactResource;
 use App\Http\Resources\Messaging\SmsMessageResource;
@@ -76,13 +77,28 @@ class SmsMessagingController extends Controller
             'contact_type' => ['nullable', 'string'],
         ]);
 
-        $message = $this->messaging->sendSms(array_merge($data, [
-            'user_id' => $request->user()?->id,
-            'contact_phone' => $data['to'],
-        ]));
+        try {
+            $message = $this->messaging->sendSms(array_merge($data, [
+                'user_id' => $request->user()?->id,
+                'contact_phone' => $data['to'],
+            ]));
+        } catch (SmsSendException $e) {
+            return response()->json([
+                'success' => false,
+                'error' => 'sms_send_failed',
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'sms_send_failed',
+                'message' => 'SMS could not be sent. Please try again.',
+            ], 422);
+        }
 
         $thread = $message->thread->load(['contact', 'assignedTo']);
-
         return response()->json([
             'message' => SmsMessageResource::make($message),
             'thread' => SmsThreadResource::make($thread),
@@ -108,15 +124,31 @@ class SmsMessagingController extends Controller
             ], 422);
         }
 
-        $message = $this->messaging->sendSms([
-            'to' => $toNumber,
-            'body_text' => $data['body'],
-            'sms_number_id' => $data['sms_number_id'] ?? null,
-            'user_id' => $request->user()?->id,
-            'contact_phone' => $toNumber,
-            'contact_name' => $contact->name,
-            'contact_type' => $contact->type,
-        ]);
+        try {
+            $message = $this->messaging->sendSms([
+                'to' => $toNumber,
+                'body_text' => $data['body'],
+                'sms_number_id' => $data['sms_number_id'] ?? null,
+                'user_id' => $request->user()?->id,
+                'contact_phone' => $toNumber,
+                'contact_name' => $contact->name,
+                'contact_type' => $contact->type,
+            ]);
+        } catch (SmsSendException $e) {
+            return response()->json([
+                'success' => false,
+                'error' => 'sms_send_failed',
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'sms_send_failed',
+                'message' => 'SMS could not be sent. Please try again.',
+            ], 422);
+        }
 
         // Staff manual reply pauses AI on this thread (per-thread takeover).
         $pauseMinutes = (int) config('services.telnyx.ai_takeover_pause_minutes', 120);

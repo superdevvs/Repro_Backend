@@ -63,4 +63,69 @@ class ShootFinalizeControllerTest extends TestCase
                 && $job->finalStatus === 'completed';
         });
     }
+
+    public function test_internal_no_charge_shoot_can_finalize_without_media_when_explicitly_confirmed(): void
+    {
+        Queue::fake();
+
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client']);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'service_id' => null,
+            'status' => Shoot::STATUS_READY,
+            'workflow_status' => Shoot::STATUS_READY,
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'product_status' => Shoot::PRODUCT_STATUS_NO_PRODUCT,
+            'base_quote' => 0,
+            'tax_amount' => 0,
+            'total_quote' => 0,
+            'payment_status' => 'paid',
+            'bypass_paywall' => true,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/shoots/' . $shoot->id . '/finalize', [
+            'allow_no_media_delivery' => true,
+        ]);
+
+        $response->assertAccepted()
+            ->assertJsonPath('data.queued', true);
+
+        Queue::assertPushed(FinalizeShootJob::class, function (FinalizeShootJob $job) use ($shoot) {
+            return $job->shootId === $shoot->id
+                && $job->allowNoMediaDelivery === true;
+        });
+    }
+
+    public function test_standard_shoot_without_media_still_cannot_finalize(): void
+    {
+        Queue::fake();
+
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client']);
+        $service = Service::factory()->create();
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'service_id' => $service->id,
+            'status' => Shoot::STATUS_READY,
+            'workflow_status' => Shoot::STATUS_READY,
+            'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+            'product_status' => Shoot::PRODUCT_STATUS_HAS_PRODUCT,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/shoots/' . $shoot->id . '/finalize', [
+            'allow_no_media_delivery' => true,
+        ]);
+
+        $response->assertBadRequest()
+            ->assertJsonPath('message', 'No edited files to finalize');
+
+        Queue::assertNotPushed(FinalizeShootJob::class);
+    }
 }

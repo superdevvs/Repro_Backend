@@ -47,7 +47,8 @@ class FinalizeShootJob implements ShouldQueue
         public int $shootId,
         public int $userId,
         public ?string $finalStatus = null,
-        public ?int $shootServiceId = null
+        public ?int $shootServiceId = null,
+        public bool $allowNoMediaDelivery = false
     ) {
         $this->onQueue('default');
     }
@@ -94,6 +95,9 @@ class FinalizeShootJob implements ShouldQueue
                         'shoot_service_id' => $this->shootServiceId,
                         'full_order_delivery' => $isFullOrderDelivery,
                         'previous_status' => $previousStatus,
+                        'allow_no_media_delivery' => $this->allowNoMediaDelivery,
+                        'shoot_type' => $shoot->shoot_type,
+                        'product_status' => $shoot->product_status,
                     ],
                     $actor
                 );
@@ -115,6 +119,7 @@ class FinalizeShootJob implements ShouldQueue
                     'final_status' => $this->finalStatus,
                     'shoot_service_id' => $this->shootServiceId,
                     'full_order_delivery' => $isFullOrderDelivery,
+                    'allow_no_media_delivery' => $this->allowNoMediaDelivery,
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -205,9 +210,12 @@ class FinalizeShootJob implements ShouldQueue
                 ->when($this->shootServiceId, fn ($q) => $q->where('shoot_service_id', $this->shootServiceId))
                 ->count();
             $hasEditedWithoutRaw = !empty($completedIds) && $rawCount === 0;
+            $allowNoMediaDelivery = $this->allowNoMediaDelivery
+                && !$this->shootServiceId
+                && $shoot->allowsNoMediaDelivery();
 
             $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
-            if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw) {
+            if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
                     'action' => 'finalize_failed',
@@ -221,7 +229,7 @@ class FinalizeShootJob implements ShouldQueue
                 return null;
             }
 
-            if (empty($completedIds)) {
+            if (empty($completedIds) && !$allowNoMediaDelivery) {
                 $shoot->workflowLogs()->create([
                     'user_id' => $this->userId,
                     'action' => 'finalize_failed',
@@ -244,17 +252,22 @@ class FinalizeShootJob implements ShouldQueue
                     'total_files' => count($completedIds),
                     'final_status' => $this->finalStatus,
                     'shoot_service_id' => $this->shootServiceId,
+                    'allow_no_media_delivery' => $allowNoMediaDelivery,
+                    'shoot_type' => $shoot->shoot_type,
+                    'product_status' => $shoot->product_status,
                 ],
             ]);
 
             // ---- The hot path: one UPDATE instead of N Http downloads + N saves.
-            ShootFile::query()
-                ->whereIn('id', $completedIds)
-                ->update([
-                    'workflow_stage' => ShootFile::STAGE_VERIFIED,
-                    'verified_at' => now(),
-                    'verified_by' => $this->userId,
-                ]);
+            if (!empty($completedIds)) {
+                ShootFile::query()
+                    ->whereIn('id', $completedIds)
+                    ->update([
+                        'workflow_stage' => ShootFile::STAGE_VERIFIED,
+                        'verified_at' => now(),
+                        'verified_by' => $this->userId,
+                    ]);
+            }
 
             // ---- Service-item rollups.
             $isFullOrderDelivery = true;

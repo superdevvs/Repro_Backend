@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Models\User;
+use App\Models\Shoot;
 use App\Models\ShootFile;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -332,6 +333,10 @@ class ShootResource extends JsonResource
             'completedAt' => $this->completed_at?->toIso8601String(),
             'status' => $this->status,
             'workflowStatus' => $this->workflow_status,
+            'shoot_type' => $this->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD,
+            'shootType' => $this->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD,
+            'product_status' => $this->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT,
+            'productStatus' => $this->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT,
             'deliveryStatus' => $this->delivery_status ?? 'not_started',
             'rawPhotoCount' => (int) ($this->raw_photo_count ?? 0),
             'editedPhotoCount' => (int) ($this->edited_photo_count ?? 0),
@@ -591,4 +596,3 @@ class ShootResource extends JsonResource
         ];
     }
 }
-

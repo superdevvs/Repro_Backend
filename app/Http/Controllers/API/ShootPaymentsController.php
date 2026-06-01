@@ -47,6 +47,7 @@ class ShootPaymentsController extends Controller
         $request->validate([
             'final_status' => 'nullable|string|in:admin_verified,completed',
             'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
+            'allow_no_media_delivery' => 'nullable|boolean',
         ]);
 
         $shoot = Shoot::with(['files'])->findOrFail($shootId);
@@ -64,16 +65,19 @@ class ShootPaymentsController extends Controller
             ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
             ->get();
         $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
+        $allowNoMediaDelivery = $request->boolean('allow_no_media_delivery')
+            && $shoot->allowsNoMediaDelivery()
+            && !$shootServiceId;
         $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
 
-        if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw) {
+        if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {
             return response()->json([
-                'message' => 'Shoot can only be finalized from editing/ready/uploaded status, or when edited files exist without raw files',
+                'message' => 'Shoot can only be finalized from editing/ready/uploaded status, when edited files exist without raw files, or with explicit no-media delivery for eligible no-charge/internal shoots',
                 'current_status' => $shoot->workflow_status,
             ], 400);
         }
 
-        if ($completedFiles->isEmpty()) {
+        if ($completedFiles->isEmpty() && !$allowNoMediaDelivery) {
             return response()->json([
                 'message' => 'No edited files to finalize',
                 'data' => $shoot->only(['id', 'workflow_status']),
@@ -91,10 +95,13 @@ class ShootPaymentsController extends Controller
                     'completed_file_count' => $completedFiles->count(),
                     'final_status' => $request->input('final_status'),
                     'shoot_service_id' => $shootServiceId,
+                    'allow_no_media_delivery' => $allowNoMediaDelivery,
+                    'shoot_type' => $shoot->shoot_type,
+                    'product_status' => $shoot->product_status,
                 ],
             ]);
 
-            FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId);
+            FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId, $allowNoMediaDelivery);
 
             return response()->json([
                 'message' => 'Finalize started in background',

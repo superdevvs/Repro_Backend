@@ -25,7 +25,7 @@ use App\Services\Users\EmailHealthService;
 
 class MailService
 {
-    private const SHOOT_DELIVERED_SUBJECT = 'Your Photos Are Ready';
+    private const SHOOT_DELIVERED_SUBJECT = 'Your Shoot Has Been Delivered';
     private const SHOOT_REMINDER_SUBJECT = 'Shoot Reminder: 24 Hours to Go';
     private const SHOOT_REMOVED_SUBJECT = 'Photo Shoot Removed from Schedule';
     private const SHOOT_REQUEST_DECLINED_SUBJECT = 'Your Shoot Request Was Declined';
@@ -1986,6 +1986,10 @@ class MailService
         $totalPaid = $shoot->calculateCanonicalTotalPaid();
         $totalQuote = (float) ($shoot->total_quote ?? 0);
 
+        if ($totalQuote <= 0.01) {
+            return 'paid';
+        }
+
         if ($totalPaid <= 0) {
             return 'unpaid';
         }
@@ -1996,6 +2000,15 @@ class MailService
     private function shouldShowShootReadyPaymentLink(Shoot $shoot): bool
     {
         if ((bool) ($shoot->bypass_paywall ?? false)) {
+            return false;
+        }
+
+        $totalQuote = (float) ($shoot->total_quote ?? 0);
+        $totalPaid = $shoot->relationLoaded('payments')
+            ? $shoot->calculateCanonicalTotalPaid()
+            : (float) ($shoot->total_paid ?? 0);
+
+        if (max($totalQuote - $totalPaid, 0) <= 0.01) {
             return false;
         }
 

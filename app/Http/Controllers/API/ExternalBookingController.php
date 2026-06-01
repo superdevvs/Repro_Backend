@@ -11,11 +11,13 @@ use App\Models\Service;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Services\ShootTaxService;
+use App\Services\MailService;
 use App\Services\ShootWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\Users\ClientDashboardOnboardingService;
+use App\Services\Users\ClientEmailVerificationLinkService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -88,6 +90,7 @@ class ExternalBookingController extends Controller
 
                 // 7. Create the shoot as "requested"
                 $source = $validated['source'] ?? 'external_website';
+                $isNoCharge = (float) $pricingCalculation['total_quote'] <= 0.01;
                 $shoot = Shoot::create([
                     'client_id' => $client->id,
                     'rep_id' => $repId,
@@ -112,8 +115,10 @@ class ExternalBookingController extends Controller
                     'tax_percent' => $pricingCalculation['tax_percent'],
                     'tax_amount' => $pricingCalculation['tax_amount'],
                     'total_quote' => $pricingCalculation['total_quote'],
-                    'bypass_paywall' => false,
-                    'payment_status' => 'unpaid',
+                    'bypass_paywall' => $isNoCharge,
+                    'payment_status' => $isNoCharge ? 'paid' : 'unpaid',
+                    'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+                    'product_status' => $isNoCharge ? Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT : Shoot::PRODUCT_STATUS_HAS_PRODUCT,
                     'created_by' => "External ({$source})",
                     'updated_by' => "External ({$source})",
                     'shoot_notes' => $validated['notes'] ?? null,
@@ -151,6 +156,10 @@ class ExternalBookingController extends Controller
 
             $shoot = $result['shoot'];
 
+            if ($result['is_new_client']) {
+                $this->sendNewExternalClientAccountSetup($result['client'], $shoot);
+            }
+
             ProcessExternalShootRequestedJob::dispatch($shoot->id)->afterCommit();
 
             return response()->json([
@@ -160,6 +169,7 @@ class ExternalBookingController extends Controller
                     'status' => 'requested',
                     'client_id' => $result['client']->id,
                     'is_new_client' => $result['is_new_client'],
+                    'account_setup_required' => $result['is_new_client'],
                     'total_quote' => $shoot->total_quote,
                 ],
             ], 201);
@@ -294,6 +304,33 @@ class ExternalBookingController extends Controller
             'password' => Hash::make(Str::random(32)),
             'metadata' => app(ClientDashboardOnboardingService::class)->applyEligibility([], 'external_booking'),
         ]);
+    }
+
+    protected function sendNewExternalClientAccountSetup(User $client, Shoot $shoot): void
+    {
+        try {
+            $mailService = app(MailService::class);
+            $resetLink = $mailService->generateStoredPasswordResetLink($client);
+            $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($client, [
+                'issued_context' => 'external_booking',
+                'shoot_id' => $shoot->id,
+            ]);
+            $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($client, $verificationToken);
+
+            $mailService->sendAccountCreatedEmail($client, $resetLink, $verificationLink, null, 0, true);
+            $mailService->sendClientEmailVerificationEmail($client, [
+                'issued_context' => 'external_booking',
+                'shoot_id' => $shoot->id,
+                'verification_token' => $verificationToken,
+                'verification_link' => $verificationLink,
+            ]);
+        } catch (\Throwable $exception) {
+            Log::warning('External booking client account setup email failed.', [
+                'shoot_id' => $shoot->id,
+                'client_id' => $client->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     protected function generateUniqueUsername(string $name, string $email): string

@@ -11,11 +11,13 @@ use App\Models\SmsNumber;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\Providers\TelnyxSmsProvider;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
+use RuntimeException;
 use Tests\TestCase;
 
 class TelnyxMessagingTest extends TestCase
@@ -87,6 +89,77 @@ class TelnyxMessagingTest extends TestCase
         $this->assertSame('SENT', $message->status);
         $this->assertSame('telnyx-msg-1', $message->provider_message_id);
         $this->assertSame('+12025550100', $message->to_address);
+    }
+
+    public function test_sms_send_against_unverified_number_returns_handled_422_and_records_failure(): void
+    {
+        // Provider rejects the send the way Telnyx does for an unverified toll-free sender.
+        $this->bindThrowingTelnyxProviderMock(
+            new RuntimeException('Toll-free number is unverified (code 40300): traffic blocked until verification completes.')
+        );
+        $this->createDefaultSmsNumber();
+
+        $admin = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/messaging/sms/send', [
+            'to' => '+12025550100',
+            'body_text' => 'Telnyx unverified-number test',
+        ]);
+
+        // Must be a handled 4xx (422), never an unhandled 500 (Req 2.1, 2.2, 7.2).
+        $response->assertStatus(422);
+        $this->assertNotSame(500, $response->getStatusCode());
+        $response->assertJson([
+            'success' => false,
+            'error' => 'sms_send_failed',
+        ]);
+
+        // The client-safe message must indicate the sending number is not verified (Req 2.4).
+        $this->assertStringContainsStringIgnoringCase(
+            'not verified',
+            (string) $response->json('message')
+        );
+
+        // The failure must be recorded on the message row (Req 2.1, 2.3).
+        $message = Message::first();
+        $this->assertNotNull($message);
+        $this->assertSame('SMS', $message->channel);
+        $this->assertSame('FAILED', $message->status);
+        $this->assertNotNull($message->failed_at);
+    }
+
+    public function test_sms_send_returns_handled_422_even_when_failure_write_throws(): void
+    {
+        // Provider rejects the send (generic provider error).
+        $this->bindThrowingTelnyxProviderMock(
+            new RuntimeException('Telnyx provider rejected the request.')
+        );
+        $this->createDefaultSmsNumber();
+
+        // Simulate production schema drift: the failure-write itself fails because the
+        // failed_at column is missing from the messages table. The defensive inner
+        // try/catch must swallow this so the request still resolves to a handled 422.
+        Schema::table('messages', function (Blueprint $table) {
+            $table->dropColumn('failed_at');
+        });
+
+        $admin = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/messaging/sms/send', [
+            'to' => '+12025550100',
+            'body_text' => 'Telnyx failure-write drift test',
+        ]);
+
+        // Even though recording the failure threw a DB error, the endpoint must return a
+        // handled 422 and never an unhandled 500 (Req 2.3, 7.2).
+        $response->assertStatus(422);
+        $this->assertNotSame(500, $response->getStatusCode());
+        $response->assertJson([
+            'success' => false,
+            'error' => 'sms_send_failed',
+        ]);
     }
 
     public function test_sms_automation_uses_telnyx_provider(): void
@@ -262,8 +335,15 @@ class TelnyxMessagingTest extends TestCase
         $response->assertStatus(403);
     }
 
-    private function bindTelnyxProviderMock(string $messageId, ?int $times = 1): void
+    private function bindThrowingTelnyxProviderMock(\Throwable $error): void
     {
+        $mock = Mockery::mock(TelnyxSmsProvider::class);
+        $mock->shouldReceive('send')->once()->andThrow($error);
+
+        $this->app->instance(TelnyxSmsProvider::class, $mock);
+    }
+
+    private function bindTelnyxProviderMock(string $messageId, ?int $times = 1): void    {
         $mock = Mockery::mock(TelnyxSmsProvider::class);
         $expectation = $mock->shouldReceive('send');
 

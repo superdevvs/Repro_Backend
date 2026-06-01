@@ -126,6 +126,82 @@ class ShootBookingTest extends TestCase
     }
 
     /** @test */
+    public function admin_can_book_internal_no_product_no_charge_shoot(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $response = $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'address' => '321 Sample Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ]);
+
+        $response->assertStatus(201);
+
+        $shoot = Shoot::query()->where('address', '321 Sample Way')->first();
+        $this->assertNotNull($shoot);
+        $this->assertNull($shoot->service_id);
+        $this->assertSame(Shoot::SHOOT_TYPE_SAMPLE_UPLOAD, $shoot->shoot_type);
+        $this->assertSame(Shoot::PRODUCT_STATUS_NO_PRODUCT, $shoot->product_status);
+        $this->assertSame('paid', $shoot->payment_status);
+        $this->assertTrue((bool) $shoot->bypass_paywall);
+        $this->assertEquals(0.0, (float) $shoot->total_quote);
+        $this->assertCount(0, $shoot->services);
+    }
+
+    /** @test */
+    public function client_cannot_book_without_product(): void
+    {
+        Sanctum::actingAs($this->client);
+
+        $response = $this->postJson('/api/shoots', [
+            'address' => '654 Missing Product Ln',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ]);
+
+        $response->assertUnprocessable();
+    }
+
+    /** @test */
+    public function zero_dollar_product_shoot_is_created_as_paid(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $freeService = Service::factory()->create([
+            'name' => 'Complimentary Product',
+            'price' => 0.00,
+        ]);
+
+        $response = $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'address' => '777 Free Product Ct',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'services' => [
+                ['id' => $freeService->id, 'quantity' => 1],
+            ],
+        ]);
+
+        $response->assertStatus(201);
+
+        $shoot = Shoot::query()->where('address', '777 Free Product Ct')->first();
+        $this->assertNotNull($shoot);
+        $this->assertSame(Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT, $shoot->product_status);
+        $this->assertSame('paid', $shoot->payment_status);
+        $this->assertTrue((bool) $shoot->bypass_paywall);
+        $this->assertEquals(0.0, (float) $shoot->total_quote);
+    }
+
+    /** @test */
     public function client_can_book_shoot_with_bypass_paywall()
     {
         Sanctum::actingAs($this->client);

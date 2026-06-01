@@ -126,10 +126,10 @@ Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->
 });
 
 Route::get('/weather', [WeatherController::class, 'show'])
-    ->middleware('throttle:60,1');
+    ->middleware('throttle:300,1');
 
 Route::get('/ip-location', [IpLocationController::class, 'show'])
-    ->middleware('throttle:60,1');
+    ->middleware('throttle:300,1');
 
 Route::get('/public/share-links/{token}', [PublicShootShareLinkController::class, 'show'])
     ->name('api.public.share-links.show');

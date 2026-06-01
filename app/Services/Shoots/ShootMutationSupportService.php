@@ -23,6 +23,10 @@ class ShootMutationSupportService
 
     public function calculateBaseQuote(array $services): float
     {
+        if (empty($services)) {
+            return 0.0;
+        }
+
         $total = 0;
         $serviceIds = collect($services)->pluck('id');
         $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
@@ -194,6 +198,14 @@ class ShootMutationSupportService
 
     public function attachServices(Shoot $shoot, array $services): void
     {
+        if (empty($services)) {
+            $shoot->services()->sync([]);
+            $shoot->load(['services', 'serviceItems']);
+            $shoot->syncServiceItemRollups();
+
+            return;
+        }
+
         $serviceIds = collect($services)->pluck('id');
         $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
         $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
@@ -350,6 +362,10 @@ class ShootMutationSupportService
 
     public function ensureClientCanBookServices(int $clientId, array $services): void
     {
+        if (empty($services)) {
+            return;
+        }
+
         if (!$this->serviceGroupsFeatureAvailable()) {
             return;
         }

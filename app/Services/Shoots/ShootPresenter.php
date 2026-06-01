@@ -265,7 +265,7 @@ class ShootPresenter
         }
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
 
-        if (!$shoot->payment_status || !in_array($shoot->payment_status, ['paid', 'unpaid', 'partial'], true)) {
+        if ((float) ($shoot->total_quote ?? 0) <= 0.01 || !$shoot->payment_status || !in_array($shoot->payment_status, ['paid', 'unpaid', 'partial'], true)) {
             $totalPaid = $shoot->total_paid ?? 0;
             $totalQuote = $shoot->total_quote ?? 0;
             $shoot->payment_status = $this->calculatePaymentStatus($totalPaid, $totalQuote);
@@ -691,6 +691,10 @@ class ShootPresenter
         }
 
         $shoot->setAttribute('services_list', $servicesArray);
+        $shoot->setAttribute('shoot_type', $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
+        $shoot->setAttribute('shootType', $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
+        $shoot->setAttribute('product_status', $shoot->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT);
+        $shoot->setAttribute('productStatus', $shoot->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT);
         $shoot->setAttribute('raw_photo_count', $shoot->raw_photo_count ?? 0);
         $shoot->setAttribute('edited_photo_count', $shoot->edited_photo_count ?? 0);
         $shoot->setAttribute('raw_missing_count', $shoot->raw_missing_count ?? 0);
@@ -868,6 +872,10 @@ class ShootPresenter
 
     protected function calculatePaymentStatus(float $totalPaid, float $totalQuote): string
     {
+        if ($totalQuote <= 0.01) {
+            return 'paid';
+        }
+
         if ($totalPaid <= 0) {
             return 'unpaid';
         }

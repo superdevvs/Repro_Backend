@@ -7,6 +7,7 @@ use App\Events\EmailMessageSent;
 use App\Events\SmsMessageReceived;
 use App\Events\SmsMessageSent;
 use App\Events\SmsThreadUpdated;
+use App\Exceptions\Messaging\SmsSendException;
 use App\Models\Contact;
 use App\Models\Message;
 use App\Models\MessageChannel;
@@ -158,22 +159,49 @@ class MessagingService
                 'sent_at' => now(),
                 'provider_message_id' => $providerMessageId,
             ]);
-        } catch (\Exception $e) {
-            $message->update([
-                'status' => 'FAILED',
-                'failed_at' => now(),
-                'error_message' => $e->getMessage(),
-            ]);
-            
+        } catch (\Throwable $e) {
+            // Defensive failure-write: never let recording the failure raise a new fatal error.
+            try {
+                $message->update([
+                    'status' => 'FAILED',
+                    'failed_at' => now(),
+                    'error_message' => $e->getMessage(),
+                ]);
+            } catch (\Throwable $writeError) {
+                Log::error('SMS failure-write failed; continuing with provider error', [
+                    'message_id' => $message->id,
+                    'provider_error' => $e->getMessage(),
+                    'write_error' => $writeError->getMessage(),
+                ]);
+            }
+
             Log::error('SMS send failed', [
                 'message_id' => $message->id,
+                'to_address' => $message->to_address,
                 'error' => $e->getMessage(),
             ]);
-            
-            throw $e;
+
+            // Typed exception lets the controller map to a clean 4xx (Req 2.1, 2.2).
+            throw new SmsSendException($this->clientSafeSmsError($e), previous: $e);
         }
 
         return $message->fresh();
+    }
+
+    /**
+     * Build a client-safe error message for a failed SMS send. When the provider error
+     * indicates the Telnyx sending number is unverified, surface that condition; otherwise
+     * return a generic provider-error message (Req 2.4).
+     */
+    protected function clientSafeSmsError(\Throwable $e): string
+    {
+        $raw = strtolower($e->getMessage());
+        if (str_contains($raw, 'unverified') || str_contains($raw, 'not verified')
+            || str_contains($raw, 'toll-free') || str_contains($raw, '40300')) {
+            return 'SMS could not be sent: the Telnyx sending number is not verified.';
+        }
+
+        return 'SMS could not be sent due to a provider error.';
     }
 
     public function listThreads(array $filters = []): Builder

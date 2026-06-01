@@ -41,9 +41,9 @@ class ShootServiceItemSupport
 
             $paidAmount = round(min($paidAmount, $subtotal), 2);
             $balanceDue = max(round($subtotal - $paidAmount, 2), 0);
-            $paymentStatus = $paidAmount <= 0
-                ? ShootService::PAYMENT_UNPAID
-                : ($balanceDue <= 0.01 ? ShootService::PAYMENT_PAID : ShootService::PAYMENT_PARTIALLY_PAID);
+            $paymentStatus = $subtotal <= 0.01 || $balanceDue <= 0.01
+                ? ShootService::PAYMENT_PAID
+                : ($paidAmount <= 0 ? ShootService::PAYMENT_UNPAID : ShootService::PAYMENT_PARTIALLY_PAID);
             $unlockState = $this->unlockState($shoot, $item, $paymentStatus);
 
             return [

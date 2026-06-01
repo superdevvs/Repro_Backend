@@ -53,6 +53,8 @@ class Shoot extends Model
         'admin_issue_notes',
         'status',
         'workflow_status',
+        'shoot_type',
+        'product_status',
         'created_by',
         'updated_by',
         'photos_uploaded_at',
@@ -204,6 +206,23 @@ class Shoot extends Model
     const STATUS_ON_HOLD = 'on_hold';
     const STATUS_CANCELLED = 'cancelled';
     const STATUS_DECLINED = 'declined';   // admin/rep declined the shoot request
+
+    public const SHOOT_TYPE_STANDARD = 'standard';
+    public const SHOOT_TYPE_COMPLIMENTARY = 'complimentary';
+    public const SHOOT_TYPE_SAMPLE_UPLOAD = 'sample_upload';
+    public const SHOOT_TYPE_INTERNAL_TEST = 'internal_test';
+    public const SHOOT_TYPE_PRICING_PENDING = 'pricing_pending';
+
+    public const PRODUCT_STATUS_HAS_PRODUCT = 'has_product';
+    public const PRODUCT_STATUS_NO_PRODUCT = 'no_product';
+    public const PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT = 'zero_dollar_product';
+
+    public const INTERNAL_NO_CHARGE_SHOOT_TYPES = [
+        self::SHOOT_TYPE_COMPLIMENTARY,
+        self::SHOOT_TYPE_SAMPLE_UPLOAD,
+        self::SHOOT_TYPE_INTERNAL_TEST,
+        self::SHOOT_TYPE_PRICING_PENDING,
+    ];
 
     // Legacy aliases (all map to the unified statuses above)
     const WORKFLOW_BOOKED = self::STATUS_SCHEDULED;
@@ -571,9 +590,9 @@ class Shoot extends Model
     {
         $totalPaid = $this->calculateCanonicalTotalPaid();
         $totalQuote = (float) ($this->total_quote ?? 0);
-        $newStatus = $totalPaid <= 0
-            ? 'unpaid'
-            : ($totalPaid >= $totalQuote ? 'paid' : 'partial');
+        $newStatus = $totalQuote <= 0.01
+            ? 'paid'
+            : ($totalPaid <= 0 ? 'unpaid' : ($totalPaid >= $totalQuote ? 'paid' : 'partial'));
 
         $dirty = false;
 
@@ -607,6 +626,21 @@ class Shoot extends Model
             'payment_status' => $newStatus,
             'remaining_balance' => max($totalQuote - $totalPaid, 0),
         ];
+    }
+
+    public function isNoChargeShoot(): bool
+    {
+        return (float) ($this->total_quote ?? 0) <= 0.01;
+    }
+
+    public function isInternalNoProductShoot(): bool
+    {
+        return in_array((string) ($this->shoot_type ?? self::SHOOT_TYPE_STANDARD), self::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
+    }
+
+    public function allowsNoMediaDelivery(): bool
+    {
+        return $this->isInternalNoProductShoot() || $this->isNoChargeShoot();
     }
 
     public function syncServiceItemRollups(): array

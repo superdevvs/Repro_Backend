@@ -76,6 +76,24 @@ class ShootEditablePayloadService
             'service_photographers' => 'nullable|array',
             'service_photographers.*.service_id' => 'required_with:service_photographers|integer',
             'service_photographers.*.photographer_id' => 'nullable|integer|exists:users,id',
+            'shoot_type' => [
+                'nullable',
+                Rule::in([
+                    Shoot::SHOOT_TYPE_STANDARD,
+                    Shoot::SHOOT_TYPE_COMPLIMENTARY,
+                    Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+                    Shoot::SHOOT_TYPE_INTERNAL_TEST,
+                    Shoot::SHOOT_TYPE_PRICING_PENDING,
+                ]),
+            ],
+            'product_status' => [
+                'nullable',
+                Rule::in([
+                    Shoot::PRODUCT_STATUS_HAS_PRODUCT,
+                    Shoot::PRODUCT_STATUS_NO_PRODUCT,
+                    Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
+                ]),
+            ],
         ];
     }
 
@@ -147,6 +165,12 @@ class ShootEditablePayloadService
         if (array_key_exists('total_quote', $validated)) {
             $shoot->total_quote = $validated['total_quote'];
         }
+        if (array_key_exists('shoot_type', $validated)) {
+            $shoot->shoot_type = $validated['shoot_type'] ?: Shoot::SHOOT_TYPE_STANDARD;
+        }
+        if (array_key_exists('product_status', $validated)) {
+            $shoot->product_status = $validated['product_status'] ?: Shoot::PRODUCT_STATUS_HAS_PRODUCT;
+        }
         if (array_key_exists('discount_type', $validated)) {
             $shoot->discount_type = $validated['discount_type'];
         }
@@ -183,6 +207,22 @@ class ShootEditablePayloadService
             $shoot->tax_amount = $pricingCalculation['tax_amount'];
             $shoot->total_quote = $pricingCalculation['total_quote'];
             $invoiceNeedsRefresh = true;
+        }
+
+        if (array_key_exists('services', $validated) || $shouldRecalculatePricing || $paymentFieldsProvided) {
+            $hasServices = count($targetServices) > 0;
+            if (!$hasServices) {
+                $shoot->product_status = Shoot::PRODUCT_STATUS_NO_PRODUCT;
+            } elseif ((float) ($shoot->total_quote ?? 0) <= 0.01) {
+                $shoot->product_status = Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT;
+            } elseif (!array_key_exists('product_status', $validated)) {
+                $shoot->product_status = Shoot::PRODUCT_STATUS_HAS_PRODUCT;
+            }
+
+            if ((float) ($shoot->total_quote ?? 0) <= 0.01) {
+                $shoot->payment_status = 'paid';
+                $shoot->bypass_paywall = true;
+            }
         }
 
         $propertyDetails = $shoot->property_details ?? [];

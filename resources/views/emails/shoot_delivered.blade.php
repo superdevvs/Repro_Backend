@@ -1,16 +1,16 @@
 @extends('emails.layouts.master')
 
-@section('title', 'Your Photos Are Ready')
-@section('preheader', 'Your photos are ready to review and download in the dashboard.')
+@section('title', 'Your Shoot Has Been Delivered')
+@section('preheader', 'Your shoot is complete and available to review or download in the dashboard.')
 
 @section('hero')
-    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Photos Ready</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your photos are ready.</p>
-    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">Your final media package is now available in the dashboard, along with the latest property delivery details.</p>
+    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Shoot Delivered</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your shoot has been delivered.</p>
+    <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">Your shoot is now complete and available in the dashboard for review and download.</p>
 @endsection
 
 @section('content')
-<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Your finished photos are ready for review and download.</strong></p>
+<p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#2d4769;"><strong class="dark-strong" style="color:#071223;">Your shoot is complete and your delivered files are ready for review and download.</strong></p>
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
         <tr>

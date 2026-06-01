@@ -45,9 +45,10 @@ class UpdateShootAction
         $originalAddress = $this->support->formatFullAddress($shoot);
         $originalBaseQuote = (float) $shoot->base_quote;
         $originalTotalQuote = (float) $shoot->total_quote;
-        $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
+        $normalizedRole = strtolower((string) $user->role);
+        $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
         $isClient = $user->role === 'client';
-        $isRep = $user->role === 'salesRep';
+        $isRep = in_array($normalizedRole, ['salesrep', 'sales_rep'], true);
         $isPhotographer = $user->role === 'photographer';
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
@@ -167,6 +168,13 @@ class UpdateShootAction
             ],
             ]
         ));
+
+        if (array_key_exists('services', $validated)) {
+            $targetShootType = (string) ($validated['shoot_type'] ?? $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
+            if (empty($validated['services']) && !in_array($targetShootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true)) {
+                $this->abortJson('A shoot without products must be marked complimentary, sample upload, internal test, or pricing pending.', 422);
+            }
+        }
         $availabilityPayload = $validated;
         $scheduledAtProvidedForAvailability = array_key_exists('scheduled_at', $validated);
         $scheduledDateProvidedForAvailability = array_key_exists('scheduled_date', $validated);

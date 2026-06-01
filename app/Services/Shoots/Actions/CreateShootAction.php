@@ -37,6 +37,7 @@ class CreateShootAction
     public function execute(StoreShootRequest $request, User $user): CreateShootResult
     {
         $validated = $request->validated();
+        $validated['services'] = $validated['services'] ?? [];
         $this->support->ensureClientCanBookServices((int) $validated['client_id'], $validated['services']);
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
@@ -60,7 +61,7 @@ class CreateShootAction
             );
 
             if (
-                in_array($userRole, ['admin', 'superadmin'], true)
+                in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true)
                 && array_key_exists('admin_adjusted_total_quote', $validated)
                 && $validated['admin_adjusted_total_quote'] !== null
             ) {
@@ -156,11 +157,15 @@ class CreateShootAction
                 $initialTourLinks = array_merge($autoPropertyTourLinks, $initialTourLinks);
             }
 
+            $shootType = $this->normalizeShootType($validated['shoot_type'] ?? null, $servicesPayload);
+            $productStatus = $this->resolveProductStatus($servicesPayload, (float) $pricingCalculation['total_quote'], $validated['product_status'] ?? null);
+            $isNoCharge = (float) $pricingCalculation['total_quote'] <= 0.01;
+
             $shoot = Shoot::create([
                 'client_id' => $validated['client_id'],
                 'rep_id' => $repId,
                 'photographer_id' => $photographerId,
-                'service_id' => $servicesPayload[0]['id'],
+                'service_id' => $servicesPayload[0]['id'] ?? null,
                 'address' => $validated['address'],
                 'city' => $validated['city'],
                 'state' => $validated['state'],
@@ -186,8 +191,10 @@ class CreateShootAction
                 'tax_percent' => $pricingCalculation['tax_percent'],
                 'tax_amount' => $pricingCalculation['tax_amount'],
                 'total_quote' => $pricingCalculation['total_quote'],
-                'bypass_paywall' => $validated['bypass_paywall'] ?? false,
-                'payment_status' => 'unpaid',
+                'bypass_paywall' => $isNoCharge || (bool) ($validated['bypass_paywall'] ?? false),
+                'payment_status' => $isNoCharge ? 'paid' : 'unpaid',
+                'shoot_type' => $shootType,
+                'product_status' => $productStatus,
                 'created_by' => $user->name,
                 'updated_by' => $user->name,
                 'package_name' => $validated['package_name'] ?? null,
@@ -268,6 +275,35 @@ class CreateShootAction
             'tax_amount' => $taxAmount,
             'total_quote' => $totalQuote,
         ]);
+    }
+
+    protected function normalizeShootType(?string $shootType, array $servicesPayload): string
+    {
+        $shootType = $shootType ?: Shoot::SHOOT_TYPE_STANDARD;
+
+        if (in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true)) {
+            return $shootType;
+        }
+
+        return empty($servicesPayload) ? Shoot::SHOOT_TYPE_COMPLIMENTARY : Shoot::SHOOT_TYPE_STANDARD;
+    }
+
+    protected function resolveProductStatus(array $servicesPayload, float $totalQuote, ?string $requestedStatus): string
+    {
+        if (empty($servicesPayload)) {
+            return Shoot::PRODUCT_STATUS_NO_PRODUCT;
+        }
+
+        if ($requestedStatus && in_array($requestedStatus, [
+            Shoot::PRODUCT_STATUS_HAS_PRODUCT,
+            Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
+        ], true)) {
+            return $requestedStatus;
+        }
+
+        return $totalQuote <= 0.01
+            ? Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT
+            : Shoot::PRODUCT_STATUS_HAS_PRODUCT;
     }
 
     protected function registerDeferredSideEffects(CreateShootResult $result): void

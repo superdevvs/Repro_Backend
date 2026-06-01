@@ -15,6 +15,10 @@ class ShootPaymentStatusSupport
 
     public function calculatePaymentStatus(float $totalPaid, float $totalQuote): string
     {
+        if ($totalQuote <= 0.01) {
+            return 'paid';
+        }
+
         if ($totalPaid <= 0) {
             return 'unpaid';
         }

@@ -173,6 +173,15 @@ return [
         ],
     ],
 
+    // QA / test harness configuration
+    'qa' => [
+        // Outbound destination number used by QA/test scripts (e.g. the SMS check).
+        // MUST be a valid, owned E.164 number. The documented default below uses the
+        // reserved North American 555-01xx test range, which is safe for non-delivering
+        // test runs; override per environment with QA_OUTBOUND_TEST_NUMBER as needed.
+        'outbound_test_number' => env('QA_OUTBOUND_TEST_NUMBER', '+12025550100'),
+    ],
+
     // Bright MLS Integration
     'bright_mls' => [
         'api_mode' => env('BRIGHT_MLS_API_MODE', 'new'),

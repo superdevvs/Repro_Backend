@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Shoot;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -41,12 +42,15 @@ class StoreShootRequest extends FormRequest
     public function rules(): array
     {
         $user = $this->user();
-        $isAdmin = in_array($user->role ?? '', ['admin', 'superadmin']);
+        $userRole = strtolower((string) ($user->role ?? ''));
+        $isInternalScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
+        $shootType = (string) $this->input('shoot_type', 'standard');
+        $canOmitServices = $isInternalScheduler && in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
 
         return [
             // Client ID: required for admin, optional for client (defaults to auth user)
             'client_id' => [
-                $isAdmin ? 'required' : 'nullable',
+                $isInternalScheduler ? 'required' : 'nullable',
                 'exists:users,id',
                 function ($attribute, $value, $fail) use ($user) {
                     if ($value && $user->role === 'client' && (int) $value !== $user->id) {
@@ -67,8 +71,27 @@ class StoreShootRequest extends FormRequest
             'state' => 'required|string|max:2',
             'zip' => 'required|string|max:10',
 
+            'shoot_type' => [
+                'nullable',
+                Rule::in([
+                    Shoot::SHOOT_TYPE_STANDARD,
+                    Shoot::SHOOT_TYPE_COMPLIMENTARY,
+                    Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+                    Shoot::SHOOT_TYPE_INTERNAL_TEST,
+                    Shoot::SHOOT_TYPE_PRICING_PENDING,
+                ]),
+            ],
+            'product_status' => [
+                'nullable',
+                Rule::in([
+                    Shoot::PRODUCT_STATUS_HAS_PRODUCT,
+                    Shoot::PRODUCT_STATUS_NO_PRODUCT,
+                    Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
+                ]),
+            ],
+
             // Services: required array with service_id, quantity, and price
-            'services' => 'required|array|min:1',
+            'services' => [$canOmitServices ? 'nullable' : 'required', 'array', $canOmitServices ? 'min:0' : 'min:1'],
             'services.*.id' => 'required|exists:services,id',
             'services.*.quantity' => 'nullable|integer|min:1',
             'services.*.price' => 'nullable|numeric|min:0',
@@ -109,7 +132,7 @@ class StoreShootRequest extends FormRequest
             'bypass_paywall' => 'nullable|boolean',
             'tax_region' => 'nullable|string|in:md,dc,va,none',
             'admin_adjusted_total_quote' => [
-                $isAdmin ? 'nullable' : 'prohibited',
+                $isInternalScheduler ? 'nullable' : 'prohibited',
                 'numeric',
                 'min:0',
             ],

@@ -45,7 +45,9 @@ class ExternalBookingControllerTest extends TestCase
 
         $response->assertCreated()
             ->assertJsonPath('message', 'Shoot request submitted successfully. It will be reviewed by our team.')
-            ->assertJsonPath('data.status', 'requested');
+            ->assertJsonPath('data.status', 'requested')
+            ->assertJsonPath('data.is_new_client', true)
+            ->assertJsonPath('data.account_setup_required', true);
 
         $shootId = (int) $response->json('data.shoot_id');
 
@@ -59,6 +61,15 @@ class ExternalBookingControllerTest extends TestCase
         $client = User::query()->where('email', 'external-booking-client@example.com')->first();
         $this->assertNotNull($client);
         $this->assertSame('client', $client->role);
+
+        $this->assertDatabaseHas('password_reset_tokens', [
+            'email' => 'external-booking-client@example.com',
+        ]);
+
+        $this->assertDatabaseHas('client_email_verification_tokens', [
+            'user_id' => $client->id,
+            'issued_context' => 'external_booking',
+        ]);
 
         Queue::assertPushed(ProcessExternalShootRequestedJob::class, function (ProcessExternalShootRequestedJob $job) use ($shootId) {
             return $job->shootId === $shootId

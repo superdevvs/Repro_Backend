@@ -6,10 +6,17 @@ use App\Http\Controllers\Controller;
 use App\Services\IpLocationLookupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
 
 class IpLocationController extends Controller
 {
+    /**
+     * Time-to-live (in minutes) for cached IP-location lookups. IP->location
+     * mappings are stable for relatively long periods, so a longer TTL is safe.
+     */
+    public const CACHE_TTL_MINUTES = 60;
+
     public function __construct(
         private readonly IpLocationLookupService $ipLocationLookupService,
     ) {
@@ -36,16 +43,26 @@ class IpLocationController extends Controller
         $hasHint = $request->filled('postalCode')
             || ($request->filled('latitude') && $request->filled('longitude'));
 
-        $location = $hasHint
-            ? $this->ipLocationLookupService->refine([
-                'latitude' => $request->input('latitude'),
-                'longitude' => $request->input('longitude'),
-                'postalCode' => $request->input('postalCode'),
-                'countryCode' => $request->input('countryCode'),
-                'city' => $request->input('city'),
-                'region' => $request->input('region'),
-            ])
-            : $this->ipLocationLookupService->lookup($request->ip());
+        $cacheKey = $hasHint
+            ? 'iploc:hint:' . sha1(json_encode($request->only([
+                'latitude', 'longitude', 'postalCode', 'countryCode', 'city', 'region',
+            ])))
+            : 'iploc:ip:' . sha1((string) $request->ip());
+
+        $location = Cache::remember(
+            $cacheKey,
+            now()->addMinutes(self::CACHE_TTL_MINUTES),
+            fn () => $hasHint
+                ? $this->ipLocationLookupService->refine([
+                    'latitude' => $request->input('latitude'),
+                    'longitude' => $request->input('longitude'),
+                    'postalCode' => $request->input('postalCode'),
+                    'countryCode' => $request->input('countryCode'),
+                    'city' => $request->input('city'),
+                    'region' => $request->input('region'),
+                ])
+                : $this->ipLocationLookupService->lookup($request->ip())
+        );
 
         if (!$location) {
             return response()->json([
