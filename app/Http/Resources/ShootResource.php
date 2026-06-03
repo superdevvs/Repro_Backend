@@ -10,6 +10,15 @@ use Illuminate\Http\Resources\Json\JsonResource;
 
 class ShootResource extends JsonResource
 {
+    protected function normalizeCoordinate(mixed $value): ?float
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return is_numeric($value) ? (float) $value : null;
+    }
+
     /**
      * Calculate total photographer pay from services.
      *
@@ -106,6 +115,9 @@ class ShootResource extends JsonResource
         $isPhotographer = strtolower((string) ($requestingUser?->role ?? '')) === 'photographer';
         $assignmentService = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
         $serviceCollection = $this->services;
+        $propertyDetails = is_array($this->property_details) ? $this->property_details : [];
+        $listingLatitude = $this->normalizeCoordinate($propertyDetails['latitude'] ?? $propertyDetails['lat'] ?? null);
+        $listingLongitude = $this->normalizeCoordinate($propertyDetails['longitude'] ?? $propertyDetails['lng'] ?? null);
         if ($isEditor && $requestingUser) {
             $serviceCollection = $assignmentService->filterServicesForEditor($this->resource, $requestingUser);
         }
@@ -193,7 +205,11 @@ class ShootResource extends JsonResource
                 'state' => $this->state,
                 'zip' => $this->zip,
                 'fullAddress' => "{$this->address}, {$this->city}, {$this->state} {$this->zip}",
+                'latitude' => $listingLatitude,
+                'longitude' => $listingLongitude,
             ],
+            'latitude' => $listingLatitude,
+            'longitude' => $listingLongitude,
             // Batch-load unique per-service photographer IDs to avoid N+1 queries
             'services' => (function () use ($serviceCollection, $isEditor, $assignmentService, $serviceItemByServiceId) {
                 $servicePhotographerIds = $serviceCollection

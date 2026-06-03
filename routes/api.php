@@ -69,6 +69,7 @@ use App\Http\Controllers\API\SystemTelemetryController;
 use App\Http\Controllers\API\SystemEmailHealthController;
 use App\Http\Controllers\API\ClientEmailVerificationController;
 use App\Http\Controllers\API\Admin\SystemOverviewController;
+use App\Http\Controllers\API\UploadSourceController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
 use App\Http\Controllers\StripePaymentController;
@@ -232,6 +233,9 @@ Route::prefix('dropbox')->name('dropbox.')->group(function () {
 
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'callback'])
     ->name('google-calendar.callback');
+Route::get('upload-sources/{provider}/callback', [UploadSourceController::class, 'callback'])
+    ->whereIn('provider', \App\Services\UploadSourceService::PROVIDERS)
+    ->name('upload-sources.callback');
 
 // Stripe Webhook (no auth - signature verified in controller)
 Route::post('webhooks/stripe', [StripePaymentController::class, 'handleWebhook'])
@@ -627,6 +631,7 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
+    Route::post('/shoots/{shoot}/upload-from-source', [UploadSourceController::class, 'import']);
     Route::post('/shoots/{shoot}/upload/finalize-raw', [ShootMediaController::class, 'finalizeRawUpload']);
     Route::post('/shoots/{shoot}/upload/finalize-edited', [ShootMediaController::class, 'finalizeEditedUpload']);
     Route::post('/shoots/{shoot}/approve-editing-review', [ShootMediaController::class, 'approveEditingReview']);
@@ -666,6 +671,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/upload-from-pc', [App\Http\Controllers\FileUploadController::class, 'uploadFromPC']);
     Route::post('/shoots/{shoot}/copy-from-dropbox', [App\Http\Controllers\FileUploadController::class, 'copyFromDropbox']);
     Route::get('/dropbox/browse', [App\Http\Controllers\FileUploadController::class, 'listDropboxFiles']);
+
+    Route::get('/upload-sources', [UploadSourceController::class, 'index']);
+    Route::post('/upload-sources/{provider}/connect', [UploadSourceController::class, 'connect'])
+        ->whereIn('provider', \App\Services\UploadSourceService::PROVIDERS);
+    Route::delete('/upload-sources/{provider}', [UploadSourceController::class, 'disconnect'])
+        ->whereIn('provider', \App\Services\UploadSourceService::PROVIDERS);
+    Route::get('/upload-sources/{provider}/items', [UploadSourceController::class, 'items'])
+        ->whereIn('provider', \App\Services\UploadSourceService::PROVIDERS);
 
     // Finalize a shoot (admin toggle triggers this)
     Route::post('/shoots/{shoot}/finalize', [ShootPaymentsController::class, 'finalize']);
