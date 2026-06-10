@@ -1,0 +1,380 @@
+
+   WARN  Metadata found in doc-comment for method Tests\Unit\ShootMediaArchiveServiceTest::it_generates_small_archives_from_optimized_media_when_available(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Unit\ShootMediaArchiveServiceTest::it_generates_full_archives_from_original_media_sources(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Unit\ShootMediaArchiveServiceTest::it_marks_cached_archives_as_stale_when_the_selected_source_changes(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Unit\ShootMediaArchiveServiceTest::it_generates_service_scoped_archives_for_only_the_selected_service_item(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\BatchSizeBoundTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\BatchSubmissionCreatesOneJobPerFileTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\BookingToolsTest::ai_booking_uses_booked_fallback_to_notify_client_and_photographer(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\BookingToolsTest::ai_booking_still_uses_booked_fallback_when_automation_is_handled_without_sending_client_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\BookingToolsTest::ai_booking_returns_a_validation_style_error_when_client_has_no_primary_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ClientConfirmationRecoveryTest::admin_can_list_client_confirmation_recovery_candidates(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ClientConfirmationRecoveryTest::non_admin_users_cannot_list_or_replay_client_confirmation_recovery_candidates(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ClientConfirmationRecoveryTest::replay_rejects_deliveries_with_invalid_email_or_ineligible_status(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ClientConfirmationRecoveryTest::replay_sends_client_confirmation_for_eligible_delivery_and_marks_it_recovered(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ClientConfirmationRecoveryTest::audit_command_lists_failed_and_skipped_deliveries_only(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::scheduled_email_continues_to_assigned_photographers_when_client_delivery_fails(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::scheduled_email_skips_blank_client_address_and_still_notifies_assigned_photographers(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::updated_email_skips_blank_client_address_and_still_notifies_assigned_photographers(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::shoot_requested_email_is_delivered_to_unverified_clients_as_a_transactional_message(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::shoot_requested_email_is_blocked_for_bounced_clients(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::terms_accepted_email_persists_client_account_context_without_blocking_unverified_clients(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\MailServiceTest::password_reset_email_persists_client_account_context_without_blocking_unverified_clients(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\ReelValidationCreatesNoJobsTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::admin_can_book_shoot_with_date_and_photographer(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::admin_can_book_hold_on_shoot_without_date(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::admin_can_book_internal_no_product_no_charge_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::client_cannot_book_without_product(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::zero_dollar_product_shoot_is_created_as_paid(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::client_can_book_shoot_with_bypass_paywall(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::tax_is_calculated_correctly_for_maryland(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::notes_are_created_with_correct_visibility(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::client_cannot_book_for_another_client(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::booking_fails_if_photographer_has_conflict(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootBookingTest::booking_creates_activity_log(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootListingHistoryTest::admin_can_load_the_operational_listing_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootListingHistoryTest::photographer_listing_includes_service_level_assignments(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootListingHistoryTest::admin_can_load_history_and_export_csv_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::admin_can_finalize_raw_upload_after_queue_completes(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::admin_can_upload_edited_files_while_a_shoot_is_still_scheduled(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::superadmin_can_upload_edited_files_after_delivery(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::upload_without_files_keeps_the_legacy_invalid_file_payload(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::upload_rejects_oversized_files_with_the_existing_payload_shape(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::verify_shoot_file_action_moves_the_last_completed_file_to_ready(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editor_can_generate_share_link_with_local_zip_fallback_and_broadcast_activity(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::admin_can_set_cover_media_and_clear_cached_file_lists(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::admin_can_reorder_media_after_the_controller_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::media_zip_download_returns_a_cached_archive_redirect_when_small_zip_is_ready(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::media_zip_download_can_target_a_single_service_item_archive(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::media_zip_download_rejects_a_service_item_from_another_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::client_can_download_a_paid_delivered_service_archive_on_a_partial_order(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::client_cannot_download_whole_shoot_archive_until_the_partial_order_is_paid(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::admin_can_download_raw_files_from_an_in_progress_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editing_manager_can_download_raw_files_from_an_in_progress_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editing_manager_can_download_selected_files_zip(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editing_manager_can_get_a_single_file_download_url(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::assigned_editor_can_download_raw_files_via_the_editor_raw_endpoint(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::admin_can_mark_extra_file_as_required_for_editing(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editor_raw_file_list_excludes_optional_extras_but_keeps_required_extras(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::raw_archive_source_list_excludes_optional_extras_but_keeps_required_extras(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::unassigned_editor_cannot_download_raw_files_via_the_editor_raw_endpoint(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editor_cannot_download_archive_zip_files(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editor_cannot_download_selected_files_zip(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::assigned_editor_can_get_a_single_raw_file_download_url(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::editor_cannot_download_an_edited_single_file(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::assigned_sales_rep_can_download_a_delivered_archive(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::unassigned_sales_rep_cannot_download_a_delivered_archive(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::assigned_sales_rep_can_download_selected_edited_files(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::unassigned_sales_rep_cannot_download_selected_edited_files(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::assigned_sales_rep_can_download_a_single_media_file(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::unassigned_sales_rep_cannot_download_a_single_media_file(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::sales_rep_cannot_download_raw_files_from_the_editor_raw_endpoint(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::original_media_zip_download_returns_preparing_and_queues_generation(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::public_signed_media_archive_route_redirects_when_cached_archive_is_ready(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::moving_a_shoot_to_editing_queues_the_raw_small_archive(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMediaActionsTest::moving_a_shoot_to_ready_or_delivered_queues_the_edited_small_archive(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::client_request_creation_keeps_requested_flow_and_broadcasts_activity(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_booking_is_rejected_when_selected_client_has_no_primary_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::client_self_booking_is_rejected_when_primary_email_is_missing(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_schedule_a_hold_shoot_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::scheduling_falls_back_when_scheduled_automation_did_not_send_client_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::scheduling_records_automation_client_confirmation_delivery_when_automation_sent_the_client_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::scheduling_records_skipped_client_confirmation_delivery_when_client_email_is_missing(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_approve_a_requested_shoot_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_approve_a_requested_shoot_with_inline_edits_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_approving_a_requested_shoot_with_client_facing_edits_uses_the_modified_request_trigger(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::requested_shoot_approval_email_counts_as_client_confirmation_without_sending_scheduled_duplicate(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_approve_a_requested_shoot_without_notifications_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_approve_a_requested_shoot_with_notifications_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::approval_falls_back_when_scheduled_automation_is_handled_but_client_email_was_not_sent(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::approval_records_failed_client_confirmation_delivery_when_fallback_send_fails(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_created_scheduled_shoot_uses_booked_fallback_to_notify_client_and_photographer(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_reassigning_a_photographer_uses_the_dedicated_photographer_change_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::shoot_update_falls_back_when_update_automation_did_not_send_client_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_update_a_shoot_and_emit_the_dynamic_refresh_signal(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::shoots_table_supports_the_featured_flag_with_a_false_default(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_toggle_featured_on_a_shoot_and_receive_both_payload_keys(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::assigned_sales_rep_can_toggle_featured_on_a_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::assigned_photographer_can_toggle_featured_on_a_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::client_cannot_toggle_featured_on_a_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::unassigned_photographer_cannot_toggle_featured_on_a_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::unassigned_sales_rep_cannot_toggle_featured_on_a_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootMutationActionsTest::admin_can_delete_a_shoot_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::public_branded_route_still_returns_the_public_asset_contract(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::public_video_links_are_hidden_until_the_shoot_is_delivered(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::privileged_users_can_view_video_links_before_delivery(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::delivered_video_links_are_public(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::notes_route_still_returns_note_payloads_after_the_route_split(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::public_payment_token_route_returns_the_sanitized_payment_payload(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::admin_client_requests_route_still_parses_legacy_issue_notes(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::editor_client_requests_route_only_returns_requests_for_assigned_shoots(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::legacy_single_service_photographer_assignment_route_is_compatible(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::legacy_bulk_service_photographer_assignment_route_is_compatible(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::editor_download_raw_route_uses_local_zip_fallback_when_realtime_storage_is_unavailable(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::editor_generate_share_link_route_returns_cors_headers_when_no_raw_files_exist(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::shoot_media_preflight_routes_return_cors_headers(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::public_client_profile_route_still_returns_the_profile_contract(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::album_routes_still_return_the_expected_payload_shapes(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootRouteSplitControllersTest::share_link_listing_route_still_returns_the_formatted_contract(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::admin_can_put_a_scheduled_shoot_on_hold_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::client_can_request_cancellation_for_scheduled_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::client_must_acknowledge_fee_notice_for_scheduled_cancellation_within_four_hours(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::client_withdrawing_requested_shoot_sends_cancellation_confirmation_email(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::admin_can_approve_cancellation_request_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::approved_scheduled_cancellation_applies_fee_only_invoice(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::approved_scheduled_cancellation_splits_photographer_payout_equally(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::approved_scheduled_cancellation_with_waived_fee_does_not_create_fee_or_payout(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::admin_can_cancel_shoot_without_notifications(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::cancellation_request_side_effects_notify_client_and_photographer(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::cancellation_completion_side_effects_notify_client_and_photographer(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::admin_can_reject_cancellation_request_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::client_can_request_hold_and_admin_can_approve_it_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::client_can_request_hold_for_requested_shoot(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::admin_can_reject_hold_request_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::editing_manager_can_start_editing_and_submit_for_review_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::start_editing_auto_assigns_lane_specific_editor_without_sqlite_json_length(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::editing_manager_can_complete_a_ready_shoot_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::admin_can_decline_requested_shoot_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\ShootWorkflowActionsTest::editing_manager_can_assign_editor_after_refactor(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\StudioAccessControlTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\StudioHeroSuccessRateTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\StudioMetricsAccessTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\StudioMetricsAccessTest::test_unauthenticated_request_is_rejected_with_401(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\StudioMetricsAccessTest::test_unauthorized_client_role_is_rejected_with_403(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\StudioMetricsAccessTest::test_each_unauthorized_role_is_rejected_with_403(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\StudioMetricsAccessTest::test_authorized_role_hero_returns_expected_shape(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\StudioMetricsAccessTest::test_authorized_role_recent_projects_returns_expected_shape(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\StudioMetricsAccessTest::test_authorized_role_active_queue_returns_expected_shape(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\StudioMetricsActiveQueueTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\StudioMetricsCountOnceTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for class Tests\Feature\StudioMetricsRecentProjectsTest. Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\UserBrandingControllerTest::visible_role_can_update_their_own_branding(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\UserBrandingControllerTest::hidden_role_cannot_update_their_own_branding(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\UserBrandingControllerTest::privileged_editor_can_update_someone_elses_branding_without_wiping_unsent_fields(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\UserBrandingControllerTest::public_profile_route_is_public_and_uses_branding_backed_fields(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   WARN  Metadata found in doc-comment for method Tests\Feature\UserBrandingControllerTest::public_contact_route_accepts_client_ids(). Metadata in doc-comments is deprecated and will no longer be supported in PHPUnit 12. Update your test code to use attributes instead.
+
+   FAIL  Tests\Feature\GoogleCalendarShootSyncTest
+  Γ¿» scheduled shoot creation syncs to gΓÇª 1.59s  
+  ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ  
+   FAILED  Tests\Feature\GoogleCalendarShootΓÇª   
+  An expected request was not recorded.
+Failed asserting that false is true.
+
+  at vendor\laravel\framework\src\Illuminate\Http\Client\Factory.php:379
+    375Γûò      * @return void
+    376Γûò      */
+    377Γûò     public function assertSent($callback)
+    378Γûò     {
+  Γ₧£ 379Γûò         PHPUnit::assertTrue(
+    380Γûò             $this->recorded($callback)->count() > 0,
+    381Γûò             'An expected request was not recorded.'
+    382Γûò         );
+    383Γûò     }
+
+  1   vendor\laravel\framework\src\Illuminate\Http\Client\Factory.php:379
+  2   vendor\laravel\framework\src\Illuminate\Support\Facades\Facade.php:361
+
+
+  Tests:    1 failed (16 assertions)
+  Duration: 2.08s
+
+
+RECORDED >> POST https://www.googleapis.com/calendar/v3/calendars/primary/events
+{
+    "summary": "HDR Photos",
+    "location": "100 Sync Street, Baltimore, MD 21201",
+    "description": "Service\nHDR Photos\n\nShoot Notes \/ Access Information\nUse side door. Gate code 1234.\n\nPhotographer Notes\nBring the wide-angle lens.",
+    "start": {
+        "dateTime": "2026-06-12T05:00:00-04:00",
+        "timeZone": "America\/New_York"
+    },
+    "end": {
+        "dateTime": "2026-06-12T07:00:00-04:00",
+        "timeZone": "America\/New_York"
+    },
+    "extendedProperties": {
+        "private": {
+            "repro_shoot_id": "1",
+            "repro_shoot_service_id": "1",
+            "repro_service_id": "1",
+            "repro_photographer_id": "3"
+        }
+    }
+}
+
+RECORDED >> POST https://www.googleapis.com/calendar/v3/calendars/primary/events
+{
+    "summary": "Floor Plan",
+    "location": "100 Sync Street, Baltimore, MD 21201",
+    "description": "Service\nFloor Plan\n\nShoot Notes \/ Access Information\nUse side door. Gate code 1234.\n\nPhotographer Notes\nBring the wide-angle lens.",
+    "start": {
+        "dateTime": "2026-06-12T05:00:00-04:00",
+        "timeZone": "America\/New_York"
+    },
+    "end": {
+        "dateTime": "2026-06-12T07:00:00-04:00",
+        "timeZone": "America\/New_York"
+    },
+    "extendedProperties": {
+        "private": {
+            "repro_shoot_id": "1",
+            "repro_shoot_service_id": "2",
+            "repro_service_id": "2",
+            "repro_photographer_id": "3"
+        }
+    }
+}

@@ -6,7 +6,6 @@ use App\Models\Shoot;
 use App\Models\ShootMediaAlbum;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxService;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Jobs\GenerateWatermarkedImageJob;

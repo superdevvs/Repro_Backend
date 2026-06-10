@@ -12,7 +12,6 @@ use App\Http\Middleware\PermissionMiddleware;
 use App\Http\Middleware\SystemOverviewTelemetryMiddleware;
 use App\Http\Middleware\TelnyxToolBridgeAuth;
 use App\Http\Middleware\ValidateExternalApiKey;
-use App\Jobs\BackupToDropboxJob;
 use App\Jobs\DispatchScheduledMessages;
 use App\Services\SystemOverviewTelemetryService;
 use Symfony\Component\HttpFoundation\Request;
@@ -29,7 +28,6 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withSchedule(function (Schedule $schedule) {
         // Laravel 11 in this project boots schedules from the application builder.
         $schedule->command('automations:run-system')->everyFifteenMinutes();
-        $schedule->job(new BackupToDropboxJob())->dailyAt('02:00');
         $schedule->job(new DispatchScheduledMessages())->everyMinute();
         $schedule->command('messaging:shoot-reminders')->everyFiveMinutes();
         $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');

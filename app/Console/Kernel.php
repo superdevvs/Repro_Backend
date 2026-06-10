@@ -16,7 +16,6 @@ use App\Console\Commands\SeedPhotographerAvailability;
 use App\Console\Commands\SendPayoutReports;
 use App\Console\Commands\SendWeeklyInvoiceSummaries;
 use App\Console\Commands\SendWeeklySalesReports;
-use App\Jobs\BackupToDropboxJob;
 use App\Jobs\DispatchScheduledMessages;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
@@ -53,8 +52,6 @@ class Kernel extends ConsoleKernel
         // Database-backed weekly system automations run through a tracked executor.
         $schedule->command('automations:run-system')->everyFifteenMinutes();
         
-        // Nightly backup to Dropbox - Daily at 2:00 AM
-        $schedule->job(new BackupToDropboxJob())->dailyAt('02:00');
         
         $schedule->job(new DispatchScheduledMessages())->everyMinute();
         $schedule->command('messages:retry-stuck')->everyFiveMinutes()->withoutOverlapping();
