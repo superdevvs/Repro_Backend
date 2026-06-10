@@ -20,3 +20,6 @@ codex-*.log
 /.nova
 /.vscode
 /.zed
+
+create_out.txt
+verify_reel.php
