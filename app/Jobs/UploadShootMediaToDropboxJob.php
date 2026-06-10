@@ -10,6 +10,7 @@ use App\Services\DropboxService;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Jobs\GenerateWatermarkedImageJob;
+use App\Jobs\ScanShootFileJob;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -77,6 +78,22 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
                 'workflow_stage' => ShootFile::STAGE_TODO,
             ]);
 
+            // Quarantine + scan (Req 14.1/14.2/14.3): the ShootFile is created with
+            // scan_status='quarantined' (migration default). Downstream processing
+            // (thumbnail/web generation and watermarking) is withheld until the file
+            // is scanned clean. The Scan_Job is enqueued here; once it records a clean
+            // verdict, FileScanService::release dispatches ProcessImageJob.
+            $isClearedForProcessing = $shootFile->isClearedForProcessing();
+
+            try {
+                ScanShootFileJob::dispatch($shootFile->id)->afterResponse();
+            } catch (\Throwable $e) {
+                Log::warning('UploadShootMediaToDropboxJob: scan job dispatch failed', [
+                    'file_id' => $shootFile->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             // Process image for thumbnails/web sizes
             $fileType = strtolower((string) $shootFile->file_type);
             $mimeType = strtolower((string) ($shootFile->mime_type ?? ''));
@@ -84,7 +101,7 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
                 || str_starts_with($fileType, 'image/')
                 || str_starts_with($mimeType, 'image/');
 
-            if ($shouldProcessImage) {
+            if ($shouldProcessImage && $isClearedForProcessing) {
                 try {
                     $imageService = app(\App\Services\ImageProcessingService::class);
                     $imageService->processImage($shootFile);
@@ -141,7 +158,13 @@ class UploadShootMediaToDropboxJob implements ShouldQueue
             }
 
             // Dispatch watermarking job if needed (for all image files when payment not complete)
-            if (($this->mediaType === 'image' || $this->mediaType === 'raw') && $shootFile->shouldBeWatermarked()) {
+            // Withheld until the file is scanned clean (Req 14.3): watermarking prepares
+            // media for delivery and must not run on quarantined/unscanned files.
+            if (
+                $isClearedForProcessing
+                && ($this->mediaType === 'image' || $this->mediaType === 'raw')
+                && $shootFile->shouldBeWatermarked()
+            ) {
                 GenerateWatermarkedImageJob::dispatch($shootFile);
             }
 

@@ -11,6 +11,8 @@ use App\Services\Messaging\AutomationWorkflowValidator;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
+use App\Services\MailService;
+use App\Services\SystemEmails\ProtectedAutomationEmailMap;
 use ReflectionMethod;
 use Tests\TestCase;
 
@@ -107,6 +109,8 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
             $this->createMock(TemplateVariableResolver::class),
             $this->createMock(AutomationWorkflowConverter::class),
             $this->createMock(AutomationWorkflowValidator::class),
+            $this->createMock(MailService::class),
+            $this->createMock(ProtectedAutomationEmailMap::class),
         );
     }
 

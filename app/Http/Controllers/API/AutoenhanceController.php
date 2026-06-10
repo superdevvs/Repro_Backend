@@ -4,10 +4,12 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Jobs\ProcessAutoenhanceEditingJob;
+use App\Jobs\ProcessFalEditingJob;
 use App\Models\AiEditingJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\AutoenhanceService;
+use App\Services\FalService;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -19,19 +21,25 @@ class AutoenhanceController extends Controller
 {
     public function __construct(
         private AutoenhanceService $autoenhanceService,
+        private FalService $falService,
         private ShootFileAccessService $shootFileAccessService,
     ) {
     }
 
-    public function connectionStatus()
+    public function connectionStatus(Request $request)
     {
+        $provider = $this->providerFromRequest($request);
+
         try {
             return response()->json([
                 'success' => true,
-                'data' => $this->autoenhanceService->testConnection(),
+                'data' => $provider === 'fal'
+                    ? $this->falService->testConnection()
+                    : $this->autoenhanceService->testConnection(),
             ]);
         } catch (\Exception $e) {
             Log::warning('AutoenhanceController: connection status error', [
+                'provider' => $provider,
                 'error' => $e->getMessage(),
             ]);
 
@@ -40,29 +48,39 @@ class AutoenhanceController extends Controller
                 'data' => [
                     'success' => false,
                     'status' => 503,
-                    'message' => 'Autoenhance status unavailable',
+                    'provider' => $provider,
+                    'message' => 'AI editing provider status unavailable',
                 ],
             ]);
         }
     }
 
-    public function getEditingTypes()
+    public function getEditingTypes(Request $request)
     {
+        $provider = $this->providerFromRequest($request);
+
         try {
             return response()->json([
                 'success' => true,
-                'data' => $this->autoenhanceService->getEditingTypes(),
+                'provider' => $provider,
+                'data' => $provider === 'fal'
+                    ? $this->falService->getImageEditingTypes()
+                    : $this->autoenhanceService->getEditingTypes(),
             ]);
         } catch (\Exception $e) {
             Log::error('AutoenhanceController: Error getting editing types', [
+                'provider' => $provider,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => true,
-                'data' => $this->autoenhanceService->getDefaultEditingTypes(),
-                'message' => 'Using default Autoenhance editing types',
+                'provider' => $provider,
+                'data' => $provider === 'fal'
+                    ? $this->falService->getImageEditingTypes()
+                    : $this->autoenhanceService->getDefaultEditingTypes(),
+                'message' => 'Using default AI editing types',
             ]);
         }
     }
@@ -71,9 +89,10 @@ class AutoenhanceController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'shoot_id' => 'required|exists:shoots,id',
-            'file_ids' => 'required|array|min:1',
+            'file_ids' => 'required|array|min:1|max:100',
             'file_ids.*' => 'required|exists:shoot_files,id',
             'editing_type' => 'required|string',
+            'provider' => 'nullable|string|in:autoenhance,fal',
             'params' => 'nullable|array',
         ]);
 
@@ -86,6 +105,7 @@ class AutoenhanceController extends Controller
         }
 
         try {
+            $provider = $this->providerFromRequest($request);
             $shoot = Shoot::findOrFail($request->shoot_id);
             $user = $request->user();
             if (!$this->canEditShoot($user, $shoot)) {
@@ -109,7 +129,7 @@ class AutoenhanceController extends Controller
                 }
 
                 $imageUrl = $this->getImageUrl($shootFile);
-                if (!$imageUrl) {
+                if (!$imageUrl && $provider === 'autoenhance') {
                     Log::warning('AutoenhanceController: Could not get image URL', [
                         'file_id' => $fileId,
                     ]);
@@ -121,28 +141,31 @@ class AutoenhanceController extends Controller
                     'shoot_id' => $shoot->id,
                     'shoot_file_id' => $shootFile->id,
                     'user_id' => $user->id,
-                    'provider' => 'autoenhance',
+                    'provider' => $provider,
                     'status' => AiEditingJob::STATUS_PENDING,
                     'editing_type' => $request->editing_type,
                     'editing_params' => $request->params ?? [],
-                    'original_image_url' => $imageUrl,
+                    'original_image_url' => $imageUrl ?: ('shoot-file:' . $shootFile->id),
                 ]);
 
-                ProcessAutoenhanceEditingJob::dispatchAfterResponse($editingJob);
+                $provider === 'fal'
+                    ? ProcessFalEditingJob::dispatchAfterResponse($editingJob)
+                    : ProcessAutoenhanceEditingJob::dispatchAfterResponse($editingJob);
                 $jobs->push($editingJob);
             }
 
             if ($jobs->isEmpty()) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No valid files could be queued for Autoenhance editing',
+                    'message' => 'No valid files could be queued for AI editing',
                     'skipped' => $skipped,
                 ], 400);
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Autoenhance editing jobs submitted successfully',
+                'message' => 'AI editing jobs submitted successfully',
+                'provider' => $provider,
                 'data' => $jobs->map(fn (AiEditingJob $job) => $this->presentJob($job))->values(),
                 'skipped' => $skipped,
             ], 201);
@@ -154,7 +177,7 @@ class AutoenhanceController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to submit Autoenhance editing job',
+                'message' => 'Failed to submit AI editing job',
                 'error' => $e->getMessage(),
             ], 500);
         }
@@ -488,6 +511,7 @@ class AutoenhanceController extends Controller
             'staged_ids' => 'nullable|array|min:1|max:50',
             'staged_ids.*' => 'nullable|string',
             'editing_type' => 'nullable|string|in:enhance,sky_replace,vertical_correction,window_pull,hdr_merge',
+            'provider' => 'nullable|string|in:autoenhance,fal',
             'params' => 'nullable',
         ]);
 
@@ -507,6 +531,7 @@ class AutoenhanceController extends Controller
             ], 401);
         }
 
+        $provider = $this->providerFromRequest($request);
         $editingType = $request->input('editing_type', 'enhance');
         $rawParams = $request->input('params');
         if (is_string($rawParams)) {
@@ -610,34 +635,46 @@ class AutoenhanceController extends Controller
                     'shoot_id' => null,
                     'shoot_file_id' => null,
                     'user_id' => $user->id,
-                    'provider' => 'autoenhance',
+                    'provider' => $provider,
                     'status' => AiEditingJob::STATUS_PENDING,
                     'editing_type' => $editingType,
                     'editing_params' => $rawParams,
                     'original_image_url' => $publicUrl,
                 ]);
 
-                // Submit synchronously using a binary buffer so Autoenhance does not
-                // need to fetch our local URL.
                 $providerParams = array_merge($rawParams, [
                     'image_name' => $originalName,
                     'content_type' => $contentType,
                     'mime_type' => $contentType,
                 ]);
 
-                $result = $this->autoenhanceService->submitEditingJobFromBuffer(
-                    $contents,
-                    $originalName,
-                    $contentType,
-                    $editingType,
-                    $providerParams
-                );
+                $result = $provider === 'fal'
+                    ? $this->falService->submitImageEditFromBuffer(
+                        $contents,
+                        $originalName,
+                        $contentType,
+                        $editingType,
+                        $providerParams
+                    )
+                    : $this->autoenhanceService->submitEditingJobFromBuffer(
+                        $contents,
+                        $originalName,
+                        $contentType,
+                        $editingType,
+                        $providerParams
+                    );
 
-                if (!is_array($result) || !($result['image_id'] ?? null)) {
+                $providerJobId = is_array($result)
+                    ? ($provider === 'fal'
+                        ? ($result['request_id'] ?? $result['job_id'] ?? null)
+                        : ($result['image_id'] ?? null))
+                    : null;
+
+                if (!is_array($result) || !$providerJobId) {
                     $errorMessage = is_array($result)
-                        ? ($result['error'] ?? 'Autoenhance submission failed')
-                        : 'Autoenhance submission failed';
-                    $editingJob->markAsFailed(is_string($errorMessage) ? $errorMessage : 'Autoenhance submission failed');
+                        ? ($result['error'] ?? 'AI editing submission failed')
+                        : 'AI editing submission failed';
+                    $editingJob->markAsFailed(is_string($errorMessage) ? $errorMessage : 'AI editing submission failed');
                     if (is_array($result)) {
                         $editingJob->provider_payload = $result;
                         $editingJob->save();
@@ -646,9 +683,11 @@ class AutoenhanceController extends Controller
                     continue;
                 }
 
-                $editingJob->autoenhance_image_id = $result['image_id'];
-                $editingJob->provider_job_id = $result['image_id'];
-                $editingJob->provider_order_id = $result['order_id'] ?? null;
+                if ($provider === 'autoenhance') {
+                    $editingJob->autoenhance_image_id = $providerJobId;
+                    $editingJob->provider_order_id = $result['order_id'] ?? null;
+                }
+                $editingJob->provider_job_id = (string) $providerJobId;
                 $editingJob->provider_payload = $result['data'] ?? null;
                 $editingJob->status = AiEditingJob::STATUS_PROCESSING;
                 $editingJob->started_at = now();
@@ -672,7 +711,7 @@ class AutoenhanceController extends Controller
         if (empty($jobs) && !empty($skipped)) {
             return response()->json([
                 'success' => false,
-                'message' => 'No images could be submitted to Autoenhance',
+                'message' => 'No images could be submitted to AI editing',
                 'skipped' => $skipped,
             ], 422);
         }
@@ -680,6 +719,7 @@ class AutoenhanceController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Quick-edit jobs submitted',
+            'provider' => $provider,
             'data' => collect($jobs)->map(fn (AiEditingJob $job) => $this->presentJob(
                 $job->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])
             ))->values(),
@@ -705,9 +745,12 @@ class AutoenhanceController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthenticated'], 401);
         }
 
-        $query = AiEditingJob::where('provider', 'autoenhance')
+        $query = AiEditingJob::whereIn('provider', ['autoenhance', 'fal'])
             ->where('status', AiEditingJob::STATUS_PROCESSING)
-            ->whereNotNull('autoenhance_image_id');
+            ->where(function ($query) {
+                $query->whereNotNull('autoenhance_image_id')
+                    ->orWhereNotNull('provider_job_id');
+            });
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             $query->where('user_id', $user->id);
         }
@@ -716,23 +759,33 @@ class AutoenhanceController extends Controller
         $updated = [];
         foreach ($jobs as $job) {
             try {
-                $status = $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
+                $status = $job->provider === 'fal'
+                    ? $this->falService->imageEditStatus((string) $job->provider_job_id)
+                    : $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
                 if (!$status) continue;
 
                 $normalized = strtolower((string) ($status['status'] ?? 'processing'));
                 $job->provider_result = $status;
 
                 if ($normalized === 'completed') {
-                    $editedImageUrl = $status['enhanced_image_url']
-                        ?? $status['result_url']
-                        ?? $status['image_url']
-                        ?? $status['edited_image_url']
-                        ?? null;
-                    if (!$editedImageUrl) {
-                        $editedImageUrl = $this->autoenhanceService->downloadEditedImage($job->autoenhance_image_id);
+                    if ($job->provider === 'fal') {
+                        $result = $this->falService->imageEditResult((string) $job->provider_job_id);
+                        $editedImageUrl = $result['edited_image_url'] ?? $result['image_url'] ?? null;
+                        $job->provider_result = array_merge($job->provider_result ?? [], [
+                            'result' => $result,
+                        ]);
+                    } else {
+                        $editedImageUrl = $status['enhanced_image_url']
+                            ?? $status['result_url']
+                            ?? $status['image_url']
+                            ?? $status['edited_image_url']
+                            ?? null;
+                        if (!$editedImageUrl) {
+                            $editedImageUrl = $this->autoenhanceService->downloadEditedImage($job->autoenhance_image_id);
+                        }
                     }
                     if (!$editedImageUrl) {
-                        $job->markAsFailed('Enhanced image URL not found in Autoenhance response');
+                        $job->markAsFailed('Enhanced image URL not found in AI editing provider response');
                         $updated[] = $job->id;
                         continue;
                     }
@@ -795,10 +848,11 @@ class AutoenhanceController extends Controller
                 'image/webp' => 'webp',
                 default => 'jpg',
             };
+            $provider = $job->provider ?: 'autoenhance';
             $baseName = $job->shoot_id
-                ? ('shoots/' . $job->shoot_id . '/autoenhance')
-                : ('autoenhance-uploads/' . $job->user_id . '/edited');
-            $filename = Str::slug('autoenhance-' . $job->id) . '.' . $extension;
+                ? ('shoots/' . $job->shoot_id . '/' . $provider)
+                : ('ai-editing-uploads/' . $job->user_id . '/edited');
+            $filename = Str::slug($provider . '-' . $job->id) . '.' . $extension;
             $path = $baseName . '/' . $filename;
             Storage::disk('public')->put($path, $binary, 'public');
             $publicPath = 'storage/' . $path;
@@ -821,7 +875,7 @@ class AutoenhanceController extends Controller
                     'ai_editing_job_id' => $job->id,
                     'is_ai_edited' => true,
                     'ai_editing_metadata' => [
-                        'provider' => 'autoenhance',
+                        'provider' => $provider,
                         'editing_type' => $job->editing_type,
                         'completed_at' => now()->toIso8601String(),
                     ],
@@ -842,13 +896,17 @@ class AutoenhanceController extends Controller
     {
         try {
             $user = $request->user();
-            $query = AiEditingJob::with(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])->where('provider', 'autoenhance');
+            $query = AiEditingJob::with(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])
+                ->whereIn('provider', ['autoenhance', 'fal']);
 
             if ($request->has('shoot_id')) {
                 $query->where('shoot_id', $request->shoot_id);
             }
             if ($request->has('status')) {
                 $query->where('status', $request->status);
+            }
+            if ($request->has('provider')) {
+                $query->where('provider', $this->providerFromRequest($request));
             }
             if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
                 $query->where('user_id', $user->id);
@@ -873,7 +931,7 @@ class AutoenhanceController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to retrieve Autoenhance jobs',
+                'message' => 'Failed to retrieve AI editing jobs',
                 'error' => $e->getMessage(),
             ], 500);
         }
@@ -891,7 +949,12 @@ class AutoenhanceController extends Controller
                 ], 403);
             }
 
-            if ($job->isProcessing() && $job->autoenhance_image_id) {
+            if ($job->isProcessing() && $job->provider === 'fal' && $job->provider_job_id) {
+                $status = $this->falService->imageEditStatus((string) $job->provider_job_id);
+                if (($status['status'] ?? null) === 'completed') {
+                    ProcessFalEditingJob::dispatchAfterResponse($job);
+                }
+            } elseif ($job->isProcessing() && $job->autoenhance_image_id) {
                 $status = $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
                 if (($status['status'] ?? null) === 'completed') {
                     ProcessAutoenhanceEditingJob::dispatchAfterResponse($job);
@@ -944,7 +1007,9 @@ class AutoenhanceController extends Controller
             // just re-fetch the result instead of re-submitting from scratch. This
             // covers the "Enhanced image URL not found in Autoenhance response"
             // failure mode where the upload succeeded but the local download didn't.
-            if ($job->autoenhance_image_id) {
+            $provider = $job->provider ?: $this->defaultProvider();
+
+            if ($provider === 'autoenhance' && $job->autoenhance_image_id) {
                 $status = $this->autoenhanceService->getJobStatus($job->autoenhance_image_id);
                 $normalized = strtolower((string) ($status['status'] ?? ''));
                 if ($status && $normalized === 'completed') {
@@ -962,7 +1027,7 @@ class AutoenhanceController extends Controller
                         $job->markAsCompleted($stored ?: $editedImageUrl);
                         return response()->json([
                             'success' => true,
-                            'message' => 'Autoenhance result downloaded',
+                            'message' => 'AI editing result downloaded',
                             'data' => $this->presentJob($job->refresh()->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])),
                         ]);
                     }
@@ -980,16 +1045,19 @@ class AutoenhanceController extends Controller
             $job->edited_image_url = null;
             $job->autoenhance_image_id = null;
             $job->provider_job_id = null;
+            $job->provider = $provider;
             $job->started_at = null;
             $job->completed_at = null;
             $job->retry_count = 0;
             $job->save();
 
-            ProcessAutoenhanceEditingJob::dispatchAfterResponse($job);
+            $provider === 'fal'
+                ? ProcessFalEditingJob::dispatchAfterResponse($job)
+                : ProcessAutoenhanceEditingJob::dispatchAfterResponse($job);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Autoenhance job re-queued for processing',
+                'message' => 'AI editing job re-queued for processing',
                 'data' => $this->presentJob($job->refresh()->load(['shoot:id,address,city,state,zip', 'shootFile', 'user:id,name,email'])),
             ]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
@@ -1030,7 +1098,7 @@ class AutoenhanceController extends Controller
                 ], 400);
             }
 
-            if ($job->autoenhance_image_id) {
+            if ($job->provider === 'autoenhance' && $job->autoenhance_image_id) {
                 $this->autoenhanceService->cancelJob($job->autoenhance_image_id);
             }
 
@@ -1039,7 +1107,7 @@ class AutoenhanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Autoenhance job cancelled successfully',
+                'message' => 'AI editing job cancelled successfully',
                 'data' => $this->presentJob($job),
             ]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
@@ -1132,6 +1200,26 @@ class AutoenhanceController extends Controller
     private function canEditShoot($user, Shoot $shoot): bool
     {
         return in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true);
+    }
+
+    private function providerFromRequest(Request $request): string
+    {
+        $provider = strtolower((string) (
+            $request->input('provider')
+            ?? $request->query('provider')
+            ?? $this->defaultProvider()
+        ));
+
+        return in_array($provider, ['autoenhance', 'fal'], true)
+            ? $provider
+            : $this->defaultProvider();
+    }
+
+    private function defaultProvider(): string
+    {
+        $provider = strtolower((string) config('services.ai_editing.provider', 'fal'));
+
+        return in_array($provider, ['autoenhance', 'fal'], true) ? $provider : 'fal';
     }
 
     private function getImageUrl(ShootFile $shootFile): ?string

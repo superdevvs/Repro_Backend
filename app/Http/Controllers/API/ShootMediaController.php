@@ -210,11 +210,11 @@ class ShootMediaController extends Controller
         }
     }
 
-    public function toggleFileExtra(Request $request, $shootId, $fileId)
+    public function toggleFileExtra(Request $request, Shoot $shoot, ShootFile $file)
     {
-        $shoot = Shoot::findOrFail($shootId);
-        $file = ShootFile::where('shoot_id', $shootId)->findOrFail($fileId);
         $user = auth()->user();
+        $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+
         $isAdmin = $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
         $isAssignedPhotographer = $user
             && $this->shootAuthorizationSupport->hasRole($user, ['photographer'])
@@ -356,6 +356,9 @@ class ShootMediaController extends Controller
         if (!$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
+        if ($file->isBlockedFromDelivery()) {
+            return $this->infectedFileResponse();
+        }
         if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
         }
@@ -382,6 +385,9 @@ class ShootMediaController extends Controller
         if (!$this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
+        if ($file->isBlockedFromDelivery()) {
+            return $this->infectedFileResponse();
+        }
 
         $needsWatermark = $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
@@ -398,6 +404,9 @@ class ShootMediaController extends Controller
         $files = $shoot->files()->whereIn('id', $request->input('ids'))->get();
         if ($files->contains(fn (ShootFile $file) => !$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $request->user()))) {
             return response()->json(['message' => 'Forbidden'], 403);
+        }
+        if ($files->contains(fn (ShootFile $file) => $file->isBlockedFromDelivery())) {
+            return $this->infectedFileResponse();
         }
         if ($files->contains(fn (ShootFile $file) => $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $request->user()))) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
@@ -637,6 +646,19 @@ class ShootMediaController extends Controller
                 $request,
             );
         }
+    }
+
+    /**
+     * Standard response when a file is withheld because its virus scan flagged
+     * it as infected (Req 15.7). Infected files are never previewed or
+     * downloaded; legacy/unscanned files remain servable.
+     */
+    protected function infectedFileResponse()
+    {
+        return response()->json([
+            'error_type' => 'file_infected',
+            'message' => 'This file was flagged as infected by a virus scan and cannot be previewed or downloaded.',
+        ], 403);
     }
 
     protected function withCors(Response $response, Request $request): Response

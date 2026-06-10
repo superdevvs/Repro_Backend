@@ -442,6 +442,30 @@ class AddressLookupService
     }
 
     /**
+     * Resolve an exact property address to coordinates using the shared,
+     * server-side geocode cache.
+     *
+     * @return array{latitude: float, longitude: float}|null
+     */
+    public function geocodeAddress(array $address): ?array
+    {
+        $coordinates = $this->geocodeWithCache($address);
+        if ($coordinates) {
+            return $coordinates;
+        }
+
+        // Test/imported street names are not always known to the provider.
+        // Fall back to the locality so the listing can still participate in
+        // area-based map browsing instead of remaining permanently unmapped.
+        $locality = $address;
+        unset($locality['address']);
+
+        return $this->formatAddressForApi($locality)
+            ? $this->geocodeWithCache($locality)
+            : null;
+    }
+
+    /**
      * Format address suggestions for frontend
      */
     private function formatAddressSuggestions(array $predictions): array

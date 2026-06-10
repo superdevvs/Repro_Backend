@@ -11,6 +11,7 @@ use App\Models\ShootFile;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Models\WorkflowLog;
+use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -35,31 +36,34 @@ class DashboardController extends Controller
 
         // Cache key includes user role to ensure proper access control
         $cacheKey = 'dashboard_overview_' . $user->role . '_' . $user->id;
+        $todayDate = now()->startOfDay()->toDateString();
         
-        $data = Cache::remember($cacheKey, now()->addSeconds(60), function () use ($user) {
+        $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () use ($user) {
             $today = now()->startOfDay();
+            $todayDate = $today->toDateString();
+            $scheduleScope = app(ScheduleDateScopeService::class);
 
         // Optimize: Use select to only load necessary columns
         $upcomingShoots = $this->formatShoots(
-            Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip', 
+            $scheduleScope->upcomingShoots(
+                $todayDate,
+                30,
+                ['id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
                          'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                          'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
-                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
-                ->with([
+                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
+                         'scheduled_at', 'timezone'],
+                [
                     'client:id,name,company_name,phonenumber',
                     'photographer:id,name,avatar',
                     'service:id,name,icon,category_id',
                     'service.category:id,name,icon',
-                ])
-                ->whereDate('scheduled_date', '>=', $today->toDateString())
-                ->orderBy('scheduled_date')
-                ->orderBy('time')
-                ->limit(30)
-                ->get(),
+                ],
+            ),
             $today
         );
 
-        $photographers = $this->buildPhotographerSummaries($today);
+        $photographers = $this->buildPhotographerSummaries($today, $scheduleScope);
 
         // Pending reviews removed - avoid a no-op query
         $pendingReviews = collect([]);
@@ -115,7 +119,12 @@ class DashboardController extends Controller
 
         $stats = [
             'total_shoots' => Shoot::count(),
-            'scheduled_today' => Shoot::whereDate('scheduled_date', $today->toDateString())->count(),
+            'scheduled_today' => $scheduleScope->rememberForDate(
+                $todayDate,
+                'dashboard-overview:scheduled-today',
+                60,
+                fn () => $scheduleScope->countForLocalDate($todayDate)
+            ),
             'flagged_shoots' => Shoot::where('is_flagged', true)->count(),
         ];
 
@@ -176,27 +185,44 @@ class DashboardController extends Controller
         $today = now()->startOfDay();
         $tomorrow = $today->copy()->addDay();
         $weekEnd = $today->copy()->endOfWeek();
+        $todayDate = $today->toDateString();
+        $tomorrowDate = $tomorrow->toDateString();
+        $weekEndDate = $weekEnd->toDateString();
+        $scheduleScope = app(ScheduleDateScopeService::class);
 
         $excluded = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED];
 
-        $todayCount = Shoot::whereDate('scheduled_date', $today->toDateString())
-            ->whereNotIn('status', $excluded)
-            ->count();
+        $todayCount = $scheduleScope->rememberForDate(
+            $todayDate,
+            'dashboard:schedule-summary:today:' . md5(json_encode($excluded)),
+            60,
+            fn () => $scheduleScope->countForLocalDate($todayDate, $excluded)
+        );
 
-        $tomorrowCount = Shoot::whereDate('scheduled_date', $tomorrow->toDateString())
-            ->whereNotIn('status', $excluded)
-            ->count();
+        $tomorrowCount = $scheduleScope->rememberForDate(
+            $tomorrowDate,
+            'dashboard:schedule-summary:tomorrow:' . md5(json_encode($excluded)),
+            60,
+            fn () => $scheduleScope->countForLocalDate($tomorrowDate, $excluded)
+        );
 
-        $weekCount = Shoot::whereBetween('scheduled_date', [
-                $today->toDateString(),
-                $weekEnd->toDateString(),
-            ])
-            ->whereNotIn('status', $excluded)
-            ->count();
+        $summaryDates = [];
+        $cursor = $today->copy();
+        while ($cursor->lte($weekEnd)) {
+            $summaryDates[] = $cursor->toDateString();
+            $cursor->addDay();
+        }
+
+        $weekCount = $scheduleScope->rememberForDates(
+            $summaryDates,
+            'dashboard:schedule-summary:week:' . md5(json_encode($excluded)),
+            60,
+            fn () => $scheduleScope->countForLocalRange($todayDate, $weekEndDate, $excluded)
+        );
 
         return response()->json([
             'data' => [
-                'reference_date' => $today->toDateString(),
+                'reference_date' => $todayDate,
                 'scheduled_today' => $todayCount,
                 'scheduled_tomorrow' => $tomorrowCount,
                 'scheduled_this_week' => $weekCount,
@@ -209,6 +235,8 @@ class DashboardController extends Controller
      */
     protected function formatShoots(Collection $shoots, Carbon $today, bool $includeMedia = false): Collection
     {
+        $scheduleScope = app(ScheduleDateScopeService::class);
+
         if ($includeMedia && $shoots->isNotEmpty()) {
             $shoots->loadMissing(['files' => function ($query) {
                 $query->select(
@@ -232,9 +260,13 @@ class DashboardController extends Controller
             }]);
         }
 
-        return $shoots->map(function (Shoot $shoot) use ($today, $includeMedia) {
-            $date = $shoot->scheduled_date ? Carbon::parse($shoot->scheduled_date) : null;
-            $dateTime = $this->combineDateAndTime($shoot->scheduled_date, $shoot->time);
+        return $shoots->map(function (Shoot $shoot) use ($today, $includeMedia, $scheduleScope) {
+            $localDate = $scheduleScope->localDateForShoot($shoot);
+            $localTime = $shoot->scheduled_at
+                ? $scheduleScope->localTimeForScheduledAt($shoot->scheduled_at, $shoot->timezone)
+                : $shoot->time;
+            $date = $localDate ? Carbon::parse($localDate) : null;
+            $dateTime = $this->combineDateAndTime($localDate, $localTime);
 
             $summary = [
                 'id' => $shoot->id,
@@ -382,8 +414,10 @@ class DashboardController extends Controller
     /**
      * Build quick stats for each photographer (load, availability, next slot).
      */
-    protected function buildPhotographerSummaries(Carbon $today): array
+    protected function buildPhotographerSummaries(Carbon $today, ?ScheduleDateScopeService $scheduleScope = null): array
     {
+        $scheduleScope ??= app(ScheduleDateScopeService::class);
+        $todayDate = $today->toDateString();
         $photographers = User::where('role', 'photographer')
             ->select('id', 'name', 'company_name', 'phonenumber', 'avatar', 'email', 'metadata')
             ->orderBy('name')
@@ -395,18 +429,25 @@ class DashboardController extends Controller
 
         $ids = $photographers->pluck('id');
 
-        $todayCounts = Shoot::select('photographer_id', DB::raw('count(*) as total'))
-            ->whereIn('photographer_id', $ids)
-            ->whereDate('scheduled_date', $today->toDateString())
+        $todayCounts = $scheduleScope
+            ->shootsForLocalDate(
+                $todayDate,
+                [],
+                fn ($query) => $query
+                    ->select('id', 'photographer_id', 'scheduled_date', 'scheduled_at', 'time', 'timezone', 'status')
+                    ->whereIn('photographer_id', $ids)
+            )
             ->groupBy('photographer_id')
-            ->pluck('total', 'photographer_id');
+            ->map->count();
 
-        $nextShoots = Shoot::select('id', 'photographer_id', 'scheduled_date', 'time')
-            ->whereIn('photographer_id', $ids)
-            ->whereDate('scheduled_date', '>=', $today->toDateString())
-            ->orderBy('scheduled_date')
-            ->orderBy('time')
-            ->get()
+        $nextShoots = $scheduleScope
+            ->upcomingShoots(
+                $todayDate,
+                max($photographers->count() * 3, 30),
+                ['id', 'photographer_id', 'scheduled_date', 'scheduled_at', 'time', 'timezone'],
+                [],
+                fn ($query) => $query->whereIn('photographer_id', $ids)
+            )
             ->groupBy('photographer_id')
             ->map->first();
 
@@ -479,6 +520,8 @@ class DashboardController extends Controller
 
     protected function buildWorkflowColumns(Carbon $today): array
     {
+        $scheduleScope = app(ScheduleDateScopeService::class);
+        $todayDate = $today->toDateString();
         $config = [
             [
                 'key' => 'booked',
@@ -511,12 +554,15 @@ class DashboardController extends Controller
             ],
         ];
 
-        $columns = collect($config)->map(function (array $column) use ($today) {
+        $columns = collect($config)->map(function (array $column) use ($today, $scheduleScope, $todayDate) {
             // Optimize: Use select to only load necessary columns
-            $query = Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip', 
+            $columns = ['id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
                              'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                              'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
-                             'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
+                             'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
+                             'scheduled_at', 'timezone'];
+
+            $query = Shoot::select($columns)
                     ->with([
                         'client:id,name,company_name',
                         'photographer:id,name,avatar',
@@ -536,14 +582,27 @@ class DashboardController extends Controller
             
             // For scheduled/booked column, only show shoots from today onwards
             if ($column['key'] === 'booked') {
-                $query->where('scheduled_date', '>=', $today->copy()->startOfDay()->toDateString());
-                $query->orderBy('scheduled_date', 'asc')->orderBy('time', 'asc');
+                $shoots = $scheduleScope->upcomingShoots(
+                    $todayDate,
+                    15,
+                    $columns,
+                    [
+                        'client:id,name,company_name',
+                        'photographer:id,name,avatar',
+                        'service:id,name,icon,category_id',
+                        'service.category:id,name,icon',
+                    ],
+                    function ($scopedQuery) use ($column) {
+                        $scopedQuery->whereIn('workflow_status', $column['statuses']);
+                    }
+                );
             } else {
                 $query->orderByDesc('updated_at');
+                $shoots = $query->limit(15)->get();
             }
             
             $shoots = $this->formatShoots(
-                $query->limit(15)->get(),
+                $shoots,
                 $today,
                 $column['key'] === 'ready'
             );

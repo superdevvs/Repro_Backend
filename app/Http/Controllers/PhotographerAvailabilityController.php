@@ -834,6 +834,15 @@ class PhotographerAvailabilityController extends Controller
             'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
         ]);
 
+        // Determine whether the caller is authenticated privileged staff. The route is public
+        // (no auth middleware), but Sanctum still populates the user when a valid bearer token is
+        // sent — the internal staff booking UI sends one. Public/anonymous callers (no token) and
+        // non-staff roles (e.g. clients) must receive a sanitized payload that omits other
+        // clients' shoot identifiers and property addresses.
+        $authUser = $request->user();
+        $privilegedRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative', 'photographer', 'editor'];
+        $includeSensitiveSlotFields = $authUser !== null && in_array($authUser->role, $privilegedRoles, true);
+
         $date = \Carbon\Carbon::parse($validated['date']);
         $shootAddress = $validated['shoot_address'];
         $shootCity = $validated['shoot_city'];
@@ -1070,21 +1079,31 @@ class PhotographerAvailabilityController extends Controller
             ]);
 
             // Get booked slots for this day
-            $bookedSlots = $shootsOnDate->map(function ($shoot) {
+            $bookedSlots = $shootsOnDate->map(function ($shoot) use ($includeSensitiveSlotFields) {
                 $scheduledAt = \Carbon\Carbon::parse($shoot->scheduled_at);
                 $duration = $this->calculateShootDurationFromShoot($shoot);
                 $endTime = $scheduledAt->copy()->addMinutes($duration);
-                
-                return [
+
+                // Non-identifying scheduling fields are always safe to expose — they are what
+                // the public availability calculation needs to block out occupied times.
+                $slot = [
                     'start_time' => $scheduledAt->format('H:i'),
                     'end_time' => $endTime->format('H:i'),
                     'status' => $shoot->status,
-                    'shoot_id' => $shoot->id,
-                    'address' => $shoot->property_address ?? $shoot->address,
-                    'city' => $shoot->city,
-                    'state' => $shoot->state,
-                    'zip' => $shoot->zip,
                 ];
+
+                // Sensitive per-slot fields (other clients' shoot id + property location) are only
+                // returned to authenticated privileged staff who legitimately need them in the
+                // internal booking UI.
+                if ($includeSensitiveSlotFields) {
+                    $slot['shoot_id'] = $shoot->id;
+                    $slot['address'] = $shoot->property_address ?? $shoot->address;
+                    $slot['city'] = $shoot->city;
+                    $slot['state'] = $shoot->state;
+                    $slot['zip'] = $shoot->zip;
+                }
+
+                return $slot;
             })->values()->toArray();
 
             // Calculate net available slots (availability minus bookings)

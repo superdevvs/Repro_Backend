@@ -218,6 +218,11 @@ return [
         'webhook_secret' => env('IGUIDE_WEBHOOK_SECRET'),
     ],
 
+    // AI Photo Editing provider selector
+    'ai_editing' => [
+        'provider' => env('AI_EDITING_PROVIDER', 'fal'),
+    ],
+
     // Autoenhance AI Photo Editing Integration
     'autoenhance' => [
         'api_key' => env('AUTOENHANCE_API_KEY'),
@@ -244,6 +249,7 @@ return [
     'fal' => [
         'key' => env('FAL_KEY'),
         'model' => env('FAL_MODEL', 'fal-ai/wan-pro/image-to-video'),
+        'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/flux-kontext/dev'),
         'test_mode' => env('FAL_TEST_MODE', false),
     ],
 

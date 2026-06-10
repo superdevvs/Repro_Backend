@@ -119,6 +119,7 @@ class MessagingSystemSeeder extends Seeder
         'due_date' => 'due_date',
         'payment_link' => 'payment_link',
         'payment_date' => 'payment_date',
+        'client_name' => 'client_name',
         'services_provided' => 'services_provided',
         'assigned_photographers' => 'assigned_photographers',
         'cancellation_reason' => 'cancellation_reason',
@@ -329,17 +330,17 @@ class MessagingSystemSeeder extends Seeder
                 'is_active' => true,
             ],
 
-            // 12. Payment Due Reminder
+            // 12. Invoice Payment Reminder
             [
                 'channel' => 'EMAIL',
-                'name' => 'Payment Due Reminder',
+                'name' => 'Invoice Payment Reminder',
                 'slug' => 'payment-due-reminder',
-                'description' => 'Payment due reminder for completed shoot',
-                'category' => 'PAYMENT',
-                'subject' => '[shoot_location] - Payment Due Reminder',
+                'description' => 'Invoice payment reminder for pending balances',
+                'category' => 'INVOICE',
+                'subject' => 'Payment Reminder - Invoice [invoice_number]',
                 'body_html' => $this->getPaymentDueReminderTemplate(),
                 'body_text' => $this->getPaymentDueReminderPlainText(),
-                'variables_json' => ['greeting', 'realtor_first', 'shoot_location', 'shoot_date', 'shoot_time', 'shoot_quote', 'shoot_completeddate', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes', 'pay_link', 'portal_url', 'company_email'],
+                'variables_json' => ['greeting', 'client_first_name', 'client_name', 'company_email', 'invoice_number', 'amount_due', 'due_date', 'payment_link'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
@@ -540,6 +541,24 @@ class MessagingSystemSeeder extends Seeder
                 'recipients_json' => ['client'],
             ],
             [
+                'name' => 'Invoice Due Reminder',
+                'description' => 'Send invoice reminder when a balance is due',
+                'trigger_type' => 'INVOICE_DUE',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'template_id' => MessageTemplate::where('slug', 'payment-due-reminder')->first()?->id,
+                'recipients_json' => ['client'],
+            ],
+            [
+                'name' => 'Invoice Overdue Reminder',
+                'description' => 'Send invoice reminder when a balance remains overdue',
+                'trigger_type' => 'INVOICE_OVERDUE',
+                'is_active' => true,
+                'scope' => 'SYSTEM',
+                'template_id' => MessageTemplate::where('slug', 'payment-due-reminder')->first()?->id,
+                'recipients_json' => ['client'],
+            ],
+            [
                 'name' => 'Property Contact Reminder - 2 Days Before',
                 'description' => 'Remind client to provide property contact or lockbox details (2 days before shoot)',
                 'trigger_type' => 'PROPERTY_CONTACT_REMINDER',
@@ -704,6 +723,8 @@ class MessagingSystemSeeder extends Seeder
                 'PAYMENT_REFUNDED' => 'refund-submitted',
                 'PHOTOGRAPHER_ASSIGNED' => 'photographer-assigned',
                 'PHOTOGRAPHER_CHANGED' => 'photographer-changed',
+                'INVOICE_DUE' => 'payment-due-reminder',
+                'INVOICE_OVERDUE' => 'payment-due-reminder',
             ];
 
             // For property contact reminders, use email template for email channel and SMS template for SMS
@@ -1216,35 +1237,29 @@ class MessagingSystemSeeder extends Seeder
     {
         $content = '
             <p>[greeting]!</p>
-            
-            <p>This is a friendly reminder that one of your shoots is ready and <strong>payment is requested</strong>:</p>
-            
+
+            <p>This is a reminder that your invoice still has an outstanding balance.</p>
+
             <div class="info-box">
                 <div class="info-row">
-                    <span class="info-label">Payment Due:</span> <strong style="font-size: 18px; color: #dc2626;">[shoot_quote]</strong>
+                    <span class="info-label">Invoice Number:</span> [invoice_number]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Location:</span> [shoot_location]
+                    <span class="info-label">Amount Due:</span> <strong style="font-size: 18px; color: #dc2626;">$[amount_due]</strong>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Completed Date:</span> [shoot_completeddate]
-                </div>
-                <div class="info-row">
-                    <span class="info-label">Services:</span><br>[services_provided_html]
+                    <span class="info-label">Due Date:</span> [due_date]
                 </div>
             </div>
-            
-            <p><strong>Notes:</strong></p>
-            <p>[shoot_notes]</p>
-            
+
+            <p>Please use the payment link below to complete the balance.</p>
+
             <center>
-                <a href="[pay_link]" class="button button-large">Pay Now</a>
+                <a href="[payment_link]" class="button button-large">Pay Now</a>
             </center>
-            
-            <p>Alternatively you can make the requested payment by logging in to your account at <a href="[portal_url]">[portal_url]</a> and clicking on the shoot under <strong>Completed Shoots</strong>.</p>
-            
-            <p>If you have any questions about this notice please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
-            
+
+            <p>If you have already paid this invoice, please disregard this notice. If you need help, reply to this email or contact <a href="mailto:[company_email]">[company_email]</a>.</p>
+
             <p>Thank you!</p>
         ';
         
@@ -1649,18 +1664,17 @@ Thank you!';
 
     private function getPaymentDueReminderPlainText(): string
     {
-        return '[greeting], [realtor_first]!
+        return '[greeting]!
 
-This is a friendly reminder that one of your shoots is ready and payment is requested:
+This is a reminder that your invoice still has an outstanding balance.
 
-Payment Due: [shoot_quote]
-Location: [shoot_location]
-Completed Date: [shoot_completeddate]
-[services_provided]
+Invoice Number: [invoice_number]
+Amount Due: $[amount_due]
+Due Date: [due_date]
 
-[shoot_notes]
+Payment link: [payment_link]
 
-Payment link: [pay_link]
+If you have already paid this invoice, please disregard this notice. If you need help, reply to this email or contact [company_email].
 
 Thank you!';
     }

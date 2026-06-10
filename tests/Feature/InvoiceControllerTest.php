@@ -198,8 +198,10 @@ class InvoiceControllerTest extends TestCase
         $response->assertOk();
         $response->assertJsonFragment(['id' => $invoice->id]);
         $response->assertJsonPath('data.0.payment_method', 'square');
-        $response->assertJsonPath('data.0.payment_details.brand', 'amex');
-        $response->assertJsonPath('data.0.payment_details.last4', '9009');
+        // The resolver surfaces the linked shoot payment's card metadata through the
+        // payment_breakdown structure (one group per payment method).
+        $response->assertJsonPath('data.0.payment_details.payment_breakdown.0.details.brand', 'amex');
+        $response->assertJsonPath('data.0.payment_details.payment_breakdown.0.details.last4', '9009');
     }
 
     public function test_admin_invoice_show_resolves_payment_method_from_linked_payment(): void
@@ -236,8 +238,8 @@ class InvoiceControllerTest extends TestCase
 
         $response->assertOk();
         $response->assertJsonPath('payment_method', 'square');
-        $response->assertJsonPath('payment_details.brand', 'visa');
-        $response->assertJsonPath('payment_details.last4', '4242');
+        $response->assertJsonPath('payment_details.payment_breakdown.0.details.brand', 'visa');
+        $response->assertJsonPath('payment_details.payment_breakdown.0.details.last4', '4242');
     }
 
     public function test_shoot_invoice_route_resolves_payment_method_from_paid_shoot_payment(): void
@@ -275,8 +277,8 @@ class InvoiceControllerTest extends TestCase
         $response->assertOk();
         $response->assertJsonPath('data.id', $invoice->id);
         $response->assertJsonPath('data.payment_method', 'square');
-        $response->assertJsonPath('data.payment_details.brand', 'mastercard');
-        $response->assertJsonPath('data.payment_details.last4', '5454');
+        $response->assertJsonPath('data.payment_details.payment_breakdown.0.details.brand', 'mastercard');
+        $response->assertJsonPath('data.payment_details.payment_breakdown.0.details.last4', '5454');
     }
 
     private function createService(): Service

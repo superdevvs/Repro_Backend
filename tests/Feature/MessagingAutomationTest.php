@@ -98,11 +98,8 @@ class MessagingAutomationTest extends TestCase
         $this->createDefaultEmailChannel();
 
         $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
-
-        $dueTemplate = $this->createTemplate('Invoice Due');
         $overdueTemplate = $this->createTemplate('Invoice Overdue');
 
-        $this->createAutomation('INVOICE_DUE', $dueTemplate, ['client']);
         $this->createAutomation('INVOICE_OVERDUE', $overdueTemplate, ['client']);
 
         $dueInvoice = $this->createInvoice([
@@ -111,8 +108,9 @@ class MessagingAutomationTest extends TestCase
             'role' => Invoice::ROLE_CLIENT,
             'period_start' => now()->toDateString(),
             'period_end' => now()->toDateString(),
-            'issue_date' => now()->subDays(2),
-            'due_date' => now(),
+            'invoice_number' => 'INV-1001',
+            'issue_date' => now()->subDays(3),
+            'due_date' => now()->subDay(),
             'total' => 250,
             'amount_paid' => 0,
             'status' => Invoice::STATUS_SENT,
@@ -124,8 +122,9 @@ class MessagingAutomationTest extends TestCase
             'role' => Invoice::ROLE_CLIENT,
             'period_start' => now()->subDays(10)->toDateString(),
             'period_end' => now()->subDays(2)->toDateString(),
+            'invoice_number' => 'INV-1002',
             'issue_date' => now()->subDays(15),
-            'due_date' => now()->subDay(),
+            'due_date' => now()->subDays(2),
             'total' => 180,
             'amount_paid' => 0,
             'status' => Invoice::STATUS_SENT,
@@ -136,18 +135,19 @@ class MessagingAutomationTest extends TestCase
         $dueMessage = Message::where('related_invoice_id', $dueInvoice->id)->first();
         $this->assertNotNull($dueMessage);
         $this->assertSame('AUTOMATION', $dueMessage->send_source);
-        $this->assertContains(
-            sprintf('INVOICE_DUE:%s:due', $dueInvoice->id),
-            $dueMessage->tags_json ?? []
-        );
+        $this->assertContains(sprintf('INVOICE_OVERDUE:%s:1d', $dueInvoice->id), $dueMessage->tags_json ?? []);
+        $this->assertSame('overdue_1d', $dueMessage->metadata['reminder_stage'] ?? null);
+        $this->assertSame((float) $dueInvoice->balanceDue(), (float) ($dueMessage->metadata['amount_due'] ?? -1));
+        $this->assertSame($dueInvoice->invoice_number, $dueMessage->metadata['invoice_number'] ?? null);
+        $this->assertSame($dueInvoice->paymentLink(), $dueMessage->metadata['payment_link'] ?? null);
 
         $overdueMessage = Message::where('related_invoice_id', $overdueInvoice->id)->first();
         $this->assertNotNull($overdueMessage);
         $this->assertSame('AUTOMATION', $overdueMessage->send_source);
-        $this->assertContains(
-            sprintf('INVOICE_OVERDUE:%s:1d', $overdueInvoice->id),
-            $overdueMessage->tags_json ?? []
-        );
+        $this->assertContains(sprintf('INVOICE_OVERDUE:%s:2d', $overdueInvoice->id), $overdueMessage->tags_json ?? []);
+        $this->assertSame('overdue_2d', $overdueMessage->metadata['reminder_stage'] ?? null);
+        $this->assertSame($overdueInvoice->invoice_number, $overdueMessage->metadata['invoice_number'] ?? null);
+        $this->assertSame($overdueInvoice->paymentLink(), $overdueMessage->metadata['payment_link'] ?? null);
 
         Artisan::call('messaging:invoice-reminders');
 
@@ -173,6 +173,7 @@ class MessagingAutomationTest extends TestCase
                 'client_id' => $client->id,
                 'user_id' => $client->id,
                 'role' => Invoice::ROLE_CLIENT,
+                'invoice_number' => 'INV-S-' . $offset,
                 'issue_date' => now()->subDays($offset + 5),
                 'due_date' => now()->subDays($offset),
                 'total' => 200 + $offset,
@@ -186,6 +187,7 @@ class MessagingAutomationTest extends TestCase
                 'client_id' => $client->id,
                 'user_id' => $client->id,
                 'role' => Invoice::ROLE_CLIENT,
+                'invoice_number' => 'INV-K-' . $offset,
                 'issue_date' => now()->subDays($offset + 5),
                 'due_date' => now()->subDays($offset),
                 'total' => 200 + $offset,
@@ -206,6 +208,7 @@ class MessagingAutomationTest extends TestCase
                 sprintf('INVOICE_OVERDUE:%s:%dd', $invoice->id, $offset),
                 $messages->first()->tags_json ?? []
             );
+            $this->assertSame(sprintf('overdue_%dd', $offset), $messages->first()->metadata['reminder_stage'] ?? null);
         }
 
         foreach ($skippedInvoices as $offset => $invoice) {
@@ -254,6 +257,65 @@ class MessagingAutomationTest extends TestCase
             Message::where('related_invoice_id', $photographerInvoice->id)->count(),
             'Photographer payout invoices must not receive client overdue reminders.'
         );
+    }
+
+    public function test_invoice_reminders_stop_once_balance_is_paid(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $client = User::factory()->create(['role' => 'client', 'email' => 'paid-stop@example.com']);
+        $template = $this->createTemplate('Invoice Overdue Paid Stop');
+        $this->createAutomation('INVOICE_OVERDUE', $template, ['client']);
+
+        $invoice = $this->createInvoice([
+            'client_id' => $client->id,
+            'user_id' => $client->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'invoice_number' => 'INV-PAID',
+            'issue_date' => now()->subDays(8),
+            'due_date' => now()->subDays(7),
+            'total' => 300,
+            'amount_paid' => 0,
+            'status' => Invoice::STATUS_SENT,
+        ]);
+
+        Artisan::call('messaging:invoice-reminders');
+        $this->assertSame(1, Message::where('related_invoice_id', $invoice->id)->count());
+
+        $invoice->forceFill([
+            'amount_paid' => 300,
+            'status' => Invoice::STATUS_PAID,
+            'paid_at' => now(),
+        ])->save();
+
+        Artisan::call('messaging:invoice-reminders');
+        $this->assertSame(1, Message::where('related_invoice_id', $invoice->id)->count());
+    }
+
+    public function test_system_seeder_sets_invoice_reminder_automation_templates(): void
+    {
+        app(MessagingSystemSeeder::class)->run();
+
+        $invoiceDue = AutomationRule::query()
+            ->where('trigger_type', 'INVOICE_DUE')
+            ->where('name', 'Invoice Due Reminder')
+            ->first();
+
+        $invoiceOverdue = AutomationRule::query()
+            ->where('trigger_type', 'INVOICE_OVERDUE')
+            ->where('name', 'Invoice Overdue Reminder')
+            ->first();
+
+        $template = MessageTemplate::query()
+            ->where('slug', 'payment-due-reminder')
+            ->first();
+
+        $this->assertNotNull($invoiceDue);
+        $this->assertNotNull($invoiceOverdue);
+        $this->assertNotNull($template);
+        $this->assertSame($template->id, $invoiceDue->template_id);
+        $this->assertSame($template->id, $invoiceOverdue->template_id);
     }
 
     public function test_weekly_invoice_summaries_send_for_clients_and_reps(): void
@@ -694,6 +756,26 @@ class MessagingAutomationTest extends TestCase
 
     private function createAutomation(string $trigger, MessageTemplate $template, array $recipients): AutomationRule
     {
+        $existingRule = AutomationRule::query()
+            ->where('trigger_type', $trigger)
+            ->orderBy('id')
+            ->first();
+
+        if ($existingRule) {
+            $existingRule->forceFill([
+                'template_id' => $template->id,
+                'is_active' => true,
+                'recipients_json' => $recipients,
+            ])->save();
+
+            AutomationRule::query()
+                ->where('trigger_type', $trigger)
+                ->where('id', '!=', $existingRule->id)
+                ->update(['is_active' => false]);
+
+            return $existingRule->fresh();
+        }
+
         return AutomationRule::create([
             'name' => $trigger . ' Rule',
             'trigger_type' => $trigger,
@@ -715,6 +797,7 @@ class MessagingAutomationTest extends TestCase
             'amount_paid' => 0,
             'issue_date' => now()->subDays(5),
             'due_date' => now()->addDays(10),
+            'invoice_number' => 'INV-' . strtoupper(\Illuminate\Support\Str::random(6)),
         ];
 
         return Invoice::create(array_merge($defaults, $overrides));

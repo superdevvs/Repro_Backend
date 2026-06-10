@@ -11,6 +11,9 @@ use App\Http\Controllers\API\ShootPublicAssetsController;
 use App\Http\Controllers\Admin\PermissionController;
 use App\Http\Controllers\Admin\AccountingExpenseController;
 use App\Http\Controllers\Admin\UserController;
+use App\Http\Controllers\Admin\AccountStatusController;
+use App\Http\Controllers\Admin\ServiceAreaController;
+use App\Http\Controllers\Admin\TestShootController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceGroupController;
 use App\Http\Controllers\CategoryController;
@@ -60,6 +63,8 @@ use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\AutoenhanceController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\ListingVideoController;
+use App\Http\Controllers\API\ReelController;
+use App\Http\Controllers\API\StudioMetricsController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
@@ -293,6 +298,8 @@ Route::prefix('address')->group(function () {
     Route::get('search', [App\Http\Controllers\AddressLookupController::class, 'searchAddresses']);
     Route::get('details', [App\Http\Controllers\AddressLookupController::class, 'getAddressDetails']);
     Route::post('validate', [App\Http\Controllers\AddressLookupController::class, 'validateAddress']);
+    Route::post('geocode', [App\Http\Controllers\AddressLookupController::class, 'geocodeAddress'])
+        ->middleware('throttle:120,1');
     Route::post('distance', [App\Http\Controllers\AddressLookupController::class, 'calculateDistance']);
     Route::get('service-area', [App\Http\Controllers\AddressLookupController::class, 'checkServiceArea']);
     Route::get('nearby-photographers', [App\Http\Controllers\AddressLookupController::class, 'getNearbyPhotographers']);
@@ -400,6 +407,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/admin/permis
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permissions', [PermissionController::class, 'update']);
 
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/convert-type', [AccountStatusController::class, 'convertType']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/status', [AccountStatusController::class, 'setStatus']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->post('/admin/users/{id}/resend-verification', [UserController::class, 'resendVerificationEmail']);
@@ -439,6 +448,19 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesR
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,client,salesRep'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
 // Public lightweight list for dropdowns
 Route::get('/photographers', [UserController::class, 'simplePhotographers']);
+
+// Photographer service-area assignment tool (Req 10) — assign / filter / preview / commit.
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->group(function () {
+    Route::post('/admin/photographers/{user}/service-areas', [ServiceAreaController::class, 'assign']);
+    Route::get('/admin/service-area/photographers', [ServiceAreaController::class, 'filter']);
+    Route::post('/admin/assignments/preview', [ServiceAreaController::class, 'preview']);
+    Route::post('/admin/assignments/commit', [ServiceAreaController::class, 'commit']);
+
+    // Test_Shoot generator/simulator (Req 10.7-10.9) — create / preview eligible / assign.
+    Route::post('/admin/test-shoots', [TestShootController::class, 'createTestShoot']);
+    Route::get('/admin/test-shoots/{shoot}/eligible-photographers', [TestShootController::class, 'previewEligible']);
+    Route::post('/admin/test-shoots/{shoot}/assign', [TestShootController::class, 'assignTestShoot']);
+});
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin/photographer-equipments')->group(function () {
     Route::get('/', [PhotographerEquipmentController::class, 'adminIndex']);
@@ -649,6 +671,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootMediaController::class, 'moveFileToCompleted']);
     Route::post('/shoots/{shoot}/files/{file}/verify', [ShootMediaController::class, 'verifyFile']);
     Route::post('/shoots/{shoot}/files/{file}/extra', [ShootMediaController::class, 'toggleFileExtra']);
+    // Retry-scan control: re-enqueue ScanShootFileJob for a file whose scan failed (Req 15.8).
+    Route::post('/shoots/{shoot}/files/{file}/rescan', [App\Http\Controllers\API\FileScanController::class, 'rescan'])
+        ->middleware('role:admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/generate-description', [ShootPublicAssetsController::class, 'generatePropertyDescription']);
     Route::get('/shoots/{shoot}/tour-analytics', [TourAnalyticsController::class, 'summary']);
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootMediaController::class, 'reclassifyFiles']);
@@ -779,6 +804,21 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/jobs/{job}/cancel', [ListingVideoController::class, 'cancel']);
     });
 
+    // fal.ai AI Reel Generator endpoints
+    Route::prefix('reels')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
+        Route::post('/generate', [ReelController::class, 'generate']);
+        Route::get('/jobs', [ReelController::class, 'index']);
+        Route::get('/jobs/{job}', [ReelController::class, 'show']);
+        Route::post('/jobs/{job}/cancel', [ReelController::class, 'cancel']);
+    });
+
+    // Studio Metrics aggregation endpoints (read-only across photo + video jobs)
+    Route::prefix('studio/metrics')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
+        Route::get('/hero', [StudioMetricsController::class, 'hero']);
+        Route::get('/recent-projects', [StudioMetricsController::class, 'recentProjects']);
+        Route::get('/active-queue', [StudioMetricsController::class, 'activeQueue']);
+    });
+
     // Higgsfield AI Video Generation endpoints
     Route::prefix('higgsfield')->group(function () {
         // Presets - read for all authenticated users
@@ -812,6 +852,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/property/refresh', [IntegrationController::class, 'refreshPropertyDetails']);
             Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide']);
             Route::post('/cubicasa/sync', [IntegrationController::class, 'syncCubicasa']);
+            Route::post('/cubicasa/order', [IntegrationController::class, 'createCubicasa']);
             Route::post('/cubicasa/identifiers', [IntegrationController::class, 'saveCubicasaIdentifiers']);
             Route::post('/bright-mls/publish', [IntegrationController::class, 'publishToBrightMls']);
             Route::post('/mmm/punchout', [IntegrationController::class, 'mmmPunchout']);
@@ -980,6 +1021,11 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
         Route::post('/templates/{template}/duplicate', [MessageTemplateController::class, 'duplicate']);
         Route::post('/templates/{template}/test-send', [MessageTemplateController::class, 'testSend']);
         Route::post('/templates/{template}/preview', [MessageTemplateController::class, 'preview']);
+
+        // Manual shoot notifications (Req 12.1, 12.5, 12.6, 12.7) — wraps ManualNotificationService;
+        // shares this group's role:superadmin,admin restriction with the template routes above.
+        Route::post('/notifications/manual-send', [MessageTemplateController::class, 'manualSend']);
+        Route::post('/notifications/manual-preview', [MessageTemplateController::class, 'manualPreview']);
 
         // Automations
         Route::get('/automations', [AutomationController::class, 'index']);

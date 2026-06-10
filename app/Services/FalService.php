@@ -9,22 +9,83 @@ class FalService
 {
     private string $key;
     private string $model;
+    private string $imageModel;
 
     public function __construct()
     {
         $this->key = (string) config('services.fal.key');
         $this->model = (string) config('services.fal.model', 'fal-ai/wan-pro/image-to-video');
+        $this->imageModel = (string) config('services.fal.image_model', 'fal-ai/flux-kontext/dev');
+    }
 
-        $missing = $this->key === '' || $this->key === 'PASTE_YOUR_FAL_KEY_HERE';
-        if ($missing && ! config('services.fal.test_mode')) {
-            throw new RuntimeException(
-                'FAL_KEY is not set. Add it to your .env file or enable FAL_TEST_MODE=true.'
-            );
+    public function testConnection(): array
+    {
+        if ($this->key === '' || $this->key === 'PASTE_YOUR_FAL_KEY_HERE') {
+            return [
+                'success' => false,
+                'status' => 401,
+                'provider' => 'fal',
+                'message' => 'FAL_KEY is not configured',
+            ];
         }
+
+        return [
+            'success' => true,
+            'status' => 200,
+            'provider' => 'fal',
+            'message' => 'fal.ai configuration is present',
+            'image_model' => $this->imageModel,
+            'video_model' => $this->model,
+            'test_mode' => (bool) config('services.fal.test_mode'),
+        ];
+    }
+
+    public function getImageEditingTypes(): array
+    {
+        return [
+            [
+                'id' => 'enhance',
+                'name' => 'Enhance',
+                'description' => 'fal.ai natural photo enhancement',
+                'params' => [
+                    'prompt' => 'string',
+                    'output_format' => ['jpeg', 'png'],
+                ],
+            ],
+            [
+                'id' => 'sky_replace',
+                'name' => 'Sky Replacement',
+                'description' => 'fal.ai exterior sky cleanup while preserving property realism',
+                'params' => [
+                    'prompt' => 'string',
+                    'output_format' => ['jpeg', 'png'],
+                ],
+            ],
+            [
+                'id' => 'vertical_correction',
+                'name' => 'Vertical Correction',
+                'description' => 'fal.ai perspective and vertical-line correction',
+                'params' => [
+                    'prompt' => 'string',
+                    'output_format' => ['jpeg', 'png'],
+                ],
+            ],
+            [
+                'id' => 'window_pull',
+                'name' => 'Window Pull',
+                'description' => 'fal.ai window exposure balancing for real estate interiors',
+                'params' => [
+                    'prompt' => 'string',
+                    'output_format' => ['jpeg', 'png'],
+                ],
+            ],
+        ];
     }
 
     public function uploadImage(string $binary, string $mime): string
     {
+        $this->ensureConfigured();
+
         $init = Http::withHeaders([
             'Authorization' => 'Key ' . $this->key,
             'Content-Type' => 'application/json',
@@ -53,6 +114,8 @@ class FalService
 
     public function submit(string $imageUrl, string $prompt): string
     {
+        $this->ensureConfigured();
+
         $response = Http::withHeaders([
             'Authorization' => 'Key ' . $this->key,
             'Content-Type' => 'application/json',
@@ -73,11 +136,50 @@ class FalService
         return (string) $requestId;
     }
 
+    public function submitImageEdit(string $imageUrl, string $editingType, array $params = []): array
+    {
+        $payload = $this->buildImageEditPayload($imageUrl, $editingType, $params);
+        $response = $this->postQueue($this->imageModel, $payload);
+
+        if (! $response->successful()) {
+            throw new RuntimeException('fal.ai image edit submit failed: ' . $response->body());
+        }
+
+        $data = $response->json() ?? [];
+        $requestId = $data['request_id'] ?? null;
+        if (! $requestId) {
+            throw new RuntimeException('fal.ai image edit did not return a request_id.');
+        }
+
+        return [
+            'job_id' => (string) $requestId,
+            'request_id' => (string) $requestId,
+            'status' => 'processing',
+            'model' => $this->imageModel,
+            'data' => $data,
+            'payload' => $payload,
+        ];
+    }
+
+    public function submitImageEditFromBuffer(
+        string $contents,
+        string $imageName,
+        ?string $contentType,
+        string $editingType,
+        array $params = []
+    ): array {
+        $mime = $contentType ?: $this->mimeForName($imageName);
+        $imageUrl = 'data:' . $mime . ';base64,' . base64_encode($contents);
+
+        return $this->submitImageEdit($imageUrl, $editingType, array_merge($params, [
+            'image_name' => $imageName,
+            'content_type' => $mime,
+        ]));
+    }
+
     public function status(string $requestId): string
     {
-        $response = Http::withHeaders([
-            'Authorization' => 'Key ' . $this->key,
-        ])->get('https://queue.fal.run/' . $this->model . '/requests/' . $requestId . '/status');
+        $response = $this->getQueueStatus($this->model, $requestId);
 
         if (! $response->successful()) {
             return 'IN_PROGRESS';
@@ -88,23 +190,146 @@ class FalService
 
     public function result(string $requestId): string
     {
-        $response = Http::withHeaders([
+        $data = $this->fetchQueueResult($this->model, $requestId);
+
+        $url = data_get($data, 'video.url')
+            ?? data_get($data, 'video_url')
+            ?? data_get($data, 'output.video.url');
+
+        if (! $url) {
+            throw new RuntimeException('fal.ai result had no video URL: ' . json_encode($data));
+        }
+
+        return (string) $url;
+    }
+
+    public function imageEditStatus(string $requestId): ?array
+    {
+        $response = $this->getQueueStatus($this->imageModel, $requestId);
+
+        if (! $response->successful()) {
+            return null;
+        }
+
+        $data = $response->json() ?? [];
+        $providerStatus = (string) ($data['status'] ?? 'IN_PROGRESS');
+
+        return [
+            'status' => $this->normalizeQueueStatus($providerStatus),
+            'provider_status' => $providerStatus,
+            'data' => $data,
+        ];
+    }
+
+    public function imageEditResult(string $requestId): array
+    {
+        $data = $this->fetchQueueResult($this->imageModel, $requestId);
+        $url = data_get($data, 'images.0.url')
+            ?? data_get($data, 'image.url')
+            ?? data_get($data, 'image_url')
+            ?? data_get($data, 'output.images.0.url')
+            ?? data_get($data, 'output.image.url')
+            ?? data_get($data, 'output.image_url');
+
+        if (! $url) {
+            throw new RuntimeException('fal.ai image edit result had no image URL: ' . json_encode($data));
+        }
+
+        return [
+            'status' => 'completed',
+            'edited_image_url' => (string) $url,
+            'image_url' => (string) $url,
+            'data' => $data,
+        ];
+    }
+
+    private function postQueue(string $model, array $payload)
+    {
+        $this->ensureConfigured();
+
+        return Http::withHeaders([
             'Authorization' => 'Key ' . $this->key,
-        ])->get('https://queue.fal.run/' . $this->model . '/requests/' . $requestId);
+            'Content-Type' => 'application/json',
+        ])->post('https://queue.fal.run/' . ltrim($model, '/'), $payload);
+    }
+
+    private function getQueueStatus(string $model, string $requestId)
+    {
+        $this->ensureConfigured();
+
+        return Http::withHeaders([
+            'Authorization' => 'Key ' . $this->key,
+        ])->get('https://queue.fal.run/' . ltrim($model, '/') . '/requests/' . $requestId . '/status');
+    }
+
+    private function fetchQueueResult(string $model, string $requestId): array
+    {
+        $this->ensureConfigured();
+
+        $baseUrl = 'https://queue.fal.run/' . ltrim($model, '/') . '/requests/' . $requestId;
+        $headers = ['Authorization' => 'Key ' . $this->key];
+
+        $response = Http::withHeaders($headers)->get($baseUrl . '/response');
+        if (! $response->successful()) {
+            $response = Http::withHeaders($headers)->get($baseUrl);
+        }
 
         if (! $response->successful()) {
             throw new RuntimeException('fal.ai result fetch failed: ' . $response->body());
         }
 
-        $url = $response->json('video.url')
-            ?? $response->json('video_url')
-            ?? $response->json('output.video.url');
+        return $response->json() ?? [];
+    }
 
-        if (! $url) {
-            throw new RuntimeException('fal.ai result had no video URL: ' . $response->body());
+    private function buildImageEditPayload(string $imageUrl, string $editingType, array $params): array
+    {
+        $payload = [
+            'image_url' => $imageUrl,
+            'prompt' => (string) ($params['prompt'] ?? $this->promptForEditingType($editingType, $params)),
+            'num_images' => max(1, min(4, (int) ($params['num_images'] ?? 1))),
+            'output_format' => $params['output_format'] ?? 'jpeg',
+        ];
+
+        foreach (['seed', 'guidance_scale', 'num_inference_steps', 'safety_tolerance', 'sync_mode'] as $key) {
+            if (array_key_exists($key, $params) && $params[$key] !== null && $params[$key] !== '') {
+                $payload[$key] = $params[$key];
+            }
         }
 
-        return (string) $url;
+        return $payload;
+    }
+
+    private function ensureConfigured(): void
+    {
+        $missing = $this->key === '' || $this->key === 'PASTE_YOUR_FAL_KEY_HERE';
+        if ($missing && ! config('services.fal.test_mode')) {
+            throw new RuntimeException(
+                'FAL_KEY is not set. Add it to your .env file or enable FAL_TEST_MODE=true.'
+            );
+        }
+    }
+
+    private function promptForEditingType(string $editingType, array $params): string
+    {
+        $base = 'Edit this real estate photo naturally. Preserve the property layout, architectural details, materials, colors, camera angle, and photorealistic style.';
+
+        return match ($editingType) {
+            'sky_replace' => $base . ' Replace dull or overcast skies with a clean realistic blue sky and keep lighting believable.',
+            'vertical_correction' => $base . ' Correct perspective and straighten vertical architectural lines without cropping important room details.',
+            'window_pull' => $base . ' Balance bright windows so exterior detail is visible while keeping the interior naturally exposed.',
+            default => $base . ' Improve exposure, contrast, white balance, clarity, and overall polish without making the image look artificial.',
+        };
+    }
+
+    private function normalizeQueueStatus(string $status): string
+    {
+        $status = strtoupper($status);
+
+        return match ($status) {
+            'COMPLETED' => 'completed',
+            'FAILED', 'ERROR', 'CANCELLED' => 'failed',
+            default => 'processing',
+        };
     }
 
     private function extensionForMime(string $mime): string
@@ -115,6 +340,17 @@ class FalService
             'image/heic' => '.heic',
             'image/heif' => '.heif',
             default => '.jpg',
+        };
+    }
+
+    private function mimeForName(string $name): string
+    {
+        return match (strtolower(pathinfo($name, PATHINFO_EXTENSION))) {
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'heic' => 'image/heic',
+            'heif' => 'image/heif',
+            default => 'image/jpeg',
         };
     }
 }

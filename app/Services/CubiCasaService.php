@@ -3,19 +3,21 @@
 namespace App\Services;
 
 use App\Models\Shoot;
+use App\Models\User;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 /**
  * Outbound + parsing helper for the CubiCasa Integrate API v3.
  *
  * Mirrors the surface of {@see IguideService}: syncShoot(), parseOrderData(),
- * applyShootData(), plus connection/webhook utilities. Reads only — order
- * creation is intentionally out of scope for the first pass.
+ * applyShootData(), plus connection/webhook utilities. Manual order creation is
+ * supported via createOrder() with a per-shoot Idempotency-Key (Req 19).
  *
  * Auth: CubiCasa uses an `api-key:` header (NOT `Authorization: Bearer`).
  * Docs: https://integrate.docs.cubi.casa/
@@ -28,15 +30,26 @@ class CubiCasaService
     public const FAILURE_AUTH = 'auth';
     public const FAILURE_OTHER = 'other';
 
+    public const SYNC_STATUS_QUEUED = 'queued';
+    public const SYNC_STATUS_RUNNING = 'running';
+    public const SYNC_STATUS_SUCCEEDED = 'succeeded';
+    public const SYNC_STATUS_FAILED = 'failed';
+    public const SYNC_STATUS_NOT_LINKED = 'not_linked';
+
     private ?string $apiKey;
     private string $baseUrl;
     private ?string $environment;
     private ?string $webhookUrl;
     private ?string $webhookSecret;
     private ?string $lastFailureReason = null;
+    private AuditLogService $auditLog;
 
-    public function __construct()
+    public function __construct(?AuditLogService $auditLog = null)
     {
+        // Default-construct the audit facade so existing `new CubiCasaService()`
+        // call sites (and the read-only tests) keep working without DI.
+        $this->auditLog = $auditLog ?? new AuditLogService();
+
         $settings = $this->loadSettings('integrations.cubicasa');
 
         $this->apiKey = $settings['apiKey'] ?? config('services.cubicasa.api_key');
@@ -201,6 +214,7 @@ class CubiCasaService
     public function syncShoot(Shoot $shoot): ?array
     {
         $this->lastFailureReason = null;
+        $this->markSyncRunning($shoot);
 
         $raw = null;
         if (!empty($shoot->cubicasa_order_id)) {
@@ -215,6 +229,13 @@ class CubiCasaService
             if ($this->lastFailureReason === null) {
                 $this->lastFailureReason = self::FAILURE_NOT_LINKED;
             }
+            $this->markSyncFailed(
+                $shoot,
+                $this->lastFailureReason === self::FAILURE_NOT_LINKED
+                    ? self::SYNC_STATUS_NOT_LINKED
+                    : self::SYNC_STATUS_FAILED,
+                $this->failureMessage($this->lastFailureReason)
+            );
             return null;
         }
 
@@ -225,8 +246,122 @@ class CubiCasaService
     }
 
     /**
-     * Find an order by external_id. Walks the paginated list (capped to 5 pages).
+     * Manually create a CubiCasa order for a Shoot, or sync the existing one.
+     *
+     * AC 19.5 — when the Shoot is already linked (order_id or external_id), this
+     * syncs the existing order rather than creating a duplicate.
+     * AC 19.6 — a per-shoot Idempotency-Key (persisted on
+     * `shoots.cubicasa_idempotency_key`) is reused on every create attempt, so a
+     * retried or double-clicked request never produces a duplicate order.
+     * AC 19.2/19.3 — on success the order is linked via
+     * `cubicasa_order_id`/`cubicasa_external_id` and `cubicasa_status` is updated
+     * (through {@see applyShootData()}).
+     * AC 19.10 — every create or sync writes an Audit_Log entry via AuditLogService.
+     *
+     * @return array<string, mixed>|null parsed order data, or null on failure.
      */
+    public function createOrder(Shoot $shoot, ?User $actor = null): ?array
+    {
+        $this->lastFailureReason = null;
+
+        // AC 19.5 — already linked: sync the existing order instead of creating.
+        if (!empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id)) {
+            $parsed = $this->syncShoot($shoot);
+            $this->auditLog->record('cubicasa.manual_sync', $actor, $shoot, [
+                'outcome' => $parsed ? 'ok' : 'failed',
+                'failure_reason' => $parsed ? null : $this->lastFailureReason,
+                'order_id' => $shoot->cubicasa_order_id,
+            ]);
+            return $parsed;
+        }
+
+        if (!$this->hasCredentials()) {
+            $this->lastFailureReason = self::FAILURE_AUTH;
+            return null;
+        }
+
+        // AC 19.6 — reuse a per-shoot Idempotency-Key so repeated create requests
+        // never duplicate the order. Persist it on first use.
+        $idempotencyKey = $shoot->cubicasa_idempotency_key
+            ?? tap(Str::uuid()->toString(), function (string $key) use ($shoot): void {
+                $shoot->cubicasa_idempotency_key = $key;
+                $shoot->save();
+            });
+
+        try {
+            $resp = $this->client()
+                ->withHeaders(['Idempotency-Key' => $idempotencyKey])
+                ->post($this->baseUrl . '/orders', $this->buildOrderPayload($shoot));
+        } catch (\Throwable $e) {
+            $this->lastFailureReason = self::FAILURE_OTHER;
+            Log::error('CubiCasa createOrder exception', [
+                'shoot_id' => $shoot->id,
+                'error' => $e->getMessage(),
+            ]);
+            $this->auditLog->record('cubicasa.manual_create', $actor, $shoot, [
+                'outcome' => 'failed',
+                'failure_reason' => $this->lastFailureReason,
+            ]);
+            return null;
+        }
+
+        if (!$resp->successful()) {
+            $this->lastFailureReason = $this->classifyFailure($resp);
+            Log::warning('CubiCasa createOrder failed', [
+                'shoot_id' => $shoot->id,
+                'status' => $resp->status(),
+                'body' => substr((string) $resp->body(), 0, 500),
+            ]);
+            $this->auditLog->record('cubicasa.manual_create', $actor, $shoot, [
+                'outcome' => 'failed',
+                'failure_reason' => $this->lastFailureReason,
+            ]);
+            return null;
+        }
+
+        $parsed = $this->parseOrderData($resp->json());
+        // AC 19.2/19.3 — link via cubicasa_order_id/external_id + update status.
+        $this->applyShootData($shoot, $parsed);
+
+        $this->auditLog->record('cubicasa.manual_create', $actor, $shoot, [
+            'outcome' => 'ok',
+            'order_id' => $shoot->cubicasa_order_id,
+            'external_id' => $shoot->cubicasa_external_id,
+        ]);
+
+        return $parsed;
+    }
+
+    /**
+     * Build the `POST /orders` request body for a manual order creation.
+     *
+     * The external_id is scoped to the Shoot (`shoot-{id}`) so the order can be
+     * matched back to this Shoot by {@see findOrderByExternalId()} and the
+     * webhook resolver.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildOrderPayload(Shoot $shoot): array
+    {
+        $address = array_filter([
+            'street' => $shoot->address,
+            'city' => $shoot->city,
+            'state' => $shoot->state,
+            'postalCode' => $shoot->zip,
+        ], static fn ($value): bool => is_string($value) ? trim($value) !== '' : $value !== null);
+
+        $payload = [
+            'info' => [
+                'external_id' => 'shoot-' . $shoot->id,
+            ],
+        ];
+
+        if (!empty($address)) {
+            $payload['address'] = $address;
+        }
+
+        return $payload;
+    }
     public function findOrderByExternalId(string $externalId): ?array
     {
         $this->lastFailureReason = null;
@@ -456,9 +591,104 @@ class CubiCasaService
         // managed `tour_links` slots.
 
         $shoot->cubicasa_last_synced_at = now();
+        if (Schema::hasColumn('shoots', 'cubicasa_sync_status')) {
+            $shoot->cubicasa_sync_status = self::SYNC_STATUS_SUCCEEDED;
+        }
+        if (Schema::hasColumn('shoots', 'cubicasa_last_sync_error')) {
+            $shoot->cubicasa_last_sync_error = null;
+        }
         $shoot->save();
 
         return $shoot;
+    }
+
+    public function markSyncQueued(Shoot $shoot, ?string $jobId = null): Shoot
+    {
+        $jobId ??= (string) Str::uuid();
+
+        $this->fillSyncColumns($shoot, [
+            'cubicasa_sync_status' => self::SYNC_STATUS_QUEUED,
+            'cubicasa_sync_job_id' => $jobId,
+            'cubicasa_sync_started_at' => now(),
+            'cubicasa_last_sync_error' => null,
+        ]);
+
+        $shoot->save();
+
+        return $shoot;
+    }
+
+    public function markSyncRunning(Shoot $shoot, ?string $jobId = null): Shoot
+    {
+        $jobId ??= $shoot->cubicasa_sync_job_id ?: (string) Str::uuid();
+
+        $this->fillSyncColumns($shoot, [
+            'cubicasa_sync_status' => self::SYNC_STATUS_RUNNING,
+            'cubicasa_sync_job_id' => $jobId,
+            'cubicasa_sync_started_at' => now(),
+            'cubicasa_last_sync_error' => null,
+        ]);
+
+        $shoot->save();
+
+        return $shoot;
+    }
+
+    public function markSyncFailed(Shoot $shoot, string $status, string $error): Shoot
+    {
+        $this->fillSyncColumns($shoot, [
+            'cubicasa_sync_status' => $status,
+            'cubicasa_last_sync_error' => $error,
+        ]);
+
+        $shoot->save();
+
+        return $shoot;
+    }
+
+    public function isSyncInProgress(Shoot $shoot): bool
+    {
+        $status = (string) ($shoot->cubicasa_sync_status ?? '');
+        if (!in_array($status, [self::SYNC_STATUS_QUEUED, self::SYNC_STATUS_RUNNING], true)) {
+            return false;
+        }
+
+        $startedAt = $shoot->cubicasa_sync_started_at;
+        if (!$startedAt) {
+            return true;
+        }
+
+        return $startedAt->greaterThan(now()->subMinutes(10));
+    }
+
+    public function syncStatePayload(Shoot $shoot): array
+    {
+        return [
+            'sync_status' => $shoot->cubicasa_sync_status,
+            'sync_job_id' => $shoot->cubicasa_sync_job_id,
+            'sync_started_at' => optional($shoot->cubicasa_sync_started_at)->toIso8601String(),
+            'last_synced_at' => optional($shoot->cubicasa_last_synced_at)->toIso8601String(),
+            'last_sync_error' => $shoot->cubicasa_last_sync_error,
+        ];
+    }
+
+    private function fillSyncColumns(Shoot $shoot, array $attributes): void
+    {
+        foreach ($attributes as $column => $value) {
+            if (Schema::hasColumn('shoots', $column)) {
+                $shoot->{$column} = $value;
+            }
+        }
+    }
+
+    private function failureMessage(?string $reason): string
+    {
+        return match ($reason) {
+            self::FAILURE_AUTH => 'CubiCasa API key invalid or missing.',
+            self::FAILURE_NOT_FOUND => 'CubiCasa order not found.',
+            self::FAILURE_NOT_LINKED => 'No CubiCasa order linked to this shoot.',
+            default => 'Failed to fetch CubiCasa order.',
+        };
     }
 
     /**

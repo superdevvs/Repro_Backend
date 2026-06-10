@@ -39,6 +39,21 @@ class ProcessImageJob implements ShouldQueue
      */
     public function handle(ImageProcessingService $imageService, DropboxWorkflowService $dropboxService): void
     {
+        // Quarantine gate (Req 14.3 / 15.1 / 15.4): downstream image processing is
+        // withheld unless the file has cleared the virus scan (clean, or a legacy
+        // file with no scan row). Quarantined/infected/failed files are skipped so
+        // unscanned or unsafe media is never processed for delivery. ProcessImageJob
+        // is normally dispatched only by FileScanService::release once clean, but
+        // this guard makes the invariant hold regardless of the dispatch path.
+        if (! $this->shootFile->isClearedForProcessing()) {
+            Log::info('ProcessImageJob skipped — file not cleared from quarantine.', [
+                'file_id' => $this->shootFile->id,
+                'scan_status' => $this->shootFile->scan_status,
+            ]);
+
+            return;
+        }
+
         try {
             $needsPreviewRegeneration = $imageService->needsPreviewRegeneration($this->shootFile);
 

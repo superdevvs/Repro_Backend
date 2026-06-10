@@ -31,18 +31,13 @@ class ProcessInvoiceReminders extends Command
     {
         $today = now()->startOfDay();
 
-        $dueInvoices = $this->clientInvoiceQuery()
-            ->whereDate('due_date', $today)
-            ->get();
-
         $overdueInvoices = $this->clientInvoiceQuery()
             ->whereDate('due_date', '<', $today)
             ->get();
 
-        $dueCount = $this->processDueInvoices($automationService, $dueInvoices);
         $overdueCount = $this->processOverdueInvoices($automationService, $overdueInvoices, $today);
 
-        $this->info(sprintf('Invoice reminders sent: %d due, %d overdue', $dueCount, $overdueCount));
+        $this->info(sprintf('Invoice reminders sent: %d overdue', $overdueCount));
 
         return Command::SUCCESS;
     }
@@ -58,21 +53,6 @@ class ProcessInvoiceReminders extends Command
                     });
             })
             ->with(['client', 'salesRep', 'shoot.client', 'shoot.rep', 'shoots.client', 'shoots.rep']);
-    }
-
-    private function processDueInvoices(AutomationService $automationService, Collection $invoices): int
-    {
-        $sent = 0;
-
-        foreach ($invoices as $invoice) {
-            $tag = sprintf('INVOICE_DUE:%s:due', $invoice->id);
-
-            if ($this->dispatchReminder($automationService, $invoice, 'INVOICE_DUE', $tag)) {
-                $sent++;
-            }
-        }
-
-        return $sent;
     }
 
     private function processOverdueInvoices(
@@ -137,12 +117,37 @@ class ProcessInvoiceReminders extends Command
             return false;
         }
 
+        $dueDate = $invoice->due_date instanceof Carbon
+            ? $invoice->due_date->copy()->startOfDay()
+            : Carbon::parse($invoice->due_date)->startOfDay();
+        $today = now()->startOfDay();
+        $daysOverdue = max(0, (int) $dueDate->diffInDays($today, false));
+        $reminderStage = $this->reminderStageForDaysOverdue($daysOverdue);
+        $amountDue = round((float) $invoice->balanceDue(), 2);
+
         $context = [
             'invoice' => $invoice,
             'invoice_id' => $invoice->id,
+            'reminder_stage' => $reminderStage,
+            'days_overdue' => $daysOverdue,
+            'amount_due' => $amountDue,
+            'due_date' => $dueDate->toDateString(),
+            'invoice_number' => $invoice->invoice_number,
+            'payment_link' => $invoice->paymentLink(),
+            'client_name' => $client->name,
             'client' => $client,
             'account_id' => $client->id,
             'tags_json' => [$tag],
+            'metadata' => [
+                'invoice_id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+                'reminder_stage' => $reminderStage,
+                'days_overdue' => $daysOverdue,
+                'amount_due' => $amountDue,
+                'due_date' => $dueDate->toDateString(),
+                'payment_link' => $invoice->paymentLink(),
+                'client_name' => $client->name,
+            ],
         ];
 
         $rep = $this->resolveRep($invoice, $client);
@@ -153,6 +158,15 @@ class ProcessInvoiceReminders extends Command
         $automationService->handleEvent($triggerType, $context);
 
         return true;
+    }
+
+    private function reminderStageForDaysOverdue(int $daysOverdue): string
+    {
+        if ($daysOverdue <= 0) {
+            return 'overdue';
+        }
+
+        return sprintf('overdue_%dd', $daysOverdue);
     }
 
     private function resolveClient(Invoice $invoice): ?User

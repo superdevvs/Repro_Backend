@@ -1124,15 +1124,39 @@ HTML;
                 'Shoot Summary for',
                 locationIndex: 1
             ),
-            'payment-due-reminder' => $this->captureLocationTitleParts(
-                $subject,
-                '/^(.+?)\s*-\s*Payment Due Reminder$/i',
-                'Payment Due for',
-                locationIndex: 1,
-                status: 'Reminder'
-            ),
+            'payment-due-reminder' => $this->captureInvoiceReminderTitleParts($subject),
             default => null,
         };
+    }
+
+    /**
+     * @return array{lead: string, location: string, status?: string}|null
+     */
+    protected function captureInvoiceReminderTitleParts(string $subject): ?array
+    {
+        if (preg_match('/^Payment Reminder\s*-\s*Invoice\s+(.+)$/i', $subject, $matches)) {
+            $invoiceNumber = trim((string) ($matches[1] ?? ''));
+            if ($invoiceNumber !== '') {
+                return [
+                    'lead' => 'Payment Reminder for',
+                    'location' => 'Invoice ' . $invoiceNumber,
+                    'status' => 'Pending',
+                ];
+            }
+        }
+
+        if (preg_match('/^Invoice\s+(.+?)\s*-\s*Payment Reminder$/i', $subject, $matches)) {
+            $invoiceNumber = trim((string) ($matches[1] ?? ''));
+            if ($invoiceNumber !== '') {
+                return [
+                    'lead' => 'Payment Reminder for',
+                    'location' => 'Invoice ' . $invoiceNumber,
+                    'status' => 'Pending',
+                ];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -1215,7 +1239,7 @@ HTML;
     {
         return match ($template->slug) {
             'account-created' => ['New Account Information'],
-            'payment-due-reminder' => ['Payment Due Reminder'],
+            'payment-due-reminder' => ['Payment Reminder'],
             'shoot-summary' => ['Summary'],
             'shoot-delivered' => ['Shoot Delivered'],
             default => [],

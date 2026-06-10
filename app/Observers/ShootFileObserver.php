@@ -23,6 +23,8 @@ class ShootFileObserver
                 'file_size',
                 'sort_order',
                 'media_type',
+                'is_extra',
+                'required_for_editing',
                 'filename',
                 'stored_filename',
             ])

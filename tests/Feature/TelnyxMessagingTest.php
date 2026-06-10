@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\DispatchScheduledMessages;
 use App\Models\AutomationRule;
 use App\Models\Contact;
 use App\Models\Message;
@@ -10,6 +11,8 @@ use App\Models\MessageThread;
 use App\Models\SmsNumber;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\AutomationWorkflowExecutor;
+use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\Providers\TelnyxSmsProvider;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -202,6 +205,57 @@ class TelnyxMessagingTest extends TestCase
         $this->assertSame('TELNYX', $message->provider);
         $this->assertSame('+12025550125', $message->to_address);
         $this->assertSame('SENT', $message->status);
+    }
+
+    public function test_scheduled_runner_dispatches_due_sms_and_internal_messages(): void
+    {
+        $this->bindTelnyxProviderMock('scheduled-sms-id');
+        $number = $this->createDefaultSmsNumber();
+
+        $sms = Message::create([
+            'channel' => 'SMS',
+            'direction' => 'OUTBOUND',
+            'provider' => 'TELNYX',
+            'from_address' => $number->phone_number,
+            'to_address' => '+12025550177',
+            'body_text' => 'Scheduled SMS body',
+            'status' => 'SCHEDULED',
+            'scheduled_at' => now()->subMinute(),
+            'send_source' => 'MANUAL',
+        ]);
+
+        $internal = Message::create([
+            'channel' => 'EMAIL',
+            'direction' => 'OUTBOUND',
+            'provider' => 'INTERNAL',
+            'from_address' => 'admin@example.com',
+            'to_address' => 'team@example.com',
+            'subject' => 'Internal note',
+            'body_text' => 'Internal scheduled body',
+            'status' => 'SCHEDULED',
+            'scheduled_at' => now()->subMinute(),
+            'send_source' => 'MANUAL',
+        ]);
+
+        $workflowExecutor = Mockery::mock(AutomationWorkflowExecutor::class);
+        $workflowExecutor->shouldReceive('resumeDueSteps')->once();
+
+        (new DispatchScheduledMessages())->handle(
+            $this->app->make(MessagingService::class),
+            $workflowExecutor,
+            $this->app->make(AutomationService::class)
+        );
+
+        $sms->refresh();
+        $internal->refresh();
+
+        $this->assertSame('SENT', $sms->status);
+        $this->assertSame('scheduled-sms-id', $sms->provider_message_id);
+        $this->assertNotNull($sms->sent_at);
+
+        $this->assertSame('SENT', $internal->status);
+        $this->assertSame('INTERNAL', $internal->provider);
+        $this->assertNotNull($internal->sent_at);
     }
 
     public function test_telnyx_inbound_webhook_creates_sms_thread_message(): void

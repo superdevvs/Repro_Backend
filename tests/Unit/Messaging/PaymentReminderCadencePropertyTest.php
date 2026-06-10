@@ -1,0 +1,346 @@
+<?php
+
+namespace Tests\Unit\Messaging;
+
+use App\Services\Messaging\PaymentReminderScheduler;
+use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
+use PHPUnit\Framework\Attributes\Test;
+use Tests\TestCase;
+
+/**
+ * Feature: production-qa-fixes-2, Property 9: Payment reminder cadence is correct
+ * and anchored to shoot_ready_notified_at
+ *
+ * Validates: Requirements 12.10, 12.11, 12.12, 12.13
+ *
+ * For an arbitrary shoot_ready_notified_at anchor and an arbitrary horizon,
+ * PaymentReminderScheduler::schedule(start, horizonEnd) must produce a list
+ * of reminder timestamps that satisfies the following universal invariants:
+ *
+ *   (1) Phase 1 — fixed reminders at exactly start+1, +3, +7 days, included
+ *       only when within the horizon.
+ *   (2) Phase 2 — weekly reminders for the rest of the first month at exactly
+ *       start+14, +21, +28 days, included only when within the horizon.
+ *   (3) Phase 3 — after the first month, exactly one reminder per calendar
+ *       month strictly later than the anchor's month, falling on that month's
+ *       last Sunday at 09:00 in the anchor's timezone, included only when
+ *       within the horizon.
+ *   (4) The result is strictly ascending and every entry is <= horizonEnd.
+ *   (5) Every result entry that is not a Phase 1/2 timestamp has dayOfWeek
+ *       == Sunday and time == 09:00 (i.e. is a valid Phase 3 entry).
+ *
+ * No PHP property-based-testing library is configured for the backend, so the
+ * test follows the spec's "strong randomization plus deterministic edge cases"
+ * approach: 30 randomized {anchor, horizon} cases (2026/2027 anchors with
+ * horizons covering Phase 1 / 2 / 3 boundaries) plus 10 deterministic edge
+ * cases (horizon before day +1, anchor on Feb 28/29 in a leap year, anchor on
+ * a Sunday, anchor at month-end, anchor on a year boundary, exact day +7 and
+ * +28 horizons, and a horizon that lands strictly between Phase 2 and the
+ * first Phase 3 reminder).
+ *
+ * The expected reminder set is computed by an independent oracle that walks
+ * each calendar month from the 1st forward to find every Sunday and keeps
+ * the last one — structurally distinct from the implementation's
+ * end-of-month-minus-modular-offset arithmetic — so the test would catch a
+ * regression in either approach.
+ */
+class PaymentReminderCadencePropertyTest extends TestCase
+{
+    /** Spec mandates >= 25 randomized cases. */
+    private const RANDOM_ITERATIONS = 30;
+
+    private PaymentReminderScheduler $scheduler;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->scheduler = new PaymentReminderScheduler();
+        // Seeded RNG so test runs are deterministic and any failure can be
+        // reproduced exactly without losing the random-coverage benefit.
+        mt_srand(20260618);
+    }
+
+    /**
+     * Generator: 30 random + 10 deterministic edge cases.
+     *
+     * Each entry is [CarbonImmutable $anchor, CarbonImmutable $horizonEnd, string $label].
+     * Anchors are uniform-random instants across 2026 and 2027. Horizons are
+     * sampled across four bands so every batch covers Phase 1, Phase 2, and
+     * Phase 3 boundaries.
+     *
+     * @return array<string, array{0: CarbonImmutable, 1: CarbonImmutable, 2: string}>
+     */
+    private function casesGenerator(): array
+    {
+        $cases = [];
+
+        $base = CarbonImmutable::parse('2026-01-01 00:00:00', 'UTC');
+        // Anchor offset window covers all of 2026 and 2027 (~2 years of minutes).
+        $maxAnchorMinutes = 2 * 365 * 24 * 60 - 1;
+
+        for ($i = 0; $i < self::RANDOM_ITERATIONS; $i++) {
+            $anchor = $base->addMinutes(mt_rand(0, $maxAnchorMinutes));
+
+            // Cycle horizon bands so the generator covers every phase.
+            $mode = $i % 4;
+            switch ($mode) {
+                case 0:
+                    // Phase 1 territory: 0..13 days from anchor (may include
+                    // partial Phase 1, never reaches Phase 2).
+                    $horizonDeltaDays = mt_rand(0, 13);
+                    $modeLabel = 'phase-1';
+                    break;
+                case 1:
+                    // Phase 2 territory: 14..29 days from anchor.
+                    $horizonDeltaDays = mt_rand(14, 29);
+                    $modeLabel = 'phase-2';
+                    break;
+                case 2:
+                    // Phase 3 territory (first months): 31..180 days from anchor.
+                    $horizonDeltaDays = mt_rand(31, 180);
+                    $modeLabel = 'phase-3-near';
+                    break;
+                default:
+                    // Phase 3 territory (wide): 181..540 days from anchor.
+                    $horizonDeltaDays = mt_rand(181, 540);
+                    $modeLabel = 'phase-3-wide';
+                    break;
+            }
+
+            // Random hour-of-day for the horizon so we also probe boundary
+            // behaviour where reminders generated by Phase 1 / 2 fall just
+            // before / after the configured horizon's clock time.
+            $horizon = $anchor
+                ->addDays($horizonDeltaDays)
+                ->setTime(mt_rand(0, 23), mt_rand(0, 59), mt_rand(0, 59));
+
+            $cases["random_{$i}_{$modeLabel}"] = [$anchor, $horizon, "random iter {$i} ({$modeLabel})"];
+        }
+
+        // Deterministic edge cases.
+        $edges = [
+            // Horizon strictly before day +1 — the result must be empty.
+            [
+                CarbonImmutable::parse('2026-05-15 14:30:00', 'UTC'),
+                CarbonImmutable::parse('2026-05-16 02:00:00', 'UTC'),
+                'horizon strictly before day +1 (empty result)',
+            ],
+            // Anchor on Feb 28 of a leap year — day +1 is Feb 29.
+            [
+                CarbonImmutable::parse('2024-02-28 10:00:00', 'UTC'),
+                CarbonImmutable::parse('2025-02-28 23:59:59', 'UTC'),
+                'anchor on Feb 28 of leap year 2024',
+            ],
+            // Anchor on Feb 29 of a leap year — day +1 is Mar 1.
+            [
+                CarbonImmutable::parse('2024-02-29 09:00:00', 'UTC'),
+                CarbonImmutable::parse('2025-12-31 23:59:59', 'UTC'),
+                'anchor on Feb 29 of leap year 2024',
+            ],
+            // Anchor on a Sunday — Phase 3 entries should still be Sundays at 09:00.
+            // 2026-03-01 is a Sunday.
+            [
+                CarbonImmutable::parse('2026-03-01 12:00:00', 'UTC'),
+                CarbonImmutable::parse('2026-12-31 23:59:59', 'UTC'),
+                'anchor on Sunday at midday',
+            ],
+            // Anchor at month-end — Phase 1 day +1 crosses to next month.
+            [
+                CarbonImmutable::parse('2026-01-31 22:00:00', 'UTC'),
+                CarbonImmutable::parse('2026-12-31 23:59:59', 'UTC'),
+                'anchor on Jan 31 (month-end)',
+            ],
+            // Anchor on Dec 31 — Phase 3 starts in next year's January.
+            [
+                CarbonImmutable::parse('2026-12-31 18:00:00', 'UTC'),
+                CarbonImmutable::parse('2027-12-31 23:59:59', 'UTC'),
+                'anchor on Dec 31 (year boundary)',
+            ],
+            // Wide horizon spanning many Phase 3 months.
+            [
+                CarbonImmutable::parse('2026-01-15 09:00:00', 'UTC'),
+                CarbonImmutable::parse('2027-06-30 23:59:59', 'UTC'),
+                'wide horizon (many Phase 3 months)',
+            ],
+            // Horizon exactly at the day +7 boundary — Phase 1 fully included,
+            // Phase 2 excluded.
+            [
+                CarbonImmutable::parse('2026-04-01 10:30:00', 'UTC'),
+                CarbonImmutable::parse('2026-04-08 10:30:00', 'UTC'),
+                'horizon exactly at day +7 boundary',
+            ],
+            // Horizon exactly at the day +28 boundary — Phase 1 + Phase 2
+            // fully included, Phase 3 excluded.
+            [
+                CarbonImmutable::parse('2026-07-04 08:00:00', 'UTC'),
+                CarbonImmutable::parse('2026-08-01 08:00:00', 'UTC'),
+                'horizon exactly at day +28 boundary',
+            ],
+            // Horizon at day +29 — Phase 1 + Phase 2 fully included, no Phase 3
+            // because the next-calendar-month start is past the horizon.
+            [
+                CarbonImmutable::parse('2026-09-01 12:00:00', 'UTC'),
+                CarbonImmutable::parse('2026-09-30 23:59:59', 'UTC'),
+                'horizon at day +29 (Phase 1+2 only, no Phase 3)',
+            ],
+        ];
+
+        foreach ($edges as $j => [$anchor, $horizon, $label]) {
+            $cases["edge_{$j}_" . str_replace(' ', '_', $label)] = [$anchor, $horizon, $label];
+        }
+
+        return $cases;
+    }
+
+    /**
+     * Independent oracle: the last Sunday of the month containing $any, at 09:00.
+     *
+     * Walks every day of the month from the 1st forward and remembers the most
+     * recent Sunday. This is structurally different from the implementation's
+     * (endOfMonth - modular days-back) computation, so the property test is
+     * not validating the algorithm against itself.
+     */
+    private function lastSundayOfMonth(CarbonImmutable $any): CarbonImmutable
+    {
+        $start = $any->startOfMonth()->setTime(0, 0);
+        $end = $any->endOfMonth();
+        $lastSunday = null;
+        for ($d = $start; $d->lessThanOrEqualTo($end); $d = $d->addDay()) {
+            if ($d->dayOfWeek === CarbonInterface::SUNDAY) {
+                $lastSunday = $d;
+            }
+        }
+        // Every month contains at least four Sundays, so $lastSunday is
+        // guaranteed non-null.
+        return $lastSunday->setTime(9, 0);
+    }
+
+    /**
+     * Independent oracle: the expected ascending list of reminder timestamps
+     * for an (anchor, horizon) pair.
+     */
+    private function expectedReminders(CarbonImmutable $anchor, CarbonImmutable $horizonEnd): array
+    {
+        $expected = [];
+
+        // Phase 1: day +1, +3, +7 (each included only when within horizon).
+        foreach ([1, 3, 7] as $d) {
+            $t = $anchor->addDays($d);
+            if ($t->lessThanOrEqualTo($horizonEnd)) {
+                $expected[] = $t;
+            }
+        }
+
+        // Phase 2: day +14, +21, +28 (each included only when within horizon).
+        foreach ([14, 21, 28] as $d) {
+            $t = $anchor->addDays($d);
+            if ($t->lessThanOrEqualTo($horizonEnd)) {
+                $expected[] = $t;
+            }
+        }
+
+        // Phase 3: last Sunday of every calendar month strictly after the
+        // anchor's month, at 09:00, included only when within horizon.
+        $month = $anchor->addMonth()->startOfMonth();
+        while ($month->lessThanOrEqualTo($horizonEnd)) {
+            $sunday = $this->lastSundayOfMonth($month);
+            if ($sunday->lessThanOrEqualTo($horizonEnd)) {
+                $expected[] = $sunday;
+            }
+            $month = $month->addMonth()->startOfMonth();
+        }
+
+        usort($expected, fn (CarbonImmutable $a, CarbonImmutable $b) => $a <=> $b);
+
+        return $expected;
+    }
+
+    /**
+     * Property 9 — universal cadence invariant.
+     *
+     * Validates: Requirements 12.10, 12.11, 12.12, 12.13
+     */
+    #[Test]
+    public function payment_reminder_cadence_holds_for_all_anchors_and_horizons(): void
+    {
+        foreach ($this->casesGenerator() as $key => [$anchor, $horizon, $label]) {
+            $result = $this->scheduler->schedule($anchor, $horizon);
+            $expected = $this->expectedReminders($anchor, $horizon);
+
+            $resultIso = array_map(fn (CarbonImmutable $t) => $t->toIso8601String(), $result);
+            $expectedIso = array_map(fn (CarbonImmutable $t) => $t->toIso8601String(), $expected);
+
+            $context = sprintf(
+                'case %s (anchor=%s UTC, horizon=%s UTC, label=%s)',
+                $key,
+                $anchor->toDateTimeString(),
+                $horizon->toDateTimeString(),
+                $label
+            );
+
+            // (1) The result equals the expected reminder set, ascending.
+            $this->assertSame(
+                $expectedIso,
+                $resultIso,
+                "cadence does not match expected schedule for {$context}"
+                    . "\n  expected: " . implode(', ', $expectedIso)
+                    . "\n  got     : " . implode(', ', $resultIso)
+            );
+
+            // (2) Every entry is <= horizonEnd.
+            foreach ($result as $t) {
+                $this->assertTrue(
+                    $t->lessThanOrEqualTo($horizon),
+                    "reminder {$t->toDateTimeString()} exceeds horizon for {$context}"
+                );
+            }
+
+            // (3) Strictly ascending — catches duplicates and out-of-order
+            //     entries even when set equality might mask them.
+            for ($i = 1; $i < count($result); $i++) {
+                $this->assertTrue(
+                    $result[$i]->greaterThan($result[$i - 1]),
+                    "reminders are not strictly ascending at index {$i} ({$result[$i - 1]->toDateTimeString()} -> {$result[$i]->toDateTimeString()}) for {$context}"
+                );
+            }
+
+            // (4) For every Phase 1 / Phase 2 day offset that is within the
+            //     horizon, the corresponding timestamp must appear in the
+            //     result. (The set-equality assertion above implies this, but
+            //     the explicit per-offset check produces a clearer error.)
+            foreach ([1, 3, 7, 14, 21, 28] as $d) {
+                $t = $anchor->addDays($d);
+                if ($t->lessThanOrEqualTo($horizon)) {
+                    $this->assertContains(
+                        $t->toIso8601String(),
+                        $resultIso,
+                        "expected Phase 1/2 reminder at day +{$d} ({$t->toDateTimeString()}) missing for {$context}"
+                    );
+                }
+            }
+
+            // (5) Every result entry that is NOT one of the Phase 1 / Phase 2
+            //     fixed-offset timestamps must be a Phase 3 entry: dayOfWeek
+            //     == Sunday and time == 09:00 in the anchor's zone.
+            $phase12Keys = [];
+            foreach ([1, 3, 7, 14, 21, 28] as $d) {
+                $phase12Keys[$anchor->addDays($d)->toIso8601String()] = true;
+            }
+            foreach ($result as $t) {
+                if (!isset($phase12Keys[$t->toIso8601String()])) {
+                    $this->assertSame(
+                        CarbonInterface::SUNDAY,
+                        $t->dayOfWeek,
+                        "Phase 3 entry {$t->toDateTimeString()} is not a Sunday for {$context}"
+                    );
+                    $this->assertSame(
+                        '09:00',
+                        $t->format('H:i'),
+                        "Phase 3 entry {$t->toDateTimeString()} is not at 09:00 for {$context}"
+                    );
+                }
+            }
+        }
+    }
+}

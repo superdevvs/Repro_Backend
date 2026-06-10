@@ -180,6 +180,33 @@ class AddressLookupController extends Controller
     }
 
     /**
+     * Resolve an address to map coordinates, with a locality fallback.
+     */
+    public function geocodeAddress(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'address' => 'required|string|max:255',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'zip' => 'nullable|string|max:20',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'error' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $coordinates = $this->addressService->geocodeAddress($validator->validated());
+
+        return response()->json([
+            'success' => $coordinates !== null,
+            'data' => $coordinates,
+        ]);
+    }
+
+    /**
      * Calculate distance between two addresses
      */
     public function calculateDistance(Request $request): JsonResponse

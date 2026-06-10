@@ -810,7 +810,22 @@ class MessagingService
 
     public function dispatchScheduledMessage(Message $message): Message
     {
-        return $this->dispatchStoredEmailMessage($message);
+        $channel = strtoupper((string) $message->channel);
+        $provider = strtoupper((string) $message->provider);
+
+        if ($channel === 'SMS') {
+            return $this->dispatchStoredSmsMessage($message);
+        }
+
+        if ($channel === 'EMAIL' && $provider === 'INTERNAL') {
+            return $this->dispatchStoredInternalEmailMessage($message);
+        }
+
+        if ($channel === 'EMAIL') {
+            return $this->dispatchStoredEmailMessage($message);
+        }
+
+        return $message;
     }
 
     public function dispatchStoredEmailMessage(Message $message): Message
@@ -863,6 +878,92 @@ class MessagingService
         }
 
         return $message->refresh();
+    }
+
+    public function dispatchStoredSmsMessage(Message $message): Message
+    {
+        if ($message->channel !== 'SMS') {
+            return $message;
+        }
+
+        try {
+            if ($this->isRecipientOptedOut((string) $message->to_address)) {
+                throw new RuntimeException('Recipient is opted out of SMS.');
+            }
+
+            $number = $this->resolveSmsNumberForMessage($message);
+            $providerMessageId = $this->telnyxProvider->send($number, [
+                'to' => $message->to_address,
+                'text' => $message->body_text ?? '',
+            ]);
+
+            $message->update([
+                'status' => 'SENT',
+                'sent_at' => now(),
+                'provider' => 'TELNYX',
+                'from_address' => $number->phone_number,
+                'provider_message_id' => $providerMessageId,
+                'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                    'provider' => 'TELNYX',
+                    'provider_message_id' => $providerMessageId,
+                    'status' => 'SENT',
+                    'sent_at' => now()->toIso8601String(),
+                ]),
+            ]);
+
+            $message->refresh()->loadMissing('thread.contact');
+            SmsMessageSent::dispatch($message);
+            if ($message->thread) {
+                SmsThreadUpdated::dispatch($message->thread);
+            }
+        } catch (\Throwable $exception) {
+            $this->markMessageFailed(
+                $message,
+                $exception,
+                'Scheduled SMS dispatch failed',
+                'TELNYX'
+            );
+
+            throw $exception;
+        }
+
+        return $message->refresh();
+    }
+
+    public function dispatchStoredInternalEmailMessage(Message $message): Message
+    {
+        if ($message->channel !== 'EMAIL') {
+            return $message;
+        }
+
+        $message->update([
+            'status' => 'SENT',
+            'sent_at' => now(),
+            'provider' => 'INTERNAL',
+            'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                'provider' => 'INTERNAL',
+                'status' => 'SENT',
+                'sent_at' => now()->toIso8601String(),
+            ]),
+        ]);
+
+        return $message->refresh();
+    }
+
+    protected function resolveSmsNumberForMessage(Message $message): SmsNumber
+    {
+        $from = trim((string) $message->from_address);
+        if ($from !== '') {
+            $number = SmsNumber::query()
+                ->where('phone_number', $from)
+                ->first();
+
+            if ($number) {
+                return $number;
+            }
+        }
+
+        return $this->resolveSmsNumber([]);
     }
 
     protected function markMessageFailed(

@@ -3,6 +3,7 @@
 namespace App\Services\Shoots;
 
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
@@ -29,12 +30,17 @@ class ShootEditorDownloadService
             $fileIdsParam = array_filter(explode(',', $fileIdsParam));
         }
 
-        $filesQuery = $shoot->files()->where('workflow_stage', 'todo');
+        $filesQuery = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO);
         if (!empty($fileIdsParam)) {
             $filesQuery->whereIn('id', $fileIdsParam);
         }
 
-        $allFiles = $filesQuery->get();
+        $allFiles = $filesQuery
+            ->get()
+            ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
+            // Infected files are withheld from download/delivery (Req 15.7).
+            ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
+            ->values();
         $isEditorDownload = $this->shootAuthorizationSupport->hasRole($user, ['editor']);
         $files = $isEditorDownload
             ? $this->shootEditingAssignmentService->filterFilesForEditor($allFiles, $shoot, $user)

@@ -9,6 +9,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\ShootActivityLogger;
@@ -38,6 +39,10 @@ class UpdateShootAction
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
         $shoot->loadMissing(['services', 'ghostUsers']);
+        $scheduleScope = app(ScheduleDateScopeService::class);
+        // Capture the shoot's current local calendar day before any mutation so a reschedule
+        // that moves it to a different day busts both the old and new buckets (Req 8.1, 8.3).
+        $previousLocalDate = $scheduleScope->localDateForShoot($shoot);
         $beforeSnapshot = $this->mailService->captureShootSnapshot($shoot);
         $originalServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
         $originalServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
@@ -46,7 +51,10 @@ class UpdateShootAction
         $originalBaseQuote = (float) $shoot->base_quote;
         $originalTotalQuote = (float) $shoot->total_quote;
         $normalizedRole = strtolower((string) $user->role);
-        $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
+        // Reps are NOT admins: they are assignment-scoped editors handled by the $assignedRep
+        // branch below (rep_id === user->id with $repEditableKeys). Including them here would
+        // let any rep bypass authorization and edit any shoot, so they must fall through.
+        $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'editing_manager'], true);
         $isClient = $user->role === 'client';
         $isRep = in_array($normalizedRole, ['salesrep', 'sales_rep'], true);
         $isPhotographer = $user->role === 'photographer';
@@ -282,8 +290,12 @@ class UpdateShootAction
             if ($validated['scheduled_at']) {
                 $scheduledAt = Carbon::parse($validated['scheduled_at']);
                 $shoot->scheduled_at = $scheduledAt;
-                $shoot->scheduled_date = $scheduledAt->copy()->toDateString();
-                $shoot->time = $scheduledAt->copy()->format('H:i');
+                $scheduleScope = app(ScheduleDateScopeService::class);
+                $timezone = $validated['timezone'] ?? $shoot->timezone;
+                $shoot->scheduled_date = $scheduleScope->localDateForScheduledAt($scheduledAt, $timezone)
+                    ?? $scheduledAt->copy()->toDateString();
+                $shoot->time = $scheduleScope->localTimeForScheduledAt($scheduledAt, $timezone)
+                    ?? $scheduledAt->copy()->format('H:i');
             } else {
                 $shoot->scheduled_at = null;
                 $shoot->scheduled_date = null;
@@ -336,6 +348,11 @@ class UpdateShootAction
         }
 
         $this->editablePayloadService->apply($shoot, $validated);
+        if (($scheduledAtProvided || array_key_exists('timezone', $validated)) && $shoot->scheduled_at) {
+            $scheduleScope = app(ScheduleDateScopeService::class);
+            $shoot->scheduled_date = $scheduleScope->localDateForShoot($shoot) ?? $shoot->scheduled_date;
+            $shoot->time = $scheduleScope->localTimeForScheduledAt($shoot->scheduled_at, $shoot->timezone) ?? $shoot->time;
+        }
         $updatedTourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
         $tourLinksChanged = $originalTourLinks !== $updatedTourLinks;
         $generatedTourLinkKeys = $tourLinksChanged
@@ -533,6 +550,13 @@ class UpdateShootAction
         }
 
         $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
+
+        // Bust the per-date schedule buckets for both the old and the new calendar day so a
+        // reschedule via update reflects in the Schedule_View immediately (Req 8.1, 8.3).
+        $scheduleScope->invalidateDates([
+            $previousLocalDate,
+            $scheduleScope->localDateForShoot($shoot),
+        ]);
 
         return $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files', 'ghostUsers']);
     }

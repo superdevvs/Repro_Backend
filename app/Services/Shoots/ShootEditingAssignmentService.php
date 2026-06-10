@@ -123,6 +123,12 @@ class ShootEditingAssignmentService
 
     public function canEditorAccessFile(Shoot $shoot, ShootFile $file, User $editor): bool
     {
+        // Withhold non-required extras from editors regardless of any other
+        // assignment they hold (Req 13.2, 13.4).
+        if (!$this->isEditable($file)) {
+            return false;
+        }
+
         if ($file->shoot_service_id) {
             $serviceItem = $shoot->serviceItems()
                 ->whereKey($file->shoot_service_id)
@@ -152,6 +158,32 @@ class ShootEditingAssignmentService
         return in_array($fileLane, $assignedLanes, true);
     }
 
+    /**
+     * Determine whether a file belongs in the editing payload.
+     *
+     * A file is editable unless it is an extra that is not marked as required for
+     * editing. Required extras are always included. (Req 13.1, 13.3)
+     */
+    public function isEditable(ShootFile $file): bool
+    {
+        return $file->isRequiredForEditing();
+    }
+
+    /**
+     * Build the editing payload for a shoot, excluding non-required extras and
+     * always including extras flagged as required for editing. (Req 13.1, 13.3)
+     */
+    public function editableFiles(Shoot $shoot): Collection
+    {
+        $files = $shoot->relationLoaded('files')
+            ? collect($shoot->files)
+            : $shoot->files()->get();
+
+        return $files
+            ->filter(fn (ShootFile $file) => $this->isEditable($file))
+            ->values();
+    }
+
     public function filterFilesForEditor(Collection $files, Shoot $shoot, User $editor): Collection
     {
         $assignedLanes = $this->getAssignedLanesForEditor($shoot, $editor);
@@ -160,6 +192,12 @@ class ShootEditingAssignmentService
         }
 
         return $files->filter(function (ShootFile $file) use ($assignedLanes) {
+            // Withhold non-required extras from the editor view in addition to
+            // lane filtering (Req 13.2, 13.4).
+            if (!$this->isEditable($file)) {
+                return false;
+            }
+
             $fileLane = $this->getFileLane($file);
             if ($fileLane === null) {
                 return true;

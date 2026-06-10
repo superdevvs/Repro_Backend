@@ -341,7 +341,7 @@ class InvoiceBillingFlow
         if ($clientEmail) {
             try {
                 $messagingService = app(MessagingService::class);
-                $paymentLink = config('app.url') . "/pay/invoice/{$invoice->id}";
+                $paymentLink = $invoice->paymentLink();
                 
                 $messagingService->sendEmail([
                     'to' => $clientEmail,

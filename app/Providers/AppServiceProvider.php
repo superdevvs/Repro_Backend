@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Models\PersonalAccessToken;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Observers\ShootFileObserver;
@@ -10,6 +11,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Sanctum\Sanctum;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -26,6 +28,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Resolve soft-deleted users during token authentication so they are explicitly rejected
+        // (Req 17.5) rather than being treated as an absent/unknown user.
+        Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
+
         // Explicit route model binding for ShootFile
         Route::model('file', ShootFile::class);
         Shoot::observe(ShootObserver::class);

@@ -4,6 +4,8 @@ namespace App\Http\Controllers\API\Messaging;
 
 use App\Http\Controllers\Controller;
 use App\Models\MessageTemplate;
+use App\Models\Shoot;
+use App\Services\Messaging\ManualNotificationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -159,6 +161,71 @@ class MessageTemplateController extends Controller
         $result = $renderer->render($template, $variables);
 
         return response()->json($result);
+    }
+
+    /**
+     * Manually send a shoot notification (Req 12.1, 12.6, 12.7) via {@see ManualNotificationService}.
+     *
+     * Wraps the existing test-send/preview pipeline: maps the manual notification type to a
+     * MessageTemplate slug, dispatches through the existing MessagingService for the selected
+     * channel, and lets the service record `shoot_ready_notified_at` (AC 12.10) and the
+     * Audit_Log entry (AC 12.9). Mounted at POST /messaging/notifications/manual-send.
+     */
+    public function manualSend(Request $request, ManualNotificationService $manual): JsonResponse
+    {
+        $data = $this->validateManualPayload($request);
+
+        $shoot = Shoot::findOrFail($data['shoot_id']);
+
+        $message = $manual->send(
+            $shoot,
+            $data['type'],
+            $data['recipient_type'],
+            $data['channel'],
+            $request->user(),
+        );
+
+        return response()->json([
+            'status'     => 'sent',
+            'message_id' => $message->id ?? null,
+            'channel'    => $data['channel'],
+            'recipient_type' => $data['recipient_type'],
+        ]);
+    }
+
+    /**
+     * Render a manual shoot notification preview (Req 12.5, 12.8) without sending or auditing.
+     *
+     * Returns the rendered subject/body plus any unresolved template variables so the Dashboard
+     * can show a missing-variables warning before the Admin sends. Mounted at
+     * POST /messaging/notifications/manual-preview.
+     */
+    public function manualPreview(Request $request, ManualNotificationService $manual): JsonResponse
+    {
+        $data = $this->validateManualPayload($request, requireChannel: false);
+
+        $shoot = Shoot::findOrFail($data['shoot_id']);
+
+        $preview = $manual->preview($shoot, $data['type'], $data['recipient_type']);
+
+        return response()->json($preview);
+    }
+
+    /**
+     * Validate the manual-send / manual-preview request payload.
+     *
+     * @return array{shoot_id:int,type:string,recipient_type:string,channel?:string}
+     */
+    protected function validateManualPayload(Request $request, bool $requireChannel = true): array
+    {
+        $rules = [
+            'shoot_id'       => ['required', 'integer', 'exists:shoots,id'],
+            'type'           => ['required', 'string', Rule::in(array_keys(ManualNotificationService::TYPES))],
+            'recipient_type' => ['required', Rule::in(['client', 'photographer'])],
+            'channel'        => [$requireChannel ? 'required' : 'nullable', Rule::in(['email', 'sms'])],
+        ];
+
+        return $request->validate($rules);
     }
 
     protected function validatePayload(Request $request): array

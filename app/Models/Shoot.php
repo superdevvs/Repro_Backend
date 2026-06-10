@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
+use App\Services\Schedule\ScheduleDateScopeService;
 
 class Shoot extends Model
 {
@@ -54,6 +56,10 @@ class Shoot extends Model
         'status',
         'workflow_status',
         'shoot_type',
+        'service_area_kind',
+        'service_area_value',
+        'shoot_ready_notified_at',
+        'cubicasa_idempotency_key',
         'product_status',
         'created_by',
         'updated_by',
@@ -105,6 +111,10 @@ class Shoot extends Model
         'cubicasa_data',
         'cubicasa_last_synced_at',
         'cubicasa_last_status_at',
+        'cubicasa_sync_status',
+        'cubicasa_sync_job_id',
+        'cubicasa_sync_started_at',
+        'cubicasa_last_sync_error',
         'is_private_listing',
         'is_featured',
         'is_listing_hidden',
@@ -145,6 +155,7 @@ class Shoot extends Model
         'scheduled_at' => 'datetime',
         'timezone' => 'string',
         'completed_at' => 'datetime',
+        'shoot_ready_notified_at' => 'datetime',
         'bypass_paywall' => 'boolean',
         'photos_uploaded_at' => 'datetime',
         'editing_completed_at' => 'datetime',
@@ -177,6 +188,7 @@ class Shoot extends Model
         'cubicasa_data' => 'array',
         'cubicasa_last_synced_at' => 'datetime',
         'cubicasa_last_status_at' => 'datetime',
+        'cubicasa_sync_started_at' => 'datetime',
         'bright_mls_last_published_at' => 'datetime',
         'iguide_last_synced_at' => 'datetime',
         'is_private_listing' => 'boolean',
@@ -738,6 +750,14 @@ class Shoot extends Model
         return $this->hasMany(ShootActivityLog::class);
     }
 
+    /**
+     * Scheduled payment reminders for this shoot (Req 12).
+     */
+    public function paymentReminders()
+    {
+        return $this->hasMany(PaymentReminder::class);
+    }
+
     // Helper methods
     public function getTotalPaidAttribute()
     {
@@ -943,6 +963,15 @@ class Shoot extends Model
         Cache::forget("shoot_files_{$shootId}_raw");
         Cache::forget("shoot_files_{$shootId}_edited");
         Cache::forget("shoot_files_{$shootId}_all");
+
+        try {
+            app(ScheduleDateScopeService::class)->invalidateShootBuckets($shoot);
+        } catch (\Throwable $exception) {
+            Log::warning('Could not invalidate schedule date caches', [
+                'shoot_id' => $shootId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
         
         // Invalidate dashboard caches - clear all dashboard overview caches
         // Since we can't easily get all keys, we'll let them expire naturally
@@ -1042,6 +1071,17 @@ class Shoot extends Model
                 $query->whereNull('flag_reason')
                     ->orWhere('flag_reason', '');
             })
+            ->when(
+                Schema::hasColumn('shoot_files', 'is_extra') && Schema::hasColumn('shoot_files', 'required_for_editing'),
+                fn ($query) => $query->where(function ($scope) {
+                    $scope->where(function ($nested) {
+                        $nested->where('is_extra', false)->orWhereNull('is_extra');
+                    })->orWhere('required_for_editing', true);
+                }),
+                fn ($query) => $query->where(function ($scope) {
+                    $scope->whereNull('media_type')->orWhere('media_type', '!=', 'extra');
+                })
+            )
             ->count();
 
         $this->edited_photo_count = $this->files()
@@ -1054,7 +1094,18 @@ class Shoot extends Model
 
         $this->extra_photo_count = $this->files()
             ->where('workflow_stage', 'todo')
-            ->where('path', 'like', '%/extra/%')
+            ->where(function ($query) {
+                $query->whereNull('flag_reason')
+                    ->orWhere('flag_reason', '');
+            })
+            ->when(
+                Schema::hasColumn('shoot_files', 'is_extra'),
+                fn ($query) => $query->where('is_extra', true),
+                fn ($query) => $query->where(function ($scope) {
+                    $scope->where('media_type', 'extra')
+                        ->orWhere('path', 'like', '%/extra/%');
+                })
+            )
             ->count();
 
         // Calculate missing counts

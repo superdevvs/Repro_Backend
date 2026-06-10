@@ -11,6 +11,7 @@ use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
 use App\Services\ShootActivityLogger;
 use App\Services\ShootWorkflowService;
@@ -160,6 +161,13 @@ class CreateShootAction
             $shootType = $this->normalizeShootType($validated['shoot_type'] ?? null, $servicesPayload);
             $productStatus = $this->resolveProductStatus($servicesPayload, (float) $pricingCalculation['total_quote'], $validated['product_status'] ?? null);
             $isNoCharge = (float) $pricingCalculation['total_quote'] <= 0.01;
+            $scheduleScope = app(ScheduleDateScopeService::class);
+            $scheduledDate = $scheduledAt
+                ? ($scheduleScope->localDateForScheduledAt($scheduledAt, $validated['timezone'] ?? null) ?? $scheduledAt->format('Y-m-d'))
+                : null;
+            $scheduledTime = $scheduledAt
+                ? ($scheduleScope->localTimeForScheduledAt($scheduledAt, $validated['timezone'] ?? null) ?? $scheduledAt->format('H:i'))
+                : ($validated['time'] ?? null);
 
             $shoot = Shoot::create([
                 'client_id' => $validated['client_id'],
@@ -179,8 +187,8 @@ class CreateShootAction
                 'property_status' => $propertyStatus,
                 'tour_links' => !empty($initialTourLinks) ? $initialTourLinks : null,
                 'scheduled_at' => $scheduledAt,
-                'scheduled_date' => $scheduledAt ? $scheduledAt->format('Y-m-d') : null,
-                'time' => $scheduledAt ? $scheduledAt->format('H:i') : ($validated['time'] ?? null),
+                'scheduled_date' => $scheduledDate,
+                'time' => $scheduledTime,
                 'status' => $initialStatus,
                 'workflow_status' => $workflowStatus,
                 'base_quote' => $pricingCalculation['base_quote'],

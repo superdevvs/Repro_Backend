@@ -10,12 +10,21 @@ use App\Services\Messaging\AutomationService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
+use PHPUnit\Framework\Attributes\PreserveGlobalState;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Tests\TestCase;
 
 class StripeRefundWorkflowTest extends TestCase
 {
     use RefreshDatabase;
 
+    /**
+     * Runs in a separate process so the `alias:Stripe\Refund` mock loads into a clean
+     * process. Without isolation the alias collides ("class Stripe\Refund already exists")
+     * when an earlier test in the same process has already autoloaded the Stripe SDK class.
+     */
+    #[RunInSeparateProcess]
+    #[PreserveGlobalState(false)]
     public function test_admin_can_process_a_full_stripe_refund(): void
     {
         config()->set('services.stripe.secret_key', 'sk_test_123');
@@ -49,8 +58,10 @@ class StripeRefundWorkflowTest extends TestCase
         $refundMock->shouldReceive('create')
             ->once()
             ->with(Mockery::on(function (array $params) use ($payment) {
+                // Current controller contract: a full refund sends the explicit amount
+                // (in cents) alongside the payment_intent. ($250.00 -> 25000)
                 return ($params['payment_intent'] ?? null) === $payment->stripe_payment_id
-                    && !array_key_exists('amount', $params);
+                    && ($params['amount'] ?? null) === (int) round(((float) $payment->amount) * 100);
             }))
             ->andReturn((object) [
                 'id' => 're_test_123',

@@ -41,6 +41,11 @@ class ShootFile extends Model
         'is_cover',
         'is_favorite',
         'is_hidden',
+        'is_extra',
+        'required_for_editing',
+        'scan_status',
+        'scan_result',
+        'scanned_at',
         'bracket_group',
         'sequence',
         'flag_reason',
@@ -59,9 +64,12 @@ class ShootFile extends Model
         'verified_at' => 'datetime',
         'processed_at' => 'datetime',
         'processing_failed_at' => 'datetime',
+        'scanned_at' => 'datetime',
         'is_cover' => 'boolean',
         'is_favorite' => 'boolean',
         'is_hidden' => 'boolean',
+        'is_extra' => 'boolean',
+        'required_for_editing' => 'boolean',
         'bracket_group' => 'integer',
         'sequence' => 'integer',
         'sort_order' => 'integer',
@@ -76,6 +84,60 @@ class ShootFile extends Model
     const STAGE_VERIFIED = 'verified';
     const STAGE_ARCHIVED = 'archived';
     const STAGE_FLAGGED = 'flagged';
+
+    // Virus-scan state machine (Req 14/15). Files quarantine on upload and are only
+    // released to downstream processing once scanned clean.
+    const SCAN_STATUS_QUARANTINED = 'quarantined';
+    const SCAN_STATUS_CLEAN = 'clean';
+    const SCAN_STATUS_INFECTED = 'infected';
+    const SCAN_STATUS_FAILED = 'failed';
+
+    /**
+     * Whether this file has cleared Quarantine and may be handed to downstream
+     * processing jobs (ProcessImageJob / UploadShootMediaToDropboxJob).
+     *
+     * Req 14.3 / 15.1 / 15.4: only a file with a recorded clean verdict is
+     * released for downstream processing; quarantined, infected, and failed
+     * files are withheld. A null scan_status is treated as a legacy file that
+     * predates the scanning feature and is allowed through so existing media
+     * keeps processing (documented legacy fallback).
+     */
+    public function isClearedForProcessing(): bool
+    {
+        $status = $this->scan_status;
+
+        return $status === null || $status === self::SCAN_STATUS_CLEAN;
+    }
+
+    /**
+     * Whether this file must be blocked from preview and download.
+     *
+     * Req 15.7: a file whose scan status is infected is never served. Legacy
+     * files (null status) and not-yet-scanned files remain servable so that
+     * delivery of pre-existing media is not broken; only a positive infected
+     * verdict hard-blocks delivery.
+     */
+    public function isBlockedFromDelivery(): bool
+    {
+        return $this->scan_status === self::SCAN_STATUS_INFECTED;
+    }
+
+    public function isExtra(): bool
+    {
+        if (array_key_exists('is_extra', $this->attributes)) {
+            return (bool) $this->attributes['is_extra'];
+        }
+
+        $mediaType = strtolower((string) ($this->media_type ?? ''));
+        $path = strtolower((string) ($this->path ?? $this->storage_path ?? $this->dropbox_path ?? ''));
+
+        return $mediaType === 'extra' || str_contains($path, '/extra/');
+    }
+
+    public function isRequiredForEditing(): bool
+    {
+        return !$this->isExtra() || (bool) ($this->required_for_editing ?? false);
+    }
 
     public function shoot()
     {

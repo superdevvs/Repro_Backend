@@ -10,10 +10,12 @@ use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootMediaMutationSupportService;
+use App\Services\UploadValidationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 class UploadShootFilesAction
@@ -23,7 +25,8 @@ class UploadShootFilesAction
         protected ShootMediaMutationSupportService $support,
         protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootActivityLogger $activityLogger,
-        protected AutoStackRawFilesAction $autoStackRawFilesAction
+        protected AutoStackRawFilesAction $autoStackRawFilesAction,
+        protected UploadValidationService $uploadValidation
     ) {
     }
 
@@ -111,6 +114,16 @@ class UploadShootFilesAction
                 ];
             }
         }
+
+        // Pre-scan validation (Req 14.5/14.6): reject oversize / disallowed-type
+        // files with HTTP 422 BEFORE creating any ShootFile row or enqueuing a
+        // scan job. ValidationException is rendered by Laravel's exception
+        // handler as a 422 JSON response with field-keyed errors. Runs after
+        // the legacy in-action 2GB cap and isValid() checks so existing
+        // response shapes for those specific cases are preserved; this catches
+        // anything still left (e.g. > configured per-file limit but <= 2GB,
+        // or a disallowed extension).
+        $this->uploadValidation->validateMany($files, 'files');
 
         $request->files->set('files', $files);
         $uploadType = $request->input('upload_type', 'raw');
@@ -223,6 +236,9 @@ class UploadShootFilesAction
         DB::beginTransaction();
         try {
             $isExtra = $request->boolean('is_extra', false);
+            $requiredForEditing = $request->has('required_for_editing')
+                ? $request->boolean('required_for_editing')
+                : $request->boolean('requiredForEditing', false);
             $mediaTypeOverride = $request->input('media_type');
             $serviceCategory = $request->input('service_category');
             $rawBracketMode = $uploadType === 'raw' ? (int) ($request->input('bracket_mode') ?? $shoot->bracket_mode ?? 0) : 0;
@@ -276,6 +292,19 @@ class UploadShootFilesAction
                         $shootFile->save();
                     }
 
+                    $flagUpdates = [];
+                    if (Schema::hasColumn('shoot_files', 'is_extra')) {
+                        $flagUpdates['is_extra'] = $isExtra || $shootFile->media_type === 'extra';
+                    }
+                    if (Schema::hasColumn('shoot_files', 'required_for_editing')) {
+                        $flagUpdates['required_for_editing'] = ($isExtra || $shootFile->media_type === 'extra')
+                            && $requiredForEditing;
+                    }
+                    if ($flagUpdates !== []) {
+                        $shootFile->forceFill($flagUpdates)->save();
+                        $shootFile->refresh();
+                    }
+
                     if ($shootServiceId) {
                         $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
                         if ($serviceItem) {
@@ -327,7 +356,9 @@ class UploadShootFilesAction
                         'file_size' => $shootFile->file_size,
                         'shoot_service_id' => $shootFile->shoot_service_id,
                         'uploaded_at' => $shootFile->created_at,
-                        'is_extra' => $shootFile->media_type === 'extra',
+                        'is_extra' => $shootFile->isExtra(),
+                        'required_for_editing' => $shootFile->isRequiredForEditing(),
+                        'requiredForEditing' => $shootFile->isRequiredForEditing(),
                         'bracket_group' => $shootFile->bracket_group,
                         'sequence' => $shootFile->sequence,
                         'thumbnail_path' => $shootFile->thumbnail_path,

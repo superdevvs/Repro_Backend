@@ -749,16 +749,16 @@ HTML;
     private function resolveInvoiceVariables(Invoice $invoice): array
     {
         $amountPaid = (float) ($invoice->amount_paid ?? 0);
-        $totalAmount = (float) ($invoice->total_amount ?? $invoice->total ?? 0);
-        $amountDue = max($totalAmount - $amountPaid, 0);
+        $amountDue = max((float) $invoice->balanceDue(), 0);
 
         $variables = [
             'invoice_id' => $invoice->id,
-            'invoice_number' => $invoice->invoice_number ?? null,
+            'invoice_number' => $invoice->invoice_number ?? ('Invoice #' . $invoice->id),
             'amount_due' => $amountDue > 0 ? $amountDue : null,
             'payment_amount' => $amountPaid > 0 ? $amountPaid : null,
             'payment_date' => $invoice->paid_at?->format('M j, Y') ?? null,
             'due_date' => $invoice->due_date?->format('M j, Y') ?? null,
+            'payment_link' => $invoice->paymentLink(),
         ];
 
         if ($invoice->client_id) {

@@ -7,16 +7,20 @@ use App\Models\ShootFile;
 use App\Models\AiEditingJob;
 use App\Services\AutoenhanceService;
 use App\Jobs\ProcessAutoenhanceEditingJob;
+use App\Jobs\ProcessFalEditingJob;
+use App\Services\FalService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class AiEditingTools
 {
     private AutoenhanceService $autoenhanceService;
+    private FalService $falService;
 
     public function __construct()
     {
         $this->autoenhanceService = app(AutoenhanceService::class);
+        $this->falService = app(FalService::class);
     }
 
     /**
@@ -33,6 +37,7 @@ class AiEditingTools
             $editingType = $params['editing_type'] ?? 'enhance';
             $fileIds = $params['file_ids'] ?? null;
             $userId = $context['user_id'] ?? null;
+            $provider = $this->resolveProvider($params['provider'] ?? null);
 
             if (!$shootId) {
                 return [
@@ -110,7 +115,7 @@ class AiEditingTools
                     'shoot_id' => $shoot->id,
                     'shoot_file_id' => $file->id,
                     'user_id' => $userId,
-                    'provider' => 'autoenhance',
+                    'provider' => $provider,
                     'status' => AiEditingJob::STATUS_PENDING,
                     'editing_type' => $editingType,
                     'editing_params' => $params['params'] ?? [],
@@ -118,20 +123,25 @@ class AiEditingTools
                 ]);
 
                 // Dispatch queue job
-                ProcessAutoenhanceEditingJob::dispatch($editingJob);
+                $provider === 'fal'
+                    ? ProcessFalEditingJob::dispatch($editingJob)
+                    : ProcessAutoenhanceEditingJob::dispatch($editingJob);
 
                 $jobs[] = [
+                    'id' => $editingJob->id,
                     'job_id' => $editingJob->id,
                     'file_id' => $file->id,
                     'filename' => $file->filename,
+                    'provider' => $provider,
                 ];
             }
 
             return [
                 'success' => true,
-                'message' => "Submitted {$validFiles->count()} image(s) to Autoenhance",
+                'message' => "Submitted {$validFiles->count()} image(s) to " . $this->providerLabel($provider),
                 'jobs' => $jobs,
                 'editing_type' => $editingType,
+                'provider' => $provider,
             ];
 
         } catch (\Exception $e) {
@@ -198,7 +208,8 @@ class AiEditingTools
             }
 
             if ($shootId) {
-                $query = AiEditingJob::where('shoot_id', $shootId)->where('provider', 'autoenhance');
+                $query = AiEditingJob::where('shoot_id', $shootId)
+                    ->whereIn('provider', ['autoenhance', 'fal']);
                 
                 if ($userId && !in_array($context['user_role'] ?? '', ['admin', 'superadmin'])) {
                     $query->where('user_id', $userId);
@@ -251,10 +262,14 @@ class AiEditingTools
     public function getEditingTypes(array $params = [], array $context = []): array
     {
         try {
-            $types = $this->autoenhanceService->getEditingTypes();
+            $provider = $this->resolveProvider($params['provider'] ?? null);
+            $types = $provider === 'fal'
+                ? $this->falService->getImageEditingTypes()
+                : $this->autoenhanceService->getEditingTypes();
 
             return [
                 'success' => true,
+                'provider' => $provider,
                 'editing_types' => $types,
             ];
         } catch (\Exception $e) {
@@ -383,9 +398,18 @@ class AiEditingTools
             foreach ($failed as $job) {
                 $job->status = AiEditingJob::STATUS_PENDING;
                 $job->error_message = null;
+                $job->edited_image_url = null;
+                $job->autoenhance_image_id = null;
+                $job->provider_job_id = null;
+                $job->provider_order_id = null;
+                $job->started_at = null;
+                $job->completed_at = null;
+                $job->retry_count = 0;
                 $job->save();
 
-                ProcessAutoenhanceEditingJob::dispatch($job);
+                ($job->provider === 'fal')
+                    ? ProcessFalEditingJob::dispatch($job)
+                    : ProcessAutoenhanceEditingJob::dispatch($job);
                 $retried++;
             }
 
@@ -421,6 +445,7 @@ class AiEditingTools
     {
         $jobs = [];
         $skipped = [];
+        $provider = $this->resolveProvider($params['provider'] ?? null);
 
         foreach ($stagedIds as $stagedId) {
             $stagedId = (string) $stagedId;
@@ -465,7 +490,7 @@ class AiEditingTools
                     'shoot_id' => null,
                     'shoot_file_id' => null,
                     'user_id' => $userId,
-                    'provider' => 'autoenhance',
+                    'provider' => $provider,
                     'status' => AiEditingJob::STATUS_PENDING,
                     'editing_type' => $mode,
                     'editing_params' => $params,
@@ -478,15 +503,25 @@ class AiEditingTools
                     'mime_type' => $contentType,
                 ]);
 
-                $result = $this->autoenhanceService->submitEditingJobFromBuffer(
-                    $contents, $name, $contentType, $mode, $providerParams
-                );
+                $result = $provider === 'fal'
+                    ? $this->falService->submitImageEditFromBuffer(
+                        $contents, $name, $contentType, $mode, $providerParams
+                    )
+                    : $this->autoenhanceService->submitEditingJobFromBuffer(
+                        $contents, $name, $contentType, $mode, $providerParams
+                    );
 
-                if (!is_array($result) || !($result['image_id'] ?? null)) {
+                $providerJobId = is_array($result)
+                    ? ($provider === 'fal'
+                        ? ($result['request_id'] ?? $result['job_id'] ?? null)
+                        : ($result['image_id'] ?? null))
+                    : null;
+
+                if (!is_array($result) || !$providerJobId) {
                     $errorMessage = is_array($result)
-                        ? ($result['error'] ?? 'Autoenhance submission failed')
-                        : 'Autoenhance submission failed';
-                    $editingJob->markAsFailed(is_string($errorMessage) ? $errorMessage : 'Autoenhance submission failed');
+                        ? ($result['error'] ?? 'AI editing submission failed')
+                        : 'AI editing submission failed';
+                    $editingJob->markAsFailed(is_string($errorMessage) ? $errorMessage : 'AI editing submission failed');
                     if (is_array($result)) {
                         $editingJob->provider_payload = $result;
                         $editingJob->save();
@@ -495,9 +530,11 @@ class AiEditingTools
                     continue;
                 }
 
-                $editingJob->autoenhance_image_id = $result['image_id'];
-                $editingJob->provider_job_id = $result['image_id'];
-                $editingJob->provider_order_id = $result['order_id'] ?? null;
+                if ($provider === 'autoenhance') {
+                    $editingJob->autoenhance_image_id = $providerJobId;
+                    $editingJob->provider_order_id = $result['order_id'] ?? null;
+                }
+                $editingJob->provider_job_id = (string) $providerJobId;
                 $editingJob->provider_payload = $result['data'] ?? null;
                 $editingJob->status = AiEditingJob::STATUS_PROCESSING;
                 $editingJob->started_at = now();
@@ -528,7 +565,7 @@ class AiEditingTools
     public function getRecentJobsForUser(int $userId, int $limit = 10): array
     {
         $jobs = AiEditingJob::where('user_id', $userId)
-            ->where('provider', 'autoenhance')
+            ->whereIn('provider', ['autoenhance', 'fal'])
             ->orderByDesc('id')
             ->limit($limit)
             ->get();
@@ -538,6 +575,7 @@ class AiEditingTools
                 'id' => $job->id,
                 'status' => $job->status,
                 'editing_type' => $job->editing_type,
+                'provider' => $job->provider,
                 'shoot_id' => $job->shoot_id,
                 'error' => $job->error_message,
                 'created_at' => optional($job->created_at)->toIso8601String(),
@@ -564,6 +602,7 @@ class AiEditingTools
             'id' => $job->id,
             'status' => $job->status,
             'editing_type' => $job->editing_type,
+            'provider' => $job->provider,
             'shoot_id' => $job->shoot_id,
             'error' => $job->error_message,
         ])->all();
@@ -590,7 +629,7 @@ class AiEditingTools
                 continue;
             }
             try {
-                if ($job->autoenhance_image_id) {
+                if ($job->provider === 'autoenhance' && $job->autoenhance_image_id) {
                     $this->autoenhanceService->cancelJob($job->autoenhance_image_id);
                 }
                 $job->status = AiEditingJob::STATUS_CANCELLED;
@@ -629,11 +668,14 @@ class AiEditingTools
                 $job->edited_image_url = null;
                 $job->autoenhance_image_id = null;
                 $job->provider_job_id = null;
+                $job->provider_order_id = null;
                 $job->started_at = null;
                 $job->completed_at = null;
                 $job->retry_count = 0;
                 $job->save();
-                ProcessAutoenhanceEditingJob::dispatchAfterResponse($job);
+                ($job->provider === 'fal')
+                    ? ProcessFalEditingJob::dispatchAfterResponse($job)
+                    : ProcessAutoenhanceEditingJob::dispatchAfterResponse($job);
                 $retried++;
             } catch (\Throwable $e) {
                 $skipped[] = ['id' => $job->id, 'reason' => $e->getMessage()];
@@ -641,5 +683,16 @@ class AiEditingTools
         }
         return ['retried' => $retried, 'skipped' => $skipped];
     }
-}
 
+    private function resolveProvider(?string $provider = null): string
+    {
+        $resolved = strtolower((string) ($provider ?: config('services.ai_editing.provider', 'fal')));
+
+        return in_array($resolved, ['autoenhance', 'fal'], true) ? $resolved : 'fal';
+    }
+
+    private function providerLabel(string $provider): string
+    {
+        return $provider === 'fal' ? 'fal.ai' : 'Autoenhance';
+    }
+}

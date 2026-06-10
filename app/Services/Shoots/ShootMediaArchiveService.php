@@ -355,6 +355,22 @@ class ShootMediaArchiveService
 
         $files = $query->get();
 
+        // Infected files are never packaged for delivery (Req 15.7). Excluding
+        // them here keeps every archive path consistent — buildArchivePlan,
+        // hasDownloadableFiles, the authenticated ZIP download, and the public
+        // share-link archive all funnel through getFilesForType. Legacy/unscanned
+        // files (null status) and not-yet-clean files remain in the archive set so
+        // existing delivery is not broken; only a positive infected verdict blocks.
+        $files = $files
+            ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
+            ->values();
+
+        if ($this->normalizeType($type) === 'raw') {
+            $files = $files
+                ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
+                ->values();
+        }
+
         if ($this->normalizeType($type) === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->shootAuthorizationSupport->isRawCameraFile($file))

@@ -881,24 +881,6 @@ class AccountLinkController extends Controller
         ];
     }
 
-    private function serializeIncomingOwnerForUser(AccountLink $link): ?array
-    {
-        if (!$link->mainAccount) {
-            return null;
-        }
-
-        return array_merge(
-            $this->serializeOwnerSummary($link->mainAccount) ?? [],
-            [
-                'status' => $link->status,
-                'sharedDetails' => $link->getFormattedSharedDetails(),
-                'linkedAt' => $link->linked_at?->toISOString(),
-                'linkId' => (string) $link->id,
-                'linkDirection' => 'incoming',
-            ],
-        );
-    }
-
     private function serializeLinkedClientForOwner(AccountLink $link): ?array
     {
         if (!$link->linkedAccount) {
@@ -982,6 +964,39 @@ class AccountLinkController extends Controller
         }
 
         if ($link->sharesDetail('invoices')) {
+            // totalSpent mirrors the admin-side shared-data builder (getSharedData): it is derived
+            // from the linked client's shoot quotes (total_quote). The reorientation had switched
+            // this to an invoice-only sum, which dropped quote-based spend coverage (Req 7.4).
+            // Using total_quote keeps this linked-client scoped view consistent with the admin view.
+            $sharedData['totalSpent'] = (float) (Shoot::query()
+                ->where('client_id', $linkedClientId)
+                ->sum('total_quote') ?? 0);
+
+            // paymentHistory is populated from the linked client's shoot payments, mirroring the
+            // admin-side builder. The reorientation previously initialized this to [] and never
+            // filled it, dropping payment-history coverage (Req 7.4).
+            $sharedData['paymentHistory'] = Payment::query()
+                ->whereHas('shoot', function ($query) use ($linkedClientId) {
+                    $query->where('client_id', $linkedClientId);
+                })
+                ->with('shoot')
+                ->orderByDesc('created_at')
+                ->take(10)
+                ->get()
+                ->map(function (Payment $payment) {
+                    return [
+                        'id' => (string) $payment->id,
+                        'amount' => (float) $payment->amount,
+                        'status' => $payment->status,
+                        'created_at' => $payment->created_at?->toISOString(),
+                        'shoot' => $payment->shoot ? [
+                            'id' => (string) $payment->shoot->id,
+                            'address' => $payment->shoot->address,
+                        ] : null,
+                    ];
+                })
+                ->all();
+
             $invoiceScope = fn ($query) => $query
                 ->where('client_id', $linkedClientId)
                 ->orWhereHas('shoot', function ($shootQuery) use ($linkedClientId) {
@@ -990,14 +1005,6 @@ class AccountLinkController extends Controller
                 ->orWhereHas('shoots', function ($shootQuery) use ($linkedClientId) {
                     $shootQuery->where('client_id', $linkedClientId);
                 });
-
-            $invoiceTotals = Invoice::query()
-                ->where($invoiceScope)
-                ->get(['id', 'total', 'total_amount', 'subtotal', 'tax']);
-
-            $sharedData['totalSpent'] = (float) $invoiceTotals->sum(function (Invoice $invoice) {
-                return (float) ($invoice->total ?? $invoice->total_amount ?? (($invoice->subtotal ?? 0) + ($invoice->tax ?? 0)));
-            });
 
             $invoices = Invoice::query()
                 ->where($invoiceScope)

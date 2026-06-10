@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootShareLinkService;
+use App\Services\Schedule\ScheduleDateScopeService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -96,13 +97,20 @@ class ShootWorkflowService
             $this->validateTransition($shoot, self::STATUS_SCHEDULED);
         }
 
-        DB::transaction(function () use ($shoot, $scheduledAt, $user, $isAlreadyScheduled, $isResumingFromHold) {
+        $scheduleScope = app(ScheduleDateScopeService::class);
+        // Capture the shoot's current (old) local calendar day before mutating it so a
+        // reschedule that moves the shoot to a different day busts both buckets (Req 8.1, 8.3).
+        $previousLocalDate = $scheduleScope->localDateForShoot($shoot);
+
+        DB::transaction(function () use ($shoot, $scheduledAt, $user, $isAlreadyScheduled, $isResumingFromHold, $scheduleScope) {
             // Update status if resuming from hold or if not already scheduled
             $shoot->workflow_status = self::STATUS_SCHEDULED;
             $shoot->status = self::STATUS_SCHEDULED;
             $shoot->scheduled_at = $scheduledAt;
-            $shoot->scheduled_date = $scheduledAt->format('Y-m-d');
-            $shoot->time = $scheduledAt->format('H:i');
+            $shoot->scheduled_date = $scheduleScope->localDateForScheduledAt($scheduledAt, $shoot->timezone)
+                ?? $scheduledAt->format('Y-m-d');
+            $shoot->time = $scheduleScope->localTimeForScheduledAt($scheduledAt, $shoot->timezone)
+                ?? $scheduledAt->format('H:i');
             $shoot->updated_by = $user?->id ?? auth()->id();
             $shoot->save();
 
@@ -124,6 +132,13 @@ class ShootWorkflowService
         
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
+
+        // Bust the per-date schedule buckets for both the old and the new calendar day so the
+        // Schedule_View reflects the create/reschedule within the same request (Req 8.1, 8.3).
+        $scheduleScope->invalidateDates([
+            $previousLocalDate,
+            $scheduleScope->localDateForShoot($shoot),
+        ]);
     }
 
     /**

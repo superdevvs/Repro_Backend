@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 
 class UserActivityLog extends Model
 {
@@ -13,6 +14,8 @@ class UserActivityLog extends Model
     protected $fillable = [
         'user_id',
         'actor_user_id',
+        'target_type',
+        'target_id',
         'event_type',
         'title',
         'description',
@@ -35,6 +38,15 @@ class UserActivityLog extends Model
     public function actor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'actor_user_id');
+    }
+
+    /**
+     * Polymorphic target of the audited action (Shoot, User, ...). Null for
+     * actions that have no specific target.
+     */
+    public function target(): MorphTo
+    {
+        return $this->morphTo();
     }
 
     public static function record(

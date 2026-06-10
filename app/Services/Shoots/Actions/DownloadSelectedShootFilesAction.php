@@ -56,6 +56,14 @@ class DownloadSelectedShootFilesAction
                 return response()->json(['message' => 'Forbidden'], 403);
             }
 
+            // Infected files are blocked from download (Req 15.7).
+            if ($file->isBlockedFromDelivery()) {
+                return response()->json([
+                    'error_type' => 'file_infected',
+                    'message' => 'A selected file was flagged as infected by a virus scan and cannot be downloaded.',
+                ], 403);
+            }
+
             if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
                 return $this->shootClientReleaseAccessService->downloadLockedResponse();
             }

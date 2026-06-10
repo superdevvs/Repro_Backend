@@ -273,7 +273,8 @@ class ShootAuthorizationSupport
             return false;
         }
 
-        return $file->workflow_stage === ShootFile::STAGE_TODO;
+        return $file->workflow_stage === ShootFile::STAGE_TODO
+            && $file->isRequiredForEditing();
     }
 
     public function isPhotographerAssignedToShoot(Shoot $shoot, User $photographer): bool

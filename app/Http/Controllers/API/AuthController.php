@@ -167,13 +167,28 @@ class AuthController extends Controller
         $email = strtolower(trim($request->email));
         Log::info('[Auth] Login attempt', ['email' => $email]);
 
-        $user = User::where('email', $email)->first();
+        $user = User::withTrashed()->where('email', $email)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
             Log::warning('[Auth] Login failed', ['email' => $email]);
             return response()->json([
                 'message' => 'Invalid credentials'
             ], 401);
+        }
+
+        if (!$user->isAccountEligibleForAuthentication()) {
+            $user->revokeAllApiTokens();
+
+            Log::warning('[Auth] Login blocked for inactive account', [
+                'email' => $email,
+                'user_id' => $user->id,
+                'account_status' => $user->account_status,
+                'deleted_at' => optional($user->deleted_at)->toIso8601String(),
+            ]);
+
+            return response()->json([
+                'message' => 'This account is no longer active.',
+            ], 403);
         }
 
         $token = $user->createToken('auth_token')->plainTextToken;

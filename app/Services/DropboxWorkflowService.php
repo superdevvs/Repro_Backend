@@ -7,11 +7,13 @@ use App\Models\ShootFile;
 use App\Models\DropboxFolder;
 use App\Models\OauthToken;
 use App\Jobs\ProcessImageJob;
+use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 class DropboxWorkflowService
@@ -384,7 +386,7 @@ class DropboxWorkflowService
             'workflow_stage' => $stage,
         ]);
 
-        $shootFile->fill([
+        $attributes = [
             'filename' => $file->getClientOriginalName(),
             'stored_filename' => $filename,
             'path' => $serverPath,
@@ -402,7 +404,16 @@ class DropboxWorkflowService
             'processing_failed_at' => null,
             'processing_error' => null,
             'metadata' => !empty($metadata) ? $metadata : null,
-        ]);
+        ];
+
+        if (Schema::hasColumn('shoot_files', 'is_extra')) {
+            $attributes['is_extra'] = $mediaType === 'extra' || $storageMediaType === 'extra';
+        }
+        if (Schema::hasColumn('shoot_files', 'required_for_editing')) {
+            $attributes['required_for_editing'] = false;
+        }
+
+        $shootFile->fill($attributes);
         $shootFile->save();
 
         $requiresImageProcessing = $this->shouldProcessImage($file)
@@ -414,39 +425,49 @@ class DropboxWorkflowService
                 || !$shootFile->placeholder_path
             );
 
-        if ($requiresImageProcessing) {
-            $processedInline = false;
+        if ($requiresImageProcessing && app()->runningUnitTests()) {
+            // Inline image processing for tests so derived asset paths are
+            // populated immediately. Real environments rely on the queued
+            // ProcessImageJob dispatched by FileScanService::release once the
+            // scan verdict is clean (task 13.5/13.6).
+            $generatedPaths = app(ImageProcessingService::class)->processImageFromPath(
+                $shoot->id,
+                $shootFile->filename,
+                Storage::disk('public')->path($serverPath)
+            );
 
-            if (app()->runningUnitTests()) {
-                $generatedPaths = app(ImageProcessingService::class)->processImageFromPath(
-                    $shoot->id,
-                    $shootFile->filename,
-                    Storage::disk('public')->path($serverPath)
-                );
-
-                if (!empty($generatedPaths)) {
-                    $shootFile->update([
-                        'thumbnail_path' => $generatedPaths['thumbnail'] ?? $shootFile->thumbnail_path,
-                        'web_path' => $generatedPaths['web'] ?? $shootFile->web_path,
-                        'placeholder_path' => $generatedPaths['placeholder'] ?? $shootFile->placeholder_path,
-                        'processed_at' => now(),
-                    ]);
-                    $shootFile->refresh();
-                    $processedInline = true;
-                }
+            if (!empty($generatedPaths)) {
+                $shootFile->update([
+                    'thumbnail_path' => $generatedPaths['thumbnail'] ?? $shootFile->thumbnail_path,
+                    'web_path' => $generatedPaths['web'] ?? $shootFile->web_path,
+                    'placeholder_path' => $generatedPaths['placeholder'] ?? $shootFile->placeholder_path,
+                    'processed_at' => now(),
+                ]);
+                $shootFile->refresh();
             }
+        }
 
-            if (!$processedInline) {
-                try {
-                    ProcessImageJob::dispatch($shootFile)->afterResponse();
-                } catch (\Throwable $e) {
-                    Log::warning('Image processing dispatch failed after local upload', [
-                        'shoot_id' => $shoot->id,
-                        'file_id' => $shootFile->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
+        // Quarantine + scan (Req 14.1/14.2): the ShootFile is created with
+        // scan_status='quarantined' (migration default) and the Scan_Job is
+        // enqueued instead of dispatching ProcessImageJob directly.
+        // ProcessImageJob is dispatched by FileScanService::release once a
+        // clean verdict is recorded by ScanShootFileJob (task 13.5).
+        // Downstream gating inside ProcessImageJob/UploadShootMediaToDropboxJob
+        // lands in task 13.6.
+        //
+        // Dispatch is unconditional — every newly uploaded ShootFile gets a
+        // Scan_Job, including non-image files (videos, archives, etc.) that
+        // would not have triggered ProcessImageJob anyway. This guarantees the
+        // wiring contract for every upload entry that calls into storeLocally
+        // (FileUploadController::uploadFromPC and UploadShootFilesAction).
+        try {
+            ScanShootFileJob::dispatch($shootFile->id)->afterResponse();
+        } catch (\Throwable $e) {
+            Log::warning('Scan job dispatch failed after local upload', [
+                'shoot_id' => $shoot->id,
+                'file_id' => $shootFile->id,
+                'error' => $e->getMessage(),
+            ]);
         }
 
         if ($this->isEnabled()) {
@@ -1129,9 +1150,12 @@ class DropboxWorkflowService
                     'dropbox_file_id' => $fileData['id'] ?? null
                 ]);
 
-                if ($this->shouldProcessFilename($filename, $mimeType)) {
-                    ProcessImageJob::dispatch($shootFile)->afterResponse();
-                }
+                // Quarantine + scan (Req 14.1/14.2): every newly created
+                // ShootFile — including non-image files (videos, archives) —
+                // enters quarantine and is sent to ScanShootFileJob.
+                // ProcessImageJob is dispatched only by FileScanService::release
+                // after ScanShootFileJob records a clean verdict (task 13.5).
+                ScanShootFileJob::dispatch($shootFile->id)->afterResponse();
 
                 // Workflow status transition is owned by FinalizeRawUploadAction;
                 // copying a file into ToDo no longer auto-advances shoot status.

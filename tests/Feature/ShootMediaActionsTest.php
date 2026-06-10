@@ -936,6 +936,141 @@ class ShootMediaActionsTest extends TestCase
     }
 
     /** @test */
+    public function admin_can_mark_extra_file_as_required_for_editing(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+        ]);
+
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'floorplan-reference.jpg',
+            'stored_filename' => 'floorplan-reference.jpg',
+            'path' => 'shoots/' . $shoot->id . '/todo/floorplan-reference.jpg',
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+        ]);
+
+        $this->postJson('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/extra', [
+            'is_extra' => true,
+            'required_for_editing' => true,
+        ])
+            ->assertOk()
+            ->assertJsonPath('file.is_extra', true)
+            ->assertJsonPath('file.required_for_editing', true);
+
+        $file->refresh();
+        $this->assertTrue($file->isExtra());
+        $this->assertTrue($file->isRequiredForEditing());
+        $this->assertSame('extra', $file->media_type);
+    }
+
+    /** @test */
+    public function editor_raw_file_list_excludes_optional_extras_but_keeps_required_extras(): void
+    {
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+        Sanctum::actingAs($this->editor);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+
+        $normalRaw = $this->createShootFile($shoot, [
+            'filename' => 'normal-raw.jpg',
+            'stored_filename' => 'normal-raw.jpg',
+            'path' => 'shoots/' . $shoot->id . '/todo/normal-raw.jpg',
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'is_extra' => false,
+            'required_for_editing' => false,
+        ]);
+
+        $optionalExtra = $this->createShootFile($shoot, [
+            'filename' => 'optional-extra.jpg',
+            'stored_filename' => 'optional-extra.jpg',
+            'path' => 'shoots/' . $shoot->id . '/extra/optional-extra.jpg',
+            'media_type' => 'extra',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'is_extra' => true,
+            'required_for_editing' => false,
+        ]);
+
+        $requiredExtra = $this->createShootFile($shoot, [
+            'filename' => 'required-extra.jpg',
+            'stored_filename' => 'required-extra.jpg',
+            'path' => 'shoots/' . $shoot->id . '/extra/required-extra.jpg',
+            'media_type' => 'extra',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'is_extra' => true,
+            'required_for_editing' => true,
+        ]);
+
+        $response = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=raw')
+            ->assertOk();
+
+        $ids = collect($response->json('data'))->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        $this->assertContains($normalRaw->id, $ids);
+        $this->assertContains($requiredExtra->id, $ids);
+        $this->assertNotContains($optionalExtra->id, $ids);
+    }
+
+    /** @test */
+    public function raw_archive_source_list_excludes_optional_extras_but_keeps_required_extras(): void
+    {
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+
+        $shoot = $this->createShoot([
+            'editor_id' => $this->editor->id,
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+
+        $normalRaw = $this->createShootFile($shoot, [
+            'filename' => 'archive-normal-raw.jpg',
+            'stored_filename' => 'archive-normal-raw.jpg',
+            'path' => 'shoots/' . $shoot->id . '/todo/archive-normal-raw.jpg',
+            'media_type' => 'raw',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'is_extra' => false,
+            'required_for_editing' => false,
+        ]);
+
+        $optionalExtra = $this->createShootFile($shoot, [
+            'filename' => 'archive-optional-extra.jpg',
+            'stored_filename' => 'archive-optional-extra.jpg',
+            'path' => 'shoots/' . $shoot->id . '/extra/archive-optional-extra.jpg',
+            'media_type' => 'extra',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'is_extra' => true,
+            'required_for_editing' => false,
+        ]);
+
+        $requiredExtra = $this->createShootFile($shoot, [
+            'filename' => 'archive-required-extra.jpg',
+            'stored_filename' => 'archive-required-extra.jpg',
+            'path' => 'shoots/' . $shoot->id . '/extra/archive-required-extra.jpg',
+            'media_type' => 'extra',
+            'workflow_stage' => ShootFile::STAGE_TODO,
+            'is_extra' => true,
+            'required_for_editing' => true,
+        ]);
+
+        $ids = app(ShootMediaArchiveService::class)
+            ->getFilesForType($shoot, 'raw')
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        $this->assertContains($normalRaw->id, $ids);
+        $this->assertContains($requiredExtra->id, $ids);
+        $this->assertNotContains($optionalExtra->id, $ids);
+    }
+
+    /** @test */
     public function unassigned_editor_cannot_download_raw_files_via_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');

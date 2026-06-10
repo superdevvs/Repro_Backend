@@ -57,10 +57,10 @@ class ShootPaidEmailViewTest extends TestCase
         $this->assertStringContainsString('9412 Gwynndale Dr, Clinton, MD 20735', $html);
         $this->assertStringContainsString('contact@reprophotos.com', $html);
 
-        $this->assertStringContainsString('width="140"', $html);
+        $this->assertStringContainsString('width="120"', $html);
         $this->assertStringContainsString('max-width:720px', $html);
         $this->assertStringContainsString('display:inline-block; padding:14px 22px;', $html);
-        $this->assertStringContainsString('border:1px solid #dee6f1; border-radius:24px 24px 0 0;', $html);
+        $this->assertStringContainsString('border:0; border-radius:24px 24px 0 0;', $html);
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringContainsString('@media only screen and (max-width: 640px)', $html);

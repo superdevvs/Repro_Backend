@@ -7,6 +7,7 @@ use App\Models\ShootFile;
 use App\Models\ShootMediaAlbum;
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 class ShootMediaMutationSupportService
@@ -30,13 +31,19 @@ class ShootMediaMutationSupportService
 
     public function refreshMediaCounters(Shoot $shoot): Shoot
     {
-        $rawCount = $shoot->files()->where('workflow_stage', ShootFile::STAGE_TODO)->count();
+        $rawCount = $this->requiredRawFilesQuery($shoot)->count();
         $editedCount = $shoot->files()
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where(function ($query) {
+                $query->whereNull('flag_reason')
+                    ->orWhere('flag_reason', '');
+            })
             ->count();
+        $extraCount = $this->extraFilesQuery($shoot)->count();
 
         $shoot->raw_photo_count = $rawCount;
         $shoot->edited_photo_count = $editedCount;
+        $shoot->extra_photo_count = $extraCount;
 
         $expectedRaw = $shoot->expected_raw_count ?? 0;
         $expectedFinal = $shoot->expected_final_count ?? 0;
@@ -48,6 +55,49 @@ class ShootMediaMutationSupportService
         $shoot->save();
 
         return $shoot->fresh(['files']);
+    }
+
+    protected function requiredRawFilesQuery(Shoot $shoot)
+    {
+        $query = $shoot->files()
+            ->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->where(function ($scope) {
+                $scope->whereNull('flag_reason')
+                    ->orWhere('flag_reason', '');
+            });
+
+        if (Schema::hasColumn('shoot_files', 'is_extra') && Schema::hasColumn('shoot_files', 'required_for_editing')) {
+            $query->where(function ($scope) {
+                $scope->where(function ($nested) {
+                    $nested->where('is_extra', false)->orWhereNull('is_extra');
+                })->orWhere('required_for_editing', true);
+            });
+        } else {
+            $query->where(function ($scope) {
+                $scope->whereNull('media_type')->orWhere('media_type', '!=', 'extra');
+            });
+        }
+
+        return $query;
+    }
+
+    protected function extraFilesQuery(Shoot $shoot)
+    {
+        $query = $shoot->files()
+            ->where('workflow_stage', ShootFile::STAGE_TODO)
+            ->where(function ($scope) {
+                $scope->whereNull('flag_reason')
+                    ->orWhere('flag_reason', '');
+            });
+
+        if (Schema::hasColumn('shoot_files', 'is_extra')) {
+            return $query->where('is_extra', true);
+        }
+
+        return $query->where(function ($scope) {
+            $scope->where('media_type', 'extra')
+                ->orWhere('path', 'like', '%/extra/%');
+        });
     }
 
     public function deleteShootMediaAssets(Shoot $shoot): int
@@ -106,6 +156,10 @@ class ShootMediaMutationSupportService
             'dropbox_path' => $file->dropbox_path,
             'workflow_stage' => $file->workflow_stage,
             'media_type' => $file->media_type,
+            'is_extra' => $file->isExtra(),
+            'isExtra' => $file->isExtra(),
+            'required_for_editing' => $file->isRequiredForEditing(),
+            'requiredForEditing' => $file->isRequiredForEditing(),
             'file_size' => $file->file_size,
             'thumbnail_path' => $file->thumbnail_path,
             'web_path' => $file->web_path,

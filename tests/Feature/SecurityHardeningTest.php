@@ -18,9 +18,14 @@ class SecurityHardeningTest extends TestCase
 
     public function test_public_registration_forces_client_role(): void
     {
+        // Email-health hardening (production-qa-fixes-2 / EmailHealthService) now gates
+        // registration: a domain that cannot receive mail (e.g. test.com -> domain_no_mail)
+        // is rejected with 422 before the account is created. Use a deliverable domain so this
+        // test continues to exercise its real intent: a public signup that requests an elevated
+        // role is forced down to "client".
         $response = $this->postJson('/api/register', [
             'name' => 'Public Signup',
-            'email' => 'public-signup@test.com',
+            'email' => 'public-signup@gmail.com',
             'password' => 'secret123',
             'password_confirmation' => 'secret123',
             'role' => 'superadmin',
@@ -30,7 +35,7 @@ class SecurityHardeningTest extends TestCase
             ->assertJsonPath('user.role', 'client');
 
         $this->assertDatabaseHas('users', [
-            'email' => 'public-signup@test.com',
+            'email' => 'public-signup@gmail.com',
             'role' => 'client',
         ]);
     }
@@ -119,6 +124,62 @@ class SecurityHardeningTest extends TestCase
             ->assertJsonMissingPath('data.0.booked_slots.0.shoot_id')
             ->assertJsonMissingPath('data.0.booked_slots.0.address')
             ->assertJsonMissingPath('data.0.booked_slots.0.title');
+    }
+
+    public function test_authenticated_staff_booking_lookup_keeps_full_payload(): void
+    {
+        $service = Service::factory()->create();
+        $client = User::factory()->create(['role' => 'client']);
+        $admin = User::factory()->create(['role' => 'admin']);
+        $photographer = User::factory()->create([
+            'role' => 'photographer',
+            'name' => 'Booking Photographer',
+            'address' => '1 Main St',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+
+        PhotographerAvailability::create([
+            'photographer_id' => $photographer->id,
+            'date' => now()->addDay()->toDateString(),
+            'day_of_week' => strtolower(now()->addDay()->format('l')),
+            'start_time' => '09:00',
+            'end_time' => '17:00',
+            'status' => 'available',
+        ]);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'photographer_id' => $photographer->id,
+            'service_id' => $service->id,
+            'scheduled_at' => now()->addDay()->setTime(10, 0),
+            'scheduled_date' => now()->addDay()->toDateString(),
+            'address' => '99 Booked Rd',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21203',
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $shoot->services()->attach($service->id, ['price' => 100, 'quantity' => 1]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/photographer/availability/for-booking', [
+            'date' => now()->addDay()->toDateString(),
+            'time' => '11:00 AM',
+            'shoot_address' => '22 Listing Ave',
+            'shoot_city' => 'Baltimore',
+            'shoot_state' => 'MD',
+            'shoot_zip' => '21202',
+            'photographer_ids' => [$photographer->id],
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.0.id', $photographer->id)
+            ->assertJsonPath('data.0.booked_slots.0.shoot_id', $shoot->id)
+            ->assertJsonPath('data.0.booked_slots.0.address', '99 Booked Rd');
     }
 
     public function test_old_public_payment_route_is_not_public_anymore(): void

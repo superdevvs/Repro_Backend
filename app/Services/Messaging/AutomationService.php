@@ -6,11 +6,13 @@ use App\Services\MailService;
 use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageTemplate;
+use App\Models\PaymentReminder;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
 use App\Models\Invoice;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Log;
 
 class AutomationService
@@ -18,12 +20,22 @@ class AutomationService
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
     private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
 
+    /**
+     * How far past `shoot_ready_notified_at` the monthly (last-Sunday) phase keeps scheduling
+     * reminders. The cadence has no natural end, so we cap it at a sensible finite horizon: a
+     * shoot that stays unpaid for half a year will keep generating one reminder per month for
+     * six months, after which the scheduler stops. Re-running the scheduler later (with a fresh
+     * "now") never duplicates earlier rows because of the (shoot_id, scheduled_date) upsert.
+     */
+    private const PAYMENT_REMINDER_HORIZON_MONTHS = 6;
+
     public function __construct(
         private readonly MessagingService $messagingService,
         private readonly TemplateRenderer $templateRenderer,
         private readonly TemplateVariableResolver $variableResolver,
         private readonly AutomationWorkflowExecutor $workflowExecutor,
         private readonly ?MailService $mailService = null,
+        private readonly ?PaymentReminderScheduler $paymentReminderScheduler = null,
     ) {
     }
 
@@ -32,6 +44,161 @@ class AutomationService
         return AutomationRule::active()
             ->forTrigger($triggerType)
             ->exists();
+    }
+
+    /**
+     * Persist the automated Payment_Reminder schedule for a shoot (Req 12.11-12.15).
+     *
+     * The cadence is anchored to the shoot's `shoot_ready_notified_at` timestamp (Req 12.10/12.11)
+     * and computed by the pure {@see PaymentReminderScheduler}. Each reminder is upserted keyed by
+     * `(shoot_id, scheduled_date)` so re-running this method (e.g. after a payment status change,
+     * a redeploy, or a scheduled sweep) never produces a duplicate row for the same date
+     * (Req 12.15). A reminder that has already been sent or cancelled keeps its status; only its
+     * scheduled time is refreshed.
+     *
+     * If the shoot is already paid, no reminders are scheduled and any pending reminders are
+     * cancelled (stop-on-paid, Req 12.14). If the shoot has no `shoot_ready_notified_at` anchor,
+     * the cadence cannot start, so nothing is scheduled.
+     *
+     * @return list<PaymentReminder> the upserted reminder rows, ascending by date
+     */
+    public function schedulePaymentReminders(Shoot $shoot): array
+    {
+        // Stop-on-paid (Req 12.14): a paid shoot gets no new reminders and any pending ones are
+        // cancelled. Re-running the scheduler after payment therefore self-heals the schedule.
+        if ($this->isShootPaid($shoot)) {
+            $this->cancelPaymentReminders($shoot);
+
+            return [];
+        }
+
+        $anchor = $shoot->shoot_ready_notified_at;
+        if ($anchor === null) {
+            // Cadence is anchored to shoot_ready_notified_at; without it there is nothing to schedule.
+            return [];
+        }
+
+        $start = $anchor instanceof CarbonImmutable
+            ? $anchor
+            : CarbonImmutable::parse((string) $anchor);
+        $horizonEnd = $start->addMonths(self::PAYMENT_REMINDER_HORIZON_MONTHS);
+
+        $scheduler = $this->paymentReminderScheduler ?? new PaymentReminderScheduler();
+        $timestamps = $scheduler->schedule($start, $horizonEnd);
+
+        $reminders = [];
+        foreach ($timestamps as $timestamp) {
+            // firstOrNew (not updateOrCreate) so an already sent/cancelled row is never resurrected
+            // to "pending"; the (shoot_id, scheduled_date) key guarantees no duplicate rows.
+            $reminder = PaymentReminder::firstOrNew([
+                'shoot_id' => $shoot->id,
+                'scheduled_date' => $timestamp->toDateString(),
+            ]);
+
+            $reminder->scheduled_at = $timestamp->toDateTimeString();
+
+            if (!$reminder->exists) {
+                $reminder->status = PaymentReminder::STATUS_PENDING;
+            }
+
+            $reminder->save();
+            $reminders[] = $reminder;
+        }
+
+        return $reminders;
+    }
+
+    /**
+     * Cancel every pending Payment_Reminder for a shoot (stop-on-paid, Req 12.14).
+     *
+     * Called when a shoot's payment is recorded complete. Already sent reminders are left intact;
+     * only `pending` rows transition to `cancelled` so the DispatchScheduledMessages job will skip
+     * them. Returns the number of reminders cancelled.
+     */
+    public function cancelPaymentReminders(Shoot $shoot): int
+    {
+        return PaymentReminder::query()
+            ->where('shoot_id', $shoot->id)
+            ->where('status', PaymentReminder::STATUS_PENDING)
+            ->update(['status' => PaymentReminder::STATUS_CANCELLED]);
+    }
+
+    /**
+     * Whether a shoot's payment has been recorded complete.
+     */
+    private function isShootPaid(Shoot $shoot): bool
+    {
+        return strtolower((string) $shoot->payment_status) === 'paid';
+    }
+
+    /**
+     * Public re-check used by the DispatchScheduledMessages job at send time (Req 12.14).
+     *
+     * The scheduler stops scheduling once a shoot is paid, but a reminder may already be queued
+     * when the payment lands. The dispatcher calls this immediately before sending so a stale
+     * reminder is never delivered after payment.
+     */
+    public function shootPaymentIsComplete(Shoot $shoot): bool
+    {
+        return $this->isShootPaid($shoot);
+    }
+
+    /**
+     * Build and send a single automated Payment_Reminder for a shoot (Req 12).
+     *
+     * Renders the system `payment-due-reminder` template for the shoot's client and dispatches it
+     * through the same {@see MessagingService} send path the rest of automation uses. Returns the
+     * created {@see Message} so the caller can link it to the PaymentReminder row, or null when the
+     * shoot has no client/email or the template is unavailable (nothing can be sent).
+     */
+    public function sendPaymentReminder(Shoot $shoot): ?Message
+    {
+        $client = $shoot->client;
+        $email = trim((string) ($client->email ?? ''));
+
+        if ($client === null || $email === '') {
+            Log::warning('Skipping payment reminder: shoot has no client email', [
+                'shoot_id' => $shoot->id,
+            ]);
+
+            return null;
+        }
+
+        $template = MessageTemplate::query()
+            ->where('slug', 'payment-due-reminder')
+            ->where('is_active', true)
+            ->first();
+
+        if ($template === null) {
+            Log::warning('Skipping payment reminder: payment-due-reminder template is unavailable', [
+                'shoot_id' => $shoot->id,
+            ]);
+
+            return null;
+        }
+
+        $context = $this->variableResolver->resolve(array_merge($this->buildShootContext($shoot), [
+            'recipient_type' => 'client',
+            'recipient_name' => $client->name ?? 'Client',
+            'recipient_email' => $email,
+        ]));
+
+        $rendered = $this->templateRenderer->render($template, $context);
+
+        return $this->messagingService->sendEmail([
+            'to' => $email,
+            'subject' => $rendered['subject'] ?? $template->subject,
+            'body_html' => $rendered['body_html'] ?? null,
+            'body_text' => $rendered['body_text'] ?? null,
+            'send_source' => 'AUTOMATION',
+            'template_id' => $template->id,
+            'related_shoot_id' => $shoot->id,
+            'related_account_id' => $shoot->client_id,
+            'contact_email' => $email,
+            'contact_name' => $client->name ?? 'Client',
+            'contact_type' => 'client',
+            'tags_json' => ['PAYMENT_REMINDER:shoot:' . $shoot->id],
+        ]);
     }
 
     /**

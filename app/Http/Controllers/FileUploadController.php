@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\Shoot;
 use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
+use App\Services\UploadValidationService;
 use App\Models\ShootFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -15,14 +16,17 @@ class FileUploadController extends Controller
 {
     protected $dropboxService;
     protected $mediaMutationSupport;
+    protected UploadValidationService $uploadValidation;
 
     public function __construct(
         DropboxWorkflowService $dropboxService,
-        ShootMediaMutationSupportService $mediaMutationSupport
+        ShootMediaMutationSupportService $mediaMutationSupport,
+        UploadValidationService $uploadValidation
     )
     {
         $this->dropboxService = $dropboxService;
         $this->mediaMutationSupport = $mediaMutationSupport;
+        $this->uploadValidation = $uploadValidation;
     }
 
     /**
@@ -30,6 +34,10 @@ class FileUploadController extends Controller
      */
     public function uploadFromPC(Request $request, \App\Models\Shoot $shoot)
     {
+        // Basic shape only — per-file size/type checks below are delegated to
+        // UploadValidationService so every upload entry uses the same rules
+        // (Req 14.5/14.6). The historical inline `mimes:` / `max:` allow-list
+        // is preserved as a defensive first pass before the service runs.
         $request->validate([
             'files' => 'required|array',
             // Allow up to ~1 GiB per file (max in KB), plus common photo/video mimes
@@ -39,6 +47,17 @@ class FileUploadController extends Controller
             'media_type' => 'nullable|string|in:floorplan,extra,virtual_staging,green_grass,twilight,drone',
             'is_extra' => 'nullable|boolean',
         ]);
+
+        // Pre-scan validation (Req 14.5/14.6): reject oversize / disallowed-type
+        // files with HTTP 422 BEFORE creating any ShootFile row or enqueuing a
+        // scan job. ValidationException -> 422 with field-keyed errors.
+        $filesForValidation = $request->file('files');
+        if ($filesForValidation instanceof \Illuminate\Http\UploadedFile) {
+            $filesForValidation = [$filesForValidation];
+        }
+        if (is_array($filesForValidation)) {
+            $this->uploadValidation->validateMany($filesForValidation, 'files');
+        }
 
         // Route model binding provides $shoot
         $uploadType = $request->input('upload_type', 'raw');
@@ -140,7 +159,13 @@ class FileUploadController extends Controller
                         // Upload directly to Completed folder (for edited files)
                         $shootFile = $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
                     }
-                    
+
+                    // The ShootFile is created with scan_status='quarantined'
+                    // (migration default) and DropboxWorkflowService now
+                    // enqueues ScanShootFileJob in place of ProcessImageJob, so
+                    // downstream processing is held back until task 13.5/13.6.
+                    // No further dispatch is required at this layer.
+
                     $uploadedFiles[] = [
                         'id' => $shootFile->id,
                         'filename' => $shootFile->filename,

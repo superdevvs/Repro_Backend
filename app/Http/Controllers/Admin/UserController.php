@@ -173,6 +173,7 @@ class UserController extends Controller
             'client_discount_type' => 'nullable|in:fixed,percent',
             'client_discount_value' => 'nullable|numeric|min:0',
             'role' => 'required|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
+            'account_status' => 'nullable|in:active,inactive,suspended',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|image|max:2048',
             'metadata' => 'nullable',
@@ -299,6 +300,7 @@ class UserController extends Controller
         if ($this->isSalesRepUser($admin)) {
             $validated['created_by_id'] = (int) $admin->id;
             $validated['created_by_name'] = $admin->name;
+            unset($validated['account_status']);
 
             if (($validated['role'] ?? null) === 'client') {
                 $validated['metadata'] = array_merge($validated['metadata'] ?? [], [
@@ -666,6 +668,7 @@ class UserController extends Controller
             'client_discount_type' => 'nullable|in:fixed,percent',
             'client_discount_value' => 'nullable|numeric|min:0',
             'role' => 'sometimes|in:superadmin,admin,editing_manager,client,photographer,editor,salesRep',
+            'account_status' => 'sometimes|in:active,inactive,suspended',
             'bio' => 'nullable|string',
             'avatar' => 'nullable|string',
             'metadata' => 'nullable',
@@ -773,6 +776,7 @@ class UserController extends Controller
 
         if ($this->isSalesRepUser($admin)) {
             unset($validated['created_by_id'], $validated['created_by_name']);
+            unset($validated['account_status']);
         }
 
         // Add photographer-specific fields to metadata

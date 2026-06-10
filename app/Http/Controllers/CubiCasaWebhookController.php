@@ -140,6 +140,12 @@ class CubiCasaWebhookController extends Controller
                         $assetCount = count($floorplans);
                     }
                 } else {
+                    $this->cubicasa->markSyncFailed(
+                        $shoot,
+                        CubiCasaService::SYNC_STATUS_FAILED,
+                        'Webhook received but CubiCasa order detail fetch failed.'
+                    );
+
                     Log::warning('CubiCasa webhook: order detail fetch failed', [
                         'order_id' => $orderId,
                         'failure' => $this->cubicasa->getLastFailureReason(),

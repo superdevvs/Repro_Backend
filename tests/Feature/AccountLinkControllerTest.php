@@ -336,44 +336,47 @@ class AccountLinkControllerTest extends TestCase
         $response->assertJsonCount(2, 'sharedData.linkedAccounts');
     }
 
-    public function test_has_linked_accounts_only_counts_incoming_owner_links(): void
+    public function test_has_linked_accounts_only_counts_outgoing_owner_links(): void
     {
-        $ownerClient = User::factory()->create(['role' => 'client']);
+        $owner = User::factory()->create(['role' => 'client']);
         $linkedClient = User::factory()->create();
-        $outgoingOnlyClient = User::factory()->create();
+        $otherOwner = User::factory()->create(['role' => 'client']);
+        $userWithoutLinks = User::factory()->create();
 
+        // The owner's own outgoing link to a linked client (current direction: user = main_account).
         AccountLink::create([
-            'main_account_id' => $ownerClient->id,
+            'main_account_id' => $owner->id,
             'linked_account_id' => $linkedClient->id,
             'shared_details' => ['shoots' => true],
             'status' => 'active',
             'linked_at' => now(),
-            'created_by' => $ownerClient->id,
+            'created_by' => $owner->id,
         ]);
 
+        // An incoming link where the owner is the linked client must NOT count toward the owner.
         AccountLink::create([
-            'main_account_id' => $outgoingOnlyClient->id,
-            'linked_account_id' => User::factory()->create()->id,
+            'main_account_id' => $otherOwner->id,
+            'linked_account_id' => $owner->id,
             'shared_details' => ['shoots' => true],
             'status' => 'active',
             'linked_at' => now(),
-            'created_by' => $outgoingOnlyClient->id,
+            'created_by' => $otherOwner->id,
         ]);
 
-        Sanctum::actingAs($linkedClient);
+        Sanctum::actingAs($owner);
         $this->getJson('/api/account-links/has-linked')
             ->assertOk()
             ->assertJsonPath('hasLinkedAccounts', true)
             ->assertJsonCount(1, 'linkedAccounts');
 
-        Sanctum::actingAs($outgoingOnlyClient);
+        Sanctum::actingAs($userWithoutLinks);
         $this->getJson('/api/account-links/has-linked')
             ->assertOk()
             ->assertJsonPath('hasLinkedAccounts', false)
             ->assertJsonCount(0, 'linkedAccounts');
     }
 
-    public function test_client_can_fetch_owner_scoped_shared_data(): void
+    public function test_owner_can_fetch_linked_client_scoped_shared_data(): void
     {
         $owner = User::factory()->create(['role' => 'client', 'name' => 'Owner Client']);
         $linkedClient = User::factory()->create(['name' => 'Linked Client']);
@@ -387,8 +390,9 @@ class AccountLinkControllerTest extends TestCase
             'created_by' => $owner->id,
         ]);
 
+        // Shoots belong to the linked client; the owner views them through the link.
         $firstShoot = Shoot::factory()->create([
-            'client_id' => $owner->id,
+            'client_id' => $linkedClient->id,
             'address' => '101 Main St',
             'city' => 'Austin',
             'state' => 'TX',
@@ -396,7 +400,7 @@ class AccountLinkControllerTest extends TestCase
         ]);
 
         Shoot::factory()->create([
-            'client_id' => $owner->id,
+            'client_id' => $linkedClient->id,
             'address' => '101 Main St',
             'city' => 'Austin',
             'state' => 'TX',
@@ -409,11 +413,11 @@ class AccountLinkControllerTest extends TestCase
             'status' => 'completed',
         ]);
 
-        Sanctum::actingAs($linkedClient);
+        Sanctum::actingAs($owner);
 
-        $this->getJson("/api/account-links/my-shared-data?ownerId={$owner->id}")
+        $this->getJson("/api/account-links/my-shared-data?clientId={$linkedClient->id}")
             ->assertOk()
-            ->assertJsonPath('owner.id', (string) $owner->id)
+            ->assertJsonPath('client.id', (string) $linkedClient->id)
             ->assertJsonPath('link.mainAccountId', (string) $owner->id)
             ->assertJsonPath('sharedData.totalShoots', 2)
             ->assertJsonPath('sharedData.totalSpent', 735)

@@ -403,6 +403,18 @@ class Invoice extends Model
         return max((float) $total - (float) $paid, 0);
     }
 
+    public function paymentLink(): string
+    {
+        if (!$this->exists || !$this->getKey()) {
+            return '';
+        }
+
+        $baseUrl = rtrim((string) config('app.url', ''), '/');
+        $path = '/pay/invoice/' . $this->getKey();
+
+        return $baseUrl !== '' ? $baseUrl . $path : $path;
+    }
+
     public function isPastDue(): bool
     {
         $dueDate = $this->due_date instanceof Carbon ? $this->due_date : ($this->due_date ? Carbon::parse($this->due_date) : null);

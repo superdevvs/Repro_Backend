@@ -4,6 +4,7 @@ namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Log;
@@ -13,10 +14,12 @@ use Laravel\Sanctum\HasApiTokens;
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, HasApiTokens;
+    use HasFactory, Notifiable, HasApiTokens, SoftDeletes;
 
     private const CATEGORY_SPECIALTY_PREFIX = 'category:';
     private const CATEGORY_NAME_SPECIALTY_PREFIX = 'category-name:';
+
+    public const ACCOUNT_STATUS_ACTIVE = 'active';
 
     /**
      * The attributes that are mass assignable.
@@ -54,6 +57,8 @@ class User extends Authenticatable
         'bio',
         'about',
         'account_status',
+        'locked_at',
+        'password_reset_required',
         'password',
         'created_by_name',
         'created_by_id',
@@ -108,6 +113,9 @@ class User extends Authenticatable
             'verification_sent_at' => 'datetime',
             'email_last_delivery_attempt_at' => 'datetime',
             'email_last_bounced_at' => 'datetime',
+            'deleted_at' => 'datetime',
+            'locked_at' => 'datetime',
+            'password_reset_required' => 'boolean',
             'password' => 'hashed',
             'metadata' => 'array',
             'secondary_roles' => 'array',
@@ -117,6 +125,38 @@ class User extends Authenticatable
             'sms_opt_out_at' => 'datetime',
             'sms_ai_enabled' => 'boolean',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::deleting(function (User $user): void {
+            $user->revokeAllApiTokens();
+        });
+
+        static::updated(function (User $user): void {
+            if ($user->wasChanged('account_status') && !$user->isAccountEligibleForAuthentication()) {
+                $user->revokeAllApiTokens();
+            }
+        });
+    }
+
+    public function isAccountEligibleForAuthentication(): bool
+    {
+        return !$this->trashed()
+            && $this->locked_at === null
+            && strtolower(trim((string) ($this->account_status ?: self::ACCOUNT_STATUS_ACTIVE))) === self::ACCOUNT_STATUS_ACTIVE;
+    }
+
+    public function revokeAllApiTokens(): void
+    {
+        try {
+            $this->tokens()->delete();
+        } catch (\Throwable $exception) {
+            Log::warning('Unable to revoke user API tokens.', [
+                'user_id' => $this->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     protected function usersTableHasColumn(string $column): bool
@@ -237,6 +277,15 @@ class User extends Authenticatable
     public function activityLogs()
     {
         return $this->hasMany(UserActivityLog::class);
+    }
+
+    /**
+     * Service areas (region/state/area) assigned to this photographer (Req 10).
+     */
+    public function serviceAreas()
+    {
+        return $this->belongsToMany(ServiceArea::class, 'photographer_service_areas')
+            ->withTimestamps();
     }
 
     public function ghostAccessibleShoots()

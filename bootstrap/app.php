@@ -6,6 +6,7 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Console\Scheduling\Schedule;
 use App\Http\Middleware\RoleMiddleware;
+use App\Http\Middleware\EnsureAuthenticatedUserIsActive;
 use App\Http\Middleware\ImpersonationMiddleware;
 use App\Http\Middleware\PermissionMiddleware;
 use App\Http\Middleware\SystemOverviewTelemetryMiddleware;
@@ -64,6 +65,7 @@ return Application::configure(basePath: dirname(__DIR__))
         // Append impersonation middleware to run after auth
         $middleware->api(append: [
             ImpersonationMiddleware::class,
+            EnsureAuthenticatedUserIsActive::class,
             SystemOverviewTelemetryMiddleware::class,
         ]);
         

@@ -104,18 +104,25 @@ class GoogleCalendarShootSyncTest extends TestCase
             'google_event_id' => 'created-google-event',
         ]);
 
-        Http::assertSent(function (Request $request) {
-            $description = (string) ($request['description'] ?? '');
+        // The sync service now emits one calendar event per scheduled service item
+        // (per-service architecture via buildForServiceItem), so assert both events.
+        $assertServiceEventSent = function (string $service) {
+            Http::assertSent(function (Request $request) use ($service) {
+                $description = (string) ($request['description'] ?? '');
 
-            return $request->method() === 'POST'
-                && str_contains($request->url(), '/calendars/primary/events')
-                && ($request['summary'] ?? null) === 'HDR Photos + Floor Plan'
-                && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
-                && str_contains($description, "Services\nHDR Photos + Floor Plan")
-                && str_contains($description, 'Use side door. Gate code 1234.')
-                && str_contains($description, 'Bring the wide-angle lens.')
-                && !str_contains($description, 'Internal dispatch detail');
-        });
+                return $request->method() === 'POST'
+                    && str_contains($request->url(), '/calendars/primary/events')
+                    && ($request['summary'] ?? null) === $service
+                    && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
+                    && str_contains($description, "Service\n" . $service)
+                    && str_contains($description, 'Use side door. Gate code 1234.')
+                    && str_contains($description, 'Bring the wide-angle lens.')
+                    && !str_contains($description, 'Internal dispatch detail');
+            });
+        };
+
+        $assertServiceEventSent('HDR Photos');
+        $assertServiceEventSent('Floor Plan');
     }
 
     public function test_updating_a_synced_shoot_patches_the_existing_google_calendar_event(): void
@@ -411,7 +418,7 @@ class GoogleCalendarShootSyncTest extends TestCase
                 'photographers' => $shoot->photographer ? [$shoot->photographer] : [],
             ]
         );
-        $automationService->shouldReceive('handleEvent')->zeroOrMoreTimes()->andReturnNull();
+        $automationService->shouldReceive('handleEvent')->zeroOrMoreTimes()->andReturn([]); // current contract: array (was null)
         $automationService->shouldReceive('hasActiveTrigger')->zeroOrMoreTimes()->andReturnFalse();
         $this->app->instance(AutomationService::class, $automationService);
 

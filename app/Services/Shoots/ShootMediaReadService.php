@@ -132,6 +132,9 @@ class ShootMediaReadService
         }
 
         $files = $filesQuery->get();
+        if ($type === 'raw') {
+            $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
+        }
         if ($user && $user->role === 'editor') {
             $files = app(ShootEditingAssignmentService::class)->filterFilesForEditor($files, $shoot, $user);
         }
@@ -244,6 +247,10 @@ class ShootMediaReadService
             $user
         );
 
+        if ($normalizedType === 'raw') {
+            $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
+        }
+
         if ($normalizedType === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
@@ -271,6 +278,10 @@ class ShootMediaReadService
         }
 
         $files = $this->filterFilesForPhotographer($filesQuery->get(), $shoot, $user);
+
+        if ($normalizedType === 'raw') {
+            $files = $files->filter(fn (ShootFile $file) => $file->isRequiredForEditing())->values();
+        }
 
         if ($normalizedType === 'edited') {
             $files = $files
@@ -411,8 +422,17 @@ class ShootMediaReadService
             'fileType' => $file->file_type ?? $file->mime_type,
             'workflow_stage' => $file->workflow_stage,
             'workflowStage' => $file->workflow_stage,
-            'is_extra' => ($file->media_type ?? 'raw') === 'extra',
-            'isExtra' => ($file->media_type ?? 'raw') === 'extra',
+            'is_extra' => $file->isExtra(),
+            'isExtra' => $file->isExtra(),
+            'required_for_editing' => $file->isRequiredForEditing(),
+            'requiredForEditing' => $file->isRequiredForEditing(),
+            // Virus-scan state machine (Req 14/15). Surfaced on every file payload so
+            // the admin Dashboard can render a scan-status badge and gate the retry
+            // control (Req 15.5/15.8). Values are the four canonical scan_status
+            // strings (`quarantined`/`clean`/`infected`/`failed`); the frontend
+            // maps `quarantined` to a "scanning" label.
+            'scan_status' => $file->scan_status,
+            'scanStatus' => $file->scan_status,
             'is_cover' => $file->is_cover ?? false,
             'is_favorite' => $file->is_favorite ?? false,
             'file_size' => $file->file_size,

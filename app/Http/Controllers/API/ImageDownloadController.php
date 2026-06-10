@@ -44,6 +44,13 @@ class ImageDownloadController extends Controller
                 ], 403);
             }
 
+            // Infected files are blocked from download (Req 15.7).
+            if ($shootFile->isBlockedFromDelivery()) {
+                return response()->json([
+                    'error' => 'This file was flagged as infected by a virus scan and cannot be downloaded.'
+                ], 403);
+            }
+
             // Check if file exists
             if (!Storage::disk('local')->exists($shootFile->path)) {
                 Log::warning("File not found for download", [
@@ -125,6 +132,13 @@ class ImageDownloadController extends Controller
                 ], 403);
             }
 
+            // Infected files are blocked from preview (Req 15.7).
+            if ($shootFile->isBlockedFromDelivery()) {
+                return response()->json([
+                    'error' => 'This file was flagged as infected by a virus scan and cannot be previewed.'
+                ], 403);
+            }
+
             // Check if web version exists
             $webPath = $shootFile->web_path;
             if (!$webPath || !Storage::disk('public')->exists($webPath)) {
@@ -184,6 +198,10 @@ class ImageDownloadController extends Controller
 
             // Check authorization for each file
             foreach ($files as $file) {
+                // Infected files are blocked from download (Req 15.7).
+                if ($file->isBlockedFromDelivery()) {
+                    continue;
+                }
                 if ($this->canDownloadFile($user, $file->shoot, $file)) {
                     if (Storage::disk('local')->exists($file->path)) {
                         $downloadableFiles[] = $file;

@@ -8,6 +8,7 @@ use App\Models\ShootFile;
 use App\Models\MmmPunchoutSession;
 use App\Jobs\IngestIguideAssetsJob;
 use App\Jobs\IngestCubiCasaAssetsJob;
+use App\Jobs\SyncCubiCasaShootJob;
 use App\Services\ZillowPropertyService;
 use App\Services\BrightMlsService;
 use App\Services\IguideService;
@@ -496,11 +497,40 @@ class IntegrationController extends Controller
             // If the shoot has neither order_id nor external_id, there's nothing
             // to sync against. Surface a 409 with guidance instead of 500.
             if (empty($shoot->cubicasa_order_id) && empty($shoot->cubicasa_external_id)) {
+                $this->cubicasaService->markSyncFailed(
+                    $shoot,
+                    CubiCasaService::SYNC_STATUS_NOT_LINKED,
+                    'No CubiCasa order linked to this shoot.'
+                );
+
                 return response()->json([
                     'success' => false,
                     'mode' => 'not-linked',
                     'message' => 'No CubiCasa order linked to this shoot. Paste the CubiCasa Order ID in the Tour tab and try again.',
+                    'sync' => $this->cubicasaService->syncStatePayload($shoot->fresh()),
                 ], 409);
+            }
+
+            if ($this->cubicasaService->isSyncInProgress($shoot)) {
+                return response()->json([
+                    'success' => true,
+                    'mode' => 'sync-in-progress',
+                    'message' => 'CubiCasa sync is already in progress.',
+                    'sync' => $this->cubicasaService->syncStatePayload($shoot),
+                ], 202);
+            }
+
+            if ($request->boolean('async')) {
+                $jobReference = (string) Str::uuid();
+                $this->cubicasaService->markSyncQueued($shoot, $jobReference);
+                SyncCubiCasaShootJob::dispatch($shoot->id, $jobReference);
+
+                return response()->json([
+                    'success' => true,
+                    'mode' => 'queued',
+                    'message' => 'CubiCasa sync queued.',
+                    'sync' => $this->cubicasaService->syncStatePayload($shoot->fresh()),
+                ], 202);
             }
 
             $parsed = $this->cubicasaService->syncShoot($shoot);
@@ -521,6 +551,7 @@ class IntegrationController extends Controller
                     'success' => false,
                     'mode' => $reason ?? 'error',
                     'message' => $messages[$reason] ?? 'Failed to fetch CubiCasa order.',
+                    'sync' => $this->cubicasaService->syncStatePayload($shoot->fresh()),
                 ], $status);
             }
 
@@ -545,7 +576,12 @@ class IntegrationController extends Controller
                     'cubicasa_floorplans' => $shoot->cubicasa_floorplans,
                     'cubicasa_data' => $shoot->cubicasa_data,
                     'cubicasa_last_synced_at' => optional($shoot->cubicasa_last_synced_at)->toIso8601String(),
+                    'cubicasa_sync_status' => $shoot->cubicasa_sync_status,
+                    'cubicasa_sync_job_id' => $shoot->cubicasa_sync_job_id,
+                    'cubicasa_sync_started_at' => optional($shoot->cubicasa_sync_started_at)->toIso8601String(),
+                    'cubicasa_last_sync_error' => $shoot->cubicasa_last_sync_error,
                 ],
+                'sync' => $this->cubicasaService->syncStatePayload($shoot),
                 'queued_assets' => $shouldIngest ? count($floorplans) : 0,
                 'ingested' => $shouldIngest,
             ]);
@@ -559,6 +595,105 @@ class IntegrationController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to sync CubiCasa data',
+                'sync' => isset($shoot) && $shoot instanceof Shoot
+                    ? $this->cubicasaService->syncStatePayload($shoot->fresh())
+                    : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Manually create a CubiCasa order for a Shoot (Req 19.1).
+     *
+     * Delegates to {@see CubiCasaService::createOrder()} which:
+     *  - syncs the existing order when the shoot is already linked, instead of
+     *    creating a duplicate (AC 19.5);
+     *  - sends `POST /orders` with a per-shoot Idempotency-Key (AC 19.6) so a
+     *    retried/double-clicked request returns the same order;
+     *  - links the order via `cubicasa_order_id` / `cubicasa_external_id` and
+     *    updates `cubicasa_status` through `applyShootData()` (AC 19.2, 19.3);
+     *  - writes an Audit_Log entry (via AuditLogService) for create or sync (AC 19.10).
+     *
+     * On failure the response code is derived from
+     * {@see CubiCasaService::getLastFailureReason()} so the client can react
+     * appropriately (auth → 401, not found → 404, other → 502).
+     *
+     * Note: `syncCubicasa()` continues to return 409 for unlinked shoots
+     * (AC 19.4) — this endpoint is the only path that creates new orders.
+     */
+    public function createCubicasa(Request $request, $shootId)
+    {
+        try {
+            $shoot = Shoot::findOrFail($shootId);
+
+            $parsed = $this->cubicasaService->createOrder($shoot, $request->user());
+
+            if (!$parsed) {
+                $reason = $this->cubicasaService->getLastFailureReason();
+                $status = match ($reason) {
+                    \App\Services\CubiCasaService::FAILURE_AUTH => 401,
+                    \App\Services\CubiCasaService::FAILURE_NOT_FOUND => 404,
+                    default => 502,
+                };
+                $messages = [
+                    \App\Services\CubiCasaService::FAILURE_AUTH => 'CubiCasa API key invalid or missing.',
+                    \App\Services\CubiCasaService::FAILURE_NOT_FOUND => 'CubiCasa order not found.',
+                ];
+
+                return response()->json([
+                    'success' => false,
+                    'mode' => $reason ?? 'error',
+                    'message' => $messages[$reason] ?? 'Failed to create CubiCasa order.',
+                    'sync' => $this->cubicasaService->syncStatePayload($shoot->fresh()),
+                ], $status);
+            }
+
+            // Mirror syncCubicasa(): when the order returned floorplans and the
+            // shoot booked a CubiCasa-eligible service, queue asset ingestion.
+            $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
+            $shouldIngest = !empty($floorplans) && $shoot->hasCubiCasaEligibleService();
+            if ($shouldIngest) {
+                IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+            }
+
+            $shoot->refresh();
+
+            return response()->json([
+                'success' => true,
+                'data' => $parsed,
+                'shoot' => [
+                    'id' => $shoot->id,
+                    'cubicasa_order_id' => $shoot->cubicasa_order_id,
+                    'cubicasa_external_id' => $shoot->cubicasa_external_id,
+                    'cubicasa_status' => $shoot->cubicasa_status,
+                    'cubicasa_product_type' => $shoot->cubicasa_product_type,
+                    'cubicasa_tour_url' => $shoot->cubicasa_tour_url,
+                    'cubicasa_floorplans' => $shoot->cubicasa_floorplans,
+                    'cubicasa_data' => $shoot->cubicasa_data,
+                    'cubicasa_last_synced_at' => optional($shoot->cubicasa_last_synced_at)->toIso8601String(),
+                    'cubicasa_idempotency_key' => $shoot->cubicasa_idempotency_key,
+                    'cubicasa_sync_status' => $shoot->cubicasa_sync_status,
+                    'cubicasa_sync_job_id' => $shoot->cubicasa_sync_job_id,
+                    'cubicasa_sync_started_at' => optional($shoot->cubicasa_sync_started_at)->toIso8601String(),
+                    'cubicasa_last_sync_error' => $shoot->cubicasa_last_sync_error,
+                ],
+                'sync' => $this->cubicasaService->syncStatePayload($shoot),
+                'queued_assets' => $shouldIngest ? count($floorplans) : 0,
+                'ingested' => $shouldIngest,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('CubiCasa create failed', [
+                'shoot_id' => $shootId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create CubiCasa order',
+                'sync' => isset($shoot) && $shoot instanceof Shoot
+                    ? $this->cubicasaService->syncStatePayload($shoot->fresh())
+                    : null,
             ], 500);
         }
     }

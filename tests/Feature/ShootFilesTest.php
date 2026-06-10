@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Jobs\GenerateWatermarkedImageJob;
+use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Services\ImageProcessingService;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -23,6 +24,20 @@ use Tests\TestCase;
 class ShootFilesTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Isolate the asynchronous media-archive generation side effect that the
+        // ShootFile/Shoot observers dispatch on save/status change. In production
+        // GenerateShootMediaArchiveJob runs on the queue (failures are logged via the
+        // job's failed() handler); under the sync test queue it would otherwise execute
+        // inline and surface unrelated archive errors. Faking only this job keeps every
+        // other job behaving exactly as before. Tests that fake the queue themselves
+        // include this job in their own fake list to preserve the isolation.
+        Queue::fake([GenerateShootMediaArchiveJob::class]);
+    }
 
     protected function insertUser(array $attributes = []): User
     {
@@ -200,6 +215,7 @@ class ShootFilesTest extends TestCase
         Queue::fake([
             ProcessImageJob::class,
             SyncShootFileToDropboxJob::class,
+            GenerateShootMediaArchiveJob::class,
         ]);
         Config::set('services.dropbox.enabled', false);
         Config::set('services.dropbox.access_token', null);
@@ -350,7 +366,7 @@ class ShootFilesTest extends TestCase
     public function listing_raw_files_queues_reprocessing_for_small_cr3_placeholder_previews(): void
     {
         Storage::fake('public');
-        Queue::fake([ProcessImageJob::class]);
+        Queue::fake([ProcessImageJob::class, GenerateShootMediaArchiveJob::class]);
 
         $admin = $this->insertUser(['role' => 'admin']);
         $shoot = $this->createShoot([
@@ -757,7 +773,7 @@ class ShootFilesTest extends TestCase
     public function locked_client_preview_route_queues_watermark_and_never_falls_back_to_original(): void
     {
         Storage::fake('public');
-        Queue::fake([GenerateWatermarkedImageJob::class]);
+        Queue::fake([GenerateWatermarkedImageJob::class, GenerateShootMediaArchiveJob::class]);
 
         $shoot = $this->createShoot([
             'payment_status' => 'unpaid',
