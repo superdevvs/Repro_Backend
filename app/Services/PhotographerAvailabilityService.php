@@ -11,6 +11,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class PhotographerAvailabilityService
 {
@@ -602,6 +603,312 @@ class PhotographerAvailabilityService
         }
 
         return $service->getShootDurationMinutes();
+    }
+
+    /**
+     * Assert that the requested schedule falls within the photographer's
+     * effective availability bounds, throwing a structured ValidationException
+     * (HTTP 422 contract) keyed on `start_time` when it does not.
+     *
+     * This is the shared bounds check enforced identically on shoot creation
+     * and shoot update (the backend is the authoritative source of effective
+     * availability). It reuses the same slot / unavailability / conflict logic
+     * as isAvailable(), but instead of returning a bare boolean it throws an
+     * error that distinguishes "outside the photographer's configured hours"
+     * from a "booking conflict".
+     *
+     * Unlike isAvailable() — which treats a photographer with no configured
+     * slots as implicitly available — this method applies the single canonical
+     * Backend_Fallback_Hours (config/availability.php) when no configured hours
+     * exist, so a bound is ALWAYS enforced.
+     *
+     * The configured-hours bound (unavailability blocks + effective working
+     * window) is ALWAYS enforced and is identical on the create and update
+     * paths. The booking-conflict check (step 2) may be suppressed via
+     * $skipConflictCheck for privileged overrides (e.g. an admin update passing
+     * skip_availability_check); suppressing it NEVER relaxes the configured-hours
+     * bound.
+     *
+     * @param int       $photographerId
+     * @param Carbon    $scheduledAt       Requested local date/time
+     * @param int|null  $durationMinutes   Requested slot duration (defaults to config default)
+     * @param int|null  $excludeShootId    Shoot to exclude from conflict checks (updates)
+     * @param bool      $skipConflictCheck Skip ONLY the booking-conflict check (bounds still enforced)
+     *
+     * @throws ValidationException keyed on `start_time` (HTTP 422)
+     */
+    public function assertWithinAvailabilityBounds(
+        int $photographerId,
+        Carbon $scheduledAt,
+        ?int $durationMinutes = null,
+        ?int $excludeShootId = null,
+        bool $skipConflictCheck = false
+    ): void {
+        $durationMinutes = $durationMinutes ?? (int) config('availability.default_shoot_duration_minutes', 120);
+
+        // Availability slots are stored in local time; compare in local time.
+        $datetimeLocal = $scheduledAt->copy();
+        $date = $datetimeLocal->copy()->startOfDay();
+        $time = $datetimeLocal->format('H:i');
+        $dayOfWeek = strtolower($datetimeLocal->format('l'));
+        $requestEndTime = $datetimeLocal->copy()->addMinutes($durationMinutes);
+
+        // 1) Specific-date or recurring unavailability blocks => outside available hours.
+        //    This is part of the configured-hours bound and is always enforced.
+        if ($this->overlapsUnavailability($photographerId, $date, $dayOfWeek, $time, $requestEndTime)) {
+            throw $this->outsideHoursException($photographerId, $date, $dayOfWeek, $datetimeLocal);
+        }
+
+        // 2) Conflicts with existing shoots / service items (with buffer) => booking conflict.
+        //    Only this step may be skipped by a privileged override; the bound below is not.
+        if (!$skipConflictCheck
+            && $this->hasBookingConflict($photographerId, $date, $datetimeLocal, $requestEndTime, $excludeShootId)) {
+            throw ValidationException::withMessages([
+                'start_time' => ['The selected time conflicts with another booking for this photographer.'],
+            ]);
+        }
+
+        // 3) Effective working window (configured slots, else Backend_Fallback_Hours).
+        //    Always enforced — this is the configured-hours bound shared by create and update.
+        if (!$this->isWithinEffectiveWindow($photographerId, $date, $dayOfWeek, $time, $requestEndTime)) {
+            throw $this->outsideHoursException($photographerId, $date, $dayOfWeek, $datetimeLocal);
+        }
+    }
+
+    /**
+     * Whether the requested range overlaps a specific-date or recurring
+     * unavailability block. Mirrors the unavailability logic in isAvailable().
+     */
+    protected function overlapsUnavailability(
+        int $photographerId,
+        Carbon $date,
+        string $dayOfWeek,
+        string $time,
+        Carbon $requestEndTime
+    ): bool {
+        $overlapClosure = function ($query) use ($time, $requestEndTime) {
+            // Overlap if requested_start < unavailable_end && unavailable_start < requested_end
+            $query->whereRaw('(start_time < ? AND end_time > ?)', [
+                $requestEndTime->format('H:i'),
+                $time,
+            ]);
+        };
+
+        $specific = PhotographerAvailability::where('photographer_id', $photographerId)
+            ->whereDate('date', $date->toDateString())
+            ->where('status', 'unavailable')
+            ->where($overlapClosure)
+            ->exists();
+
+        if ($specific) {
+            return true;
+        }
+
+        return PhotographerAvailability::where('photographer_id', $photographerId)
+            ->whereNull('date')
+            ->where('day_of_week', $dayOfWeek)
+            ->where('status', 'unavailable')
+            ->where($overlapClosure)
+            ->exists();
+    }
+
+    /**
+     * Whether the requested range conflicts with an existing shoot or service
+     * item (buffer-aware). Mirrors the conflict logic in isAvailable().
+     */
+    protected function hasBookingConflict(
+        int $photographerId,
+        Carbon $date,
+        Carbon $datetimeLocal,
+        Carbon $requestEndTime,
+        ?int $excludeShootId
+    ): bool {
+        $bufferMinutes = (int) config('availability.buffer_time_minutes', 30);
+
+        $conflictingShoots = Shoot::where('photographer_id', $photographerId)
+            ->whereNotNull('scheduled_at')
+            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereIn('status', [
+                ShootWorkflowService::STATUS_SCHEDULED,
+                ShootWorkflowService::STATUS_IN_PROGRESS,
+                ShootWorkflowService::STATUS_EDITING,
+            ])
+            ->when($excludeShootId, function ($query) use ($excludeShootId) {
+                $query->where('id', '!=', $excludeShootId);
+            })
+            ->get();
+
+        foreach ($conflictingShoots as $shoot) {
+            $shootStart = Carbon::parse($shoot->scheduled_at);
+            $shootEnd = $shootStart->copy()->addMinutes($this->calculateShootDuration($shoot));
+            $shootEndWithBuffer = $shootEnd->copy()->addMinutes($bufferMinutes);
+            $shootStartWithBuffer = $shootStart->copy()->subMinutes($bufferMinutes);
+
+            if ($datetimeLocal < $shootEndWithBuffer && $requestEndTime > $shootStartWithBuffer) {
+                return true;
+            }
+        }
+
+        $conflictingServiceItems = ShootService::with(['shoot', 'service'])
+            ->where('photographer_id', $photographerId)
+            ->whereNotNull('scheduled_at')
+            ->whereDate('scheduled_at', $date->toDateString())
+            ->whereIn('workflow_status', [
+                ShootService::WORKFLOW_SCHEDULED,
+                ShootService::WORKFLOW_IN_PROGRESS,
+                ShootService::WORKFLOW_READY,
+            ])
+            ->whereHas('shoot', function ($query) use ($excludeShootId) {
+                $query->whereNotIn('status', [
+                    Shoot::STATUS_CANCELLED,
+                    Shoot::STATUS_DECLINED,
+                    Shoot::STATUS_ON_HOLD,
+                ]);
+
+                if ($excludeShootId) {
+                    $query->where('id', '!=', $excludeShootId);
+                }
+            })
+            ->get();
+
+        foreach ($conflictingServiceItems as $item) {
+            $itemStart = Carbon::parse($item->scheduled_at);
+            $itemEnd = $itemStart->copy()->addMinutes($this->calculateServiceItemDuration($item));
+            $itemEndWithBuffer = $itemEnd->copy()->addMinutes($bufferMinutes);
+            $itemStartWithBuffer = $itemStart->copy()->subMinutes($bufferMinutes);
+
+            if ($datetimeLocal < $itemEndWithBuffer && $requestEndTime > $itemStartWithBuffer) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Configured "available" slots for the date (specific-date overrides take
+     * precedence over recurring day-of-week rules). Mirrors isAvailable().
+     */
+    protected function getConfiguredAvailableSlots(int $photographerId, Carbon $date, string $dayOfWeek): Collection
+    {
+        return PhotographerAvailability::where('photographer_id', $photographerId)
+            ->where(function ($query) use ($date, $dayOfWeek) {
+                $query->whereDate('date', $date->toDateString())
+                    ->orWhere(function ($q) use ($dayOfWeek) {
+                        $q->whereNull('date')->where('day_of_week', $dayOfWeek);
+                    });
+            })
+            ->where('status', 'available')
+            ->get();
+    }
+
+    /**
+     * Whether the requested range falls within the effective working window:
+     * the configured available slots when present, otherwise the single
+     * canonical Backend_Fallback_Hours from config/availability.php.
+     */
+    protected function isWithinEffectiveWindow(
+        int $photographerId,
+        Carbon $date,
+        string $dayOfWeek,
+        string $time,
+        Carbon $requestEndTime
+    ): bool {
+        $slots = $this->getConfiguredAvailableSlots($photographerId, $date, $dayOfWeek);
+
+        if ($slots->isEmpty()) {
+            // No configured hours => apply the single canonical Backend_Fallback_Hours.
+            $fallbackStart = config('availability.fallback_start_time', '09:00');
+            $fallbackEnd = config('availability.fallback_end_time', '18:00');
+
+            return $this->requestWithinWindow($fallbackStart, $fallbackEnd, $time, $requestEndTime);
+        }
+
+        foreach ($slots as $slot) {
+            if ($this->requestWithinWindow($slot->start_time, $slot->end_time, $time, $requestEndTime)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a requested start/end fits a single [start, end] window. Accepts
+     * full containment, or (matching the frontend / isAvailable() behavior) a
+     * start time that falls within the window.
+     */
+    protected function requestWithinWindow(string $windowStart, string $windowEnd, string $time, Carbon $requestEndTime): bool
+    {
+        $start = Carbon::parse($windowStart)->format('H:i');
+        $end = Carbon::parse($windowEnd)->format('H:i');
+
+        // Fully contained: window starts at/before request and ends at/after request end.
+        if ($start <= $time && $end >= $requestEndTime->format('H:i')) {
+            return true;
+        }
+
+        // Start time within window (matches frontend behavior, which checks the start time).
+        return $start <= $time && $time <= $end;
+    }
+
+    /**
+     * The encompassing effective working window (min start / max end of the
+     * configured available slots, else Backend_Fallback_Hours) used for the
+     * structured "outside hours" error message.
+     *
+     * @return array{start: string, end: string}|null
+     */
+    protected function getEffectiveWindow(int $photographerId, Carbon $date, string $dayOfWeek): ?array
+    {
+        $slots = $this->getConfiguredAvailableSlots($photographerId, $date, $dayOfWeek);
+
+        if ($slots->isEmpty()) {
+            return [
+                'start' => Carbon::parse(config('availability.fallback_start_time', '09:00'))->format('H:i'),
+                'end' => Carbon::parse(config('availability.fallback_end_time', '18:00'))->format('H:i'),
+            ];
+        }
+
+        $starts = $slots->map(fn ($slot) => Carbon::parse($slot->start_time)->format('H:i'))->all();
+        $ends = $slots->map(fn ($slot) => Carbon::parse($slot->end_time)->format('H:i'))->all();
+
+        if (empty($starts) || empty($ends)) {
+            return null;
+        }
+
+        return [
+            'start' => min($starts),
+            'end' => max($ends),
+        ];
+    }
+
+    /**
+     * Build the structured "outside configured hours" ValidationException
+     * (keyed on `start_time`) per the HTTP 422 contract.
+     */
+    protected function outsideHoursException(
+        int $photographerId,
+        Carbon $date,
+        string $dayOfWeek,
+        Carbon $datetimeLocal
+    ): ValidationException {
+        $window = $this->getEffectiveWindow($photographerId, $date, $dayOfWeek);
+        $dayLabel = ucfirst($dayOfWeek);
+        $requested = $datetimeLocal->format('H:i');
+
+        $detail = $window
+            ? "Photographer is available {$window['start']}–{$window['end']} on {$dayLabel}; {$requested} is outside this window."
+            : "Photographer has no available hours on {$dayLabel}; {$requested} cannot be booked.";
+
+        $exception = ValidationException::withMessages([
+            'start_time' => [$detail],
+        ]);
+
+        // Align with the design's HTTP 422 contract.
+        $exception->status = 422;
+
+        return $exception;
     }
 
     /**

@@ -100,6 +100,34 @@ class ShootMutationSupportService
         }
     }
 
+    /**
+     * Enforce the photographer's effective availability bounds (configured hours
+     * plus the canonical Backend_Fallback_Hours) on the requested schedule.
+     *
+     * This routes both shoot creation and shoot update through the single shared
+     * bounds method on PhotographerAvailabilityService, guaranteeing identical
+     * backend-authoritative bounds on both paths. A structured ValidationException
+     * keyed on `start_time` is thrown (HTTP 422) when the time is out of bounds.
+     *
+     * @param bool $skipConflictCheck Skip ONLY the booking-conflict check; the
+     *                                configured-hours bound is always enforced.
+     */
+    public function assertWithinAvailabilityBounds(
+        int $photographerId,
+        \DateTime $scheduledAt,
+        ?int $durationMinutes = 120,
+        ?int $excludeShootId = null,
+        bool $skipConflictCheck = false
+    ): void {
+        $this->availabilityService->assertWithinAvailabilityBounds(
+            $photographerId,
+            Carbon::parse($scheduledAt),
+            $durationMinutes,
+            $excludeShootId,
+            $skipConflictCheck
+        );
+    }
+
     public function checkServiceItemPhotographerAvailability(
         array $services,
         ?int $fallbackPhotographerId = null,

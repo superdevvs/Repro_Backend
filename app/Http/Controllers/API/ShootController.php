@@ -206,7 +206,14 @@ class ShootController extends Controller
             $shoot = Shoot::findOrFail($shoot);
         }
 
-        $shoot = $this->updateShootAction->execute($request, $shoot, $user);
+        try {
+            $shoot = $this->updateShootAction->execute($request, $shoot, $user);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'errors' => $e->errors(),
+            ], 422);
+        }
 
         return response()->json([
             'message' => 'Shoot updated',

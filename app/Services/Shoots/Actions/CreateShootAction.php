@@ -114,7 +114,8 @@ class CreateShootAction
                     ->get();
 
                 $durationMinutes = $this->support->calculateShootDurationFromServices($servicesPayload);
-                $this->support->checkPhotographerAvailability($photographerId, $scheduledAt, $durationMinutes);
+                // Enforce the same backend-authoritative availability bounds as the update path.
+                $this->support->assertWithinAvailabilityBounds($photographerId, $scheduledAt, $durationMinutes);
             }
 
             if (!$treatAsClientRequest) {

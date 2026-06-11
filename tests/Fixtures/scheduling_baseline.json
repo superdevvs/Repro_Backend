@@ -1,0 +1,84 @@
+{
+    "_meta": {
+        "description": "READ-ONLY immutable baseline of the existing 6 shoots / 6 services captured before the booking-scheduling-fixes change set. Used by the final data-preservation checkpoint (tasks 11.1 / 12, Property 16) to assert that shoot-level times, per-service times, service assignments, and stored timezone are unchanged. DO NOT EDIT, RESEED, OR REGENERATE during implementation.",
+        "spec": "booking-scheduling-fixes",
+        "requirements": ["12.8", "12.9"],
+        "capture_mode": "read-only (no writes, no migration, no reseed)",
+        "source": "backend SQLite database (shoots, shoot_service, services tables)",
+        "shoot_count": 6,
+        "service_count": 6,
+        "shoot_service_assignment_count": 9
+    },
+    "services": [
+        { "service_id": 1, "name": "HDR Photography" },
+        { "service_id": 2, "name": "2D Floor Plan" },
+        { "service_id": 3, "name": "3D Floor Plan" },
+        { "service_id": 4, "name": "Aerial Drone Photos" },
+        { "service_id": 5, "name": "Virtual Tour (3D)" },
+        { "service_id": 6, "name": "Twilight Photography" }
+    ],
+    "shoots": [
+        {
+            "shoot_id": 1,
+            "time": "07:00:00",
+            "scheduled_date": "2026-06-18 00:00:00",
+            "scheduled_at": "2026-06-18 07:00:00",
+            "timezone": null,
+            "service_assignments": []
+        },
+        {
+            "shoot_id": 2,
+            "time": "09:30",
+            "scheduled_date": "2026-06-20 00:00:00",
+            "scheduled_at": "2026-06-20 09:30:00",
+            "timezone": null,
+            "service_assignments": [
+                { "shoot_service_id": 1, "service_id": 2, "photographer_id": 4, "scheduled_at": "2026-06-20 09:30:00" },
+                { "shoot_service_id": 2, "service_id": 1, "photographer_id": 4, "scheduled_at": "2026-06-20 11:30:00" }
+            ]
+        },
+        {
+            "shoot_id": 3,
+            "time": "11:00",
+            "scheduled_date": "2026-06-23 00:00:00",
+            "scheduled_at": "2026-06-23 11:00:00",
+            "timezone": null,
+            "service_assignments": [
+                { "shoot_service_id": 3, "service_id": 3, "photographer_id": 4, "scheduled_at": "2026-06-23 11:00:00" }
+            ]
+        },
+        {
+            "shoot_id": 4,
+            "time": "13:00",
+            "scheduled_date": "2026-06-25 00:00:00",
+            "scheduled_at": "2026-06-25 13:00:00",
+            "timezone": null,
+            "service_assignments": [
+                { "shoot_service_id": 4, "service_id": 4, "photographer_id": 4, "scheduled_at": "2026-06-25 13:00:00" },
+                { "shoot_service_id": 5, "service_id": 5, "photographer_id": 4, "scheduled_at": "2026-06-25 13:00:00" }
+            ]
+        },
+        {
+            "shoot_id": 5,
+            "time": "17:00",
+            "scheduled_date": "2026-07-02 00:00:00",
+            "scheduled_at": "2026-07-02 17:00:00",
+            "timezone": null,
+            "service_assignments": [
+                { "shoot_service_id": 6, "service_id": 6, "photographer_id": 4, "scheduled_at": "2026-07-02 17:00:00" }
+            ]
+        },
+        {
+            "shoot_id": 6,
+            "time": "10:00",
+            "scheduled_date": "2026-07-08 00:00:00",
+            "scheduled_at": "2026-07-08 10:00:00",
+            "timezone": null,
+            "service_assignments": [
+                { "shoot_service_id": 7, "service_id": 2, "photographer_id": 4, "scheduled_at": "2026-07-08 10:00:00" },
+                { "shoot_service_id": 8, "service_id": 4, "photographer_id": 4, "scheduled_at": "2026-07-08 10:00:00" },
+                { "shoot_service_id": 9, "service_id": 1, "photographer_id": 4, "scheduled_at": "2026-07-08 10:00:00" }
+            ]
+        }
+    ]
+}

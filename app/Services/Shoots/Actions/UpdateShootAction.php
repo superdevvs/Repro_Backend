@@ -213,8 +213,11 @@ class UpdateShootAction
             'service_photographers',
         ];
         $needsAvailabilityCheck = count(array_intersect(array_keys($validated), $availabilityRelevantKeys)) > 0;
-        $skipAvailabilityCheck = $validated['skip_availability_check'] ?? $isAdmin;
-        if ($needsAvailabilityCheck && !$skipAvailabilityCheck) {
+        // skip_availability_check (or admin) may suppress booking-CONFLICT checks only.
+        // The configured-hours availability bound is always enforced, identically to the
+        // create path, so a shoot can never be rescheduled outside the photographer's hours.
+        $skipConflictCheck = $validated['skip_availability_check'] ?? $isAdmin;
+        if ($needsAvailabilityCheck) {
             $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
             $targetScheduledAt = isset($availabilityPayload['scheduled_at'])
                 ? new \DateTime((string) $availabilityPayload['scheduled_at'])
@@ -222,19 +225,22 @@ class UpdateShootAction
             $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $availabilityPayload);
 
             if ($targetPhotographerId && $targetScheduledAt) {
-                $this->support->checkPhotographerAvailability(
+                $this->support->assertWithinAvailabilityBounds(
                     (int) $targetPhotographerId,
                     $targetScheduledAt,
                     $this->support->calculateShootDurationFromServices($targetServices),
-                    $shoot->id
+                    $shoot->id,
+                    $skipConflictCheck
                 );
             }
 
-            $this->support->checkServiceItemPhotographerAvailability(
-                $targetServices,
-                $targetPhotographerId ? (int) $targetPhotographerId : null,
-                $shoot->id
-            );
+            if (!$skipConflictCheck) {
+                $this->support->checkServiceItemPhotographerAvailability(
+                    $targetServices,
+                    $targetPhotographerId ? (int) $targetPhotographerId : null,
+                    $shoot->id
+                );
+            }
         }
         $ghostUserIds = collect($validated['ghost_user_ids'] ?? [])
             ->map(fn ($id) => (int) $id)
