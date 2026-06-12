@@ -74,6 +74,12 @@ class UpdateShootAction
         $repEditableKeys = [
             'is_private_listing',
             'is_featured',
+            'featured_homepage_title',
+            'featured_homepage_location',
+            'featured_homepage_subtitle',
+            'featured_homepage_cta_label',
+            'featured_homepage_cta_href',
+            'featured_homepage_images',
             'ghost_user_ids',
             'tour_links',
         ];

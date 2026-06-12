@@ -431,6 +431,38 @@ class ShootResource extends JsonResource
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
             'is_featured' => (bool) ($this->is_featured ?? false),
             'isFeatured' => (bool) ($this->is_featured ?? false),
+            'featured_homepage_title' => $this->featured_homepage_title,
+            'featuredHomepageTitle' => $this->featured_homepage_title,
+            'featured_homepage_location' => $this->featured_homepage_location,
+            'featuredHomepageLocation' => $this->featured_homepage_location,
+            'featured_homepage_subtitle' => $this->featured_homepage_subtitle,
+            'featuredHomepageSubtitle' => $this->featured_homepage_subtitle,
+            'featured_homepage_cta_label' => $this->featured_homepage_cta_label,
+            'featuredHomepageCtaLabel' => $this->featured_homepage_cta_label,
+            'featured_homepage_cta_href' => $this->featured_homepage_cta_href,
+            'featuredHomepageCtaHref' => $this->featured_homepage_cta_href,
+            'featured_homepage_images' => $this->whenLoaded('featuredHomepageImages', function () {
+                return $this->featuredHomepageImages->map(fn ($image) => [
+                    'id' => (int) $image->id,
+                    'shoot_file_id' => (int) $image->shoot_file_id,
+                    'sort' => (int) $image->sort_order,
+                    'alt' => $image->alt_text,
+                    'focal' => $image->focal_point,
+                    'width' => $image->width,
+                    'height' => $image->height,
+                ])->values()->all();
+            }),
+            'featuredHomepageImages' => $this->whenLoaded('featuredHomepageImages', function () {
+                return $this->featuredHomepageImages->map(fn ($image) => [
+                    'id' => (int) $image->id,
+                    'shootFileId' => (int) $image->shoot_file_id,
+                    'sort' => (int) $image->sort_order,
+                    'alt' => $image->alt_text,
+                    'focal' => $image->focal_point,
+                    'width' => $image->width,
+                    'height' => $image->height,
+                ])->values()->all();
+            }),
             'is_listing_hidden' => (bool) ($this->is_listing_hidden ?? false),
             'isListingHidden' => (bool) ($this->is_listing_hidden ?? false),
             'listing_type' => $this->listing_type,

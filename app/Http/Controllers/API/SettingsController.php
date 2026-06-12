@@ -150,7 +150,16 @@ class SettingsController extends Controller
     }
 
     // Fields that contain sensitive credentials and should be encrypted at rest
-    private const SENSITIVE_JSON_FIELDS = ['apiKey', 'apiUser', 'api_key', 'api_secret', 'access_token', 'secret_key'];
+    private const SENSITIVE_JSON_FIELDS = [
+        'apiKey',
+        'apiUser',
+        'api_key',
+        'api_secret',
+        'access_token',
+        'secret_key',
+        'featuredShootApiKey',
+        'externalBookingApiKey',
+    ];
 
     /**
      * Encrypt sensitive fields within a JSON settings value before storing.

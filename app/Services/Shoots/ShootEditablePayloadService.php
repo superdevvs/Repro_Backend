@@ -4,8 +4,10 @@ namespace App\Services\Shoots;
 
 use App\Models\Invoice;
 use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\InvoiceService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class ShootEditablePayloadService
@@ -67,6 +69,19 @@ class ShootEditablePayloadService
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
             'is_featured' => 'nullable|boolean',
+            'featured_homepage_title' => 'nullable|string|max:255',
+            'featured_homepage_location' => 'nullable|string|max:255',
+            'featured_homepage_subtitle' => 'nullable|string|max:255',
+            'featured_homepage_cta_label' => 'nullable|string|max:80',
+            'featured_homepage_cta_href' => 'nullable|string|max:255',
+            'featured_homepage_images' => 'nullable|array|min:0|max:6',
+            'featured_homepage_images.*.shoot_file_id' => 'required_with:featured_homepage_images|integer|exists:shoot_files,id',
+            'featured_homepage_images.*.sort' => 'nullable|integer|min:1|max:999',
+            'featured_homepage_images.*.sort_order' => 'nullable|integer|min:1|max:999',
+            'featured_homepage_images.*.alt' => 'nullable|string|max:255',
+            'featured_homepage_images.*.alt_text' => 'nullable|string|max:255',
+            'featured_homepage_images.*.focal' => ['nullable', 'string', 'max:32', 'regex:/^\d{1,3}%\s+\d{1,3}%$/'],
+            'featured_homepage_images.*.focal_point' => ['nullable', 'string', 'max:32', 'regex:/^\d{1,3}%\s+\d{1,3}%$/'],
             'shoot_notes' => 'nullable|string',
             'company_notes' => 'nullable|string',
             'photographer_notes' => 'nullable|string',
@@ -275,7 +290,21 @@ class ShootEditablePayloadService
             $shoot->property_status = $validated['property_status'];
         }
         if (array_key_exists('is_featured', $validated)) {
-            $shoot->is_featured = (bool) $validated['is_featured'];
+            $nextFeaturedState = (bool) $validated['is_featured'];
+            $shoot->is_featured = $nextFeaturedState;
+        }
+
+        foreach ([
+            'featured_homepage_title',
+            'featured_homepage_location',
+            'featured_homepage_subtitle',
+            'featured_homepage_cta_label',
+            'featured_homepage_cta_href',
+        ] as $featuredField) {
+            if (array_key_exists($featuredField, $validated)) {
+                $value = $validated[$featuredField];
+                $shoot->{$featuredField} = is_string($value) && trim($value) !== '' ? trim($value) : null;
+            }
         }
 
         $autoPropertyTourLinks = [];
@@ -319,7 +348,23 @@ class ShootEditablePayloadService
             $shoot->editor_notes = $validated['editor_notes'];
         }
 
-        $shoot->save();
+        DB::transaction(function () use ($shoot, $validated) {
+            if ((bool) ($shoot->is_featured ?? false)) {
+                DB::table('shoots')
+                    ->where('id', '!=', $shoot->id)
+                    ->where('is_featured', true)
+                    ->update([
+                        'is_featured' => false,
+                        'updated_at' => now(),
+                    ]);
+            }
+
+            $shoot->save();
+
+            if (array_key_exists('featured_homepage_images', $validated)) {
+                $this->syncFeaturedHomepageImages($shoot, $validated['featured_homepage_images'] ?? []);
+            }
+        });
 
         if ($invoiceNeedsRefresh) {
             try {
@@ -334,6 +379,58 @@ class ShootEditablePayloadService
                 ]);
             }
         }
+    }
+
+    protected function syncFeaturedHomepageImages(Shoot $shoot, array $images): void
+    {
+        $normalizedImages = collect($images)
+            ->map(function (array $image, int $index) {
+                $sort = $image['sort'] ?? $image['sort_order'] ?? ($index + 1);
+
+                return [
+                    'shoot_file_id' => (int) $image['shoot_file_id'],
+                    'sort_order' => (int) $sort,
+                    'alt_text' => isset($image['alt']) && trim((string) $image['alt']) !== ''
+                        ? trim((string) $image['alt'])
+                        : (isset($image['alt_text']) && trim((string) $image['alt_text']) !== ''
+                            ? trim((string) $image['alt_text'])
+                            : null),
+                    'focal_point' => trim((string) ($image['focal'] ?? $image['focal_point'] ?? '50% 50%')) ?: '50% 50%',
+                ];
+            })
+            ->unique('shoot_file_id')
+            ->sortBy('sort_order')
+            ->values();
+
+        $fileIds = $normalizedImages->pluck('shoot_file_id')->all();
+        $validFileIds = $shoot->files()
+            ->whereIn('id', $fileIds)
+            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        $shoot->featuredHomepageImages()->delete();
+
+        $normalizedImages
+            ->filter(fn (array $image) => in_array($image['shoot_file_id'], $validFileIds, true))
+            ->values()
+            ->each(function (array $image, int $index) use ($shoot) {
+                $file = $shoot->files()->find($image['shoot_file_id']);
+                $metadata = is_array($file?->metadata) ? $file->metadata : [];
+
+                $shoot->featuredHomepageImages()->create([
+                    'shoot_file_id' => $image['shoot_file_id'],
+                    'sort_order' => $index + 1,
+                    'alt_text' => $image['alt_text'],
+                    'focal_point' => $image['focal_point'],
+                    'variant_640_path' => $file?->thumbnail_path ?: $file?->web_path ?: $file?->path ?: $file?->storage_path,
+                    'variant_1280_path' => $file?->web_path ?: $file?->thumbnail_path ?: $file?->path ?: $file?->storage_path,
+                    'variant_1920_path' => $file?->storage_path ?: $file?->path ?: $file?->web_path ?: $file?->thumbnail_path,
+                    'width' => isset($metadata['width']) && is_numeric($metadata['width']) ? (int) $metadata['width'] : null,
+                    'height' => isset($metadata['height']) && is_numeric($metadata['height']) ? (int) $metadata['height'] : null,
+                ]);
+            });
     }
 
     public function targetServicesFor(Shoot $shoot, array $validated): array

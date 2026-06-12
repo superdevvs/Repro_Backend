@@ -230,7 +230,7 @@ class ShootPresenter
 
     public function transformShoot(Shoot $shoot): Shoot
     {
-        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers']);
+        $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers', 'featuredHomepageImages.file']);
         if (!$shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select(

@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Services\ReproApiSettingsService;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -21,9 +22,15 @@ class ValidateExternalApiKey
             ], 401);
         }
 
-        $validKey = config('services.external_booking.api_key');
+        $validKeys = array_values(array_filter([
+            app(ReproApiSettingsService::class)->externalBookingApiKey(),
+            config('services.external_booking.api_key'),
+        ], fn ($key) => is_string($key) && trim($key) !== ''));
 
-        if (!$validKey || !hash_equals($validKey, $apiKey)) {
+        $isAuthorized = collect($validKeys)
+            ->contains(fn (string $validKey) => hash_equals($validKey, $apiKey));
+
+        if (empty($validKeys) || !$isAuthorized) {
             return response()->json([
                 'message' => 'Invalid API key.',
             ], 403);

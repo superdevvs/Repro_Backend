@@ -68,6 +68,7 @@ use App\Http\Controllers\API\StudioMetricsController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
+use App\Http\Controllers\API\FeaturedShootController;
 use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
@@ -89,6 +90,10 @@ Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController:
 Route::get('/ping', function () {
     return response()->json(['message' => 'pong']);
 });
+
+Route::get('/v1/featured-shoot', FeaturedShootController::class)
+    ->middleware('throttle:120,1')
+    ->name('api.v1.featured-shoot');
 
 Route::middleware('telnyx.toolbridge')
     ->prefix('telnyx-ai/tools')

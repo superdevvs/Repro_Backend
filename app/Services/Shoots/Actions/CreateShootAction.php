@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots\Actions;
 
+use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\ProcessCreatedShootSideEffectsJob;
 use App\Http\Requests\StoreShootRequest;
 use App\Models\Shoot;
@@ -260,6 +261,15 @@ class CreateShootAction
         });
 
         $this->registerDeferredSideEffects($result);
+
+        if (
+            !$result->treatAsClientRequest
+            && $result->scheduledAt !== null
+            && $result->shoot->hasCubiCasaEligibleService()
+        ) {
+            CreateCubiCasaOrderJob::dispatch($result->shoot->id, 'booking')->afterCommit();
+        }
+
         $this->googleCalendarSyncDispatcher->dispatchShootSync($result->shoot->id);
 
         return $result;

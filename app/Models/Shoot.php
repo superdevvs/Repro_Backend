@@ -117,6 +117,11 @@ class Shoot extends Model
         'cubicasa_last_sync_error',
         'is_private_listing',
         'is_featured',
+        'featured_homepage_title',
+        'featured_homepage_location',
+        'featured_homepage_subtitle',
+        'featured_homepage_cta_label',
+        'featured_homepage_cta_href',
         'is_listing_hidden',
         'listing_type',
         'property_status',
@@ -552,6 +557,11 @@ class Shoot extends Model
     public function files()
     {
         return $this->hasMany(ShootFile::class);
+    }
+
+    public function featuredHomepageImages()
+    {
+        return $this->hasMany(FeaturedShootImage::class)->orderBy('sort_order');
     }
 
     public function shareLinks()

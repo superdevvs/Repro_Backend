@@ -2,6 +2,7 @@
 
 namespace App\Services\Shoots\Actions;
 
+use App\Jobs\CreateCubiCasaOrderJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
@@ -106,6 +107,13 @@ class ApproveShootAction
 
         $shoot->refresh();
         $shoot->load(['client', 'photographer', 'rep', 'service', 'services']);
+
+        $alreadyLinked = !empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id);
+
+        if ($wasRequested && $shoot->hasCubiCasaEligibleService() && !$alreadyLinked) {
+            CreateCubiCasaOrderJob::dispatch($shoot->id, 'approval')->afterCommit();
+        }
+
         $context = $this->automationService->buildShootContext($shoot);
         if ($shoot->rep) {
             $context['rep'] = $shoot->rep;

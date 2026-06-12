@@ -260,9 +260,11 @@ class CubiCasaService
      *
      * @return array<string, mixed>|null parsed order data, or null on failure.
      */
-    public function createOrder(Shoot $shoot, ?User $actor = null): ?array
+    public function createOrder(Shoot $shoot, ?User $actor = null, string $source = 'manual'): ?array
     {
         $this->lastFailureReason = null;
+
+        $createEvent = $source === 'auto' ? 'cubicasa.auto_create' : 'cubicasa.manual_create';
 
         // AC 19.5 — already linked: sync the existing order instead of creating.
         if (!empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id)) {
@@ -298,7 +300,7 @@ class CubiCasaService
                 'shoot_id' => $shoot->id,
                 'error' => $e->getMessage(),
             ]);
-            $this->auditLog->record('cubicasa.manual_create', $actor, $shoot, [
+            $this->auditLog->record($createEvent, $actor, $shoot, [
                 'outcome' => 'failed',
                 'failure_reason' => $this->lastFailureReason,
             ]);
@@ -312,7 +314,7 @@ class CubiCasaService
                 'status' => $resp->status(),
                 'body' => substr((string) $resp->body(), 0, 500),
             ]);
-            $this->auditLog->record('cubicasa.manual_create', $actor, $shoot, [
+            $this->auditLog->record($createEvent, $actor, $shoot, [
                 'outcome' => 'failed',
                 'failure_reason' => $this->lastFailureReason,
             ]);
@@ -323,7 +325,7 @@ class CubiCasaService
         // AC 19.2/19.3 — link via cubicasa_order_id/external_id + update status.
         $this->applyShootData($shoot, $parsed);
 
-        $this->auditLog->record('cubicasa.manual_create', $actor, $shoot, [
+        $this->auditLog->record($createEvent, $actor, $shoot, [
             'outcome' => 'ok',
             'order_id' => $shoot->cubicasa_order_id,
             'external_id' => $shoot->cubicasa_external_id,
@@ -343,16 +345,29 @@ class CubiCasaService
      */
     private function buildOrderPayload(Shoot $shoot): array
     {
+        // property_details is cast to 'array' on the Shoot model, so an is_array() check suffices.
+        $details = is_array($shoot->property_details) ? $shoot->property_details : [];
+
+        $suite = $details['apt_suite'] ?? $details['aptSuite'] ?? $details['suite'] ?? null;
+
         $address = array_filter([
             'street' => $shoot->address,
+            'suite' => is_string($suite) && trim($suite) !== '' ? $suite : null, // Req 7.1
             'city' => $shoot->city,
             'state' => $shoot->state,
             'postalCode' => $shoot->zip,
         ], static fn ($value): bool => is_string($value) ? trim($value) !== '' : $value !== null);
 
+        // Req 7.2 — default country to US when state + zip present and no country set.
+        $hasState = isset($address['state']);
+        $hasZip = isset($address['postalCode']);
+        if ($hasState && $hasZip && empty($address['country'])) {
+            $address['country'] = 'US';
+        }
+
         $payload = [
             'info' => [
-                'external_id' => 'shoot-' . $shoot->id,
+                'external_id' => 'shoot-' . $shoot->id, // Req 7.3
             ],
         ];
 

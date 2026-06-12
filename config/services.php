@@ -275,6 +275,10 @@ return [
         'api_key' => env('EXTERNAL_BOOKING_API_KEY'),
     ],
 
+    'repro_dashboard' => [
+        'api_key' => env('REPRO_DASHBOARD_API_KEY'),
+    ],
+
     // Cakemail Email API Integration
     'cakemail' => [
         'username' => env('CAKEMAIL_USERNAME', 'contact@reprophotos.com'),
