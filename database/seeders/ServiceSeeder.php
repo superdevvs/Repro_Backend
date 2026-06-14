@@ -322,9 +322,15 @@ class ServiceSeeder extends Seeder
             ],
         ];
 
+        // Non-editing extra categories are produced by external/automated pipelines and
+        // must stay hidden from the in-house photo/video editing lanes (QA #13).
+        $nonEditingCategories = ['Drone', 'Floor Plans', '360/3D Tours', 'Virtual Staging'];
+
         foreach ($services as $serviceData) {
             $category = Category::firstOrCreate(['name' => $serviceData['category']]);
             $basePrice = $serviceData['price'] ?? ($serviceData['sqft_ranges'][0]['price'] ?? 0);
+            $requiresEditing = $serviceData['requires_editing']
+                ?? !in_array($serviceData['category'], $nonEditingCategories, true);
 
             $service = Service::updateOrCreate(
                 ['name' => $serviceData['name']],
@@ -337,6 +343,7 @@ class ServiceSeeder extends Seeder
                     'category_id' => $category->id,
                     'icon' => $serviceData['icon'],
                     'photographer_required' => $serviceData['photographer_required'] ?? false,
+                    'requires_editing' => $requiresEditing,
                     'photographer_pay' => $serviceData['photographer_pay'] ?? null,
                     'photo_count' => $serviceData['photo_count'] ?? null,
                 ]

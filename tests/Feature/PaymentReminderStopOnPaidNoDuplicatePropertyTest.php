@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\PaymentReminder;
 use App\Models\Shoot;
 use App\Services\Messaging\AutomationService;
+use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\Test;
@@ -71,6 +72,18 @@ class PaymentReminderStopOnPaidNoDuplicatePropertyTest extends TestCase
         // Seeded RNG so test runs are deterministic and any failure can be
         // reproduced exactly without losing the random-coverage benefit.
         mt_srand(20260619);
+
+        // Scheduling uses a rolling look-ahead from "now" and only persists future-dated reminders
+        // (Req 4.6). Pin "now" to the start of the anchor window so every generated anchor (which
+        // spans 2026-2027) is at or after "now" and its full cadence is materialized deterministically,
+        // independent of the real wall clock.
+        Carbon::setTestNow('2026-01-01 00:00:00');
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
     }
 
     /**
@@ -86,9 +99,10 @@ class PaymentReminderStopOnPaidNoDuplicatePropertyTest extends TestCase
      *
      * Anchors span 2026 and 2027 so cadence schedules cover Phase 1 (day +1/3/7),
      * Phase 2 (weekly to day 28), and Phase 3 (monthly last-Sunday) without any
-     * iteration falling entirely off-cadence. The internal horizon is a fixed
-     * 6 months from the anchor (AutomationService::PAYMENT_REMINDER_HORIZON_MONTHS),
-     * so any anchor in the 2-year window produces a non-trivial reminder set.
+     * iteration falling entirely off-cadence. The internal horizon is a rolling
+     * look-ahead from "now" (AutomationService::PAYMENT_REMINDER_LOOKAHEAD_MONTHS),
+     * and "now" is pinned at the start of the anchor window in setUp(), so any anchor
+     * in the 2-year window produces a non-trivial, fully-future reminder set.
      *
      * @return array<string, array{0:CarbonImmutable,1:int,2:float,3:bool,4:string}>
      */

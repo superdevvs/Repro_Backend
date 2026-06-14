@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use App\Services\Schedule\ScheduleDateScopeService;
+use App\Services\Shoots\ShootListingService;
 
 class Shoot extends Model
 {
@@ -610,6 +611,7 @@ class Shoot extends Model
 
     public function syncPaymentStatusFromRecords(?string $paymentType = null): array
     {
+        $previousStatus = $this->payment_status;
         $totalPaid = $this->calculateCanonicalTotalPaid();
         $totalQuote = (float) ($this->total_quote ?? 0);
         $newStatus = $totalQuote <= 0.01
@@ -630,6 +632,24 @@ class Shoot extends Model
 
         if ($dirty) {
             $this->save();
+        }
+
+        // Stop-on-paid seam (Requirements 5.3, 5.4): when a payment is recorded that flips this
+        // shoot to fully paid, proactively cancel any pending payment reminders rather than waiting
+        // for the dispatch-time race guard to catch them. Guarded to fire only on the transition to
+        // paid so repeated syncs on an already-paid shoot do not re-run cancellation. The dispatch
+        // re-check in DispatchScheduledMessages remains the safety net. AutomationService is
+        // resolved via the container to avoid coupling the model to the messaging service graph.
+        $becamePaid = strtolower((string) $previousStatus) !== 'paid' && $newStatus === 'paid';
+        if ($becamePaid) {
+            try {
+                app(\App\Services\Messaging\AutomationService::class)->cancelPaymentReminders($this);
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to cancel payment reminders after shoot became paid', [
+                    'shoot_id' => $this->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
         }
 
         $overpaymentAmount = $totalPaid - $totalQuote;
@@ -973,6 +993,7 @@ class Shoot extends Model
         Cache::forget("shoot_files_{$shootId}_raw");
         Cache::forget("shoot_files_{$shootId}_edited");
         Cache::forget("shoot_files_{$shootId}_all");
+        ShootListingService::flushCachedListings();
 
         try {
             app(ScheduleDateScopeService::class)->invalidateShootBuckets($shoot);

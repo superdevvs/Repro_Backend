@@ -183,6 +183,26 @@ class ShootEmailCompletenessPreservationTest extends TestCase
                 'variables_json' => ['greeting', 'client_first_name', 'client_last_name', 'shoot_location', 'current_date', 'payment_amount', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes', 'company_email'],
                 'body_tokens' => ['client_first_name', 'client_last_name', 'company_email', 'current_date', 'greeting', 'payment_amount', 'services_provided', 'services_provided_html', 'shoot_location', 'shoot_notes'],
             ],
+            'shoot-on-hold' => [
+                'category' => 'BOOKING', 'channel' => 'EMAIL',
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'portal_url', 'company_email'],
+                'body_tokens' => ['assigned_photographers', 'company_email', 'greeting', 'portal_url', 'services_provided', 'services_provided_html', 'shoot_date', 'shoot_location', 'shoot_notes', 'shoot_time'],
+            ],
+            'shoot-cancelled' => [
+                'category' => 'BOOKING', 'channel' => 'EMAIL',
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'portal_url', 'company_email'],
+                'body_tokens' => ['assigned_photographers', 'company_email', 'greeting', 'portal_url', 'services_provided', 'services_provided_html', 'shoot_date', 'shoot_location', 'shoot_notes', 'shoot_time'],
+            ],
+            'payment-due' => [
+                'category' => 'PAYMENT', 'channel' => 'EMAIL',
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_total', 'payment_link', 'portal_url', 'company_email'],
+                'body_tokens' => ['company_email', 'greeting', 'payment_link', 'shoot_location', 'shoot_total'],
+            ],
+            'payment-receipt' => [
+                'category' => 'PAYMENT', 'channel' => 'EMAIL',
+                'variables_json' => ['greeting', 'shoot_location', 'payment_details', 'portal_url', 'company_email'],
+                'body_tokens' => ['company_email', 'greeting', 'payment_details', 'portal_url', 'shoot_location'],
+            ],
             'refund-submitted' => [
                 'category' => 'PAYMENT', 'channel' => 'EMAIL',
                 'variables_json' => ['greeting', 'client_first_name', 'shoot_location', 'services_provided', 'services_provided_html', 'assigned_photographers', 'shoot_notes'],
@@ -263,14 +283,14 @@ class ShootEmailCompletenessPreservationTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
-    // 3.5 - The same SET of seeded SYSTEM templates (20) is produced.
+    // 3.5 - The same SET of seeded SYSTEM templates (24) is produced.
     // ---------------------------------------------------------------------
     public function test_seeded_system_template_set_matches_baseline(): void
     {
         $expectedSlugs = array_keys($this->baseline());
         sort($expectedSlugs);
 
-        $this->assertCount(20, $expectedSlugs, 'Baseline must describe exactly 20 SYSTEM templates.');
+        $this->assertCount(24, $expectedSlugs, 'Baseline must describe exactly 24 SYSTEM templates.');
 
         $actualSlugs = MessageTemplate::query()
             ->where('is_system', true)

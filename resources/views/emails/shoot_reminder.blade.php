@@ -5,7 +5,7 @@
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">{{ !empty($isPhotographer) ? '24-Hour Assignment Reminder' : '24-Hour Shoot Reminder' }}</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">{{ !empty($isPhotographer) ? 'Your scheduled shoot is coming up soon.' : 'Your photo shoot is almost here.' }}</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:32px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">{{ !empty($isPhotographer) ? 'Your scheduled shoot is coming up soon.' : 'Your photo shoot is almost here.' }}</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">
         {{ !empty($isPhotographer)
             ? 'Please review the timing, address, services, and notes below so you are ready before arrival.'

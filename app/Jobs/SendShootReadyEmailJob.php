@@ -82,6 +82,29 @@ class SendShootReadyEmailJob implements ShouldQueue
                     'error' => $e->getMessage(),
                 ]);
             }
+
+            // Gap C anchor: the automated ready/delivered path must also start the payment-reminder
+            // cadence (the manual shoot_ready send already does). Stamp shoot_ready_notified_at only
+            // when it is not already set so a later ready send / job re-run never moves the anchor and
+            // reshuffles the cadence (Req 4.2 anchor stability). The stamp/schedule runs regardless of
+            // whether the mail send above succeeded — the anchor represents "we attempted the ready
+            // notification" — and is scoped to the same full-order-delivery condition as the automation.
+            try {
+                if ($shoot->shoot_ready_notified_at === null) {
+                    $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
+                }
+
+                // schedulePaymentReminders() self-guards: it cancels/skips for a paid shoot, no-ops
+                // without an anchor, and is idempotent on (shoot_id, scheduled_date), so calling it on
+                // an already-anchored shoot neither moves the anchor nor duplicates reminder rows
+                // (Req 4.3, 4.4, 4.5). Refresh so the just-stamped anchor is visible to the scheduler.
+                $automation->schedulePaymentReminders($shoot->refresh());
+            } catch (\Throwable $e) {
+                Log::warning('SendShootReadyEmailJob: payment reminder scheduling failed', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
     }
 

@@ -26,12 +26,15 @@ class MessageTemplate extends Model
         'owner_id',
         'is_system',
         'is_active',
+        'email_type',
+        'override_enabled',
     ];
 
     protected $casts = [
         'variables_json' => 'array',
         'is_system' => 'bool',
         'is_active' => 'bool',
+        'override_enabled' => 'bool',
     ];
 
     public function creator(): BelongsTo

@@ -22,6 +22,7 @@ class Service extends Model
         'category_id',
         'icon',
         'photographer_required',
+        'requires_editing',
         'photographer_pay',
         'exclude_from_sales_commission',
         'photo_count',
@@ -33,12 +34,28 @@ class Service extends Model
         'delivery_time' => 'integer',
         'category_id' => 'integer',
         'photographer_required' => 'boolean',
+        'requires_editing' => 'boolean',
         'photographer_pay' => 'decimal:2',
         'exclude_from_sales_commission' => 'boolean',
         'photo_count' => 'integer',
         'allow_multiple' => 'boolean',
         'quantity' => 'integer',
     ];
+
+    /**
+     * Whether this service is worked by the in-house photo/video editing lanes.
+     *
+     * Non-editing extras (drone, floor plans, 3D tours, virtual staging, etc.) are
+     * produced by external/automated pipelines and must stay hidden from editors
+     * (QA #13). Defaults to true when the column is absent so behaviour is preserved
+     * on databases that have not run the migration yet.
+     */
+    public function requiresEditing(): bool
+    {
+        $value = $this->getAttribute('requires_editing');
+
+        return $value === null ? true : (bool) $value;
+    }
 
     public function category()
     {

@@ -92,7 +92,7 @@ class MmmXmlBuilder
             $this->appendRequiredTextElement($dom, $propertyNode, 'City', $property['city'] ?? null);
             $this->appendRequiredTextElement($dom, $propertyNode, 'State', $property['state'] ?? null);
             $this->appendRequiredTextElement($dom, $propertyNode, 'Zip', $property['zip'] ?? null);
-            $this->appendRequiredTextElement($dom, $propertyNode, 'Description', $property['description'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'Description', $property['description'] ?? null);
 
             if ($pictures !== []) {
                 $picturesNode = $dom->createElement('Pictures');

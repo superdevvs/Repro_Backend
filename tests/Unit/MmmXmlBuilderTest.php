@@ -113,7 +113,7 @@ class MmmXmlBuilderTest extends TestCase
         $this->assertSame('', $document->getElementsByTagName('ID')->item(0)?->textContent);
         $this->assertSame('', $document->getElementsByTagName('Price')->item(0)?->textContent);
         $this->assertSame('6275 Kerrydale Drive', $document->getElementsByTagName('Address')->item(0)?->textContent);
-        $this->assertSame('', $document->getElementsByTagName('Description')->item(0)?->textContent);
+        $this->assertSame(0, $document->getElementsByTagName('Description')->length);
         $this->assertSame('', $document->getElementsByTagName('Caption')->item(0)?->textContent);
         $this->assertSame('front.jpg', $document->getElementsByTagName('FileName')->item(0)?->textContent);
     }

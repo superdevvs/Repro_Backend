@@ -52,6 +52,9 @@ class ExternalBookingRequest extends FormRequest
 
             // Source tracking
             'source' => 'nullable|string|max:100',
+
+            // Account preference
+            'create_account' => 'sometimes|boolean',
         ];
     }
 

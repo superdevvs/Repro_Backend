@@ -27,20 +27,9 @@
             <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.25; font-weight:800; color:#071223;">{{ $shoot->location }}</p>
             <p class="dark-body" style="margin:12px 0 0; font-size:15px; line-height:1.75; color:#4f6886;">Everything currently scheduled for this property is organized below, including the service lineup and assigned team.</p>
 
-            {{-- Status pills --}}
+            {{-- Category pills (status pill removed to drop the confusing status bar) --}}
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:14px;">
                 <tr>
-                    @if(!empty($shoot->status_label))
-                        @php
-                            $statusLower = strtolower((string) $shoot->status_label);
-                            $pillBg = '#edf4ff'; $pillBorder = '#d6e5ff'; $pillColor = '#295391';
-                            if (in_array($statusLower, ['cancelled', 'declined'])) { $pillBg = '#fff0f1'; $pillBorder = '#ffcbd1'; $pillColor = '#b42336'; }
-                            elseif (in_array($statusLower, ['on hold', 'pending'])) { $pillBg = '#fff5e8'; $pillBorder = '#ffd8a8'; $pillColor = '#ab5b00'; }
-                        @endphp
-                        <td style="padding-right:8px; padding-bottom:8px;">
-                            <span class="pill-bg" style="display:inline-block; padding:6px 12px; border-radius:999px; font-size:12px; line-height:1.2; font-weight:700; background-color:{{ $pillBg }}; border:1px solid {{ $pillBorder }}; color:{{ $pillColor }};">{{ $shoot->status_label }}</span>
-                        </td>
-                    @endif
                     @if(!empty($shoot->service_category))
                         <td style="padding-right:8px; padding-bottom:8px;">
                             <span class="pill-bg" style="display:inline-block; padding:6px 12px; border-radius:999px; font-size:12px; line-height:1.2; font-weight:700; background-color:#edf4ff; border:1px solid #d6e5ff; color:#295391;">{{ $shoot->service_category }}</span>

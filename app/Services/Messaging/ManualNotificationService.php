@@ -52,6 +52,7 @@ class ManualNotificationService
         private readonly TemplateVariableResolver $variableResolver,
         private readonly AuditLogService $auditLog,
         private readonly PublicPaymentAccessTokenService $paymentTokens,
+        private readonly AutomationService $automationService,
     ) {
     }
 
@@ -115,8 +116,15 @@ class ManualNotificationService
         ]);
 
         // AC 12.10 — record the ready-notification timestamp, distinct from shoot/invoice dates.
+        // Gap A: starting from this first ready notification, begin the payment-reminder cadence.
         if ($type === 'shoot_ready') {
             $shoot->forceFill(['shoot_ready_notified_at' => now()])->save();
+
+            // Start the Day 1/3/7 → weekly → last-Sunday payment-reminder cadence anchored on the
+            // timestamp just stamped. schedulePaymentReminders() self-guards: it cancels/skips for a
+            // paid shoot and no-ops without an anchor, and is idempotent on (shoot_id, scheduled_date),
+            // so re-sending shoot_ready never duplicates reminder rows (Req 4.1, 4.3, 4.4, 4.5).
+            $this->automationService->schedulePaymentReminders($shoot->refresh());
         }
 
         // AC 12.9 — audit every manual send (sender, time, shoot, template, recipient, channel, status).

@@ -185,6 +185,23 @@ class TemplateRenderer
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
         $journeyHtml = '';
 
+        // New Account emails should surface a single URL type (Dashboard), so the
+        // Website tile is suppressed for that template to avoid the confusing
+        // "website + dashboard" pairing.
+        $showWebsiteTile = $template->slug !== 'account-created';
+        $websiteTileHtml = $showWebsiteTile ? <<<TILE
+              <td class="footer-meta-cell" width="33.33%" style="width:33.33%; padding:0 4px; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                  <tr>
+                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
+                      <a href="{$websiteUrl}" class="dark-panel-link" style="display:block; margin-bottom:6px; color:{$headingColorLight}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Website</a>
+                      <span class="footer-meta-value dark-meta-value" style="color:{$bodyColorLight}; font-size:12px; line-height:1.6; font-weight:600;">View products and services to order.</span>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+TILE : '';
+
         return <<<HTML
 <!DOCTYPE html>
 <html>
@@ -310,10 +327,10 @@ a { color: {$linkColorLight}; text-decoration: none; }
   z-index: 2;
   margin: 0;
   max-width: 520px;
-  font-size: 48px;
-  line-height: 0.96;
+  font-size: 32px;
+  line-height: 1.1;
   font-weight: 300;
-  letter-spacing: -2.4px;
+  letter-spacing: -1.2px;
   color: {$headingColorLight};
 }
 .hero-title-lead {
@@ -588,8 +605,8 @@ a { color: {$linkColorLight}; text-decoration: none; }
   .hero-card { padding: 24px 22px !important; }
   .body-inner, .footer-card { padding-left: 20px !important; padding-right: 20px !important; }
   .hero-title {
-    font-size: 32px !important;
-    letter-spacing: -1.6px !important;
+    font-size: 24px !important;
+    letter-spacing: -1px !important;
     max-width: none !important;
   }
   .hero-title-lead {
@@ -797,8 +814,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
         <div class="footer-card dark-panel-surface" style="background-color:{$footerSurfaceLight}; color:{$bodyColorLight};">
           <div class="footer-title dark-panel-copy" style="color:{$headingColorLight};">Need help with a shoot, invoice, or account question?</div>
           <p class="footer-copy dark-panel-copy" style="color:{$bodyColorLight};">
-            Our team is here to help keep your marketing workflow moving.
-            Reach us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">{$supportEmail}</a> or call {$supportPhone}.
+            If you need help, call {$supportPhone} or email us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">{$supportEmail}</a>.
           </p>
           <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
@@ -812,16 +828,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
                   </tr>
                 </table>
               </td>
-              <td class="footer-meta-cell" width="33.33%" style="width:33.33%; padding:0 4px; vertical-align:top;">
-                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
-                  <tr>
-                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
-                      <a href="{$websiteUrl}" class="dark-panel-link" style="display:block; margin-bottom:6px; color:{$headingColorLight}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Website</a>
-                      <span class="footer-meta-value dark-meta-value" style="color:{$bodyColorLight}; font-size:12px; line-height:1.6; font-weight:600;">View products and services to order.</span>
-                    </td>
-                  </tr>
-                </table>
-              </td>
+{$websiteTileHtml}
               <td class="footer-meta-cell footer-meta-cell-last" width="33.33%" style="width:33.33%; padding-left:8px; padding-right:0; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
@@ -1045,20 +1052,14 @@ HTML;
             return null;
         }
 
-        $html = sprintf(
+        // The hero status badge (e.g. "Pending", "Updated") was removed from all
+        // templates per the request to drop the confusing status bar. The parsed
+        // status is intentionally ignored here; only the lead + location render.
+        return sprintf(
             '<span class="hero-title-lead">%s</span><span class="hero-title-location">%s</span>',
             $this->escapeHtml($parts['lead']),
             $this->escapeHtml($parts['location'])
         );
-
-        if (($parts['status'] ?? '') !== '') {
-            $html .= sprintf(
-                '<span class="hero-title-status">%s</span>',
-                $this->escapeHtml($parts['status'])
-            );
-        }
-
-        return $html;
     }
 
     /**

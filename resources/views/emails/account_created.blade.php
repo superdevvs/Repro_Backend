@@ -3,9 +3,15 @@
 @section('title', 'New Account Information')
 @section('preheader', 'Your new R/E Pro Photos dashboard account is ready.')
 
+@php
+    // New Account uses a single URL type (Dashboard); hide the Website tile to
+    // avoid showing both the company website and the dashboard URL.
+    $showWebsiteTile = false;
+@endphp
+
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#8298b4; font-weight:700;">Account Created</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#e8edf5;">Your dashboard access is ready.</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:32px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#e8edf5;">Your dashboard access is ready.</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#a9b8cb;">We created your R/E Pro Photos account so you can schedule shoots, track production, and manage billing in one place.</p>
 @endsection
 
@@ -76,6 +82,8 @@
             </td>
         </tr>
     </table>
+
+    <p class="dark-body" style="margin:18px 0 0; font-size:16px; line-height:1.75; color:#a9b8cb;">Thank you for the opportunity.</p>
 @endsection
 
 @section('footer_note')

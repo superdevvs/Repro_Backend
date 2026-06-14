@@ -112,14 +112,20 @@ class ShootFile extends Model
     /**
      * Whether this file must be blocked from preview and download.
      *
-     * Req 15.7: a file whose scan status is infected is never served. Legacy
-     * files (null status) and not-yet-scanned files remain servable so that
-     * delivery of pre-existing media is not broken; only a positive infected
-     * verdict hard-blocks delivery.
+     * QA #14 (hardened): a file is served only once it has a recorded CLEAN
+     * verdict. Infected, quarantined (not yet scanned), and failed files are all
+     * withheld from preview/download/zip — fail-closed so an upload that returned
+     * before scanning, or that could not be scanned, is never delivered. Legacy
+     * files (null status) predate the scanning feature and remain servable so
+     * delivery of pre-existing media is not broken.
      */
     public function isBlockedFromDelivery(): bool
     {
-        return $this->scan_status === self::SCAN_STATUS_INFECTED;
+        if ($this->scan_status === null) {
+            return false;
+        }
+
+        return $this->scan_status !== self::SCAN_STATUS_CLEAN;
     }
 
     public function isExtra(): bool

@@ -53,6 +53,7 @@ class MessagingSystemSeeder extends Seeder
         '[amount_due]' => '{{amount_due}}',
         '[due_date]' => '{{due_date}}',
         '[payment_link]' => '{{payment_link}}',
+        '[payment_details]' => '{{payment_details}}',
         '[payment_date]' => '{{payment_date}}',
         '[services_provided]' => '{{services_provided}}',
         '[assigned_photographers]' => '{{assigned_photographers}}',
@@ -471,6 +472,70 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
+
+            // 21. Shoot On Hold (manual notification)
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Shoot On Hold',
+                'slug' => 'shoot-on-hold',
+                'description' => 'Photo shoot has been placed on hold',
+                'category' => 'BOOKING',
+                'subject' => 'Photo Shoot Placed On Hold - [shoot_location]',
+                'body_html' => $this->getShootOnHoldTemplate(),
+                'body_text' => $this->getShootOnHoldPlainText(),
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
+
+            // 22. Shoot Cancelled (manual notification)
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Shoot Cancelled',
+                'slug' => 'shoot-cancelled',
+                'description' => 'Photo shoot has been cancelled',
+                'category' => 'BOOKING',
+                'subject' => 'Photo Shoot Cancelled - [shoot_location]',
+                'body_html' => $this->getShootCancelledTemplate(),
+                'body_text' => $this->getShootCancelledPlainText(),
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_date', 'shoot_time', 'assigned_photographers', 'services_provided', 'services_provided_html', 'shoot_notes', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
+
+            // 23. Payment Due (manual notification with payment link)
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Payment Due',
+                'slug' => 'payment-due',
+                'description' => 'Outstanding balance due with a secure payment link',
+                'category' => 'PAYMENT',
+                'subject' => 'Payment Due - [shoot_location]',
+                'body_html' => $this->getPaymentDueTemplate(),
+                'body_text' => $this->getPaymentDuePlainText(),
+                'variables_json' => ['greeting', 'shoot_location', 'shoot_quote', 'pay_link', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
+
+            // 24. Payment Receipt (manual notification with payment details)
+            [
+                'channel' => 'EMAIL',
+                'name' => 'Payment Receipt',
+                'slug' => 'payment-receipt',
+                'description' => 'Payment confirmation receipt with payment details',
+                'category' => 'PAYMENT',
+                'subject' => 'Payment Receipt - [shoot_location]',
+                'body_html' => $this->getPaymentReceiptTemplate(),
+                'body_text' => $this->getPaymentReceiptPlainText(),
+                'variables_json' => ['greeting', 'shoot_location', 'payment_details', 'portal_url', 'company_email'],
+                'scope' => 'SYSTEM',
+                'is_system' => true,
+                'is_active' => true,
+            ],
         ];
 
         $canonicalSlugs = collect($templates)
@@ -868,13 +933,13 @@ class MessagingSystemSeeder extends Seeder
     // by the wrapper footer). Keeps [company_email] as a token.
     private function getContactLineHtml(): string
     {
-        return '<p style="margin: 0 0 8px 0;">If you need help, call ' . self::BRAND_PHONE . ' or email [company_email].</p>';
+        return '<p style="margin: 0 0 8px 0;">If you need help, call ' . self::BRAND_PHONE . ' or email us at [company_email].</p>';
     }
 
     // Brand contact line - canonical plain-text wording.
     private function getContactLineText(): string
     {
-        return 'If you need help, call ' . self::BRAND_PHONE . ' or email [company_email].';
+        return 'If you need help, call ' . self::BRAND_PHONE . ' or email us at [company_email].';
     }
 
     // Closing sign-off + signature - canonical HTML wording (the closing voice
@@ -941,6 +1006,8 @@ class MessagingSystemSeeder extends Seeder
             </div>
             
             <p>If you have any questions about your account please feel free to reply to this email.</p>
+
+            <p>Thank you for the opportunity.</p>
         ';
         
         return $this->getEmailWrapper($content);
@@ -1586,6 +1653,141 @@ class MessagingSystemSeeder extends Seeder
         return $this->getEmailWrapper($content);
     }
 
+    private function getShootOnHoldTemplate(): string
+    {
+        $content = '
+            <p>[greeting]!</p>
+
+            <p>One of your photo shoots has been <strong>placed on hold</strong>. We will be in touch to confirm next steps, and the shoot will resume once the hold is cleared.</p>
+
+            <div class="info-box">
+                <p style="margin-top: 0;"><strong>Here is a summary of the shoot that is on hold:</strong></p>
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Photographers:</span> [assigned_photographers]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Services:</span><br>[services_provided_html]
+                </div>
+            </div>
+
+            <p><strong>Notes:</strong></p>
+            <p>[shoot_notes]</p>
+
+            <p>You can review this shoot at any time by logging into <a href="[portal_url]">[portal_url]</a>.</p>
+
+            <p>If you have any questions about this hold please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
+
+            <p>Thank you!</p>
+        ';
+
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getShootCancelledTemplate(): string
+    {
+        $content = '
+            <p>[greeting]!</p>
+
+            <p>One of your photo shoots has been <strong>cancelled</strong>.</p>
+
+            <div class="info-box">
+                <p style="margin-top: 0;"><strong>Here is a summary of the cancelled shoot:</strong></p>
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Photographers:</span> [assigned_photographers]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Services:</span><br>[services_provided_html]
+                </div>
+            </div>
+
+            <p><strong>Notes:</strong></p>
+            <p>[shoot_notes]</p>
+
+            <p>If you need real estate photography services for this property in the future please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly. You can also rebook at any time via <a href="[portal_url]">[portal_url]</a>.</p>
+
+            <p>Thank you!</p>
+        ';
+
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getPaymentDueTemplate(): string
+    {
+        $content = '
+            <p>[greeting]!</p>
+
+            <p>This is a friendly reminder that a balance is due for your photo shoot at <strong>[shoot_location]</strong>.</p>
+
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Shoot total:</span> <strong>[shoot_quote]</strong>
+                </div>
+            </div>
+
+            <p>Please use the secure payment link below to complete your payment.</p>
+
+            <center>
+                <a href="[pay_link]" class="button button-large">Pay Now</a>
+            </center>
+
+            <p style="font-size: 13px; color: #666;">If the button does not work, copy and paste this link into your browser: <a href="[pay_link]">[pay_link]</a></p>
+
+            <p>If you have already paid, please disregard this notice. If you have any questions please reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
+
+            <p>Thank you!</p>
+        ';
+
+        return $this->getEmailWrapper($content);
+    }
+
+    private function getPaymentReceiptTemplate(): string
+    {
+        $content = '
+            <h1>Payment Received - Thank You! ✓</h1>
+            <p>[greeting]!</p>
+
+            <p>Thank you for your payment for your photo shoot at <strong>[shoot_location]</strong>. Here are your payment details for your records:</p>
+
+            <div class="info-box" style="background-color: #eff6ff; border-left-color: #1463ff;">
+                <div class="info-row">
+                    <span class="info-label">Location:</span> [shoot_location]
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Payment Details:</span><br><span style="white-space: pre-line;">[payment_details]</span>
+                </div>
+            </div>
+
+            <p>You can review your shoot and payment history at any time by logging into <a href="[portal_url]">[portal_url]</a>.</p>
+
+            <p>If you have any questions about this payment please reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
+
+            <p><strong>Thank you!</strong></p>
+        ';
+
+        return $this->getEmailWrapper($content);
+    }
+
     // PLAIN TEXT VERSIONS
     
     private function getAccountCreatedPlainText(): string
@@ -1607,7 +1809,7 @@ Email: [realtor_email]
 
 If you have any questions about your account please feel free to reply to this email, or email [company_email] directly.
 
-Thanks for the opportunity to provide you with outstanding real estate marketing services!
+Thank you for the opportunity.
 
 Customer Service Team
 R/E Pro Photos
@@ -1914,6 +2116,81 @@ Location: [shoot_location]
 [shoot_notes]
 
 If you have any questions regarding this refund, please feel free to reply to this email, or email [company_email] directly.
+
+Thank you!';
+    }
+
+    private function getShootOnHoldPlainText(): string
+    {
+        return '[greeting]!
+
+One of your photo shoots has been placed on hold. We will be in touch to confirm next steps, and the shoot will resume once the hold is cleared.
+
+Location: [shoot_location]
+Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
+Photographers: [assigned_photographers]
+Services:
+[services_provided]
+
+Notes: [shoot_notes]
+
+You can review this shoot at any time by logging into [portal_url]
+
+If you have any questions about this hold please reply to this email, or email [company_email] directly.
+
+Thank you!';
+    }
+
+    private function getShootCancelledPlainText(): string
+    {
+        return '[greeting]!
+
+One of your photo shoots has been cancelled.
+
+Location: [shoot_location]
+Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
+Photographers: [assigned_photographers]
+Services:
+[services_provided]
+
+Notes: [shoot_notes]
+
+If you need real estate photography services for this property in the future please reply to this email, or email [company_email] directly. You can also rebook at any time via [portal_url]
+
+Thank you!';
+    }
+
+    private function getPaymentDuePlainText(): string
+    {
+        return '[greeting]!
+
+This is a friendly reminder that a balance is due for your photo shoot at [shoot_location].
+
+Location: [shoot_location]
+Shoot total: [shoot_quote]
+
+Pay securely here: [pay_link]
+
+If you have already paid, please disregard this notice. If you have any questions please reply to this email, or email [company_email] directly.
+
+Thank you!';
+    }
+
+    private function getPaymentReceiptPlainText(): string
+    {
+        return '[greeting]!
+
+Thank you for your payment for your photo shoot at [shoot_location]. Here are your payment details for your records:
+
+Location: [shoot_location]
+Payment Details:
+[payment_details]
+
+You can review your shoot and payment history at any time by logging into [portal_url]
+
+If you have any questions about this payment please reply to this email, or email [company_email] directly.
 
 Thank you!';
     }

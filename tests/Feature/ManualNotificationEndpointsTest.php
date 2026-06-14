@@ -195,4 +195,20 @@ class ManualNotificationEndpointsTest extends TestCase
 
         $response->assertForbidden();
     }
+
+    public function test_manual_preview_requires_admin_role(): void
+    {
+        // Req 6.1 / 6.2 — manual-preview, like manual-send, is admin/superadmin only.
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = Shoot::factory()->create();
+
+        $response = $this->actingAs($client, 'sanctum')
+            ->postJson('/api/messaging/notifications/manual-preview', [
+                'shoot_id'       => $shoot->id,
+                'type'           => 'shoot_scheduled',
+                'recipient_type' => 'client',
+            ]);
+
+        $response->assertForbidden();
+    }
 }

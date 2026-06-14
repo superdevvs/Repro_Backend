@@ -6,8 +6,8 @@ use App\Console\Commands\AuditTransactionalEmailReliability;
 use App\Console\Commands\EmailOpsSummaryCommand;
 use App\Console\Commands\GenerateInvoices;
 use App\Console\Commands\ImportShootHistory;
-use App\Console\Commands\ProcessInvoiceReminders;
-use App\Console\Commands\ProcessPropertyContactReminders;
+use App\Console\Commands\PaymentRemindersSweep;
+use App\Console\Commands\ProcessInvoiceReminders;use App\Console\Commands\ProcessPropertyContactReminders;
 use App\Console\Commands\ProcessShootReminders;
 use App\Console\Commands\RetryStuckQueuedMessages;
 use App\Console\Commands\RunSystemAutomations;
@@ -36,6 +36,7 @@ class Kernel extends ConsoleKernel
         ProcessShootReminders::class,
         ProcessPropertyContactReminders::class,
         ProcessInvoiceReminders::class,
+        PaymentRemindersSweep::class,
         RetryStuckQueuedMessages::class,
         SendWeeklyInvoiceSummaries::class,
         SetupBrightMlsTest::class,
@@ -58,6 +59,10 @@ class Kernel extends ConsoleKernel
         $schedule->command('messaging:shoot-reminders')->everyFiveMinutes();
         $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');
         $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
+        // Continuous payment-reminder cadence (Req 4.6): roll the rolling-horizon window forward.
+        // Run weekly — shorter than the look-ahead window in AutomationService — so the next
+        // last-Sunday reminder is always materialized before it is due.
+        $schedule->command('messaging:payment-reminders-sweep')->weeklyOn(1, '04:30');
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(1, '05:00');
         $schedule->command('reports:sales:weekly')->weeklyOn(1, '05:30');

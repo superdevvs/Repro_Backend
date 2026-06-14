@@ -618,7 +618,9 @@ class ShootPresenter
                         'shoot_service_id' => isset($serviceItemSummary['shoot_service_id']) ? (string) $serviceItemSummary['shoot_service_id'] : ($service->pivot?->id ? (string) $service->pivot->id : null),
                         'shootServiceId' => isset($serviceItemSummary['shootServiceId']) ? (string) $serviceItemSummary['shootServiceId'] : ($service->pivot?->id ? (string) $service->pivot->id : null),
                         'name' => $service->name,
-                        'price' => (float) ($service->pivot?->price ?? $service->price ?? 0),
+                        // Editors must never receive client pricing for a service (QA #13);
+                        // the editor UI surfaces editor payout separately.
+                        'price' => $isEditorRole ? null : (float) ($service->pivot?->price ?? $service->price ?? 0),
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
                         'pricing_type' => $service->pricing_type,
                         'photo_count' => $service->photo_count !== null ? (int) $service->photo_count : null,
@@ -631,7 +633,7 @@ class ShootPresenter
                             'photographer_pay' => $range->photographer_pay !== null ? (float) $range->photographer_pay : null,
                             'photo_count' => $range->photo_count !== null ? (int) $range->photo_count : null,
                         ])->values()->all(),
-                        'photographer_pay' => $service->pivot?->photographer_pay ? (float) $service->pivot->photographer_pay : null,
+                        'photographer_pay' => $isEditorRole ? null : ($service->pivot?->photographer_pay ? (float) $service->pivot->photographer_pay : null),
                         'photographer_id' => $isEditorRole ? null : ($pivotPhotographerId ? (string) $pivotPhotographerId : null),
                         'resolved_photographer_id' => $isEditorRole ? null : ($resolvedPhotographerId ? (string) $resolvedPhotographerId : null),
                         'photographer' => $isEditorRole ? null : $resolvedPhotographer,
@@ -649,12 +651,12 @@ class ShootPresenter
                         'deliveredAt' => $serviceItemSummary['deliveredAt'] ?? null,
                         'is_deliverable' => $serviceItemSummary['is_deliverable'] ?? true,
                         'isDeliverable' => $serviceItemSummary['isDeliverable'] ?? true,
-                        'paid_amount' => $serviceItemSummary['paid_amount'] ?? 0.0,
-                        'paidAmount' => $serviceItemSummary['paidAmount'] ?? 0.0,
-                        'balance_due' => $serviceItemSummary['balance_due'] ?? (float) ($service->pivot?->price ?? $service->price ?? 0),
-                        'balanceDue' => $serviceItemSummary['balanceDue'] ?? (float) ($service->pivot?->price ?? $service->price ?? 0),
-                        'payment_status' => $serviceItemSummary['payment_status'] ?? 'unpaid',
-                        'paymentStatus' => $serviceItemSummary['paymentStatus'] ?? 'unpaid',
+                        'paid_amount' => $isEditorRole ? null : ($serviceItemSummary['paid_amount'] ?? 0.0),
+                        'paidAmount' => $isEditorRole ? null : ($serviceItemSummary['paidAmount'] ?? 0.0),
+                        'balance_due' => $isEditorRole ? null : ($serviceItemSummary['balance_due'] ?? (float) ($service->pivot?->price ?? $service->price ?? 0)),
+                        'balanceDue' => $isEditorRole ? null : ($serviceItemSummary['balanceDue'] ?? (float) ($service->pivot?->price ?? $service->price ?? 0)),
+                        'payment_status' => $isEditorRole ? null : ($serviceItemSummary['payment_status'] ?? 'unpaid'),
+                        'paymentStatus' => $isEditorRole ? null : ($serviceItemSummary['paymentStatus'] ?? 'unpaid'),
                         'force_unlock_delivery' => $serviceItemSummary['force_unlock_delivery'] ?? false,
                         'forceUnlockDelivery' => $serviceItemSummary['forceUnlockDelivery'] ?? false,
                         'is_unlocked_for_delivery' => $serviceItemSummary['is_unlocked_for_delivery'] ?? false,
@@ -679,6 +681,31 @@ class ShootPresenter
             }
         } catch (\Throwable $e) {
             \Log::warning('transformShoot services error for shoot ' . $shoot->id . ': ' . $e->getMessage());
+        }
+
+        // Editors must never receive client pricing — strip it from the
+        // service-item summaries that are also exposed as serviceItems/service_items
+        // (QA #13), mirroring the per-service strip applied above.
+        if ($isEditorRole) {
+            $pricingKeysToHide = [
+                'price', 'subtotal', 'paid_amount', 'paidAmount',
+                'balance_due', 'balanceDue', 'payment_status', 'paymentStatus',
+                'photographer_pay', 'photographerPay',
+            ];
+            $serviceItemSummaries = collect($serviceItemSummaries)
+                ->map(function ($item) use ($pricingKeysToHide) {
+                    if (!is_array($item)) {
+                        return $item;
+                    }
+                    foreach ($pricingKeysToHide as $key) {
+                        if (array_key_exists($key, $item)) {
+                            $item[$key] = null;
+                        }
+                    }
+                    return $item;
+                })
+                ->values()
+                ->all();
         }
 
         $shoot->setAttribute('serviceItems', $serviceItemSummaries);

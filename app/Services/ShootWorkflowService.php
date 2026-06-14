@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Shoots\ShootEditingAssignmentService;
+use App\Services\Shoots\ShootListingService;
 use App\Services\Shoots\ShootShareLinkService;
 use App\Services\Schedule\ScheduleDateScopeService;
 use Illuminate\Support\Facades\Cache;
@@ -77,9 +78,7 @@ class ShootWorkflowService
             Cache::forget('dashboard_overview_superadmin_' . $userId);
         }
         
-        // Also clear shoots index caches (pattern-based)
-        // Note: This clears commonly used cache keys
-        Cache::forget('shoots_index_*');
+        ShootListingService::flushCachedListings();
     }
 
     /**
@@ -194,7 +193,8 @@ class ShootWorkflowService
             }
 
             $shoot->save();
-            $this->shootEditingAssignmentService->syncLegacyShootEditor($shoot);
+            $freshForLegacySync = $shoot->fresh(['services.category']) ?? $shoot;
+            $shoot->editor_id = $this->shootEditingAssignmentService->syncLegacyShootEditor($freshForLegacySync);
 
             $this->activityLogger->log(
                 $shoot,

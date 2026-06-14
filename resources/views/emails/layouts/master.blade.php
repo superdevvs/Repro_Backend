@@ -137,13 +137,18 @@
         .footer-link-dark { color: {{ $headingColorLight }} !important; }
         .legal-copy-dark { color: {{ $legalCopyColorLight }} !important; }
 
+        /* Shared hero title sizing (centralized). Per-template inline styles
+           match this; kept here so clients that strip inline styles still get
+           the reduced desktop size. */
+        .hero-title-td { font-size: 32px; line-height: 1.1; letter-spacing: -1.2px; }
+
         @media only screen and (max-width: 640px) {
             .email-container { width: 100% !important; max-width: 100% !important; }
             .hero-pad { padding: 24px 20px 22px 20px !important; }
             .content-pad { padding: 24px 20px !important; }
             .section-inner { padding: 18px 16px !important; }
             .footer-inner { padding: 22px 18px !important; }
-            .hero-title-td { font-size: 30px !important; line-height: 1.05 !important; letter-spacing: -1.4px !important; }
+            .hero-title-td { font-size: 24px !important; line-height: 1.1 !important; letter-spacing: -1px !important; }
             .stat-td { display: block !important; width: 100% !important; padding: 0 0 10px 0 !important; }
             .detail-label-td { display: block !important; width: 100% !important; padding-bottom: 2px !important; }
             .detail-value-td { display: block !important; width: 100% !important; padding-top: 0 !important; padding-bottom: 14px !important; }
@@ -249,8 +254,7 @@
                                                 <td class="footer-card-bg footer-inner" style="background-color:{{ $footerSurfaceLight }}; border-radius:20px; padding:24px 26px;">
                                                     <p style="margin:0 0 8px; font-size:18px; line-height:1.5; color:{{ $headingColorLight }}; font-weight:800;">Need help with a shoot, invoice, or account question?</p>
                                                     <p class="dark-body" style="margin:0; font-size:14px; line-height:1.8; color:{{ $bodyColorLight }};">
-                                                        Our team is here to help keep your marketing workflow moving.
-                                                        Reach us at <a href="mailto:{{ $supportEmail }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; text-decoration:underline;">{{ $supportEmail }}</a> or call {{ $supportPhone }}.
+                                                        If you need help, call {{ $supportPhone }} or email us at <a href="mailto:{{ $supportEmail }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; text-decoration:underline;">{{ $supportEmail }}</a>.
                                                     </p>
                                                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px;">
                                                         <tr>

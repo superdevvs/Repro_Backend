@@ -56,8 +56,9 @@ class TemplateRendererTest extends TestCase
         $this->assertStringContainsString('hero-title-location', $html);
         $this->assertStringContainsString('2068 W Glenwood Ave, Philadelphia, PA, 19132', $html);
         $this->assertStringContainsString('font-weight: 200', $html);
-        $this->assertStringContainsString('hero-title-status', $html);
-        $this->assertStringContainsString('Updated', $html);
+        // Status badge intentionally removed from all templates: the hero no
+        // longer renders a status element (e.g. "Updated").
+        $this->assertStringNotContainsString('class="hero-title-status"', $html);
     }
 
     public function test_renderer_inlines_light_defaults_with_dark_overrides_and_mobile_footer_stacking(): void

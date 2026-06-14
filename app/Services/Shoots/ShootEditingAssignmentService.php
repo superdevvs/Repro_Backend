@@ -107,6 +107,10 @@ class ShootEditingAssignmentService
             ? collect($shoot->services)
             : $shoot->services()->with('category')->get();
 
+        // Non-editing extras (drone, floor plans, 3D tours, virtual staging) must stay
+        // hidden from editors regardless of assignment path (QA #13).
+        $services = $services->filter(fn ($service) => $this->serviceRequiresEditing($service));
+
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
         if ($trackedAssignments->isEmpty()) {
             return (string) $shoot->editor_id === (string) $editor->id ? $services->values() : collect();
@@ -119,6 +123,25 @@ class ShootEditingAssignmentService
 
             return (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id;
         })->values();
+    }
+
+    /**
+     * Whether a service (as loaded on a shoot) is worked by the editing lanes.
+     * Defaults to true when the flag is unavailable so behaviour is preserved.
+     */
+    public function serviceRequiresEditing(mixed $service): bool
+    {
+        if (!is_object($service)) {
+            return true;
+        }
+
+        if (method_exists($service, 'requiresEditing')) {
+            return $service->requiresEditing();
+        }
+
+        $value = $service->requires_editing ?? null;
+
+        return $value === null ? true : (bool) $value;
     }
 
     public function canEditorAccessFile(Shoot $shoot, ShootFile $file, User $editor): bool
@@ -247,7 +270,8 @@ class ShootEditingAssignmentService
             ];
         }
 
-        $this->syncLegacyShootEditor($shoot);
+        $freshShoot = $shoot->fresh(['services.category']) ?? $shoot;
+        $shoot->editor_id = $this->syncLegacyShootEditor($freshShoot);
 
         return $laneAssignments;
     }

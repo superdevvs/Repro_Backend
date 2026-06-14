@@ -5,7 +5,7 @@
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#8298b4; font-weight:700;">Email Verified</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#e8edf5;">You are all set for updates.</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:32px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#e8edf5;">You are all set for updates.</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#a9b8cb;">Your client email is now verified, so schedule changes, reminders, delivery notices, and account alerts can reach you normally.</p>
 @endsection
 

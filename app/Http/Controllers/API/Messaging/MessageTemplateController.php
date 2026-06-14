@@ -246,6 +246,8 @@ class MessageTemplateController extends Controller
             'variables_json' => ['nullable', 'array'],
             'is_system' => ['boolean'],
             'is_active' => ['boolean'],
+            'email_type' => ['nullable', 'string', 'max:255'],
+            'override_enabled' => ['boolean'],
         ]);
     }
 }

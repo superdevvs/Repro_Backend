@@ -503,6 +503,7 @@ class MmmService
 
     private function buildPropertyPayload(Shoot $shoot, array $propertyDetails, array $params, array $pictures): array
     {
+        $tourLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
         $address = $this->resolvePropertyAddress($shoot, $propertyDetails, $params);
         $city = $this->firstFilled([
             $params['city'] ?? null,
@@ -551,6 +552,7 @@ class MmmService
             'zip' => $zip,
             'description' => $this->firstFilled([
                 $params['description'] ?? null,
+                data_get($tourLinks, 'property_description'),
                 data_get($propertyDetails, 'description'),
                 data_get($propertyDetails, 'public_remarks'),
                 data_get($propertyDetails, 'publicRemarks'),

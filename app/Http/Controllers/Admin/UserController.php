@@ -2410,7 +2410,16 @@ class UserController extends Controller
             $deletedUser
         );
 
-        $user->delete();
+        // Route through the canonical lifecycle service so deletion ALSO revokes
+        // auth tokens, purges active sessions, and busts cached directory lists in
+        // the same request (QA #15) — instead of a bare soft delete that leaves a
+        // valid token and a stale `photographers_list_v3` cache behind.
+        try {
+            app(\App\Services\AccountStatusService::class)
+                ->setStatus($user, \App\Services\AccountStatusService::STATUS_DELETED, $viewer);
+        } catch (\Illuminate\Auth\Access\AuthorizationException $e) {
+            return response()->json(['message' => $e->getMessage()], 403);
+        }
 
         return response()->json([
             'message' => 'User deleted successfully',

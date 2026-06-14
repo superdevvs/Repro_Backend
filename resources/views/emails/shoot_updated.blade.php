@@ -5,7 +5,7 @@
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">{{ !empty($isPhotographer) ? 'Assignment Updated' : 'Shoot Updated' }}</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">{{ !empty($isPhotographer) ? 'A shoot on your calendar has changed.' : 'One of your upcoming shoots has been updated.' }}</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:32px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#10192f;">{{ !empty($isPhotographer) ? 'A shoot on your calendar has changed.' : 'One of your upcoming shoots has been updated.' }}</p>
 @endsection
 
 @section('content')

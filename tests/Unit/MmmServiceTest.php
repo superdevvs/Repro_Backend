@@ -76,6 +76,40 @@ class MmmServiceTest extends TestCase
     }
 
     #[Test]
+    public function build_punchout_payload_uses_the_ai_generated_tour_description(): void
+    {
+        $this->configureMmm();
+
+        $shoot = $this->createShoot([
+            'tour_links' => [
+                'property_description' => 'AI-crafted highlights of this stunning home.',
+            ],
+            'property_details' => [
+                'description' => 'Stale fallback description.',
+            ],
+        ]);
+
+        $payload = app(MmmService::class)->buildPunchoutPayload($shoot->fresh());
+
+        $this->assertSame('AI-crafted highlights of this stunning home.', $payload['property']['description']);
+    }
+
+    #[Test]
+    public function build_punchout_payload_leaves_description_empty_when_none_exists(): void
+    {
+        $this->configureMmm();
+
+        $shoot = $this->createShoot([
+            'tour_links' => [],
+            'property_details' => [],
+        ]);
+
+        $payload = app(MmmService::class)->buildPunchoutPayload($shoot->fresh());
+
+        $this->assertNull($payload['property']['description']);
+    }
+
+    #[Test]
     public function build_punchout_payload_only_honors_selected_file_ids_when_they_reference_edited_images(): void
     {
         $this->configureMmm();

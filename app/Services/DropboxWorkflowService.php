@@ -9,12 +9,16 @@ use App\Models\OauthToken;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
+use App\Exceptions\Scanning\ClamAvUnavailable;
 use App\Services\Messaging\AutomationService;
+use App\Services\Scanning\ClamAvClient;
+use App\Services\Scanning\FileScanService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 
 class DropboxWorkflowService
 {
@@ -313,6 +317,67 @@ class DropboxWorkflowService
     }
 
     /**
+     * Synchronously stream an upload to clamd before it is persisted (QA #14).
+     *
+     * Returns:
+     *   - 'clean'        when clamd reports the file clean.
+     *   - 'unavailable'  when scanning is disabled, clamd is unreachable, or the
+     *                    scan errored — the caller then falls back to the async
+     *                    quarantine+scan path (the file is withheld until clean).
+     *
+     * @throws \Illuminate\Validation\ValidationException (HTTP 422) when the file
+     *         is found to be infected — the upload is rejected and never stored.
+     */
+    private function scanUploadSynchronously(UploadedFile $file): string
+    {
+        if (!config('clamav.scan_on_upload', true)) {
+            return 'unavailable';
+        }
+
+        // Tests run without a clamd daemon; the async dispatch path (and the
+        // dedicated ClamAv integration test) covers scanning there.
+        if (app()->runningUnitTests()) {
+            return 'unavailable';
+        }
+
+        $path = $file->getRealPath();
+        if (!is_string($path) || $path === '' || !is_readable($path)) {
+            return 'unavailable';
+        }
+
+        try {
+            $result = app(ClamAvClient::class)->scan($path);
+        } catch (ClamAvUnavailable $e) {
+            Log::warning('Synchronous upload scan skipped — ClamAV unavailable.', [
+                'shoot_file' => $file->getClientOriginalName(),
+                'error' => $e->getMessage(),
+            ]);
+
+            return 'unavailable';
+        } catch (\Throwable $e) {
+            Log::warning('Synchronous upload scan errored — falling back to async scan.', [
+                'shoot_file' => $file->getClientOriginalName(),
+                'error' => $e->getMessage(),
+            ]);
+
+            return 'unavailable';
+        }
+
+        if (!$result->isClean()) {
+            Log::warning('Infected upload rejected at pre-store scan.', [
+                'shoot_file' => $file->getClientOriginalName(),
+                'signature' => $result->signature(),
+            ]);
+
+            throw ValidationException::withMessages([
+                'file' => 'This file failed our malware scan and was rejected.',
+            ]);
+        }
+
+        return 'clean';
+    }
+
+    /**
      * Store file on local public storage as a fallback when Dropbox fails
      */
     private function storeLocally(
@@ -377,6 +442,14 @@ class DropboxWorkflowService
         $placeholderPath = $existingFile?->placeholder_path;
         $processedAt = $existingFile?->processed_at;
 
+        // Synchronous pre-store malware scan (QA #14). Stream the upload to clamd
+        // BEFORE persisting it: an infected verdict rejects the upload with HTTP 422
+        // so malware never lands in storage nor returns a 200. When clamd is
+        // unavailable this returns 'unavailable' and we fall back to the async
+        // quarantine+scan path below (the file stays withheld from delivery until a
+        // clean verdict is recorded by ScanShootFileJob).
+        $syncScanVerdict = $this->scanUploadSynchronously($file);
+
         // Now store the file (this may move the temp file)
         Storage::disk('public')->putFileAs($dir, $file, $filename);
 
@@ -411,6 +484,17 @@ class DropboxWorkflowService
         }
         if (Schema::hasColumn('shoot_files', 'required_for_editing')) {
             $attributes['required_for_editing'] = false;
+        }
+        // Record the synchronous scan verdict so a clean upload is immediately
+        // servable; otherwise it stays quarantined until the async scan clears it.
+        if (Schema::hasColumn('shoot_files', 'scan_status')) {
+            if ($syncScanVerdict === 'clean') {
+                $attributes['scan_status'] = ShootFile::SCAN_STATUS_CLEAN;
+                $attributes['scan_result'] = 'clean (pre-store scan)';
+                $attributes['scanned_at'] = now();
+            } else {
+                $attributes['scan_status'] = ShootFile::SCAN_STATUS_QUARANTINED;
+            }
         }
 
         $shootFile->fill($attributes);
@@ -460,14 +544,30 @@ class DropboxWorkflowService
         // would not have triggered ProcessImageJob anyway. This guarantees the
         // wiring contract for every upload entry that calls into storeLocally
         // (FileUploadController::uploadFromPC and UploadShootFilesAction).
-        try {
-            ScanShootFileJob::dispatch($shootFile->id)->afterResponse();
-        } catch (\Throwable $e) {
-            Log::warning('Scan job dispatch failed after local upload', [
-                'shoot_id' => $shoot->id,
-                'file_id' => $shootFile->id,
-                'error' => $e->getMessage(),
-            ]);
+        //
+        // When the synchronous pre-store scan already cleared the file, release it
+        // straight to downstream processing; otherwise enqueue the async scan which
+        // releases (or flags) the file once clamd becomes reachable.
+        if ($syncScanVerdict === 'clean' && !app()->runningUnitTests()) {
+            try {
+                app(FileScanService::class)->release($shootFile);
+            } catch (\Throwable $e) {
+                Log::warning('Post-scan release failed after local upload', [
+                    'shoot_id' => $shoot->id,
+                    'file_id' => $shootFile->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        } else {
+            try {
+                ScanShootFileJob::dispatch($shootFile->id)->afterResponse();
+            } catch (\Throwable $e) {
+                Log::warning('Scan job dispatch failed after local upload', [
+                    'shoot_id' => $shoot->id,
+                    'file_id' => $shootFile->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         if ($this->isEnabled()) {

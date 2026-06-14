@@ -57,8 +57,10 @@ class ExternalBookingController extends Controller
 
         try {
             $result = DB::transaction(function () use ($validated, $request) {
+                $createAccount = $this->shouldCreateAccount($validated);
+
                 // 1. Find or create client by email
-                $client = $this->findOrCreateClient($validated);
+                $client = $this->findOrCreateClient($validated, $createAccount);
                 $this->shootSupport->ensureClientCanBookServices($client->id, $validated['services']);
 
                 // 2. Calculate pricing from service catalog and client defaults
@@ -147,16 +149,23 @@ class ExternalBookingController extends Controller
                     null // No authenticated user for external requests
                 );
 
+                if (!$createAccount) {
+                    $shoot->ghostUsers()->syncWithoutDetaching([$client->id]);
+                }
+
                 return [
                     'shoot' => $shoot,
                     'client' => $client,
-                    'is_new_client' => $client->wasRecentlyCreated,
+                    'is_new_client' => $createAccount && $client->wasRecentlyCreated,
+                    'account_created' => $createAccount && $client->wasRecentlyCreated,
+                    'account_setup_required' => $createAccount && $client->wasRecentlyCreated,
+                    'is_guest_booking' => !$createAccount,
                 ];
             });
 
             $shoot = $result['shoot'];
 
-            if ($result['is_new_client']) {
+            if ($result['account_setup_required']) {
                 $this->sendNewExternalClientAccountSetup($result['client'], $shoot);
             }
 
@@ -169,7 +178,9 @@ class ExternalBookingController extends Controller
                     'status' => 'requested',
                     'client_id' => $result['client']->id,
                     'is_new_client' => $result['is_new_client'],
-                    'account_setup_required' => $result['is_new_client'],
+                    'account_created' => $result['account_created'],
+                    'account_setup_required' => $result['account_setup_required'],
+                    'is_guest_booking' => $result['is_guest_booking'],
                     'total_quote' => $shoot->total_quote,
                 ],
             ], 201);
@@ -266,7 +277,7 @@ class ExternalBookingController extends Controller
     /**
      * Find existing client by email or create a new one.
      */
-    protected function findOrCreateClient(array $data): User
+    protected function findOrCreateClient(array $data, bool $createAccount = true): User
     {
         $email = strtolower(trim($data['client_email']));
 
@@ -293,8 +304,15 @@ class ExternalBookingController extends Controller
             return $client;
         }
 
-        // Create new client account with a random password (they'll reset it)
-        return User::create([
+        $metadata = app(ClientDashboardOnboardingService::class)->applyEligibility([], 'external_booking');
+        if (!$createAccount) {
+            $metadata['guest_booking'] = true;
+            $metadata['guest_booking_source'] = $data['source'] ?? 'external_website';
+            $metadata['guest_booking_created_at'] = now()->toIso8601String();
+            $metadata['dashboard_account_opted_out'] = true;
+        }
+
+        $attributes = [
             'name' => $data['client_name'],
             'username' => $this->generateUniqueUsername($data['client_name'], $email),
             'email' => $email,
@@ -302,8 +320,19 @@ class ExternalBookingController extends Controller
             'company_notes' => $data['client_company'] ?? null,
             'role' => 'client',
             'password' => Hash::make(Str::random(32)),
-            'metadata' => app(ClientDashboardOnboardingService::class)->applyEligibility([], 'external_booking'),
-        ]);
+            'metadata' => $metadata,
+        ];
+
+        if (!$createAccount && $this->usersTableHasColumn('locked_at')) {
+            $attributes['locked_at'] = now();
+        }
+
+        return User::create($attributes);
+    }
+
+    protected function shouldCreateAccount(array $data): bool
+    {
+        return filter_var($data['create_account'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true;
     }
 
     protected function sendNewExternalClientAccountSetup(User $client, Shoot $shoot): void
@@ -364,8 +393,13 @@ class ExternalBookingController extends Controller
 
     protected function usersTableHasUsernameColumn(): bool
     {
+        return $this->usersTableHasColumn('username');
+    }
+
+    protected function usersTableHasColumn(string $column): bool
+    {
         try {
-            return Schema::hasColumn('users', 'username');
+            return Schema::hasColumn('users', $column);
         } catch (\Throwable) {
             return false;
         }

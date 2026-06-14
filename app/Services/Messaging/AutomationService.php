@@ -21,13 +21,19 @@ class AutomationService
     private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
 
     /**
-     * How far past `shoot_ready_notified_at` the monthly (last-Sunday) phase keeps scheduling
-     * reminders. The cadence has no natural end, so we cap it at a sensible finite horizon: a
-     * shoot that stays unpaid for half a year will keep generating one reminder per month for
-     * six months, after which the scheduler stops. Re-running the scheduler later (with a fresh
-     * "now") never duplicates earlier rows because of the (shoot_id, scheduled_date) upsert.
+     * Rolling look-ahead window (in months, measured from "now") for materializing the monthly
+     * (last-Sunday) phase of the payment-reminder cadence (Req 4.6).
+     *
+     * The cadence has no natural end: a shoot that stays unpaid keeps receiving one reminder per
+     * month on the last Sunday for as long as it remains unpaid. To keep that effectively
+     * unbounded cadence from ever materializing an infinite number of rows, scheduling only looks
+     * ahead this many months from the current time (or the anchor, whichever is later) and is
+     * re-run on a recurring sweep (`messaging:payment-reminders-sweep`) on a cadence SHORTER than
+     * this window — so the next last-Sunday reminder is always materialized before it is due,
+     * while only a bounded number of pending rows exist at any moment. The
+     * (shoot_id, scheduled_date) upsert makes every re-run idempotent.
      */
-    private const PAYMENT_REMINDER_HORIZON_MONTHS = 6;
+    private const PAYMENT_REMINDER_LOOKAHEAD_MONTHS = 3;
 
     public function __construct(
         private readonly MessagingService $messagingService,
@@ -81,13 +87,32 @@ class AutomationService
         $start = $anchor instanceof CarbonImmutable
             ? $anchor
             : CarbonImmutable::parse((string) $anchor);
-        $horizonEnd = $start->addMonths(self::PAYMENT_REMINDER_HORIZON_MONTHS);
+
+        // Rolling horizon (Req 4.6): instead of a hard cap measured from the anchor, look ahead a
+        // small window from "now" (or the anchor, whichever is later). Combined with the recurring
+        // sweep this makes the monthly cadence effectively unbounded — each sweep rolls the window
+        // forward so the next last-Sunday reminder is always materialized before it is due — while
+        // never persisting more than a bounded number of rows. The pure scheduler signature
+        // (start, horizonEnd) is unchanged; only the horizon we pass in changes.
+        $now = CarbonImmutable::now();
+        $horizonEnd = ($start->greaterThan($now) ? $start : $now)
+            ->addMonths(self::PAYMENT_REMINDER_LOOKAHEAD_MONTHS);
 
         $scheduler = $this->paymentReminderScheduler ?? new PaymentReminderScheduler();
         $timestamps = $scheduler->schedule($start, $horizonEnd);
 
         $reminders = [];
         foreach ($timestamps as $timestamp) {
+            // Future-only guard (Req 4.6): never back-date a reminder. When the sweep re-runs months
+            // after the anchor, the Phase 1/2 timestamps (Day 1/3/7/14/21/28) are already in the
+            // past and must not be created for an old anchor. On the very first run at anchor time
+            // these near-term reminders are still in the future relative to now(), so they ARE
+            // created as expected. Already-existing rows are left untouched (we simply skip them),
+            // preserving any sent/cancelled history.
+            if ($timestamp->lessThan($now)) {
+                continue;
+            }
+
             // firstOrNew (not updateOrCreate) so an already sent/cancelled row is never resurrected
             // to "pending"; the (shoot_id, scheduled_date) key guarantees no duplicate rows.
             $reminder = PaymentReminder::firstOrNew([
@@ -144,20 +169,42 @@ class AutomationService
     }
 
     /**
-     * Build and send a single automated Payment_Reminder for a shoot (Req 12).
+     * Build and send a single automated Payment_Reminder for a shoot on both channels (Req 12,
+     * Req 5.1/5.2).
      *
      * Renders the system `payment-due-reminder` template for the shoot's client and dispatches it
-     * through the same {@see MessagingService} send path the rest of automation uses. Returns the
-     * created {@see Message} so the caller can link it to the PaymentReminder row, or null when the
-     * shoot has no client/email or the template is unavailable (nothing can be sent).
+     * through the same {@see MessagingService} send path the rest of automation uses. Issue #12
+     * requires reminders to be delivered as both emails AND texts, so this sends:
+     *   - an email when the client has a usable email address, and
+     *   - an SMS (using the template's text body) when the client has a usable phone number.
+     *
+     * The two channels are fully independent and best-effort: the absence of one address, or a
+     * failure (including an SMS opt-out / {@see SmsSendException}) on one channel, never prevents
+     * or undoes the other. SMS opt-out is enforced inside {@see MessagingService::sendSms()}.
+     *
+     * Returns the email {@see Message} as the primary, status-bearing record so the caller
+     * (DispatchScheduledMessages) can link `message_id` and mark the reminder row `sent`. If the
+     * email channel was skipped or failed but the SMS was sent, the SMS Message is returned so the
+     * row can still be marked sent. Returns null only when neither channel could send anything
+     * (no client, no usable address, or the template is unavailable).
      */
     public function sendPaymentReminder(Shoot $shoot): ?Message
     {
         $client = $shoot->client;
-        $email = trim((string) ($client->email ?? ''));
 
-        if ($client === null || $email === '') {
-            Log::warning('Skipping payment reminder: shoot has no client email', [
+        if ($client === null) {
+            Log::warning('Skipping payment reminder: shoot has no client', [
+                'shoot_id' => $shoot->id,
+            ]);
+
+            return null;
+        }
+
+        $email = trim((string) ($client->email ?? ''));
+        $phone = trim((string) ($client->phonenumber ?: $client->phone ?? ''));
+
+        if ($email === '' && $phone === '') {
+            Log::warning('Skipping payment reminder: client has no usable email or phone', [
                 'shoot_id' => $shoot->id,
             ]);
 
@@ -180,25 +227,76 @@ class AutomationService
         $context = $this->variableResolver->resolve(array_merge($this->buildShootContext($shoot), [
             'recipient_type' => 'client',
             'recipient_name' => $client->name ?? 'Client',
-            'recipient_email' => $email,
+            'recipient_email' => $email !== '' ? $email : null,
+            'recipient_phone' => $phone !== '' ? $phone : null,
         ]));
 
         $rendered = $this->templateRenderer->render($template, $context);
 
-        return $this->messagingService->sendEmail([
-            'to' => $email,
-            'subject' => $rendered['subject'] ?? $template->subject,
-            'body_html' => $rendered['body_html'] ?? null,
-            'body_text' => $rendered['body_text'] ?? null,
-            'send_source' => 'AUTOMATION',
-            'template_id' => $template->id,
-            'related_shoot_id' => $shoot->id,
-            'related_account_id' => $shoot->client_id,
-            'contact_email' => $email,
-            'contact_name' => $client->name ?? 'Client',
-            'contact_type' => 'client',
-            'tags_json' => ['PAYMENT_REMINDER:shoot:' . $shoot->id],
-        ]);
+        $emailMessage = null;
+        $smsMessage = null;
+
+        // Channel 1 — email. Best-effort: a failure here is logged and must not prevent the SMS.
+        if ($email !== '') {
+            try {
+                $emailMessage = $this->messagingService->sendEmail([
+                    'to' => $email,
+                    'subject' => $rendered['subject'] ?? $template->subject,
+                    'body_html' => $rendered['body_html'] ?? null,
+                    'body_text' => $rendered['body_text'] ?? null,
+                    'send_source' => 'AUTOMATION',
+                    'template_id' => $template->id,
+                    'related_shoot_id' => $shoot->id,
+                    'related_account_id' => $shoot->client_id,
+                    'contact_email' => $email,
+                    'contact_name' => $client->name ?? 'Client',
+                    'contact_type' => 'client',
+                    'tags_json' => ['PAYMENT_REMINDER:shoot:' . $shoot->id],
+                ]);
+            } catch (\Throwable $exception) {
+                Log::error('Payment reminder email send failed', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        } else {
+            Log::info('Skipping payment reminder email: client has no email', [
+                'shoot_id' => $shoot->id,
+            ]);
+        }
+
+        // Channel 2 — SMS. Best-effort and independent of the email above: an absent phone, an
+        // opt-out, or an SmsSendException is logged and must not prevent or undo the email.
+        if ($phone !== '') {
+            try {
+                $smsMessage = $this->messagingService->sendSms([
+                    'to' => $phone,
+                    'body_text' => $rendered['body_text'] ?? null,
+                    'send_source' => 'AUTOMATION',
+                    'template_id' => $template->id,
+                    'related_shoot_id' => $shoot->id,
+                    'related_account_id' => $shoot->client_id,
+                    'contact_phone' => $phone,
+                    'contact_name' => $client->name ?? 'Client',
+                    'contact_type' => 'client',
+                    'tags_json' => ['PAYMENT_REMINDER:shoot:' . $shoot->id],
+                ]);
+            } catch (\Throwable $exception) {
+                Log::warning('Payment reminder SMS send failed or suppressed', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        } else {
+            Log::info('Skipping payment reminder SMS: client has no usable phone', [
+                'shoot_id' => $shoot->id,
+            ]);
+        }
+
+        // Primary record = email Message so DispatchScheduledMessages links message_id and marks
+        // the row sent unchanged. If only SMS sent, return it so the row is still marked sent.
+        // Null only when neither channel sent anything (dispatcher then leaves the row).
+        return $emailMessage ?? $smsMessage;
     }
 
     /**

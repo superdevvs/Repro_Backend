@@ -115,6 +115,67 @@ class ManualNotificationServiceTest extends TestCase
         $this->assertStringContainsString('/payment/', $captured['body_text']);
     }
 
+    public function test_payment_due_preview_includes_payment_link(): void
+    {
+        // Req 2.1 — the previewed payment_due body must carry the public payment link,
+        // mirroring the send path so an admin sees exactly what will go out.
+        MessageTemplate::where('slug', 'payment-due')->delete();
+        $this->template('payment-due', [
+            'body_html' => '<p>Pay here: {{payment_link}}</p>',
+            'body_text' => 'Pay here: {{payment_link}}',
+        ]);
+        $client = User::factory()->create(['email' => 'client@example.com']);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id]);
+
+        $preview = app(ManualNotificationService::class)
+            ->preview($shoot, 'payment_due', 'client');
+
+        $this->assertStringContainsString('/payment/', (string) $preview['body_text']);
+        $this->assertStringContainsString('/payment/', (string) $preview['body_html']);
+    }
+
+    public function test_payment_receipt_preview_includes_receipt_details(): void
+    {
+        // Req 2.2 — the previewed payment_receipt body must carry payment confirmation
+        // details (amount paid + remaining balance) derived from completed payments.
+        MessageTemplate::where('slug', 'payment-receipt')->delete();
+        $this->template('payment-receipt', [
+            'body_html' => '<p>Receipt: {{payment_details}}</p>',
+            'body_text' => 'Receipt: {{payment_details}}',
+        ]);
+        $client = User::factory()->create(['email' => 'client@example.com']);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id]);
+        \App\Models\Payment::factory()->create([
+            'shoot_id' => $shoot->id,
+            'amount'   => 250.50,
+            'status'   => \App\Models\Payment::STATUS_COMPLETED,
+        ]);
+
+        $preview = app(ManualNotificationService::class)
+            ->preview($shoot->fresh(), 'payment_receipt', 'client');
+
+        $body = (string) $preview['body_text'] . "\n" . (string) $preview['body_html'];
+        $this->assertStringContainsString('Amount paid: $250.50', $body);
+        $this->assertStringContainsString('Remaining balance:', $body);
+    }
+
+    public function test_all_six_manual_types_resolve_an_active_seeded_template(): void
+    {
+        // Req 1.4 — after the system seeder runs, every ManualNotificationService::TYPES
+        // entry must resolve to an active SYSTEM template (no missing-template failure for
+        // shoot_on_hold / shoot_cancelled / payment_due / payment_receipt).
+        app(\Database\Seeders\MessagingSystemSeeder::class)->run();
+
+        $service = app(ManualNotificationService::class);
+
+        foreach (array_keys(ManualNotificationService::TYPES) as $type) {
+            $template = $service->resolveTemplate($type);
+            $this->assertInstanceOf(MessageTemplate::class, $template, "type {$type} did not resolve a template");
+            $this->assertTrue((bool) $template->is_active, "template for type {$type} is not active");
+            $this->assertSame(ManualNotificationService::TYPES[$type], $template->slug);
+        }
+    }
+
     public function test_send_routes_to_sms_channel_for_photographer(): void
     {
         $this->template('shoot-scheduled', ['channel' => 'SMS', 'body_html' => null]);

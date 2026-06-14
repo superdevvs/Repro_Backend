@@ -15,6 +15,8 @@ use Illuminate\Support\Facades\Log;
 
 class ShootListingService
 {
+    protected const CACHE_REGISTRY_KEY = 'shoots_index_cache_keys';
+
     protected const TAB_STATUS_MAP = [
         'scheduled' => [
             Shoot::STATUS_SCHEDULED,
@@ -218,6 +220,7 @@ class ShootListingService
 
             if (!$skipCache) {
                 Cache::put($cacheKey, $response, now()->addSeconds(30));
+                self::rememberCacheKey($cacheKey);
             }
 
             return response()->json($response);
@@ -244,6 +247,32 @@ class ShootListingService
                 ],
             ], 500);
         }
+    }
+
+    public static function flushCachedListings(): void
+    {
+        $keys = collect((array) Cache::get(self::CACHE_REGISTRY_KEY, []))
+            ->filter(fn ($key) => is_string($key) && $key !== '')
+            ->unique()
+            ->values();
+
+        foreach ($keys as $key) {
+            Cache::forget($key);
+        }
+
+        Cache::forget(self::CACHE_REGISTRY_KEY);
+    }
+
+    protected static function rememberCacheKey(string $cacheKey): void
+    {
+        $keys = collect((array) Cache::get(self::CACHE_REGISTRY_KEY, []))
+            ->push($cacheKey)
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        Cache::put(self::CACHE_REGISTRY_KEY, $keys, now()->addDay());
     }
 
     protected function applyTabScope(Builder $query, string $tab): void

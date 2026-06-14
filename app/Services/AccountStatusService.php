@@ -46,6 +46,16 @@ class AccountStatusService
     /** Roles treated as an admin account for the admin-delete guard (AC 16.6). */
     private const ADMIN_ROLES = ['admin'];
 
+    /**
+     * Cached user-directory lists that must be busted whenever an account's
+     * lifecycle changes, so a locked/deleted/restored user does not linger in a
+     * dropdown or directory for the cache TTL (QA #15a). Keep in sync with the
+     * keys used by the directory endpoints (e.g. UserController::photographers).
+     */
+    private const USER_DIRECTORY_CACHE_KEYS = [
+        'photographers_list_v3',
+    ];
+
     public function __construct(private readonly AuditLogService $auditLog)
     {
     }
@@ -124,6 +134,10 @@ class AccountStatusService
         // Cached authorization data.
         Cache::forget("authz:user:{$user->getKey()}");
 
+        // Cached user-directory lists (QA #15a) — bust so a locked/deleted user does
+        // not linger in directories/dropdowns until the list cache TTL expires.
+        $this->bustUserDirectoryCaches();
+
         // Active sessions (database session driver). Guarded so token-only deployments without a
         // sessions table do not error.
         try {
@@ -135,6 +149,17 @@ class AccountStatusService
                 'user_id' => $user->getKey(),
                 'error' => $exception->getMessage(),
             ]);
+        }
+    }
+
+    /**
+     * Forget cached user-directory lists so lifecycle changes are reflected
+     * immediately rather than after the list cache TTL (QA #15a).
+     */
+    public function bustUserDirectoryCaches(): void
+    {
+        foreach (self::USER_DIRECTORY_CACHE_KEYS as $key) {
+            Cache::forget($key);
         }
     }
 
@@ -158,6 +183,9 @@ class AccountStatusService
 
         // Invalidate any lingering tokens so the restored user must re-authenticate.
         $user->tokens()->delete();
+
+        // Refresh directory caches so the restored user reappears immediately.
+        $this->bustUserDirectoryCaches();
 
         $this->sendPasswordReset($user);
     }

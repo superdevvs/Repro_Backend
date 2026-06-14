@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\PaymentReminder;
 use App\Models\Shoot;
 use App\Services\Messaging\AutomationService;
+use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -14,10 +15,30 @@ use Tests\TestCase;
  *
  * The pure cadence is exercised by PaymentReminderSchedulerTest; this file only verifies the
  * upsert (no duplicates) and stop-on-paid (cancel pending) behavior on top of the database.
+ *
+ * Scheduling now uses a rolling look-ahead measured from "now" (Req 4.6) and only persists
+ * future-dated reminders, so each test pins "now" to the anchor instant with Carbon::setTestNow()
+ * — at anchor time the full Day 1/3/7 → weekly → last-Sunday cadence is in the future and is
+ * materialized exactly as before.
  */
 class AutomationServicePaymentRemindersTest extends TestCase
 {
     use RefreshDatabase;
+
+    /** Anchor instant shared by every case; "now" is pinned here so all reminders are future. */
+    private const ANCHOR = '2026-01-01 10:00:00';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Carbon::setTestNow(self::ANCHOR);
+    }
+
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+        parent::tearDown();
+    }
 
     private function service(): AutomationService
     {

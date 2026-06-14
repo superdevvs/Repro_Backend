@@ -51,6 +51,58 @@ class UploadValidationService
                 $field => 'File type not allowed',
             ]);
         }
+
+        // Defence-in-depth (QA #14): reject files whose real content type (detected
+        // via magic bytes) is an executable/script even when the extension is in the
+        // allow-list. This catches a renamed binary (e.g. malware.exe -> photo.png).
+        if ($this->hasDangerousContentType($upload)) {
+            throw ValidationException::withMessages([
+                $field => 'File content does not match an allowed media type',
+            ]);
+        }
+    }
+
+    /**
+     * Whether the upload's detected MIME type is a known-dangerous executable or
+     * script type. Uses the finfo-backed detected type (not the client-supplied
+     * one), so a spoofed extension cannot bypass it.
+     */
+    public function hasDangerousContentType(UploadedFile $upload): bool
+    {
+        try {
+            $mime = strtolower((string) $upload->getMimeType());
+        } catch (\Throwable) {
+            // If the type cannot be detected, defer to the scan stage rather than
+            // blocking a legitimate upload here.
+            return false;
+        }
+
+        if ($mime === '') {
+            return false;
+        }
+
+        $dangerous = [
+            'application/x-dosexec',
+            'application/x-msdownload',
+            'application/x-executable',
+            'application/x-elf',
+            'application/x-mach-binary',
+            'application/x-sharedlib',
+            'application/vnd.microsoft.portable-executable',
+            'application/x-msdos-program',
+            'application/x-php',
+            'text/x-php',
+            'application/x-httpd-php',
+            'application/x-perl',
+            'application/x-python',
+            'application/x-shellscript',
+            'text/x-shellscript',
+            'application/javascript',
+            'application/x-bat',
+            'application/hta',
+        ];
+
+        return in_array($mime, $dangerous, true);
     }
 
     /**

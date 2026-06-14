@@ -37,4 +37,11 @@ return [
     // Must not exceed clamd's StreamMaxLength.
     'chunk_size' => (int) env('CLAMAV_CHUNK_SIZE', 8192),
 
+    // Synchronous pre-store scan (QA #14). When enabled, uploads are streamed to
+    // clamd BEFORE the file is persisted; an infected verdict rejects the upload
+    // with HTTP 422 so malware never lands in storage or returns a 200. When clamd
+    // is unavailable the upload falls back to the async quarantine+scan path (the
+    // file is withheld from delivery until a clean verdict is recorded).
+    'scan_on_upload' => filter_var(env('CLAMAV_SCAN_ON_UPLOAD', true), FILTER_VALIDATE_BOOL),
+
 ];

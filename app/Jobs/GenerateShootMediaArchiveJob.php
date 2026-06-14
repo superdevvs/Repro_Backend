@@ -43,6 +43,22 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
             return;
         }
 
+        // A qualifying file save or status change can queue this job before any
+        // deliverable media actually exists (e.g. a no-media/fast-forward
+        // delivery). Treat "nothing to archive" as a benign no-op instead of a
+        // hard failure so the job is not retried and logged as permanently
+        // failed for an expected, harmless state.
+        if (!$shootMediaArchiveService->hasDownloadableFiles($shoot, $this->type, $this->size, $this->shootServiceId)) {
+            Log::info('Shoot media archive job skipped because no downloadable files are available', [
+                'shoot_id' => $this->shootId,
+                'shoot_service_id' => $this->shootServiceId,
+                'type' => $this->type,
+                'size' => $this->size,
+            ]);
+
+            return;
+        }
+
         $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true, $this->shootServiceId);
     }
 
