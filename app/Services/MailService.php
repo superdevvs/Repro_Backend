@@ -1104,6 +1104,10 @@ class MailService
             ]);
             $this->dispatchProtectedEmail('SHOOT_DELIVERED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
                 'related_shoot_id' => $shoot->id,
+                // The delivered email is a mandatory transactional notification:
+                // bypass the email-health gate so it is never silently
+                // suppressed. The idempotency key below still prevents duplicates.
+                'enforce_email_health_gate' => false,
             ]), [
                 'idempotency_key' => sprintf(
                     'SHOOT_DELIVERED:%d:%d:%s:%s',
@@ -1530,8 +1534,10 @@ class MailService
             'website_url' => 'https://reprophotos.com',
             'property_prep_url' => 'https://reprophotos.com/tips-to-get-your-property-camera-ready/',
             'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
-            'support_email' => 'contact@reprophotos.com',
-            'support_phone' => '202-868-1663',
+            // Source support contact from the canonical config (single source of truth)
+            // so no shoot email can render a stale support phone/email. See QA #10.
+            'support_email' => config('mail.contact_address', 'contact@reprophotos.com'),
+            'support_phone' => config('mail.contact_phone', '202-868-1113'),
             'bypass_paywall' => (bool) ($shoot->bypass_paywall ?? false),
             'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
         ];

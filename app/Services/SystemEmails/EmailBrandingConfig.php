@@ -19,7 +19,7 @@ class EmailBrandingConfig
         return array_replace_recursive([
             'product_name' => 'R/E Pro Photos',
             'support_email' => config('mail.contact_address', 'contact@reprophotos.com'),
-            'support_phone' => config('mail.contact_phone', '202-868-1663'),
+            'support_phone' => config('mail.contact_phone', '202-868-1113'),
             'dashboard_url' => $dashboardUrl,
             'base_url' => $dashboardUrl,
             'website_url' => 'https://reprophotos.com',

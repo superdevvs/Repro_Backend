@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Schema;
 class MessagingSystemSeeder extends Seeder
 {
     private const BRAND_NAME = 'R/E Pro Photos';
-    private const BRAND_PHONE = '202-868-1663';
+    private const BRAND_PHONE = '202-868-1113';
     private const BRAND_EMAIL = 'contact@reprophotos.com';
     private const BRAND_SITE = 'https://reprophotos.com';
     private const BRAND_PORTAL = 'https://reprodashboard.com';
@@ -767,19 +767,158 @@ class MessagingSystemSeeder extends Seeder
     }
 
     // EMAIL BODY NORMALIZER
+    //
+    // Shared header/footer wrapper. Promotes the previous no-op trim() into the
+    // single source of truth for brand chrome around every email body:
+    //   - a brand HEADER naming the canonical brand (self::BRAND_NAME),
+    //   - the per-template message ($content, trimmed and unchanged),
+    //   - a brand FOOTER carrying the canonical sign-off, the support/contact
+    //     line, and a signature built from the BRAND_* constants and tokens.
+    //
+    // The output is an HTML fragment (consistent with the per-template bodies,
+    // which are fragments rendered inside the shared email layout) and reuses
+    // the existing CSS class vocabulary (info-box, note, button, ...) plus the
+    // same inline-style idiom already present in the bodies, so rendered output
+    // stays visually consistent and well-formed.
+    //
+    // NOTE: this output is later passed through normalizeTemplateDefinition()/
+    // transformContent(), so tokens are kept in [bracket] form (e.g.
+    // [company_email] -> {{company_email}}). The canonical brand name and phone
+    // are emitted as literals (sourced from the BRAND_* constants) because no
+    // token exists for them; the site is shown without its URL scheme so the
+    // footer never hardcodes a literal https:// link where a token belongs.
     private function getEmailWrapper($content): string
     {
-        return trim((string) $content);
+        $brand = self::BRAND_NAME;
+
+        $body = trim((string) $content);
+
+        $header = '
+            <div class="email-header" style="border-bottom: 2px solid #007bff; padding-bottom: 12px; margin-bottom: 24px;">
+                <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">' . $brand . '</h1>
+            </div>';
+
+        // The footer now reuses the canonical shared-snippet providers
+        // (getContactLineHtml() + getSignOffHtml()) so the brand contact line
+        // and closing voice are defined in exactly ONE place. The rendered
+        // footer remains equivalent to the 3.1 output: it still carries the
+        // canonical brand "R/E Pro Photos", the phone "202-868-1113" and the
+        // [company_email] token.
+        $footer = '
+            <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
+                ' . $this->getContactLineHtml() . '
+                ' . $this->getSignOffHtml() . '
+            </div>';
+
+        return trim($header . "\n\n" . $body . "\n\n" . $footer);
+    }
+
+    // ------------------------------------------------------------------
+    // Canonical shared-snippet providers (single source of truth)
+    //
+    // These methods return the ONE canonical wording per shared concept, in
+    // both channels (HTML + text). They exist so that templates which used to
+    // hardcode the copy inline can be switched to the SAME canonical wording
+    // (applying the token-vs-inlined-snippet choice uniformly across the set),
+    // and so the wrapper footer + the standalone documents speak with one
+    // voice.
+    //
+    // The cancellation-policy and property-prep wording is intentionally kept
+    // IDENTICAL to the runtime token-backed values resolved by
+    // TemplateVariableResolver for the [cancellation_policy_html]/
+    // [property_prep_html] (and *_text) tokens, so that whether a template
+    // renders the token or the inlined snippet, the same policy reads
+    // identically everywhere (2.6). The existing tokens remain valid and stay
+    // where already used; these providers supply the matching canonical copy
+    // for the previously-hardcoded sites.
+    //
+    // Tokens are kept in [bracket] form (e.g. [company_email]); generator
+    // output is later transformed via transformContent().
+    // ------------------------------------------------------------------
+
+    // Cancellation policy - canonical HTML wording (mirrors the token-backed
+    // cancellation_policy_html value).
+    private function getCancellationPolicyHtml(): string
+    {
+        return '<div style="margin-top:20px;padding:16px 18px;border:1px solid #fde68a;background:#fffbeb;border-radius:14px;"><strong style="display:block;color:#92400e;margin-bottom:6px;">Cancellation Policy</strong><span style="color:#92400e;">If an appointment is cancelled on-site, a $60 cancellation fee may apply. Please cancel or reschedule at least 6 hours before the appointment start time whenever possible.</span></div>';
+    }
+
+    // Cancellation policy - canonical plain-text wording (mirrors the
+    // token-backed cancellation_policy_text value).
+    private function getCancellationPolicyText(): string
+    {
+        return 'Cancellation policy: If an appointment is cancelled on-site, a $60 cancellation fee may apply. Please cancel or reschedule at least 6 hours before the appointment start time whenever possible.';
+    }
+
+    // Property-preparation guidance - canonical HTML wording (mirrors the
+    // token-backed property_prep_html value; no placeholder link).
+    private function getPropertyPrepHtml(): string
+    {
+        return '<p>To keep the appointment running smoothly, please make sure the property is ready before the scheduled time.</p>';
+    }
+
+    // Property-preparation guidance - canonical plain-text wording (mirrors the
+    // token-backed property_prep_text value).
+    private function getPropertyPrepText(): string
+    {
+        return 'To keep the appointment running smoothly, please make sure the property is ready before the scheduled time.';
+    }
+
+    // Brand contact line - canonical HTML wording (the support/help line shared
+    // by the wrapper footer). Keeps [company_email] as a token.
+    private function getContactLineHtml(): string
+    {
+        return '<p style="margin: 0 0 8px 0;">If you need help, call ' . self::BRAND_PHONE . ' or email [company_email].</p>';
+    }
+
+    // Brand contact line - canonical plain-text wording.
+    private function getContactLineText(): string
+    {
+        return 'If you need help, call ' . self::BRAND_PHONE . ' or email [company_email].';
+    }
+
+    // Closing sign-off + signature - canonical HTML wording (the closing voice
+    // shared by the wrapper footer).
+    private function getSignOffHtml(): string
+    {
+        $brand = self::BRAND_NAME;
+        $phone = self::BRAND_PHONE;
+        $siteDisplay = preg_replace('#^https?://#', '', self::BRAND_SITE);
+
+        return '<p style="margin: 0;">
+                    Thanks,<br>
+                    <strong>' . $brand . '</strong><br>
+                    ' . $phone . '<br>
+                    ' . $siteDisplay . '
+                </p>';
+    }
+
+    // Closing sign-off + signature - canonical plain-text wording.
+    private function getSignOffText(): string
+    {
+        $siteDisplay = preg_replace('#^https?://#', '', self::BRAND_SITE);
+
+        return "Thanks,\n"
+            . self::BRAND_NAME . "\n"
+            . self::BRAND_PHONE . "\n"
+            . $siteDisplay;
     }
 
     // TEMPLATE HTML METHODS
 
     private function getAccountCreatedTemplate(): string
     {
+        // Brand name comes from the canonical constant so the HTML agrees with
+        // getAccountCreatedPlainText() ("R/E Pro Photos client portal") instead
+        // of the old non-canonical "R/E Pro Dashboard". The portal link uses the
+        // [portal_url] token rather than a hardcoded https://reprophotos.com URL.
+        // The closing contact line and sign-off are intentionally NOT inlined
+        // here: getEmailWrapper() now supplies the canonical contact line and
+        // sign-off footer in exactly one place.
         $content = '
             <p>[greeting]!</p>
             
-            <p>A new account has been created on the <strong>R/E Pro Dashboard</strong>: <a href="https://reprophotos.com">https://reprophotos.com</a></p>
+            <p>A new account has been created for you on the <strong>' . self::BRAND_NAME . '</strong> client portal: <a href="[portal_url]">[portal_url]</a></p>
             
             <p>[password_resetlink]</p>
             
@@ -801,9 +940,7 @@ class MessagingSystemSeeder extends Seeder
                 </div>
             </div>
             
-            <p>If you have any questions about your account please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
-            
-            <p><strong>Thanks for the opportunity to provide you with outstanding real estate marketing services!</strong></p>
+            <p>If you have any questions about your account please feel free to reply to this email.</p>
         ';
         
         return $this->getEmailWrapper($content);
@@ -824,10 +961,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographers:</span> [assigned_photographers]
@@ -836,7 +973,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
+                    <span class="info-label">Shoot total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
 
@@ -876,29 +1013,27 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Requested Date:</span> [shoot_date]
+                    <span class="info-label">Requested Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Requested Time:</span> [shoot_time]
+                    <span class="info-label">Requested Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
+                    <span class="info-label">Shoot total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
             
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
+            ' . $this->getPropertyPrepHtml() . '
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            <div class="note">
-                <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-            </div>
+            ' . $this->getCancellationPolicyHtml() . '
             
             <p><strong>Thanks for requesting a photo shoot, your business is appreciated!</strong></p>
         ';
@@ -919,10 +1054,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
@@ -931,7 +1066,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
+                    <span class="info-label">Shoot total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
 
@@ -941,7 +1076,7 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
+            ' . $this->getPropertyPrepHtml() . '
             
             <center>
                 <a href="[pay_link]" class="button">Pay Now</a>
@@ -951,9 +1086,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            <div class="note">
-                <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-            </div>
+            ' . $this->getCancellationPolicyHtml() . '
             
             <p><strong>Thanks for scheduling, your business is appreciated!</strong></p>
         ';
@@ -978,10 +1111,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
@@ -990,7 +1123,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
+                    <span class="info-label">Shoot total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
 
@@ -1000,15 +1133,13 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
+            ' . $this->getPropertyPrepHtml() . '
             
             <p style="font-size: 13px; color: #666;">Payment may be made at any time throughout the shoot process. Although the image proofs will be posted to your account prior to payment being made, your final images will not be accessible until payment has been received in full.</p>
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            <div class="note">
-                <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-            </div>
+            ' . $this->getCancellationPolicyHtml() . '
             
             <p><strong>Thanks for scheduling, your business is appreciated!</strong></p>
         ';
@@ -1032,10 +1163,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Requested Date:</span> [shoot_date]
+                    <span class="info-label">Requested Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Requested Time:</span> [shoot_time]
+                    <span class="info-label">Requested Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
@@ -1068,10 +1199,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographer:</span> [photographer_first] [photographer_last]
@@ -1084,13 +1215,11 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>To ensure a smooth shoot process, please have the property ready. <a href="#">Here is a link to getting your property ready for the shoot</a>.</p>
+            ' . $this->getPropertyPrepHtml() . '
             
             <p style="font-size: 13px; color: #666;">Don\'t want to receive email reminders? Login to your account, click <strong>My Account</strong>, and turn OFF Email Reminders.</p>
             
-            <div class="note">
-                <strong>Our Cancellation Policy:</strong> If an appointment is cancelled on-site, a cancellation fee of $60 will be charged. This helps us cover time, travel and administration costs. We ask that you please reschedule or cancel at least 6 hours before the beginning of your appointment.
-            </div>
+            ' . $this->getCancellationPolicyHtml() . '
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
@@ -1112,10 +1241,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Photographers:</span> [assigned_photographers]
@@ -1165,7 +1294,7 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Services:</span><br>[services_provided_html]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Total:</span> <strong>[shoot_quote]</strong>
+                    <span class="info-label">Shoot total:</span> <strong>[shoot_quote]</strong>
                 </div>
             </div>
             
@@ -1180,7 +1309,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            <p><strong>We would love your feedback:</strong> <a href="#">Post a review on Google</a>.</p>
+            <p><strong>We would love your feedback:</strong> if you have a moment, a quick review on Google really helps us out.</p>
             
             <p>Thank you!</p>
         ';
@@ -1203,10 +1332,10 @@ class MessagingSystemSeeder extends Seeder
                     <span class="info-label">Location:</span> [shoot_location]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Date:</span> [shoot_date]
+                    <span class="info-label">Scheduled Shoot Date:</span> [shoot_date]
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Scheduled Time:</span> [shoot_time]
+                    <span class="info-label">Scheduled Shoot Time:</span> [shoot_time]
                 </div>
                 <div class="info-row">
                     <span class="info-label">Services:</span><br>[services_provided_html]
@@ -1394,7 +1523,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            <p><strong>We would love your feedback:</strong> <a href="#">Post a review on Google</a>.</p>
+            <p><strong>We would love your feedback:</strong> if you have a moment, a quick review on Google really helps us out.</p>
             
             <p>Thank you!</p>
         ';
@@ -1433,6 +1562,8 @@ class MessagingSystemSeeder extends Seeder
     {
         $content = '
             <h1>Refund Applied</h1>
+            <p>[greeting]!</p>
+            
             <p>One of your Real Estate photo shoots has been <strong>refunded</strong>.</p>
             
             <div class="info-box" style="background-color: #f0f9ff; border-left-color: #3b82f6;">
@@ -1447,7 +1578,7 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            <p>If you have any questions regarding this refund, please feel free to reply to this email.</p>
+            <p>If you have any questions regarding this refund, please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
             <p>Thank you!</p>
         ';
@@ -1461,7 +1592,7 @@ class MessagingSystemSeeder extends Seeder
     {
         return '[greeting], [realtor_first]!
 
-A new account has been created on the REPRO HQ client website: https://pro.reprohq.com
+A new account has been created for you on the R/E Pro Photos client portal: [portal_url]
 
 [password_resetlink]
 
@@ -1479,10 +1610,10 @@ If you have any questions about your account please feel free to reply to this e
 Thanks for the opportunity to provide you with outstanding real estate marketing services!
 
 Customer Service Team
-REPRO HQ
-202-868-1663
-contact@reprohq.com
-https://reprohq.com';
+R/E Pro Photos
+202-868-1113
+contact@reprophotos.com
+https://reprophotos.com';
     }
 
     private function getShootScheduledPlainText(): string
@@ -1525,7 +1656,7 @@ Location: [shoot_location]
 Requested Shoot Date: [shoot_date]
 Requested Shoot Time: [shoot_time]
 [services_provided]
-Total: [shoot_quote]
+Shoot total: [shoot_quote]
 
 [shoot_notes]
 
@@ -1543,7 +1674,7 @@ Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [services_provided]
-Total: [shoot_quote]
+Shoot total: [shoot_quote]
 
 Updated Details:
 [changes_made]
@@ -1568,7 +1699,7 @@ Scheduled Shoot Date: [shoot_date]
 Scheduled Shoot Time: [shoot_time]
 Photographer: [photographer_first] [photographer_last]
 [services_provided]
-Total: [shoot_quote]
+Shoot total: [shoot_quote]
 
 Updated Details:
 [changes_made]
@@ -1612,7 +1743,7 @@ Photographer: [photographer_first] [photographer_last]
 
 [shoot_notes]
 
-Our Cancellation Policy: If an appointment is cancelled on-site, a cancellation fee of $60 will be charged.
+' . $this->getCancellationPolicyText() . '
 
 Thank you!';
     }
@@ -1653,7 +1784,7 @@ You can view the images by logging in to [portal_url]
 
 Photographer: [photographer_first] [photographer_last]
 [services_provided]
-Total: [shoot_quote]
+Shoot total: [shoot_quote]
 
 [shoot_notes]
 
@@ -1685,8 +1816,8 @@ Thank you!';
 
 Your final media for [shoot_location] has been delivered and is ready to review.
 
-Scheduled Date: [shoot_date]
-Scheduled Time: [shoot_time]
+Scheduled Shoot Date: [shoot_date]
+Scheduled Shoot Time: [shoot_time]
 Services: [services_provided]
 
 Dashboard: [portal_url]
@@ -1773,20 +1904,31 @@ Thank you!';
 
     private function getRefundSubmittedPlainText(): string
     {
-        return 'One of your Real Estate photo shoots has been refunded.
+        return '[greeting]!
+
+One of your Real Estate photo shoots has been refunded.
 
 Location: [shoot_location]
 [services_provided]
 
 [shoot_notes]
 
-If you have any questions regarding this refund, please feel free to reply to this email.
+If you have any questions regarding this refund, please feel free to reply to this email, or email [company_email] directly.
 
 Thank you!';
     }
 
     private function getPropertyContactReminderTemplate(): string
     {
+        // This is a standalone <!DOCTYPE html> document (it does NOT route
+        // through getEmailWrapper()), so to keep one brand voice across the set
+        // it injects the SAME canonical header (brand name) and footer
+        // (canonical contact line + sign-off) used by the wrapper, sourced from
+        // the shared-snippet providers. The document therefore carries the
+        // canonical brand "R/E Pro Photos", the phone "202-868-1113" and the
+        // [company_email] contact token, while remaining valid standalone HTML.
+        $brand = self::BRAND_NAME;
+
         return '<!DOCTYPE html>
 <html>
 <head>
@@ -1795,6 +1937,10 @@ Thank you!';
     <title>Property Access Details Required</title>
 </head>
 <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <div class="email-header" style="border-bottom: 2px solid #007bff; padding-bottom: 12px; margin-bottom: 24px;">
+        <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">' . $brand . '</h1>
+    </div>
+
     <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
         <h2 style="color: #2c3e50; margin-top: 0;">Action Required: Property Access Details</h2>
     </div>
@@ -1822,9 +1968,10 @@ Thank you!';
     
     <p>This information is essential for our photographer to access the property on the scheduled date.</p>
     
-    <p>If you have any questions, please reply to this email or contact us at [company_email].</p>
-    
-    <p>Thank you!</p>
+    <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
+        ' . $this->getContactLineHtml() . '
+        ' . $this->getSignOffHtml() . '
+    </div>
     
     <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
     <p style="color: #666; font-size: 12px;">This is an automated reminder. If you have already provided this information, please disregard this message.</p>
@@ -1850,9 +1997,9 @@ You can update this information by visiting: [portal_url]
 
 This information is essential for our photographer to access the property on the scheduled date.
 
-If you have any questions, please contact us at [company_email].
+' . $this->getContactLineText() . '
 
-Thank you!
+' . $this->getSignOffText() . '
 
 ---
 This is an automated reminder. If you have already provided this information, please disregard this message.';

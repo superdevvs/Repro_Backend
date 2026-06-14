@@ -626,7 +626,14 @@ class AutomationWorkflowExecutor
                 break;
 
             case 'SHOOT_COMPLETED':
-                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootReadyEmail($client, $shoot)) {
+                // The protected delivery path (SendShootReadyEmailJob ->
+                // MailService::sendShootReadyEmail) is the single canonical
+                // client delivery email. When it has already dispatched the
+                // client email, skip the redundant automation send so the
+                // client never receives a duplicate. Non-client recipients and
+                // other automation steps are unaffected.
+                $systemEmailAlreadySent = (bool) ($context['system_email_already_sent'] ?? false);
+                if ($shoot && $client && !$systemEmailAlreadySent && in_array('client', $recipientTypes, true) && $this->mailService->sendShootReadyEmail($client, $shoot)) {
                     $sentTo[] = $client->email;
                 }
                 break;

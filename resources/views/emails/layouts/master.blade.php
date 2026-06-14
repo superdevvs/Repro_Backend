@@ -10,10 +10,15 @@
 
     $productName = data_get($brand, 'product_name', 'R/E Pro Photos');
     $supportEmail = data_get($brand, 'support_email', 'contact@reprophotos.com');
-    $supportPhone = data_get($brand, 'support_phone', '202-868-1663');
+    $supportPhone = data_get($brand, 'support_phone', '202-868-1113');
     $dashboardUrl = data_get($brand, 'dashboard_url', 'https://reprodashboard.com');
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $reviewUrl = data_get($brand, 'review_url', 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews');
+    // Footer tile toggles. Default ON so every template renders unchanged; the
+    // delivered email opts out to present a single canonical URL and drop the
+    // "Leave a Review" filler.
+    $showWebsiteTile = (isset($showWebsiteTile)) ? (bool) $showWebsiteTile : true;
+    $showReviewTile = (isset($showReviewTile)) ? (bool) $showReviewTile : true;
     $emailLogoGreyUrl = data_get($brand, 'email_logo_grey_url', data_get($brand, 'logo_url', 'https://api.reprodashboard.com/images/repro-email-logo-grey.png'));
     $socialFacebookUrl = data_get($brand, 'social_facebook_url');
     $socialInstagramUrl = data_get($brand, 'social_instagram_url');
@@ -259,6 +264,7 @@
                                                                     </tr>
                                                                 </table>
                                                             </td>
+                                                            @if($showWebsiteTile)
                                                             <td class="footer-meta-td" width="33.33%" style="padding:0 6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
@@ -269,6 +275,8 @@
                                                                     </tr>
                                                                 </table>
                                                             </td>
+                                                            @endif
+                                                            @if($showReviewTile)
                                                             <td class="footer-meta-td" width="33.33%" style="padding-left:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
@@ -279,6 +287,7 @@
                                                                     </tr>
                                                                 </table>
                                                             </td>
+                                                            @endif
                                                         </tr>
                                                     </table>
 

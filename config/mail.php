@@ -40,6 +40,8 @@ return [
 
     'contact_address' => env('MAIL_CONTACT_ADDRESS', 'contact@reprophotos.com'),
 
+    'contact_phone' => env('MAIL_CONTACT_PHONE', '202-868-1113'),
+
     'accounting_address' => env('MAIL_ACCOUNTING_ADDRESS', 'accounting@reprophotos.com'),
 
     'editing_team_address' => env('MAIL_EDITING_TEAM_ADDRESS', 'editing@reprophotos.com'),

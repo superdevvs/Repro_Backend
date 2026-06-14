@@ -125,10 +125,78 @@ class ShootBookingTest extends TestCase
         $this->assertNull($shoot->photographer_id);
     }
 
-    /** @test */
-    public function admin_can_book_internal_no_product_no_charge_shoot(): void
+    /**
+     * @test
+     *
+     * QA #5 reversal: Admin must add at least one product to schedule a shoot.
+     * No-product scheduling (even for internal no-charge shoot types) is blocked for Admin.
+     */
+    public function admin_cannot_book_no_product_shoot_even_for_no_charge_type(): void
     {
         Sanctum::actingAs($this->admin);
+
+        $response = $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'address' => '321 Sample Way',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonFragment(['message' => 'At least one service must be selected.']);
+
+        $this->assertNull(Shoot::query()->where('address', '321 Sample Way')->first());
+    }
+
+    /**
+     * @test
+     *
+     * QA #5 reversal: Sales Rep must add at least one product to schedule a shoot.
+     */
+    public function sales_rep_cannot_book_no_product_shoot_even_for_no_charge_type(): void
+    {
+        $salesRep = User::factory()->create([
+            'role' => 'salesrep',
+            'name' => 'Test Sales Rep',
+            'email' => 'salesrep@test.com',
+        ]);
+
+        Sanctum::actingAs($salesRep);
+
+        $response = $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'address' => '987 Rep No Product Rd',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonFragment(['message' => 'At least one service must be selected.']);
+
+        $this->assertNull(Shoot::query()->where('address', '987 Rep No Product Rd')->first());
+    }
+
+    /**
+     * @test
+     *
+     * QA #5 scope guard: Superadmin retains the no-product allowance for internal
+     * no-charge shoot types (out of scope for this change).
+     */
+    public function superadmin_can_still_book_no_product_no_charge_shoot(): void
+    {
+        $superadmin = User::factory()->create([
+            'role' => 'superadmin',
+            'name' => 'Test Superadmin',
+            'email' => 'superadmin@test.com',
+        ]);
+
+        Sanctum::actingAs($superadmin);
 
         $response = $this->postJson('/api/shoots', [
             'client_id' => $this->client->id,

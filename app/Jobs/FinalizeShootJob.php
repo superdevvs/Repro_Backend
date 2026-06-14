@@ -75,9 +75,25 @@ class FinalizeShootJob implements ShouldQueue
             $previousStatus = $result['previous_status'];
 
             // ------ Side effects (async, non-blocking) ------
+            // Media-dependent side effects (Bright MLS publish + the
+            // per-file local-cache jobs) only make sense when media was
+            // actually delivered, so they stay gated on processed files. The
+            // client delivery email, however, is a mandatory transactional
+            // notification and must fire on every full-order delivered
+            // transition (see below).
             $this->dispatchLocalCacheJobs($processedFileIds);
-            $this->dispatchMlsPublish($isFullOrderDelivery);
-            $this->dispatchReadyEmail($isFullOrderDelivery);
+            if (!empty($processedFileIds)) {
+                $this->dispatchMlsPublish($isFullOrderDelivery);
+            }
+
+            // The client delivery email is the canonical, mandatory
+            // notification for the full-order delivered transition. It must
+            // fire on every full-order delivery — including no-media
+            // (fast-forward) deliveries that have no processed files — so it
+            // is intentionally NOT gated on $processedFileIds.
+            if ($isFullOrderDelivery) {
+                $this->dispatchReadyEmail($isFullOrderDelivery);
+            }
 
             // Activity log parity with the previous implementation.
             try {
@@ -210,9 +226,11 @@ class FinalizeShootJob implements ShouldQueue
                 ->when($this->shootServiceId, fn ($q) => $q->where('shoot_service_id', $this->shootServiceId))
                 ->count();
             $hasEditedWithoutRaw = !empty($completedIds) && $rawCount === 0;
+            // Mirror the controller: an explicit fast-forward request may deliver
+            // a whole shoot with no media. Authorization was enforced when the
+            // job was queued.
             $allowNoMediaDelivery = $this->allowNoMediaDelivery
-                && !$this->shootServiceId
-                && $shoot->allowsNoMediaDelivery();
+                && !$this->shootServiceId;
 
             $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
             if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {

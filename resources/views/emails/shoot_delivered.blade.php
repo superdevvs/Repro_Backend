@@ -3,8 +3,16 @@
 @section('title', 'Your Shoot Has Been Delivered')
 @section('preheader', 'Your shoot is complete and available to review or download in the dashboard.')
 
+@php
+    // Scoped footer cleanup for the delivered email: present a single canonical
+    // URL (the Dashboard) and drop the "Leave a Review" filler. These toggles
+    // default ON in the shared layout, so every other template is unaffected.
+    $showWebsiteTile = false;
+    $showReviewTile = false;
+@endphp
+
 @section('hero')
-    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Shoot Delivered</p>
+    <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#5d7493; font-weight:700;">Your Shoot Has Been Delivered</p>
     <p class="hero-title-td dark-title" style="margin:0; font-size:48px; line-height:0.96; font-weight:300; letter-spacing:-2.4px; color:#10192f;">Your shoot has been delivered.</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#667a96;">Your shoot is now complete and available in the dashboard for review and download.</p>
 @endsection
@@ -52,7 +60,7 @@
         </tr>
     </table>
 
-    @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'showNotes' => false])
+    @include('emails.partials.shoot-summary', ['shoot' => $shoot, 'showNotes' => false, 'showFinancials' => false])
 @endsection
 
 @section('footer_note')

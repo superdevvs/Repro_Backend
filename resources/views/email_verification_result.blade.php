@@ -163,7 +163,7 @@
             <p class="message">{{ $message }}</p>
             <a class="button-primary" href="{{ $dashboardUrl }}">Open dashboard</a>
             <p class="support">
-                Need help? <a href="mailto:{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}">{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}</a> &middot; {{ $branding['support_phone'] ?? '202-868-1663' }}
+                Need help? <a href="mailto:{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}">{{ $branding['support_email'] ?? 'contact@reprophotos.com' }}</a> &middot; {{ $branding['support_phone'] ?? '202-868-1113' }}
             </p>
         </section>
     </main>
