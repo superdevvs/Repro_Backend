@@ -130,6 +130,12 @@ class DeliveryEmailFixTest extends TestCase
             SendShootReadyEmailJob::class,
             fn (SendShootReadyEmailJob $job) => $job->shootId === $shoot->id && $job->isFullOrderDelivery === true
         );
+
+        // Regression: the ready/delivered email job must be queued on the
+        // 'default' queue so the running production workers actually process
+        // it. When it was on the unconsumed 'mail' queue, deliveries flipped
+        // status/MLS but the client delivery email was never sent.
+        Queue::assertPushedOn('default', SendShootReadyEmailJob::class);
     }
 
     public function test_delivery_email_bypasses_health_gate_and_retains_idempotency_key(): void

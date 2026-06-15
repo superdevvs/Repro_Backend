@@ -33,7 +33,11 @@ class SendShootReadyEmailJob implements ShouldQueue
         public bool $isFullOrderDelivery = true,
         public bool $fireAutomation = true
     ) {
-        $this->onQueue('mail');
+        // Use the default queue so it lines up with the running workers.
+        // The dedicated 'mail' queue is not consumed in production, which
+        // previously left the delivered/ready email permanently unsent while
+        // the rest of the finalize flow (status flip, MLS publish) succeeded.
+        $this->onQueue('default');
     }
 
     public function handle(MailService $mail, AutomationService $automation): void
