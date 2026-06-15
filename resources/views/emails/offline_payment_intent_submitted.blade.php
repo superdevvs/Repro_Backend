@@ -5,7 +5,7 @@
 
 @section('hero')
     <p class="dark-muted" style="margin:0 0 12px; font-size:11px; line-height:1.4; letter-spacing:2px; text-transform:uppercase; color:#8298b4; font-weight:700;">Offline Payment Submitted</p>
-    <p class="hero-title-td dark-title" style="margin:0; font-size:32px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#e8edf5;">Review a {{ $paymentMethodLabel ?? 'Cash' }} payment.</p>
+    <p class="hero-title-td dark-title" style="margin:0; font-size:30px; line-height:1.1; font-weight:300; letter-spacing:-1.2px; color:#e8edf5;">Review a {{ $paymentMethodLabel ?? 'Cash' }} payment.</p>
     <p class="dark-body" style="margin:20px 0 0; font-size:15px; line-height:1.8; color:#a9b8cb;">A pending offline payment of <strong class="dark-strong" style="color:#e8edf5;">${{ number_format((float) ($amount ?? 0), 2) }}</strong> was submitted and is awaiting your confirmation.</p>
 @endsection
 

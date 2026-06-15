@@ -327,7 +327,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
   z-index: 2;
   margin: 0;
   max-width: 520px;
-  font-size: 32px;
+  font-size: 30px;
   line-height: 1.1;
   font-weight: 300;
   letter-spacing: -1.2px;

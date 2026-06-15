@@ -140,7 +140,7 @@
         /* Shared hero title sizing (centralized). Per-template inline styles
            match this; kept here so clients that strip inline styles still get
            the reduced desktop size. */
-        .hero-title-td { font-size: 32px; line-height: 1.1; letter-spacing: -1.2px; }
+        .hero-title-td { font-size: 30px; line-height: 1.1; letter-spacing: -1.2px; }
 
         @media only screen and (max-width: 640px) {
             .email-container { width: 100% !important; max-width: 100% !important; }

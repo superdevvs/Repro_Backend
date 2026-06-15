@@ -52,8 +52,9 @@ class EmailTemplateRenderingTest extends TestCase
         // Exact support line.
         $this->assertStringContainsString(self::SUPPORT_LINE, $html);
         $this->assertStringContainsString('contact@reprophotos.com', $html);
-        // Header reduced.
-        $this->assertStringContainsString('font-size: 32px', $html);
+        // Header reduced below 32px.
+        $this->assertStringContainsString('font-size: 30px', $html);
+        $this->assertStringNotContainsString('font-size: 32px', $html);
         $this->assertStringNotContainsString('font-size: 48px', $html);
         // Payment essentials still present.
         $this->assertStringContainsString('Pay Now', $html);
@@ -117,8 +118,9 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('Open Dashboard', $html);
         // Website footer tile suppressed for this email.
         $this->assertStringNotContainsString('>Website<', $html);
-        // Header reduced; no oversized hero.
-        $this->assertStringContainsString('font-size:32px', $html);
+        // Header reduced below 32px; no oversized hero.
+        $this->assertStringContainsString('font-size:30px', $html);
+        $this->assertStringNotContainsString('font-size:32px', $html);
         $this->assertStringNotContainsString('font-size:48px', $html);
         // Support contact.
         $this->assertStringContainsString('202-868-1113', $html);
