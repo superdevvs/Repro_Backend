@@ -5,6 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\ShootFile;
 use App\Services\DropboxWorkflowService;
 use App\Services\ImageProcessingService;
+use App\Services\Media\MediaStorage;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -13,7 +14,8 @@ class ShootFileAccessService
 {
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
-        protected ImageProcessingService $imageProcessingService
+        protected ImageProcessingService $imageProcessingService,
+        protected MediaStorage $mediaStorage
     ) {
     }
 
@@ -29,6 +31,16 @@ class ShootFileAccessService
 
         if ($file->path && Str::startsWith($file->path, 'http')) {
             return $file->path;
+        }
+
+        // R2-first delivery: raw originals and locked/unpaid media are served via
+        // short-lived presigned URLs (never the public CDN domain) once reads are
+        // flipped. Local remains a secondary fallback while both stores coexist.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            $key = $this->mediaStorage->normalizeKey($file->path);
+            if ($key && $this->mediaStorage->existsOnR2($key)) {
+                return $this->mediaStorage->temporaryUrl($key);
+            }
         }
 
         if ($file->path && Storage::disk('public')->exists($file->path)) {
@@ -61,6 +73,17 @@ class ShootFileAccessService
 
     public function resolveOptimizedFileUrl(ShootFile $file): ?string
     {
+        // When reads are flipped, derived previews live on the R2 CDN; resolve
+        // them there without depending on the (possibly pruned) local disk.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            foreach ([$file->web_path ?? null, $file->thumbnail_path ?? null] as $candidate) {
+                $key = $this->mediaStorage->normalizeKey($candidate);
+                if ($key && $this->mediaStorage->existsOnR2($key)) {
+                    return $this->mediaStorage->publicUrl($key);
+                }
+            }
+        }
+
         if (!empty($file->web_path) && Storage::disk('public')->exists($file->web_path)) {
             return $this->resolvePublicStorageUrl($file->web_path);
         }
@@ -88,6 +111,13 @@ class ShootFileAccessService
 
         if (preg_match('/^https?:\/\//i', $path)) {
             return $path;
+        }
+
+        // When reads are flipped to R2, public/delivered/preview assets are served
+        // from the R2 public CDN custom domain. This is the single funnel for all
+        // hand-built public URLs across presenter/preview/public-asset services.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            return $this->mediaStorage->publicUrl($path);
         }
 
         $clean = ltrim($path, '/');

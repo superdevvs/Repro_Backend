@@ -37,7 +37,7 @@ class ProcessImageJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(ImageProcessingService $imageService, DropboxWorkflowService $dropboxService): void
+    public function handle(ImageProcessingService $imageService, DropboxWorkflowService $dropboxService, \App\Services\Media\MediaStorage $media): void
     {
         // Quarantine gate (Req 14.3 / 15.1 / 15.4): downstream image processing is
         // withheld unless the file has cleared the virus scan (clean, or a legacy
@@ -85,6 +85,11 @@ class ProcessImageJob implements ShouldQueue
                 $sourcePath = Storage::disk('public')->path($this->shootFile->path);
             } elseif ($this->shootFile->storage_path && Storage::disk('public')->exists($this->shootFile->storage_path)) {
                 $sourcePath = Storage::disk('public')->path($this->shootFile->storage_path);
+            } elseif (($media->readFromR2Enabled() || $media->r2Only())
+                && ($r2Key = $media->normalizeKey($this->shootFile->path ?: $this->shootFile->storage_path))
+                && ($tempPath = $media->downloadToTemp($r2Key))) {
+                // Source the original from R2 when the local copy is gone (post-prune).
+                $sourcePath = $tempPath;
             } elseif ($this->shootFile->dropbox_path || $this->shootFile->storage_path) {
                 $tempPath = $dropboxService->downloadToTemp($this->shootFile->dropbox_path ?: $this->shootFile->storage_path);
                 $sourcePath = $tempPath;
@@ -109,6 +114,17 @@ class ProcessImageJob implements ShouldQueue
                     'processing_failed_at' => now(),
                     'processing_error' => 'Failed to process image'
                 ]);
+            } elseif (config('media.dual_write') || config('media.r2_only')) {
+                // Mirror the freshly generated derived assets (thumbnail/web/
+                // placeholder) to R2 during the dual-write/R2-only cutover.
+                try {
+                    SyncShootFileToR2Job::dispatch($this->shootFile->id);
+                } catch (\Throwable $e) {
+                    Log::warning('R2 sync dispatch failed after image processing', [
+                        'file_id' => $this->shootFile->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
             }
 
         } catch (\Exception $e) {

@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -19,7 +20,8 @@ class ShootPublicAssetsService
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootPaymentStatusSupport $paymentStatusSupport,
-        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
+        protected MediaStorage $mediaStorage
     ) {
     }
 
@@ -829,6 +831,17 @@ class ShootPublicAssetsService
 
         $clean = ltrim($path, '/');
         $relative = str_starts_with($clean, 'storage/') ? substr($clean, 8) : $clean;
+
+        // Public/delivered/tour assets resolve to the R2 CDN once reads are flipped.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            if ($this->mediaStorage->existsOnR2($relative)) {
+                return $this->mediaStorage->publicUrl($relative);
+            }
+            if ($this->mediaStorage->r2Only()) {
+                return null;
+            }
+        }
+
         if (Storage::disk('public')->exists($relative)) {
             $url = Storage::disk('public')->url($relative);
             if (!preg_match('/^https?:\/\//i', $url)) {

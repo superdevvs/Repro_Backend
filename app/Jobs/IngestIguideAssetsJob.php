@@ -155,6 +155,18 @@ class IngestIguideAssetsJob implements ShouldQueue
                         'error' => $e->getMessage(),
                     ]);
                 }
+
+                // Mirror into R2 during the dual-write/R2-only cutover.
+                if (config('media.dual_write') || config('media.r2_only')) {
+                    try {
+                        SyncShootFileToR2Job::dispatch($shootFile->id);
+                    } catch (\Throwable $e) {
+                        Log::warning('IngestIguideAssetsJob: r2 dispatch failed', [
+                            'shoot_file_id' => $shootFile->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
             } catch (\Throwable $e) {
                 Log::warning('IngestIguideAssetsJob: asset ingestion failed', [
                     'shoot_id' => $shoot->id,

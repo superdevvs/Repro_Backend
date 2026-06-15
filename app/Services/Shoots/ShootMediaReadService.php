@@ -24,7 +24,8 @@ class ShootMediaReadService
         protected ImageProcessingService $imageProcessingService,
         protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootPaymentStatusSupport $paymentStatusSupport,
-        protected ShootClientReleaseAccessService $shootClientReleaseAccessService
+        protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
+        protected \App\Services\Media\MediaStorage $mediaStorage
     ) {
     }
 
@@ -53,6 +54,16 @@ class ShootMediaReadService
             }
 
             return response()->json(['message' => 'File not available'], 404);
+        }
+
+        // R2-first: the preview route is already access-controlled, so redirect to
+        // a short-lived presigned URL (safe for raw + locked media) once reads are
+        // flipped. Local file serving remains a secondary fallback.
+        if ($file->path && ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only())) {
+            $key = $this->mediaStorage->normalizeKey($file->path);
+            if ($key && $this->mediaStorage->existsOnR2($key)) {
+                return redirect($this->mediaStorage->temporaryUrl($key));
+            }
         }
 
         if ($file->path && Storage::disk('public')->exists($file->path)) {
@@ -596,6 +607,16 @@ class ShootMediaReadService
             $clean = substr($clean, 8);
         }
 
+        // Preview/derived assets resolve to the R2 CDN once reads are flipped.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            if ($this->mediaStorage->existsOnR2($clean)) {
+                return $this->shootFileAccessService->resolvePublicStorageUrl($clean);
+            }
+            if ($this->mediaStorage->r2Only()) {
+                return null;
+            }
+        }
+
         if (Storage::disk('public')->exists($clean)) {
             return $this->shootFileAccessService->resolvePublicStorageUrl($clean);
         }
@@ -616,6 +637,15 @@ class ShootMediaReadService
     {
         if (!$path) {
             return null;
+        }
+
+        // R2-first: watermarked/derived previews are served from the CDN when reads
+        // are flipped (cacheable, safe to expose), falling back to local streaming.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            $key = $this->mediaStorage->normalizeKey($path);
+            if ($key && $this->mediaStorage->existsOnR2($key)) {
+                return redirect($this->mediaStorage->publicUrl($key));
+            }
         }
 
         $localPath = $this->shootFileAccessService->resolveLocalPath($path);

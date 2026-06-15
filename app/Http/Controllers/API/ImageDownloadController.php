@@ -19,7 +19,7 @@ class ImageDownloadController extends Controller
     /**
      * Download original image file
      */
-    public function downloadOriginal(Request $request, $fileId): StreamedResponse|JsonResponse
+    public function downloadOriginal(Request $request, $fileId): StreamedResponse|JsonResponse|\Illuminate\Http\RedirectResponse
     {
         $validator = Validator::make(['file_id' => $fileId], [
             'file_id' => 'required|integer|exists:shoot_files,id',
@@ -49,6 +49,22 @@ class ImageDownloadController extends Controller
                 return response()->json([
                     'error' => 'This file was flagged as infected by a virus scan and cannot be downloaded.'
                 ], 403);
+            }
+
+            // R2-first: serve the original via a short-lived presigned URL once
+            // reads are flipped (raw originals are never exposed via the CDN).
+            $media = app(\App\Services\Media\MediaStorage::class);
+            if ($media->readFromR2Enabled() || $media->r2Only()) {
+                $key = $media->normalizeKey($shootFile->path);
+                if ($key && $media->existsOnR2($key)) {
+                    Log::info('File download (R2 presigned)', [
+                        'file_id' => $fileId,
+                        'user_id' => $user->id,
+                        'shoot_id' => $shoot->id,
+                    ]);
+
+                    return redirect($media->temporaryUrl($key));
+                }
             }
 
             // Check if file exists
@@ -107,7 +123,7 @@ class ImageDownloadController extends Controller
     /**
      * Download web-sized image (for preview)
      */
-    public function downloadWeb(Request $request, $fileId): StreamedResponse|JsonResponse
+    public function downloadWeb(Request $request, $fileId): StreamedResponse|JsonResponse|\Illuminate\Http\RedirectResponse
     {
         $validator = Validator::make(['file_id' => $fileId], [
             'file_id' => 'required|integer|exists:shoot_files,id',
@@ -141,6 +157,17 @@ class ImageDownloadController extends Controller
 
             // Check if web version exists
             $webPath = $shootFile->web_path;
+
+            // R2-first: web previews are public/delivered assets — redirect to the
+            // CDN once reads are flipped.
+            $media = app(\App\Services\Media\MediaStorage::class);
+            if ($webPath && ($media->readFromR2Enabled() || $media->r2Only())) {
+                $key = $media->normalizeKey($webPath);
+                if ($key && $media->existsOnR2($key)) {
+                    return redirect($media->publicUrl($key));
+                }
+            }
+
             if (!$webPath || !Storage::disk('public')->exists($webPath)) {
                 return response()->json([
                     'error' => 'Web version not available'
@@ -195,6 +222,8 @@ class ImageDownloadController extends Controller
             $fileIds = $request->input('file_ids');
             $files = ShootFile::whereIn('id', $fileIds)->get();
             $downloadableFiles = [];
+            $media = app(\App\Services\Media\MediaStorage::class);
+            $r2Reads = $media->readFromR2Enabled() || $media->r2Only();
 
             // Check authorization for each file
             foreach ($files as $file) {
@@ -203,7 +232,8 @@ class ImageDownloadController extends Controller
                     continue;
                 }
                 if ($this->canDownloadFile($user, $file->shoot, $file)) {
-                    if (Storage::disk('local')->exists($file->path)) {
+                    $onR2 = $r2Reads && ($key = $media->normalizeKey($file->path)) && $media->existsOnR2($key);
+                    if (Storage::disk('local')->exists($file->path) || $onR2) {
                         $downloadableFiles[] = $file;
                     }
                 }
@@ -226,15 +256,33 @@ class ImageDownloadController extends Controller
                 ], 500);
             }
 
-            // Add files to ZIP
+            // Add files to ZIP, sourcing from local when present and otherwise
+            // pulling from R2 into a temp file (cleaned up after the archive is built).
+            $tempSources = [];
             foreach ($downloadableFiles as $file) {
                 $filePath = Storage::disk('local')->path($file->path);
                 if (file_exists($filePath)) {
                     $zip->addFile($filePath, $file->filename);
+                    continue;
+                }
+
+                if ($r2Reads) {
+                    $key = $media->normalizeKey($file->path);
+                    $contents = $key ? $media->get($key) : null;
+                    if ($contents !== null) {
+                        $tmp = tempnam(sys_get_temp_dir(), 'r2zip_');
+                        file_put_contents($tmp, $contents);
+                        $tempSources[] = $tmp;
+                        $zip->addFile($tmp, $file->filename);
+                    }
                 }
             }
 
             $zip->close();
+
+            foreach ($tempSources as $tmp) {
+                @unlink($tmp);
+            }
 
             // Log bulk download
             Log::info("Bulk download", [

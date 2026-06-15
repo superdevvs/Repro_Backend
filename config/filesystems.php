@@ -60,6 +60,23 @@ return [
             'report' => false,
         ],
 
+        // Cloudflare R2 (S3-compatible) bucket backing all shoot media.
+        // `url` is the public CDN custom domain used for public/delivered/tour
+        // assets; raw and locked media are served via presigned temporary URLs.
+        'media' => [
+            'driver' => 's3',
+            'key' => env('R2_ACCESS_KEY_ID'),
+            'secret' => env('R2_SECRET_ACCESS_KEY'),
+            'region' => env('R2_DEFAULT_REGION', 'auto'),
+            'bucket' => env('R2_BUCKET'),
+            'url' => env('R2_PUBLIC_URL'),
+            'endpoint' => env('R2_ENDPOINT'),
+            'use_path_style_endpoint' => env('R2_USE_PATH_STYLE_ENDPOINT', false),
+            'visibility' => 'private',
+            'throw' => false,
+            'report' => false,
+        ],
+
     ],
 
     /*

@@ -9,6 +9,7 @@ use App\Models\OauthToken;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
+use App\Jobs\SyncShootFileToR2Job;
 use App\Exceptions\Scanning\ClamAvUnavailable;
 use App\Services\Messaging\AutomationService;
 use App\Services\Scanning\ClamAvClient;
@@ -575,6 +576,21 @@ class DropboxWorkflowService
                 SyncShootFileToDropboxJob::dispatch($shootFile->id);
             } catch (\Throwable $e) {
                 Log::warning('Dropbox sync dispatch failed after local upload', [
+                    'shoot_id' => $shoot->id,
+                    'file_id' => $shootFile->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // Mirror the upload to Cloudflare R2 when the dual-write/R2-only cutover
+        // is enabled (config/media.php). The job is idempotent and re-dispatched
+        // after image processing/watermarking so derived assets sync too.
+        if (config('media.dual_write') || config('media.r2_only')) {
+            try {
+                SyncShootFileToR2Job::dispatch($shootFile->id);
+            } catch (\Throwable $e) {
+                Log::warning('R2 sync dispatch failed after local upload', [
                     'shoot_id' => $shoot->id,
                     'file_id' => $shootFile->id,
                     'error' => $e->getMessage(),

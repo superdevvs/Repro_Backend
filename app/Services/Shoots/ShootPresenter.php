@@ -18,7 +18,8 @@ class ShootPresenter
     public function __construct(
         protected ShootFileAccessService $fileAccessService,
         protected ShootEditingAssignmentService $editingAssignmentService,
-        protected DropboxWorkflowService $dropboxService
+        protected DropboxWorkflowService $dropboxService,
+        protected \App\Services\Media\MediaStorage $mediaStorage
     )
     {
     }
@@ -148,6 +149,17 @@ class ShootPresenter
         $clean = ltrim($path, '/');
         if (Str::startsWith($clean, 'storage/')) {
             $clean = Str::after($clean, 'storage/');
+        }
+
+        // Resolve to the R2 CDN once reads are flipped (presenter assets are
+        // previews/delivered media), falling back to local then Dropbox.
+        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
+            if ($this->mediaStorage->existsOnR2($clean)) {
+                return $this->fileAccessService->resolvePublicStorageUrl($clean);
+            }
+            if ($this->mediaStorage->r2Only()) {
+                return null;
+            }
         }
 
         if (Storage::disk('public')->exists($clean)) {

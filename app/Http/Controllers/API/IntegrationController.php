@@ -1295,6 +1295,18 @@ class IntegrationController extends Controller
                 }
             }
 
+            // When reads are flipped to R2, delivered media is publicly fetchable
+            // via the CDN custom domain — prefer that for MLS server-side fetches.
+            $media = app(\App\Services\Media\MediaStorage::class);
+            if ($media->readFromR2Enabled() || $media->r2Only()) {
+                foreach (['web_path', 'storage_path', 'path'] as $field) {
+                    $key = $media->normalizeKey($file->{$field} ?? null);
+                    if ($key && $media->existsOnR2($key)) {
+                        return $media->publicUrl($key);
+                    }
+                }
+            }
+
             // When Dropbox is enabled, files live in Dropbox — not on local disk.
             // Prefer Dropbox temporary links over converting relative paths to
             // storage URLs that would 404 because the file isn't physically there.

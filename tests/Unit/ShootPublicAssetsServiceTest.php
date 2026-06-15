@@ -86,7 +86,8 @@ class ShootPublicAssetsServiceTest extends TestCase
         return new ShootPublicAssetsService(
             $dropboxService,
             $paymentStatusSupport,
-            $clientReleaseAccessService
+            $clientReleaseAccessService,
+            new \App\Services\Media\MediaStorage()
         );
     }
 }

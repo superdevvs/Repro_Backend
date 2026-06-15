@@ -109,6 +109,18 @@ class GenerateWatermarkedImageJob implements ShouldQueue
                 $this->shootFile->album->update(['is_watermarked' => true]);
             }
 
+            // Mirror watermark outputs to R2 during the dual-write/R2-only cutover.
+            if (config('media.dual_write') || config('media.r2_only')) {
+                try {
+                    SyncShootFileToR2Job::dispatch($this->shootFile->id);
+                } catch (\Throwable $e) {
+                    Log::warning('R2 sync dispatch failed after watermark generation', [
+                        'file_id' => $this->shootFile->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             // Clean up temporary files
             if ($deleteOriginalAfter && file_exists($originalPath)) {
                 @unlink($originalPath);
@@ -759,6 +771,17 @@ class GenerateWatermarkedImageJob implements ShouldQueue
             $localPath = $this->resolveLocalFilePath($candidate);
             if ($localPath) {
                 return [$localPath, false];
+            }
+        }
+
+        // Source the original from R2 when the local copy is gone (post-prune).
+        $media = app(\App\Services\Media\MediaStorage::class);
+        if ($media->readFromR2Enabled() || $media->r2Only()) {
+            foreach ($candidates as $candidate) {
+                $downloaded = $media->downloadToTemp($candidate);
+                if ($downloaded && file_exists($downloaded)) {
+                    return [$downloaded, true];
+                }
             }
         }
 
