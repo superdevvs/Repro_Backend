@@ -63,6 +63,27 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringNotContainsString('202-868-1663', $html);
     }
 
+    public function test_payment_reminder_does_not_duplicate_invoice_label_when_number_already_includes_it(): void
+    {
+        $template = new MessageTemplate([
+            'slug' => 'payment-due-reminder',
+            'channel' => 'EMAIL',
+            'subject' => 'Payment Reminder - Invoice [invoice_number]',
+            'body_html' => '<p>Amount Due: $[amount_due]</p>',
+            'body_text' => 'Amount Due: [amount_due]',
+            'variables_json' => ['invoice_number', 'amount_due'],
+        ]);
+
+        $result = $this->renderer()->render($template, [
+            'invoice_number' => 'Invoice 00018',
+            'amount_due' => '250.00',
+        ]);
+
+        $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
+        $this->assertStringNotContainsString('Invoice Invoice 00018', $result['html']);
+        $this->assertStringContainsString('Invoice 00018', $result['html']);
+    }
+
     public function test_account_created_db_render_uses_single_url_and_new_closing(): void
     {
         $seeder = new MessagingSystemSeeder();

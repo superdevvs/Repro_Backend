@@ -38,6 +38,7 @@ class TemplateRenderer
         $html = $this->replacePlaceholders($template->body_html ?? '', $available->all());
         $text = $this->replacePlaceholders($template->body_text ?? '', $available->all());
         $subject = $this->replacePlaceholders($template->subject ?? '', $available->all());
+        $subject = $this->normalizePaymentReminderInvoiceSubject($template, $subject);
 
         if ($this->serviceDetailsAlreadyNamePhotographer($variables)) {
             $html = $this->removeDuplicatePhotographerSummaryRows($html);
@@ -127,6 +128,27 @@ class TemplateRenderer
     protected function removeDuplicatePhotographerTextRows(string $text): string
     {
         return preg_replace('/^\s*Photographers?:\s*[^\r\n]*(?:\r?\n)?/mi', '', $text) ?? $text;
+    }
+
+    protected function normalizePaymentReminderInvoiceSubject(MessageTemplate $template, string $subject): string
+    {
+        if (($template->slug ?? '') !== 'payment-due-reminder') {
+            return $subject;
+        }
+
+        $normalized = preg_replace(
+            '/^(Payment Reminder\s*-\s*Invoice)\s+Invoice\s+/i',
+            '$1 ',
+            $subject
+        );
+
+        $normalized = preg_replace(
+            '/^Invoice\s+Invoice\s+(.+?)\s*-\s*Payment Reminder$/i',
+            'Invoice $1 - Payment Reminder',
+            $normalized ?? $subject
+        );
+
+        return $normalized ?? $subject;
     }
 
     protected function wrapWithLayout(MessageTemplate $template, string $bodyHtml, string $subject): string
@@ -1140,7 +1162,7 @@ HTML;
             if ($invoiceNumber !== '') {
                 return [
                     'lead' => 'Payment Reminder for',
-                    'location' => 'Invoice ' . $invoiceNumber,
+                    'location' => $this->formatInvoiceTitleLocation($invoiceNumber),
                     'status' => 'Pending',
                 ];
             }
@@ -1151,13 +1173,24 @@ HTML;
             if ($invoiceNumber !== '') {
                 return [
                     'lead' => 'Payment Reminder for',
-                    'location' => 'Invoice ' . $invoiceNumber,
+                    'location' => $this->formatInvoiceTitleLocation($invoiceNumber),
                     'status' => 'Pending',
                 ];
             }
         }
 
         return null;
+    }
+
+    protected function formatInvoiceTitleLocation(string $invoiceNumber): string
+    {
+        $invoiceNumber = trim($invoiceNumber);
+
+        if (preg_match('/^Invoice\b/i', $invoiceNumber)) {
+            return $invoiceNumber;
+        }
+
+        return 'Invoice ' . $invoiceNumber;
     }
 
     /**
