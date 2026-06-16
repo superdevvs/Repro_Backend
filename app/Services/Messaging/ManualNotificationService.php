@@ -57,6 +57,11 @@ class ManualNotificationService
      */
     private const OPTIONAL_VARIABLES = [
         'assigned_photographers',
+        'photographer_name',
+        'photographer_first_name',
+        'photographer_last_name',
+        'photographer_email',
+        'photographer_phone',
         'shoot_notes',
         'shoot_change_summary',
         'shoot_changes_html',
