@@ -102,8 +102,8 @@ HTML,
         $this->assertStringContainsString('.dark-panel-surface {', $html);
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringContainsString('[data-ogsc] .dark-meta-surface,', $html);
-        $this->assertStringContainsString('#111c2e', $html);
-        $this->assertStringContainsString('linear-gradient(180deg, #17365c 0%, #111c2e 100%)', $html);
+        $this->assertStringContainsString('#131c2e', $html);
+        $this->assertStringContainsString('linear-gradient(180deg, #18233a 0%, #121a2b 100%)', $html);
     }
 
     public function test_renderer_removes_top_level_photographer_row_when_services_already_show_assignment(): void

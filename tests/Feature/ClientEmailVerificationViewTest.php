@@ -36,10 +36,10 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
         $this->assertStringContainsString('background-color:#ffffff;border:0;border-radius:24px24px00', $normalizedHtml);
         $this->assertStringContainsString('@media(prefers-color-scheme:dark)', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#111c2e!important', $normalizedHtml);
-        $this->assertStringContainsString('linear-gradient(180deg,#17365c0%,#111c2e100%)', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
+        $this->assertStringContainsString('linear-gradient(180deg,#18233a0%,#121a2b100%)', $normalizedHtml);
         $this->assertStringContainsString('color:#071223!important', $normalizedHtml);
-        $this->assertStringContainsString('color:#e8edf5!important', $normalizedHtml);
+        $this->assertStringContainsString('color:#eef2f9!important', $normalizedHtml);
         $this->assertStringNotContainsString('@extends(', $html);
     }
 
@@ -134,7 +134,7 @@ class ClientEmailVerificationViewTest extends TestCase
 
         $this->assertStringContainsString('/images/repro-email-logo-light.png', $html);
         $this->assertStringNotContainsString('/images/repro-email-logo-grey.png', $html);
-        $this->assertStringContainsString('#00141d', $html);
+        $this->assertStringContainsString('#0b1220', $html);
     }
 
     public function test_shoot_removed_email_uses_the_shared_theme_contract(): void
@@ -154,9 +154,9 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#111c2e!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
         $this->assertStringContainsString('background-color:#fff0f1', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#351b22!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#3a1f27!important', $normalizedHtml);
     }
 
     public function test_shoot_cancelled_email_keeps_cancellation_copy(): void
@@ -198,9 +198,9 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
         $this->assertStringContainsString('background-color:#f5f9ff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#16233a!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#1a2740!important', $normalizedHtml);
         $this->assertStringContainsString('background-color:#f7fbff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#111c2e!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
     }
 
     private function shootEmailViewData(): object

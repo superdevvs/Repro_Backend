@@ -205,7 +205,6 @@ class TemplateRenderer
         $legalCopyColorDark = $branding['legal_copy_color_dark'] ?? '#8da2be';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
-        $journeyHtml = '';
 
         // New Account emails should surface a single URL type (Dashboard), so the
         // Website tile is suppressed for that template to avoid the confusing
@@ -395,53 +394,6 @@ a { color: {$linkColorLight}; text-decoration: none; }
   color: {$bodyColorLight};
   font-size: 15px;
   line-height: 1.8;
-}
-.journey {
-  position: relative;
-  z-index: 2;
-  margin-top: 34px;
-  max-width: 640px;
-}
-.journey-bars {
-  font-size: 0;
-  white-space: nowrap;
-}
-.journey-bar {
-  display: inline-block;
-  width: calc(25% - 9px);
-  height: 7px;
-  margin-right: 12px;
-  border-radius: 999px;
-  background: {$borderColorLight};
-}
-.journey-bar:last-child {
-  margin-right: 0;
-}
-.journey-bar-complete {
-  background: #1463ff;
-}
-.journey-bar-next {
-  background: {$linkColorLight};
-}
-.journey-labels {
-  width: 100%;
-  margin-top: 12px;
-}
-.journey-label {
-  width: 25%;
-  padding-right: 10px;
-  font-size: 11px;
-  line-height: 1.4;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  color: {$mutedColorLight};
-  font-weight: 800;
-}
-.journey-label-complete {
-  color: #1463ff;
-}
-.journey-label-next {
-  color: {$bodyColorLight};
 }
 .body-card {
   margin-top: 18px;
@@ -644,15 +596,6 @@ a { color: {$linkColorLight}; text-decoration: none; }
     margin-bottom: 12px !important;
   }
   .hero-copy { max-width: none !important; }
-  .journey-bar {
-    width: calc(25% - 7px) !important;
-    margin-right: 9px !important;
-  }
-  .journey-label {
-    display: block !important;
-    width: 100% !important;
-    padding: 0 0 8px !important;
-  }
   .info-label {
     display: block !important;
     min-width: 0 !important;
@@ -732,13 +675,9 @@ a { color: {$linkColorLight}; text-decoration: none; }
   .hero-overline,
   .hero-title-lead,
   .hero-title-status,
-  .info-label,
-  .journey-label {
+  .info-label {
     color: {$mutedColorDark} !important;
   }
-  .journey-bar { background: {$borderColorDark} !important; }
-  .journey-bar-next { background: {$linkColorDark} !important; }
-  .journey-label-next { color: {$bodyColorDark} !important; }
   .button,
   .button-large {
     background-image: linear-gradient(135deg, #1463ff 0%, #0b83ff 100%) !important;
@@ -803,13 +742,9 @@ a { color: {$linkColorLight}; text-decoration: none; }
 [data-ogsc] .hero-overline,
 [data-ogsc] .hero-title-lead,
 [data-ogsc] .hero-title-status,
-[data-ogsc] .info-label,
-[data-ogsc] .journey-label {
+[data-ogsc] .info-label {
   color: {$mutedColorDark} !important;
 }
-[data-ogsc] .journey-bar { background: {$borderColorDark} !important; }
-[data-ogsc] .journey-bar-next { background: {$linkColorDark} !important; }
-[data-ogsc] .journey-label-next { color: {$bodyColorDark} !important; }
 [data-ogsc] .footer-note,
 [data-ogsc] .dark-legal-copy { color: {$legalCopyColorDark} !important; }
 </style>
@@ -826,7 +761,6 @@ a { color: {$linkColorLight}; text-decoration: none; }
       </div>
       <h1 class="hero-title">{$heroTitle}</h1>
       <p class="hero-copy">{$heroCopy}</p>
-{$journeyHtml}
     </div>
     <div class="body-card body-surface" style="background-color:{$contentSurfaceLight}; border:0; color:{$bodyColorLight};">
       <div class="body-inner body-surface" style="background-color:{$contentSurfaceLight}; color:{$bodyColorLight};">
@@ -1228,11 +1162,6 @@ HTML;
         }
 
         return $parts;
-    }
-
-    protected function buildJourneyRail(MessageTemplate $template): string
-    {
-        return '';
     }
 
     protected function escapeHtml(string $value): string
