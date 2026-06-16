@@ -443,7 +443,11 @@ class TemplateVariableResolver
 
         $names = array_values(array_unique(array_filter($names)));
 
-        return $names ? implode(', ', $names) : '';
+        // Fall back to a human-friendly placeholder rather than an empty string so
+        // (a) emails never render a blank "Photographer:" value and (b) the manual
+        // notification preview does not flag this inherently-optional variable as
+        // "missing" for shoots that have not been assigned a photographer yet.
+        return $names ? implode(', ', $names) : 'To be assigned';
     }
 
     private function resolveLoadedPhotographerName(Shoot $shoot): string

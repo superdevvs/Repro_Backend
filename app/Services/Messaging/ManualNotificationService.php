@@ -46,6 +46,37 @@ class ManualNotificationService
 
     private const CHANNELS = ['email', 'sms'];
 
+    /**
+     * Variables that are inherently optional / contextual and commonly empty for a
+     * perfectly valid shoot (e.g. a shoot with no photographer assigned yet, or no
+     * notes / change summary). These render cleanly when blank, so they must NOT be
+     * surfaced as "missing template variables" warnings in the manual-notification
+     * preview — only genuinely-required fields that came back empty should warn.
+     *
+     * @var list<string>
+     */
+    private const OPTIONAL_VARIABLES = [
+        'assigned_photographers',
+        'shoot_notes',
+        'shoot_change_summary',
+        'shoot_changes_html',
+        'photographer_change_summary',
+        'previous_photographer_name',
+        'new_photographer_name',
+        'recipient_booking_intro',
+        'recipient_update_intro',
+        'recipient_manage_copy',
+        'recipient_manage_copy_text',
+        'cancellation_policy_html',
+        'cancellation_policy_text',
+        'property_prep_html',
+        'property_prep_text',
+        'payment_cta_html',
+        'payment_cta_text',
+        'branded_tour_link',
+        'mls_tour_link',
+    ];
+
     public function __construct(
         private readonly MessagingService $messagingService,
         private readonly TemplateRenderer $templateRenderer,
@@ -213,6 +244,9 @@ class ManualNotificationService
         $missing = [];
 
         foreach ((array) ($template->variables_json ?? []) as $key) {
+            if (in_array($key, self::OPTIONAL_VARIABLES, true)) {
+                continue;
+            }
             $value = $context[$key] ?? null;
             if ($value === null || $value === '' || $value === []) {
                 $missing[] = $key;
