@@ -73,23 +73,22 @@ class ShootShareLinkService
         return $zipPath;
     }
 
-    public function createShootShareLink(
-        Shoot $shoot,
-        User $user,
-        array $fileIds = [],
-        string $mediaStage = self::MEDIA_STAGE_RAW
-    ): array
+    /**
+     * Select the files that may be shared with an editor for the given media stage.
+     *
+     * Non-required extras are withheld so they remain hidden from editors,
+     * consistent with the editing payload rule (Req 13.2). Required extras
+     * (required_for_editing = true) and standard files remain included (Req 13.3).
+     *
+     * @param  array<int, int|string>  $fileIds
+     * @return \Illuminate\Support\Collection<int, ShootFile>
+     */
+    public function selectEditorShareFiles(Shoot $shoot, string $normalizedMediaStage, array $fileIds = []): \Illuminate\Support\Collection
     {
-        $normalizedMediaStage = $this->normalizeMediaStage($mediaStage);
         $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
-        $isLaneSpecificStage = in_array($normalizedMediaStage, [
-            self::MEDIA_STAGE_RAW_PHOTO,
-            self::MEDIA_STAGE_RAW_VIDEO,
-        ], true);
         $workflowStages = $isEditedStage
             ? [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]
             : [ShootFile::STAGE_TODO];
-        $stageLabel = $isEditedStage ? 'edited' : 'raw';
 
         $filesQuery = $shoot->files()->whereIn('workflow_stage', $workflowStages);
         if ($normalizedMediaStage === self::MEDIA_STAGE_RAW_VIDEO) {
@@ -103,7 +102,28 @@ class ShootShareLinkService
         if (!empty($fileIds)) {
             $filesQuery->whereIn('id', $fileIds);
         }
-        $files = $filesQuery->get();
+
+        return $filesQuery->get()
+            ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
+            ->values();
+    }
+
+    public function createShootShareLink(
+        Shoot $shoot,
+        User $user,
+        array $fileIds = [],
+        string $mediaStage = self::MEDIA_STAGE_RAW
+    ): array
+    {
+        $normalizedMediaStage = $this->normalizeMediaStage($mediaStage);
+        $isEditedStage = $normalizedMediaStage === self::MEDIA_STAGE_EDITED;
+        $isLaneSpecificStage = in_array($normalizedMediaStage, [
+            self::MEDIA_STAGE_RAW_PHOTO,
+            self::MEDIA_STAGE_RAW_VIDEO,
+        ], true);
+        $stageLabel = $isEditedStage ? 'edited' : 'raw';
+
+        $files = $this->selectEditorShareFiles($shoot, $normalizedMediaStage, $fileIds);
         $fileCount = $files->count();
 
         if (!empty($fileIds) && $fileCount === 0) {

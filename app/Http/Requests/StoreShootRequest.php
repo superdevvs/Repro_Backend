@@ -45,7 +45,7 @@ class StoreShootRequest extends FormRequest
         $userRole = strtolower((string) ($user->role ?? ''));
         $isInternalScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
         $shootType = (string) $this->input('shoot_type', 'standard');
-        $canOmitServicesRole = in_array($userRole, ['superadmin', 'editing_manager'], true);
+        $canOmitServicesRole = in_array($userRole, ['superadmin', 'editing_manager', 'admin', 'salesrep', 'sales_rep'], true);
         $canOmitServices = $canOmitServicesRole && in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
 
         return [
