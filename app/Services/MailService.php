@@ -1225,8 +1225,8 @@ class MailService
      */
     public function captureShootSnapshot(Shoot $shoot): array
     {
-        $shoot = $shoot->fresh(['client', 'photographer', 'service', 'services']) ?? $shoot;
-        $shoot->loadMissing(['client', 'photographer', 'service', 'services']);
+        $shoot = $shoot->fresh(['client', 'photographer', 'service', 'services', 'ghostUsers']) ?? $shoot;
+        $shoot->loadMissing(['client', 'photographer', 'service', 'services', 'ghostUsers']);
 
         $propertyDetails = $this->normalizePropertyDetails($shoot->property_details);
 
@@ -1236,17 +1236,42 @@ class MailService
             'scheduled_at' => $shoot->scheduled_at?->toISOString(),
             'scheduled_date' => $shoot->scheduled_date?->toDateString(),
             'time' => $shoot->time,
+            'timezone' => $shoot->timezone,
             'location' => $this->formatFullAddress($shoot) ?: 'TBD',
             'client_name' => $shoot->client?->name,
             'photographer_name' => $shoot->photographer?->name,
             'base_quote' => (float) ($shoot->base_quote ?? 0),
+            'discount_type' => $shoot->discount_type,
+            'discount_value' => $shoot->discount_value,
+            'discount_amount' => (float) ($shoot->discount_amount ?? 0),
             'tax_amount' => (float) ($shoot->tax_amount ?? 0),
             'total_quote' => (float) ($shoot->total_quote ?? 0),
+            'shoot_type' => $shoot->shoot_type,
+            'product_status' => $shoot->product_status,
+            'listing_type' => $shoot->listing_type,
+            'property_status' => $shoot->property_status,
+            'mls_id' => $shoot->mls_id,
+            'mls_image_width' => $shoot->mls_image_width,
+            'iguide_property_id' => $shoot->iguide_property_id,
+            'iguide_work_order_id' => $shoot->iguide_work_order_id,
             'shoot_notes' => $shoot->shoot_notes,
             'company_notes' => $shoot->company_notes,
             'photographer_notes' => $shoot->photographer_notes,
             'editor_notes' => $shoot->editor_notes,
             'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
+            'is_listing_hidden' => (bool) ($shoot->is_listing_hidden ?? false),
+            'is_featured' => (bool) ($shoot->is_featured ?? false),
+            'featured_homepage_title' => $shoot->featured_homepage_title,
+            'featured_homepage_location' => $shoot->featured_homepage_location,
+            'featured_homepage_subtitle' => $shoot->featured_homepage_subtitle,
+            'featured_homepage_cta_label' => $shoot->featured_homepage_cta_label,
+            'featured_homepage_cta_href' => $shoot->featured_homepage_cta_href,
+            'ghost_users' => $shoot->ghostUsers
+                ->map(fn (User $user) => ['id' => (int) $user->id, 'name' => $user->name])
+                ->sortBy('id')
+                ->values()
+                ->all(),
+            'tour_links' => $this->normalizeArrayForComparison($shoot->tour_links ?? []),
             'services' => $this->formatServicesForComparison($shoot),
             'property_details' => [
                 'bedrooms' => $propertyDetails['bedrooms'] ?? $propertyDetails['beds'] ?? null,
@@ -1266,8 +1291,8 @@ class MailService
      */
     public function buildShootChangeSummary(array $before, Shoot $shoot): array
     {
-        $shoot = $shoot->fresh(['client', 'photographer', 'service', 'services']) ?? $shoot;
-        $shoot->loadMissing(['client', 'photographer', 'service', 'services']);
+        $shoot = $shoot->fresh(['client', 'photographer', 'service', 'services', 'ghostUsers']) ?? $shoot;
+        $shoot->loadMissing(['client', 'photographer', 'service', 'services', 'ghostUsers']);
 
         $afterPropertyDetails = $this->normalizePropertyDetails($shoot->property_details);
         $changes = [];
@@ -1277,6 +1302,13 @@ class MailService
             'Status',
             $this->formatStatusValue($before['status'] ?? null),
             $this->formatStatusValue($shoot->status)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Workflow Status',
+            $this->formatStatusValue($before['workflow_status'] ?? null),
+            $this->formatStatusValue($shoot->workflow_status)
         );
 
         $this->addChangeLine(
@@ -1292,6 +1324,13 @@ class MailService
                 $shoot->time,
                 $shoot->scheduled_at?->toISOString()
             )
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Timezone',
+            $this->normalizeChangeText($before['timezone'] ?? null),
+            $this->normalizeChangeText($shoot->timezone)
         );
 
         $this->addChangeLine(
@@ -1331,6 +1370,27 @@ class MailService
 
         $this->addChangeLine(
             $changes,
+            'Discount Type',
+            $this->formatStatusValue($before['discount_type'] ?? null),
+            $this->formatStatusValue($shoot->discount_type)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Discount Value',
+            $this->formatDiscountValue($before['discount_type'] ?? null, $before['discount_value'] ?? null),
+            $this->formatDiscountValue($shoot->discount_type, $shoot->discount_value)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Discount Amount',
+            $this->formatCurrency($before['discount_amount'] ?? 0),
+            $this->formatCurrency($shoot->discount_amount ?? 0)
+        );
+
+        $this->addChangeLine(
+            $changes,
             'Tax',
             $this->formatCurrency($before['tax_amount'] ?? 0),
             $this->formatCurrency($shoot->tax_amount ?? 0)
@@ -1341,6 +1401,62 @@ class MailService
             'Total',
             $this->formatCurrency($before['total_quote'] ?? 0),
             $this->formatCurrency($shoot->total_quote ?? 0)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Shoot Type',
+            $this->formatStatusValue($before['shoot_type'] ?? null),
+            $this->formatStatusValue($shoot->shoot_type)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Product Status',
+            $this->formatStatusValue($before['product_status'] ?? null),
+            $this->formatStatusValue($shoot->product_status)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Listing Type',
+            $this->formatStatusValue($before['listing_type'] ?? null),
+            $this->formatStatusValue($shoot->listing_type)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Property Status',
+            $this->formatStatusValue($before['property_status'] ?? null),
+            $this->formatStatusValue($shoot->property_status)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'MLS ID',
+            $this->normalizeChangeText($before['mls_id'] ?? null),
+            $this->normalizeChangeText($shoot->mls_id)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'MLS Image Width',
+            $this->formatNumberValue($before['mls_image_width'] ?? null),
+            $this->formatNumberValue($shoot->mls_image_width)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'iGUIDE Property ID',
+            $this->normalizeChangeText($before['iguide_property_id'] ?? null),
+            $this->normalizeChangeText($shoot->iguide_property_id)
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'iGUIDE Work Order ID',
+            $this->normalizeChangeText($before['iguide_work_order_id'] ?? null),
+            $this->normalizeChangeText($shoot->iguide_work_order_id)
         );
 
         $this->addChangeLine(
@@ -1433,6 +1549,50 @@ class MailService
             $this->formatBooleanValue($before['is_private_listing'] ?? false),
             $this->formatBooleanValue((bool) ($shoot->is_private_listing ?? false))
         );
+
+        $this->addChangeLine(
+            $changes,
+            'Listing Hidden',
+            $this->formatBooleanValue($before['is_listing_hidden'] ?? false),
+            $this->formatBooleanValue((bool) ($shoot->is_listing_hidden ?? false))
+        );
+
+        $this->addChangeLine(
+            $changes,
+            'Featured',
+            $this->formatBooleanValue($before['is_featured'] ?? false),
+            $this->formatBooleanValue((bool) ($shoot->is_featured ?? false))
+        );
+
+        foreach ([
+            'featured_homepage_title' => 'Featured Homepage Title',
+            'featured_homepage_location' => 'Featured Homepage Location',
+            'featured_homepage_subtitle' => 'Featured Homepage Subtitle',
+            'featured_homepage_cta_label' => 'Featured Homepage CTA Label',
+            'featured_homepage_cta_href' => 'Featured Homepage CTA Link',
+        ] as $field => $label) {
+            $this->addChangeLine(
+                $changes,
+                $label,
+                $this->normalizeChangeText($before[$field] ?? null),
+                $this->normalizeChangeText($shoot->{$field})
+            );
+        }
+
+        $this->addChangeLine(
+            $changes,
+            'Shared Client Access',
+            $this->formatUserSummary($before['ghost_users'] ?? []),
+            $this->formatUserSummary($shoot->ghostUsers
+                ->map(fn (User $user) => ['id' => (int) $user->id, 'name' => $user->name])
+                ->sortBy('id')
+                ->values()
+                ->all())
+        );
+
+        if (($before['tour_links'] ?? []) !== $this->normalizeArrayForComparison($shoot->tour_links ?? [])) {
+            $changes[] = 'Tour Links: Updated';
+        }
 
         return [
             'summary' => implode("\n", $changes),
@@ -2999,13 +3159,53 @@ HTML;
         if (!$shoot->services || $shoot->services->isEmpty()) {
             return [];
         }
+
+        $photographerNamesById = User::query()
+            ->whereIn('id', $shoot->services
+                ->map(fn ($service) => $service->pivot?->photographer_id)
+                ->filter()
+                ->unique()
+                ->values()
+                ->all())
+            ->pluck('name', 'id');
+
+        $editorNamesById = User::query()
+            ->whereIn('id', $shoot->services
+                ->map(fn ($service) => $service->pivot?->editor_id)
+                ->filter()
+                ->unique()
+                ->values()
+                ->all())
+            ->pluck('name', 'id');
+
         return $shoot->services->map(function ($s) {
+            $scheduledAt = $s->pivot?->scheduled_at;
+
             return [
                 'id' => $s->id,
                 'name' => $s->name ?? $s->service_name ?? 'Service',
                 'price' => (float) ($s->pivot->price ?? $s->price ?? 0),
                 'quantity' => (int) ($s->pivot->quantity ?? 1),
+                'photographer_id' => $s->pivot?->photographer_id ? (int) $s->pivot->photographer_id : null,
+                'photographer_name' => null,
+                'editor_id' => $s->pivot?->editor_id ? (int) $s->pivot->editor_id : null,
+                'editor_name' => null,
+                'scheduled_at' => $scheduledAt instanceof CarbonInterface
+                    ? $scheduledAt->toISOString()
+                    : ($scheduledAt ? (string) $scheduledAt : null),
+                'workflow_status' => $s->pivot?->workflow_status,
+                'delivery_status' => $s->pivot?->delivery_status,
+                'is_deliverable' => $s->pivot?->is_deliverable === null ? null : (bool) $s->pivot?->is_deliverable,
             ];
+        })->map(function (array $service) use ($photographerNamesById, $editorNamesById) {
+            if ($service['photographer_id']) {
+                $service['photographer_name'] = (string) ($photographerNamesById->get($service['photographer_id']) ?: 'Photographer #' . $service['photographer_id']);
+            }
+            if ($service['editor_id']) {
+                $service['editor_name'] = (string) ($editorNamesById->get($service['editor_id']) ?: 'Editor #' . $service['editor_id']);
+            }
+
+            return $service;
         })->sortBy('id')->values()->toArray();
     }
 
@@ -3019,8 +3219,39 @@ HTML;
             $line = $name;
             if ($qty > 1) $line .= " x{$qty}";
             if ($price > 0) $line .= ' ($' . number_format($price * $qty, 2) . ')';
+            if (!empty($s['photographer_name'])) {
+                $line .= ' - Photographer: ' . $s['photographer_name'];
+            }
+            if (!empty($s['editor_name'])) {
+                $line .= ' - Editor: ' . $s['editor_name'];
+            }
+            if (!empty($s['scheduled_at'])) {
+                $line .= ' - Time: ' . $this->formatDateTimeValue($s['scheduled_at']);
+            }
+            if (!empty($s['workflow_status'])) {
+                $line .= ' - Workflow: ' . $this->formatStatusValue($s['workflow_status']);
+            }
+            if (!empty($s['delivery_status'])) {
+                $line .= ' - Delivery: ' . $this->formatStatusValue($s['delivery_status']);
+            }
+            if (array_key_exists('is_deliverable', $s) && $s['is_deliverable'] !== null) {
+                $line .= ' - Deliverable: ' . $this->formatBooleanValue((bool) $s['is_deliverable']);
+            }
             return $line;
         })->implode(', ');
+    }
+
+    private function formatUserSummary(array $users): string
+    {
+        if (empty($users)) {
+            return 'None';
+        }
+
+        return collect($users)
+            ->map(fn (array $user) => trim((string) ($user['name'] ?? 'User #' . ($user['id'] ?? ''))))
+            ->filter()
+            ->values()
+            ->implode(', ');
     }
 
     private function normalizeChangeText(?string $value): string
@@ -3033,6 +3264,30 @@ HTML;
     {
         $num = (float) ($value ?? 0);
         return '$' . number_format($num, 2);
+    }
+
+    private function formatDiscountValue($type, $value): string
+    {
+        if ($value === null || $value === '') {
+            return '';
+        }
+
+        $formatted = number_format((float) $value, 2);
+
+        return ((string) $type === 'percent') ? "{$formatted}%" : '$' . $formatted;
+    }
+
+    private function formatDateTimeValue($value): string
+    {
+        if ($value === null || $value === '') {
+            return '';
+        }
+
+        try {
+            return \Carbon\Carbon::parse($value)->format('M j, Y \a\t g:i A');
+        } catch (\Exception $e) {
+            return (string) $value;
+        }
     }
 
     private function formatNumberValue($value, int $decimals = 0): string
@@ -3058,6 +3313,28 @@ HTML;
             $pd = json_decode($pd, true) ?? [];
         }
         return is_array($pd) ? $pd : [];
+    }
+
+    private function normalizeArrayForComparison($value): array
+    {
+        if (is_string($value) && $value !== '') {
+            $decoded = json_decode($value, true);
+            $value = is_array($decoded) ? $decoded : [];
+        }
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        ksort($value);
+
+        foreach ($value as $key => $item) {
+            if (is_array($item)) {
+                $value[$key] = $this->normalizeArrayForComparison($item);
+            }
+        }
+
+        return $value;
     }
 
     private function renderWeeklyInvoiceGeneratedTemplate(\App\Models\Invoice $invoice, $recipient, string $recipientRole, string $period): ?array

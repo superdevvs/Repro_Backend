@@ -212,6 +212,14 @@ class TemplateRenderer
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
         $preheaderText = $this->escapeHtml($this->buildPreheaderText($bodyHtml, $template));
         $preheaderFiller = str_repeat('&zwnj;&nbsp;', 24);
+        $hasFullWidthInfoBox = $this->containsInfoBox($bodyHtml);
+        $bodyInnerClass = $hasFullWidthInfoBox
+            ? 'body-inner body-inner-before-wide body-surface'
+            : 'body-inner body-surface';
+        $bodyInnerStyle = $hasFullWidthInfoBox
+            ? "background-color:{$contentSurfaceLight}; color:{$bodyColorLight}; padding-bottom:0;"
+            : "background-color:{$contentSurfaceLight}; color:{$bodyColorLight};";
+        $bodyHtml = $this->promoteInfoBoxesToFullWidth($bodyHtml, $contentSurfaceLight, $bodyColorLight);
 
         // New Account emails should surface a single URL type (Dashboard), so the
         // Website tile is suppressed for that template to avoid the confusing
@@ -409,6 +417,12 @@ a { color: {$linkColorLight}; text-decoration: none; }
 .body-inner {
   padding: 30px 32px;
 }
+.body-inner-before-wide {
+  padding-bottom: 0;
+}
+.body-inner-after-wide {
+  padding-top: 0;
+}
 .body-inner p,
 .body-inner li,
 .body-inner div,
@@ -463,8 +477,10 @@ a { color: {$linkColorLight}; text-decoration: none; }
   box-shadow: 0 16px 30px rgba(20, 99, 255, 0.22);
 }
 .info-box {
-  margin: 20px -32px;
+  margin: 20px 0;
   padding: 18px 52px;
+  width: 100%;
+  box-sizing: border-box;
   border-radius: 22px;
   border: 0;
   background: {$sectionSurfaceLight};
@@ -587,8 +603,8 @@ a { color: {$linkColorLight}; text-decoration: none; }
   .hero-card { padding: 24px 22px !important; }
   .body-inner, .footer-card { padding-left: 20px !important; padding-right: 20px !important; }
   .info-box {
-    margin-left: -20px !important;
-    margin-right: -20px !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
     padding-left: 40px !important;
     padding-right: 40px !important;
   }
@@ -777,7 +793,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
       <p class="hero-copy">{$heroCopy}</p>
     </div>
     <div class="body-card body-surface" style="background-color:{$contentSurfaceLight}; border:0; color:{$bodyColorLight};">
-      <div class="body-inner body-surface" style="background-color:{$contentSurfaceLight}; color:{$bodyColorLight};">
+      <div class="{$bodyInnerClass}" style="{$bodyInnerStyle}">
 {$bodyHtml}
       </div>
       <div class="footer-wrap">
@@ -860,7 +876,7 @@ HTML;
         }
 
         $classStyles = [
-            'info-box' => "margin:20px -32px; padding:18px 52px; border-radius:22px; border:0; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
+            'info-box' => "margin:20px 0; padding:18px 52px; width:100%; box-sizing:border-box; border-radius:22px; border:0; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
             'info-row' => "padding:10px 0; border-bottom:0;",
             'info-label' => "display:inline-block; min-width:150px; color:{$mutedColor}; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;",
             'note' => "margin:20px 0; padding:16px 18px; border-radius:18px; border:0; background-color:{$noteSurface}; color:{$bodyColor} !important;",
@@ -875,6 +891,66 @@ HTML;
         }
 
         return $bodyHtml;
+    }
+
+    protected function containsInfoBox(string $bodyHtml): bool
+    {
+        return (bool) preg_match('/<div\b(?=[^>]*\bclass=(["\'])[^"\']*\binfo-box\b[^"\']*\1)[^>]*>/i', $bodyHtml);
+    }
+
+    protected function promoteInfoBoxesToFullWidth(string $bodyHtml, string $contentSurface, string $bodyColor): string
+    {
+        if (!$this->containsInfoBox($bodyHtml)) {
+            return $bodyHtml;
+        }
+
+        $pattern = '/<div\b(?=[^>]*\bclass=(["\'])[^"\']*\binfo-box\b[^"\']*\1)[^>]*>/i';
+        $offset = 0;
+        $result = '';
+
+        while (preg_match($pattern, $bodyHtml, $matches, PREG_OFFSET_CAPTURE, $offset)) {
+            $start = $matches[0][1];
+            $end = $this->findMatchingDivEnd($bodyHtml, $start);
+
+            if ($end === null) {
+                break;
+            }
+
+            $result .= substr($bodyHtml, $offset, $start - $offset);
+            $result .= "</div>\n";
+            $result .= substr($bodyHtml, $start, $end - $start);
+            $result .= "\n<div class=\"body-inner body-inner-after-wide body-surface\" style=\"background-color:{$contentSurface}; color:{$bodyColor}; padding-top:0;\">";
+
+            $offset = $end;
+        }
+
+        return $result . substr($bodyHtml, $offset);
+    }
+
+    protected function findMatchingDivEnd(string $html, int $start): ?int
+    {
+        $depth = 0;
+
+        if (!preg_match_all('/<\/?div\b[^>]*>/i', $html, $tags, PREG_OFFSET_CAPTURE, $start)) {
+            return null;
+        }
+
+        foreach ($tags[0] as [$tag, $position]) {
+            $isClosingTag = str_starts_with(strtolower($tag), '</div');
+            $isSelfClosing = str_ends_with(rtrim($tag), '/>');
+
+            if ($isClosingTag) {
+                $depth--;
+            } elseif (!$isSelfClosing) {
+                $depth++;
+            }
+
+            if ($depth === 0) {
+                return $position + strlen($tag);
+            }
+        }
+
+        return null;
     }
 
     protected function stripLeadingGreetingFromText(string $text): string

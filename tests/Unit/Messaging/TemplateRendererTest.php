@@ -93,8 +93,9 @@ HTML,
         $this->assertStringContainsString('background-color:#ffffff;border:0;color:#47627f;', $normalizedHtml);
         $this->assertStringContainsString('class="info-box"', $html);
         $this->assertStringContainsString('background-color:#f7fbff', $normalizedHtml);
-        $this->assertStringContainsString('margin:20px-32px;padding:18px52px;', $normalizedHtml);
-        $this->assertStringContainsString('margin-left: -20px !important;', $html);
+        $this->assertStringContainsString('margin:20px0;padding:18px52px;width:100%;box-sizing:border-box;', $normalizedHtml);
+        $this->assertStringContainsString('body-inner-after-wide', $html);
+        $this->assertStringContainsString('margin-left: 0 !important;', $html);
         $this->assertStringContainsString('class="change-card"', $html);
         $this->assertStringContainsString('color:#071223', $normalizedHtml);
         $this->assertStringContainsString('.footer-meta-cell {', $html);
