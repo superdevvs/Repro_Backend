@@ -828,7 +828,8 @@ a { color: {$linkColorLight}; text-decoration: none; }
         </div>
         <div class="footer-note dark-legal-copy" style="color:{$legalCopyColorLight};">
           This email was sent by {$productName}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
-          <div class="footer-address dark-legal-copy" style="color:{$legalCopyColorLight};">[CLIENT.ADDRESS]</div>
+          <div class="footer-address dark-legal-copy" style="color:{$legalCopyColorLight};">Thank you for the opportunity.</div>
+          <div style="display:none; font-size:0; line-height:0; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">[CLIENT.ADDRESS]</div>
         </div>
       </div>
     </div>
