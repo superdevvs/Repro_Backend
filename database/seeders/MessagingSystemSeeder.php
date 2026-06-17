@@ -840,42 +840,11 @@ class MessagingSystemSeeder extends Seeder
     //   - a brand FOOTER carrying the canonical sign-off, the support/contact
     //     line, and a signature built from the BRAND_* constants and tokens.
     //
-    // The output is an HTML fragment (consistent with the per-template bodies,
-    // which are fragments rendered inside the shared email layout) and reuses
-    // the existing CSS class vocabulary (info-box, note, button, ...) plus the
-    // same inline-style idiom already present in the bodies, so rendered output
-    // stays visually consistent and well-formed.
-    //
-    // NOTE: this output is later passed through normalizeTemplateDefinition()/
-    // transformContent(), so tokens are kept in [bracket] form (e.g.
-    // [company_email] -> {{company_email}}). The canonical brand name and phone
-    // are emitted as literals (sourced from the BRAND_* constants) because no
-    // token exists for them; the site is shown without its URL scheme so the
-    // footer never hardcodes a literal https:// link where a token belongs.
+    // The modern renderer owns email chrome. Keep seeded template bodies as
+    // content fragments so legacy headers/footers do not get nested in emails.
     private function getEmailWrapper($content): string
     {
-        $brand = self::BRAND_NAME;
-
-        $body = trim((string) $content);
-
-        $header = '
-            <div class="email-header" style="border-bottom: 2px solid #007bff; padding-bottom: 12px; margin-bottom: 24px;">
-                <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">' . $brand . '</h1>
-            </div>';
-
-        // The footer now reuses the canonical shared-snippet providers
-        // (getContactLineHtml() + getSignOffHtml()) so the brand contact line
-        // and closing voice are defined in exactly ONE place. The rendered
-        // footer remains equivalent to the 3.1 output: it still carries the
-        // canonical brand "R/E Pro Photos", the phone "202-868-1113" and the
-        // [company_email] token.
-        $footer = '
-            <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
-                ' . $this->getContactLineHtml() . '
-                ' . $this->getSignOffHtml() . '
-            </div>';
-
-        return trim($header . "\n\n" . $body . "\n\n" . $footer);
+        return trim((string) $content);
     }
 
     // ------------------------------------------------------------------
@@ -977,9 +946,8 @@ class MessagingSystemSeeder extends Seeder
         // getAccountCreatedPlainText() ("R/E Pro Photos client portal") instead
         // of the old non-canonical "R/E Pro Dashboard". The portal link uses the
         // [portal_url] token rather than a hardcoded https://reprophotos.com URL.
-        // The closing contact line and sign-off are intentionally NOT inlined
-        // here: getEmailWrapper() now supplies the canonical contact line and
-        // sign-off footer in exactly one place.
+        // Shared contact and sign-off chrome is supplied by the renderer, so
+        // the seeded body stays focused on account-specific content.
         $content = '
             <p>[greeting]!</p>
             
@@ -2197,27 +2165,7 @@ Thank you!';
 
     private function getPropertyContactReminderTemplate(): string
     {
-        // This is a standalone <!DOCTYPE html> document (it does NOT route
-        // through getEmailWrapper()), so to keep one brand voice across the set
-        // it injects the SAME canonical header (brand name) and footer
-        // (canonical contact line + sign-off) used by the wrapper, sourced from
-        // the shared-snippet providers. The document therefore carries the
-        // canonical brand "R/E Pro Photos", the phone "202-868-1113" and the
-        // [company_email] contact token, while remaining valid standalone HTML.
-        $brand = self::BRAND_NAME;
-
-        return '<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Property Access Details Required</title>
-</head>
-<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <div class="email-header" style="border-bottom: 2px solid #007bff; padding-bottom: 12px; margin-bottom: 24px;">
-        <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">' . $brand . '</h1>
-    </div>
-
+        return '
     <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
         <h2 style="color: #2c3e50; margin-top: 0;">Action Required: Property Access Details</h2>
     </div>
@@ -2245,15 +2193,8 @@ Thank you!';
     
     <p>This information is essential for our photographer to access the property on the scheduled date.</p>
     
-    <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
-        ' . $this->getContactLineHtml() . '
-        ' . $this->getSignOffHtml() . '
-    </div>
-    
     <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-    <p style="color: #666; font-size: 12px;">This is an automated reminder. If you have already provided this information, please disregard this message.</p>
-</body>
-</html>';
+    <p style="color: #666; font-size: 12px;">This is an automated reminder. If you have already provided this information, please disregard this message.</p>';
     }
 
     private function getPropertyContactReminderPlainText(): string

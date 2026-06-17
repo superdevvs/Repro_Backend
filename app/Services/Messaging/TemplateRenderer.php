@@ -39,6 +39,9 @@ class TemplateRenderer
         $text = $this->replacePlaceholders($template->body_text ?? '', $available->all());
         $subject = $this->replacePlaceholders($template->subject ?? '', $available->all());
         $subject = $this->normalizePaymentReminderInvoiceSubject($template, $subject);
+        $html = $this->stripLegacyWrapper($html);
+        $html = $this->stripLeadingGreetingArtifacts($html);
+        $text = $this->stripLeadingTextGreetingArtifacts($text);
 
         if ($this->serviceDetailsAlreadyNamePhotographer($variables)) {
             $html = $this->removeDuplicatePhotographerSummaryRows($html);
@@ -49,8 +52,10 @@ class TemplateRenderer
         $text = $this->normalizeLegacyUrls($text);
         $subject = $this->normalizeLegacyUrls($subject);
         $html = $this->stripLeadingGreeting($html);
+        $html = $this->stripLeadingGreetingArtifacts($html);
         $html = $this->normalizeLegacySuccessColors($html);
         $text = $this->stripLeadingGreetingFromText($text);
+        $text = $this->stripLeadingTextGreetingArtifacts($text);
 
         if ($template->channel === 'EMAIL' && $html !== '') {
             $html = $this->wrapWithLayout($template, $html, $subject);
@@ -815,6 +820,13 @@ HTML;
         return preg_replace('/^\s*<p>\s*(hi|hello)\b.*?<\/p>\s*/is', '', $bodyHtml) ?? $bodyHtml;
     }
 
+    protected function stripLeadingGreetingArtifacts(string $bodyHtml): string
+    {
+        $cleaned = preg_replace('/^\s*<p\b[^>]*>\s*(?:&nbsp;|\s|!|&#33;)*<\/p>\s*/i', '', $bodyHtml);
+
+        return $cleaned ?? $bodyHtml;
+    }
+
     protected function stabilizeEmailBodyHtml(string $bodyHtml): string
     {
         $branding = $this->branding();
@@ -869,6 +881,11 @@ HTML;
     protected function stripLeadingGreetingFromText(string $text): string
     {
         return preg_replace('/^\s*(hi|hello)\b[^\r\n]*[\r\n]+/i', '', $text) ?? $text;
+    }
+
+    protected function stripLeadingTextGreetingArtifacts(string $text): string
+    {
+        return preg_replace('/^\s*!\s*(?:\r?\n)+/', '', $text) ?? $text;
     }
 
     protected function injectInlineStyleForTag(string $html, string $tag, string $style): string
@@ -1232,7 +1249,14 @@ HTML;
     {
         // Extract the inner template content from known wrapped email documents
         // so the renderer can apply the canonical shared layout.
-        if (str_contains($html, 'email-container') && str_contains($html, 'logo-text')) {
+        if (str_contains($html, 'email-header') || str_contains($html, 'email-footer')) {
+            $stripped = preg_replace('/^\s*<div\b[^>]*class=(["\'])[^"\']*\bemail-header\b[^"\']*\1[^>]*>.*?<\/div>\s*/is', '', $html);
+            $stripped = preg_replace('/\s*<div\b[^>]*class=(["\'])[^"\']*\bemail-footer\b[^"\']*\1[^>]*>.*?<\/div>\s*$/is', '', $stripped ?? $html);
+
+            return trim($stripped ?? $html);
+        }
+
+        if (str_contains($html, 'email-container') && str_contains($html, 'class="content"') && str_contains($html, 'class="footer"')) {
             if (preg_match('/<div\s+class=["\']content["\']>\s*(.+)\s*<\/div>\s*<div\s+class=["\']footer["\']/s', $html, $contentMatch)) {
                 return trim($contentMatch[1]);
             }

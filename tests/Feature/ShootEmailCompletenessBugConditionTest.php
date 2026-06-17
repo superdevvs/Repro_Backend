@@ -17,11 +17,8 @@ use Tests\TestCase;
  * canonical contact details, no placeholder links, consistent shared content,
  * consistent sign-off, and HTML/text agreement).
  *
- * These tests encode the EXPECTED (post-fix) behaviour and are written to FAIL
- * on the current (unfixed) seeder. Failure confirms the defects exist and the
- * root-cause hypothesis (the no-op getEmailWrapper() + inline duplication of
- * what should be shared chrome). They are NOT to be "fixed" here - they will
- * pass once the central single-source-of-truth fix is implemented.
+ * These tests encode the expected fixed behavior: seeded bodies stay focused
+ * on template content while shared email chrome is owned by the renderer.
  *
  * The property is scoped to the concrete in-set templates named in the design
  * (it iterates over the deterministic isBugCondition(T) candidates rather than
@@ -248,39 +245,47 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
-    // Check 5: Sign-off / footer consistency (hasInconsistentSignOff) - Req 1.7
-    // Every in-set email body_html must carry the canonical sign-off/footer:
-    // the canonical brand name and the canonical brand contact phone. Expected
-    // FAIL: HTML bodies lack the signature/contact block the plain text carries.
+    // Check 5: Legacy wrapper cleanup - Req 1.7
+    // Seeded DB bodies are content fragments. The shared renderer owns the
+    // brand header/footer chrome, so bodies must not store legacy wrapper
+    // markup that can be nested into rendered emails.
     // ---------------------------------------------------------------------
-    public function test_every_in_set_email_body_html_ends_with_canonical_sign_off_footer(): void
+    public function test_every_in_set_email_body_html_is_free_of_legacy_wrapper_chrome(): void
     {
-        $missingBrandName = [];
-        $missingContactPhone = [];
+        $legacyHeaders = [];
+        $legacyFooters = [];
+        $legacyDividers = [];
 
         foreach ($this->inSetEmailTemplates() as $slug => $template) {
             $html = (string) $template->body_html;
 
-            if (!str_contains($html, self::BRAND_NAME)) {
-                $missingBrandName[] = $slug;
+            if (str_contains($html, 'email-header')) {
+                $legacyHeaders[] = $slug;
             }
-            if (!str_contains($html, self::BRAND_PHONE)) {
-                $missingContactPhone[] = $slug;
+            if (str_contains($html, 'email-footer')) {
+                $legacyFooters[] = $slug;
+            }
+            if (str_contains($html, 'border-bottom: 2px solid #007bff')) {
+                $legacyDividers[] = $slug;
             }
         }
 
         $this->assertSame(
             [],
-            $missingBrandName,
-            'Every in-set email body_html must carry the canonical brand name "' . self::BRAND_NAME
-            . '" in a consistent footer. Missing in: ' . implode(', ', $missingBrandName)
+            $legacyHeaders,
+            'Seeded body_html must not carry legacy email-header chrome. Found in: ' . implode(', ', $legacyHeaders)
         );
 
         $this->assertSame(
             [],
-            $missingContactPhone,
-            'Every in-set email body_html must carry the canonical brand contact phone "' . self::BRAND_PHONE
-            . '" in a consistent footer. Missing in: ' . implode(', ', $missingContactPhone)
+            $legacyFooters,
+            'Seeded body_html must not carry legacy email-footer chrome. Found in: ' . implode(', ', $legacyFooters)
+        );
+
+        $this->assertSame(
+            [],
+            $legacyDividers,
+            'Seeded body_html must not carry the old blue legacy divider. Found in: ' . implode(', ', $legacyDividers)
         );
     }
 
@@ -364,12 +369,10 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
     //
     // Reads the corrected in-set EMAIL templates in recipient-journey order and
     // asserts the set reads as ONE coherent communication journey:
-    //   (a) every body carries the canonical brand header (brand name),
-    //   (b) every body carries the canonical footer contact line (phone +
-    //       {{company_email}}) and the canonical sign-off,
-    //   (c) no body contains the non-canonical brand or a placeholder
+    //   (a) every body is free of legacy wrapper chrome,
+    //   (b) no body contains the non-canonical brand or a placeholder
     //       href="#" link,
-    //   (d) the shared cancellation / property-prep copy reads identically
+    //   (c) the shared cancellation / property-prep copy reads identically
     //       wherever it is inlined (and no pre-fix divergent variant survives).
     //
     // This is the set-level companion to the per-template fix-checking above:
@@ -381,10 +384,7 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
     {
         $templates = $this->inSetEmailTemplates();
 
-        $missingBrandHeader = [];
-        $missingContactPhone = [];
-        $missingContactEmail = [];
-        $missingSignOff = [];
+        $legacyChrome = [];
         $usesNonCanonicalBrand = [];
         $hasPlaceholderLink = [];
         $divergentCancellation = [];
@@ -398,23 +398,14 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
             $text = (string) $template->body_text;
             $both = $html . "\n" . $text;
 
-            // (a) Canonical brand header.
-            if (!str_contains($html, self::BRAND_NAME)) {
-                $missingBrandHeader[] = $slug;
+            // (a) The renderer owns shared brand/support chrome.
+            if (str_contains($html, 'email-header')
+                || str_contains($html, 'email-footer')
+                || str_contains($html, 'border-bottom: 2px solid #007bff')) {
+                $legacyChrome[] = $slug;
             }
 
-            // (b) Canonical footer: contact line (phone + email token) + sign-off.
-            if (!str_contains($html, self::BRAND_PHONE)) {
-                $missingContactPhone[] = $slug;
-            }
-            if (!str_contains($html, self::COMPANY_EMAIL_TOKEN)) {
-                $missingContactEmail[] = $slug;
-            }
-            if (!str_contains($html, self::SIGN_OFF_OPENER)) {
-                $missingSignOff[] = $slug;
-            }
-
-            // (c) No non-canonical brand and no placeholder link anywhere.
+            // (b) No non-canonical brand and no placeholder link anywhere.
             if (str_contains($both, self::NON_CANONICAL_BRAND)) {
                 $usesNonCanonicalBrand[] = $slug;
             }
@@ -422,7 +413,7 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
                 $hasPlaceholderLink[] = $slug;
             }
 
-            // (d) Shared copy reads identically wherever inlined. A template
+            // (c) Shared copy reads identically wherever inlined. A template
             // either defers to the runtime token (no literal copy) or inlines
             // the ONE canonical wording; the pre-fix divergent variants must be
             // gone, and any inlined copy must contain the canonical sentence.
@@ -447,36 +438,24 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
             }
         }
 
-        $this->assertSame([], $missingBrandHeader,
-            'Coherent journey (2.8a): every in-set email must carry the canonical brand header "'
-            . self::BRAND_NAME . '". Missing in: ' . implode(', ', $missingBrandHeader));
-
-        $this->assertSame([], $missingContactPhone,
-            'Coherent journey (2.8b): every in-set email must carry the canonical contact phone "'
-            . self::BRAND_PHONE . '" in the shared footer. Missing in: ' . implode(', ', $missingContactPhone));
-
-        $this->assertSame([], $missingContactEmail,
-            'Coherent journey (2.8b): every in-set email must carry the canonical contact email token "'
-            . self::COMPANY_EMAIL_TOKEN . '" in the shared footer. Missing in: ' . implode(', ', $missingContactEmail));
-
-        $this->assertSame([], $missingSignOff,
-            'Coherent journey (2.8b): every in-set email must close with the canonical sign-off "'
-            . self::SIGN_OFF_OPENER . '". Missing in: ' . implode(', ', $missingSignOff));
+        $this->assertSame([], $legacyChrome,
+            'Coherent journey (2.8a): seeded body fragments must not carry legacy email chrome. Offending: '
+            . implode(', ', $legacyChrome));
 
         $this->assertSame([], $usesNonCanonicalBrand,
-            'Coherent journey (2.8c): no in-set email may reference the non-canonical brand "'
+            'Coherent journey (2.8b): no in-set email may reference the non-canonical brand "'
             . self::NON_CANONICAL_BRAND . '". Offending: ' . implode(', ', $usesNonCanonicalBrand));
 
         $this->assertSame([], $hasPlaceholderLink,
-            'Coherent journey (2.8c): no in-set email may contain a placeholder href="#" link. Offending: '
+            'Coherent journey (2.8b): no in-set email may contain a placeholder href="#" link. Offending: '
             . implode(', ', $hasPlaceholderLink));
 
         $this->assertSame([], $divergentCancellation,
-            'Coherent journey (2.8d): the shared cancellation policy must read identically wherever it '
+            'Coherent journey (2.8c): the shared cancellation policy must read identically wherever it '
             . 'appears. Divergences: ' . implode(' | ', $divergentCancellation));
 
         $this->assertSame([], $divergentPrep,
-            'Coherent journey (2.8d): the shared property-prep copy must read identically wherever it '
+            'Coherent journey (2.8c): the shared property-prep copy must read identically wherever it '
             . 'appears. Divergences: ' . implode(' | ', $divergentPrep));
     }
 }

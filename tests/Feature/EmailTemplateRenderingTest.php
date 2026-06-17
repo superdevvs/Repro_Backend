@@ -27,6 +27,22 @@ class EmailTemplateRenderingTest extends TestCase
         return app(TemplateRenderer::class);
     }
 
+    private function legacyWrappedBody(string $bodyHtml): string
+    {
+        return '
+            <div class="email-header" style="border-bottom: 2px solid #007bff; padding-bottom: 12px; margin-bottom: 24px;">
+                <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">R/E Pro Photos</h1>
+            </div>
+
+            ' . $bodyHtml . '
+
+            <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
+                <p style="margin: 0 0 8px 0;">If you need help, call 202-868-1113 or email us at [company_email].</p>
+                <p style="margin: 0;">Thanks,<br><strong>R/E Pro Photos</strong></p>
+            </div>
+        ';
+    }
+
     public function test_payment_reminder_has_no_status_badge_and_shows_support_line(): void
     {
         $template = new MessageTemplate([
@@ -82,6 +98,101 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
         $this->assertStringNotContainsString('Invoice Invoice 00018', $result['html']);
         $this->assertStringContainsString('Invoice 00018', $result['html']);
+    }
+
+    public function test_payment_reminder_strips_legacy_body_wrapper_and_empty_greeting_artifact(): void
+    {
+        $template = new MessageTemplate([
+            'slug' => 'payment-due-reminder',
+            'category' => 'INVOICE',
+            'channel' => 'EMAIL',
+            'subject' => 'Payment Reminder - Invoice [invoice_number]',
+            'body_html' => $this->legacyWrappedBody('
+                <p>[greeting]!</p>
+                <p>This is a reminder that your invoice still has an outstanding balance.</p>
+                <div class="info-box">
+                    <div class="info-row"><span class="info-label">Invoice Number:</span> [invoice_number]</div>
+                    <div class="info-row"><span class="info-label">Amount Due:</span> <strong>$[amount_due]</strong></div>
+                    <div class="info-row"><span class="info-label">Due Date:</span> [due_date]</div>
+                </div>
+                <center><a href="[payment_link]" class="button button-large">Pay Now</a></center>
+            '),
+            'body_text' => "!\nThis is a reminder that your invoice still has an outstanding balance.\nInvoice Number: [invoice_number]",
+            'variables_json' => ['greeting', 'company_email', 'invoice_number', 'amount_due', 'due_date', 'payment_link'],
+        ]);
+
+        $result = $this->renderer()->render($template, [
+            'greeting' => '',
+            'company_email' => 'contact@reprophotos.com',
+            'invoice_number' => 'Invoice 00018',
+            'amount_due' => '250.00',
+            'due_date' => 'Jul 01, 2026',
+            'payment_link' => 'https://pay.example/inv-00018',
+        ]);
+
+        $html = $result['html'];
+
+        $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
+        $this->assertStringContainsString('class="hero-title"', $html);
+        $this->assertStringContainsString('Payment Reminder', $html);
+        $this->assertStringContainsString('This is a reminder that your invoice still has an outstanding balance.', $html);
+        $this->assertStringContainsString('Invoice 00018', $html);
+        $this->assertStringContainsString('250.00', $html);
+        $this->assertStringContainsString('Jul 01, 2026', $html);
+        $this->assertStringContainsString('https://pay.example/inv-00018', $html);
+        $this->assertStringContainsString(self::SUPPORT_LINE, $html);
+        $this->assertStringNotContainsString('class="email-header"', $html);
+        $this->assertStringNotContainsString('class="email-footer note"', $html);
+        $this->assertStringNotContainsString('border-bottom: 2px solid #007bff', $html);
+        $this->assertDoesNotMatchRegularExpression('/<p\b[^>]*>\s*!\s*<\/p>/i', $html);
+        $this->assertStringStartsWith('This is a reminder', $result['text']);
+    }
+
+    public function test_representative_db_templates_do_not_render_legacy_wrapper_artifacts(): void
+    {
+        $templates = [
+            new MessageTemplate([
+                'slug' => 'shoot-scheduled',
+                'category' => 'BOOKING',
+                'channel' => 'EMAIL',
+                'subject' => 'New Shoot Scheduled',
+                'body_html' => $this->legacyWrappedBody('<p>[greeting]!</p><p>Your new shoot has been scheduled.</p>'),
+                'body_text' => "!\nYour new shoot has been scheduled.",
+                'variables_json' => ['greeting', 'company_email'],
+            ]),
+            new MessageTemplate([
+                'slug' => 'payment-due-reminder',
+                'category' => 'INVOICE',
+                'channel' => 'EMAIL',
+                'subject' => 'Payment Reminder - Invoice INV-1001',
+                'body_html' => $this->legacyWrappedBody('<p>[greeting]!</p><p>Payment reminder details are below.</p>'),
+                'body_text' => "!\nPayment reminder details are below.",
+                'variables_json' => ['greeting', 'company_email'],
+            ]),
+            new MessageTemplate([
+                'slug' => 'weekly-invoice-generated',
+                'category' => 'INVOICE',
+                'channel' => 'EMAIL',
+                'subject' => 'Weekly Invoice Generated',
+                'body_html' => $this->legacyWrappedBody('<p>[greeting]!</p><p>Your weekly invoice is ready.</p>'),
+                'body_text' => "!\nYour weekly invoice is ready.",
+                'variables_json' => ['greeting', 'company_email'],
+            ]),
+        ];
+
+        foreach ($templates as $template) {
+            $result = $this->renderer()->render($template, [
+                'greeting' => '',
+                'company_email' => 'contact@reprophotos.com',
+            ]);
+            $html = $result['html'];
+
+            $this->assertStringNotContainsString('class="email-header"', $html, "{$template->slug} must strip legacy header.");
+            $this->assertStringNotContainsString('class="email-footer note"', $html, "{$template->slug} must strip legacy footer.");
+            $this->assertStringNotContainsString('border-bottom: 2px solid #007bff', $html, "{$template->slug} must strip legacy divider.");
+            $this->assertDoesNotMatchRegularExpression('/<p\b[^>]*>\s*!\s*<\/p>/i', $html, "{$template->slug} must strip empty greeting punctuation.");
+            $this->assertFalse(str_starts_with(ltrim($result['text']), '!'), "{$template->slug} text must strip empty greeting punctuation.");
+        }
     }
 
     public function test_account_created_db_render_uses_single_url_and_new_closing(): void
