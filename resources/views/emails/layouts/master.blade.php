@@ -11,7 +11,6 @@
     $productName = data_get($brand, 'product_name', 'R/E Pro Photos');
     $supportEmail = data_get($brand, 'support_email', 'contact@reprophotos.com');
     $supportPhone = data_get($brand, 'support_phone', '202-868-1113');
-    $dashboardUrl = data_get($brand, 'dashboard_url', 'https://reprodashboard.com');
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $reviewUrl = data_get($brand, 'review_url', 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews');
     // Footer tile toggles. Default ON so every template renders unchanged; the
@@ -33,7 +32,7 @@
     ]));
     $emailCanvasBackgroundLight = data_get($brand, 'email_canvas_background_light', data_get($brand, 'email_outer_background', '#ffffff'));
     $emailCanvasBackgroundDark = data_get($brand, 'email_canvas_background_dark', data_get($brand, 'email_outer_background_dark', data_get($brand, 'outer_background', '#00141d')));
-    $heroSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'hero_surface', '#ffffff'));
+    $heroSurfaceLight = data_get($brand, 'hero_surface_light', data_get($brand, 'hero_surface', data_get($brand, 'section_surface_light', '#f7fbff')));
     $heroSurfaceDark = data_get($brand, 'card_surface_dark', '#111c2e');
     $heroSurfaceDarkGradient = data_get($brand, 'card_surface_dark_gradient', "linear-gradient(180deg, {$heroSurfaceDark} 0%, {$heroSurfaceDark} 100%)");
     $contentSurfaceLight = data_get($brand, 'card_surface_light', data_get($brand, 'content_surface', '#ffffff'));
@@ -258,18 +257,8 @@
                                                     </p>
                                                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px;">
                                                         <tr>
-                                                            <td class="footer-meta-td" width="33.33%" style="padding-right:6px; vertical-align:top;">
-                                                                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
-                                                                    <tr>
-                                                                        <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
-                                                                            <a href="{{ $dashboardUrl }}" class="footer-link-dark" style="display:block; margin-bottom:6px; color:{{ $headingColorLight }}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Dashboard</a>
-                                                                            <span class="dark-body" style="display:block; color:{{ $bodyColorLight }}; font-size:12px; line-height:1.6; font-weight:600;">Track your shoots, invoices, and delivery updates in one place.</span>
-                                                                        </td>
-                                                                    </tr>
-                                                                </table>
-                                                            </td>
                                                             @if($showWebsiteTile)
-                                                            <td class="footer-meta-td" width="33.33%" style="padding:0 6px; vertical-align:top;">
+                                                            <td class="footer-meta-td" width="50%" style="padding-right:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
                                                                         <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">
@@ -281,7 +270,7 @@
                                                             </td>
                                                             @endif
                                                             @if($showReviewTile)
-                                                            <td class="footer-meta-td" width="33.33%" style="padding-left:6px; vertical-align:top;">
+                                                            <td class="footer-meta-td" width="50%" style="padding-left:6px; vertical-align:top;">
                                                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                                                     <tr>
                                                                         <td class="footer-meta-bg" style="background-color:{{ $metaSurfaceLight }}; border:0; border-radius:14px; padding:14px 16px;">

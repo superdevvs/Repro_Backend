@@ -166,7 +166,6 @@ class TemplateRenderer
         $productName = $branding['product_name'];
         $supportEmail = $branding['support_email'];
         $supportPhone = $branding['support_phone'];
-        $dashboardUrl = $branding['dashboard_url'];
         $websiteUrl = $branding['website_url'];
         $canvasBackgroundLight = $branding['email_canvas_background_light'] ?? ($branding['email_outer_background'] ?? '#ffffff');
         $canvasBackgroundDark = $branding['email_canvas_background_dark'] ?? ($branding['email_outer_background_dark'] ?? ($branding['outer_background'] ?? '#00141d'));
@@ -174,6 +173,7 @@ class TemplateRenderer
         $contentSurfaceDark = $branding['card_surface_dark'] ?? '#111c2e';
         $contentSurfaceDarkGradient = $branding['card_surface_dark_gradient'] ?? "linear-gradient(180deg, {$contentSurfaceDark} 0%, {$contentSurfaceDark} 100%)";
         $sectionSurfaceLight = $branding['section_surface_light'] ?? ($branding['section_surface'] ?? '#f7fbff');
+        $heroSurfaceLight = $branding['hero_surface_light'] ?? ($branding['hero_surface'] ?? $sectionSurfaceLight);
         $sectionSurfaceDark = $branding['section_surface_dark'] ?? '#16233a';
         $sectionSurfaceDarkGradient = $branding['section_surface_dark_gradient'] ?? "linear-gradient(180deg, {$sectionSurfaceDark} 0%, {$sectionSurfaceDark} 100%)";
         $statSurfaceLight = $branding['stat_surface_light'] ?? '#f5f9ff';
@@ -210,13 +210,15 @@ class TemplateRenderer
         $legalCopyColorDark = $branding['legal_copy_color_dark'] ?? '#8da2be';
         $heroCopy = $this->escapeHtml($this->resolveHeroCopy($template));
         $heroTitle = $this->buildHeroTitleHtml($template, $subject !== '' ? $subject : ($template->name ?? "{$productName} Update"));
+        $preheaderText = $this->escapeHtml($this->buildPreheaderText($bodyHtml, $template));
+        $preheaderFiller = str_repeat('&zwnj;&nbsp;', 24);
 
         // New Account emails should surface a single URL type (Dashboard), so the
         // Website tile is suppressed for that template to avoid the confusing
         // "website + dashboard" pairing.
         $showWebsiteTile = $template->slug !== 'account-created';
         $websiteTileHtml = $showWebsiteTile ? <<<TILE
-              <td class="footer-meta-cell" width="33.33%" style="width:33.33%; padding:0 4px; vertical-align:top;">
+              <td class="footer-meta-cell" width="50%" style="width:50%; padding-right:8px; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
                     <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
@@ -305,6 +307,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
 }
 .hero-card {
   position: relative;
+  background-color: {$heroSurfaceLight};
   padding: 34px 38px 28px;
 }
 .brand-row {
@@ -755,10 +758,10 @@ a { color: {$linkColorLight}; text-decoration: none; }
 </style>
 </head>
 <body bgcolor="{$canvasBackgroundLight}">
-<div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all;">&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
+<div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; max-height:0; max-width:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px;">{$preheaderText}{$preheaderFiller}</div>
 <div class="page">
   <div class="shell">
-    <div class="hero-card" style="background-color:{$contentSurfaceLight}; border:0;">
+    <div class="hero-card" style="background-color:{$heroSurfaceLight}; border:0;">
       <div class="brand-row">
         <div class="brand-logo">
           <img src="{$logoUrl}" alt="{$productName}" role="presentation">
@@ -779,18 +782,8 @@ a { color: {$linkColorLight}; text-decoration: none; }
           </p>
           <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
-              <td class="footer-meta-cell" width="33.33%" style="width:33.33%; padding-right:8px; vertical-align:top;">
-                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
-                  <tr>
-                    <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
-                      <a href="{$dashboardUrl}" class="dark-panel-link" style="display:block; margin-bottom:6px; color:{$headingColorLight}; font-size:14px; line-height:1.4; font-weight:800; text-decoration:none;">Dashboard</a>
-                      <span class="footer-meta-value dark-meta-value" style="color:{$bodyColorLight}; font-size:12px; line-height:1.6; font-weight:600;">Track your shoots, invoices, and delivery updates in one place.</span>
-                    </td>
-                  </tr>
-                </table>
-              </td>
 {$websiteTileHtml}
-              <td class="footer-meta-cell footer-meta-cell-last" width="33.33%" style="width:33.33%; padding-left:8px; padding-right:0; vertical-align:top;">
+              <td class="footer-meta-cell footer-meta-cell-last" width="50%" style="width:50%; padding-left:8px; padding-right:0; vertical-align:top;">
                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
                     <td class="footer-meta-card dark-meta-surface" style="background-color:{$metaSurfaceLight}; border:0; border-radius:18px; padding:14px 16px;">
@@ -948,6 +941,53 @@ HTML;
             ['#1463ff', '#1463ff', '#295391', '#eff6ff', '#dbeafe'],
             $bodyHtml
         );
+    }
+
+    protected function buildPreheaderText(string $bodyHtml, MessageTemplate $template): string
+    {
+        $text = $this->htmlToPreviewText($bodyHtml);
+        if ($text === '') {
+            $text = $this->resolveHeroCopy($template);
+        }
+
+        return $this->limitPreviewText($text);
+    }
+
+    protected function htmlToPreviewText(string $html): string
+    {
+        $html = preg_replace('/<(script|style)\b[^>]*>.*?<\/\1>/is', ' ', $html) ?? $html;
+        $html = preg_replace('/<\s*(br|hr)\b[^>]*\/?>/i', ' ', $html) ?? $html;
+        $html = preg_replace('/<\s*\/\s*(p|div|h[1-6]|li|tr|td|th|table|center|section|article)\b[^>]*>/i', ' ', $html) ?? $html;
+
+        $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
+        $text = trim($text);
+        $text = preg_replace('/^(?:!|&#33;|\.|,|:|;|\||-|–|—)+\s*/u', '', $text) ?? $text;
+
+        return trim($text);
+    }
+
+    protected function limitPreviewText(string $text): string
+    {
+        $text = trim(preg_replace('/\s+/u', ' ', $text) ?? $text);
+        if ($text === '') {
+            return '';
+        }
+
+        $limit = 180;
+        if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+            if (mb_strlen($text, 'UTF-8') <= $limit) {
+                return $text;
+            }
+
+            return rtrim(mb_substr($text, 0, $limit - 1, 'UTF-8')) . '...';
+        }
+
+        if (strlen($text) <= $limit) {
+            return $text;
+        }
+
+        return rtrim(substr($text, 0, $limit - 1)) . '...';
     }
 
     protected function resolveHeroCopy(MessageTemplate $template): string

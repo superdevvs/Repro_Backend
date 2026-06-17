@@ -72,9 +72,13 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('font-size: 30px', $html);
         $this->assertStringNotContainsString('font-size: 32px', $html);
         $this->assertStringNotContainsString('font-size: 48px', $html);
+        // Light mode hero should render as a visible top card, not white on white.
+        $this->assertStringContainsString('class="hero-card" style="background-color:#f7fbff; border:0;"', $html);
         // Payment essentials still present.
         $this->assertStringContainsString('Pay Now', $html);
         $this->assertStringContainsString('250.00', $html);
+        // Shared footer no longer renders a Dashboard card.
+        $this->assertStringNotContainsString('>Dashboard<', $html);
         // Obsolete phone never appears.
         $this->assertStringNotContainsString('202-868-1663', $html);
     }
@@ -135,6 +139,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
         $this->assertStringContainsString('class="hero-title"', $html);
         $this->assertStringContainsString('Payment Reminder', $html);
+        $this->assertMatchesRegularExpression('/<div[^>]*display:none[^>]*>This is a reminder that your invoice still has an outstanding balance\./i', $html);
         $this->assertStringContainsString('This is a reminder that your invoice still has an outstanding balance.', $html);
         $this->assertStringContainsString('Invoice 00018', $html);
         $this->assertStringContainsString('250.00', $html);
@@ -145,6 +150,8 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringNotContainsString('class="email-footer note"', $html);
         $this->assertStringNotContainsString('border-bottom: 2px solid #007bff', $html);
         $this->assertDoesNotMatchRegularExpression('/<p\b[^>]*>\s*!\s*<\/p>/i', $html);
+        $this->assertDoesNotMatchRegularExpression('/<body[^>]*>\s*<div[^>]*display:none[^>]*>\s*(?:&zwnj;|&nbsp;|\s)/i', $html);
+        $this->assertStringNotContainsString('Payment Reminder. Invoice Invoice details', $html);
         $this->assertStringStartsWith('This is a reminder', $result['text']);
     }
 
@@ -227,9 +234,10 @@ class EmailTemplateRenderingTest extends TestCase
 
         // New closing.
         $this->assertStringContainsString('Thank you for the opportunity.', $html);
-        // Website footer tile suppressed; Dashboard tile kept (single URL type).
+        // Website footer tile suppressed and the shared footer no longer shows
+        // a Dashboard tile.
         $this->assertStringNotContainsString('>Website<', $html);
-        $this->assertStringContainsString('>Dashboard<', $html);
+        $this->assertStringNotContainsString('>Dashboard<', $html);
         // Support line present.
         $this->assertStringContainsString(self::SUPPORT_LINE, $html);
     }
@@ -248,8 +256,9 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('Thank you for the opportunity.', $html);
         // The "Open Dashboard" CTA remains (single primary URL type).
         $this->assertStringContainsString('Open Dashboard', $html);
-        // Website footer tile suppressed for this email.
+        // Website and Dashboard footer tiles are suppressed for this email.
         $this->assertStringNotContainsString('>Website<', $html);
+        $this->assertStringNotContainsString('>Dashboard<', $html);
         // Header reduced below 32px; no oversized hero.
         $this->assertStringContainsString('font-size:30px', $html);
         $this->assertStringNotContainsString('font-size:32px', $html);

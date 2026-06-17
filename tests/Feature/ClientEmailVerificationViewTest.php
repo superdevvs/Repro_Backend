@@ -34,7 +34,7 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringNotContainsString('/images/Repro%20HQ%20dark.png', $html);
         $normalizedHtml = str_replace(' ', '', strtolower($html));
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#ffffff;border:0;border-radius:24px24px00', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#f7fbff;border:0;border-radius:24px24px00', $normalizedHtml);
         $this->assertStringContainsString('@media(prefers-color-scheme:dark)', $normalizedHtml);
         $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
         $this->assertStringContainsString('linear-gradient(180deg,#18233a0%,#121a2b100%)', $normalizedHtml);
