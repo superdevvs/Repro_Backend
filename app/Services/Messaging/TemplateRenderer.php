@@ -463,8 +463,8 @@ a { color: {$linkColorLight}; text-decoration: none; }
   box-shadow: 0 16px 30px rgba(20, 99, 255, 0.22);
 }
 .info-box {
-  margin: 20px 0;
-  padding: 18px 20px;
+  margin: 20px -32px;
+  padding: 18px 52px;
   border-radius: 22px;
   border: 0;
   background: {$sectionSurfaceLight};
@@ -586,6 +586,12 @@ a { color: {$linkColorLight}; text-decoration: none; }
   .page { padding: 14px 8px !important; }
   .hero-card { padding: 24px 22px !important; }
   .body-inner, .footer-card { padding-left: 20px !important; padding-right: 20px !important; }
+  .info-box {
+    margin-left: -20px !important;
+    margin-right: -20px !important;
+    padding-left: 40px !important;
+    padding-right: 40px !important;
+  }
   .hero-title {
     font-size: 24px !important;
     letter-spacing: -1px !important;
@@ -854,7 +860,7 @@ HTML;
         }
 
         $classStyles = [
-            'info-box' => "margin:20px 0; padding:18px 20px; border-radius:22px; border:0; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
+            'info-box' => "margin:20px -32px; padding:18px 52px; border-radius:22px; border:0; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
             'info-row' => "padding:10px 0; border-bottom:0;",
             'info-label' => "display:inline-block; min-width:150px; color:{$mutedColor}; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;",
             'note' => "margin:20px 0; padding:16px 18px; border-radius:18px; border:0; background-color:{$noteSurface}; color:{$bodyColor} !important;",

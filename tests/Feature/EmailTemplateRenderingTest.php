@@ -143,6 +143,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('This is a reminder that your invoice still has an outstanding balance.', $html);
         $this->assertStringContainsString('Invoice 00018', $html);
         $this->assertStringContainsString('250.00', $html);
+        $this->assertStringContainsString('margin:20px -32px; padding:18px 52px;', $html);
         $this->assertStringContainsString('Jul 01, 2026', $html);
         $this->assertStringContainsString('https://pay.example/inv-00018', $html);
         $this->assertStringContainsString(self::SUPPORT_LINE, $html);
