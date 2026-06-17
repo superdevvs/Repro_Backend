@@ -69,9 +69,10 @@ class CakemailProviderTest extends TestCase
 
             return $payload['sender']['id'] === 'sender-default'
                 && $payload['list_id'] === 8651530
-                && $payload['content']['text'] === "Line one\nLine two"
+                && $payload['content']['text'] === "Line one\nLine two\n\n[CLIENT.ADDRESS]"
                 && str_contains((string) $payload['content']['html'], 'Line one')
-                && str_contains((string) $payload['content']['html'], '<br');
+                && str_contains((string) $payload['content']['html'], '<br')
+                && str_contains((string) $payload['content']['html'], '[CLIENT.ADDRESS]');
         });
     }
 

@@ -325,6 +325,7 @@
                     <tr>
                         <td class="legal-copy-dark" style="padding:14px 8px 0; text-align:center; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.7;">
                             This email was sent by {{ $productName }}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
+                            <div style="margin-top:8px; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.6;">[CLIENT.ADDRESS]</div>
                         </td>
                     </tr>
 

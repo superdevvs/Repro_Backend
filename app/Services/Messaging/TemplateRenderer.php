@@ -598,6 +598,12 @@ a { color: {$linkColorLight}; text-decoration: none; }
   font-size: 11px;
   line-height: 1.7;
 }
+.footer-address {
+  margin-top: 8px;
+  color: {$legalCopyColorLight};
+  font-size: 11px;
+  line-height: 1.6;
+}
 @media only screen and (max-width: 640px) {
   .page { padding: 14px 8px !important; }
   .hero-card { padding: 24px 22px !important; }
@@ -714,6 +720,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
     color: #ffffff !important;
   }
   .footer-note,
+  .footer-address,
   .dark-legal-copy { color: {$legalCopyColorDark} !important; }
 }
 [data-ogsc] body,
@@ -776,6 +783,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
   color: {$mutedColorDark} !important;
 }
 [data-ogsc] .footer-note,
+[data-ogsc] .footer-address,
 [data-ogsc] .dark-legal-copy { color: {$legalCopyColorDark} !important; }
 </style>
 </head>
@@ -820,6 +828,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
         </div>
         <div class="footer-note dark-legal-copy" style="color:{$legalCopyColorLight};">
           This email was sent by {$productName}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
+          <div class="footer-address dark-legal-copy" style="color:{$legalCopyColorLight};">[CLIENT.ADDRESS]</div>
         </div>
       </div>
     </div>

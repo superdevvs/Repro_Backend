@@ -79,6 +79,9 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('250.00', $html);
         // Shared footer no longer renders a Dashboard card.
         $this->assertStringNotContainsString('>Dashboard<', $html);
+        // CakeMail should replace this official token inside our styled footer
+        // instead of appending a loose address below the email.
+        $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
         // Obsolete phone never appears.
         $this->assertStringNotContainsString('202-868-1663', $html);
     }
@@ -267,6 +270,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringNotContainsString('font-size:48px', $html);
         // Support contact.
         $this->assertStringContainsString('202-868-1113', $html);
+        $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
         $this->assertStringNotContainsString('202-868-1663', $html);
     }
 

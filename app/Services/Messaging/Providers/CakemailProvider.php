@@ -11,6 +11,8 @@ use Illuminate\Support\Str;
 
 class CakemailProvider implements EmailProviderInterface
 {
+    private const CLIENT_ADDRESS_TAG = '[CLIENT.ADDRESS]';
+
     protected ?string $baseUrl;
     protected string $username;
     protected string $password;
@@ -659,6 +661,8 @@ class CakemailProvider implements EmailProviderInterface
         $contentType = $payload['type'] ?? 'transactional';
         $html = $this->resolveHtmlBody($payload);
         $text = $this->resolveTextBody($payload, $html);
+        $html = $this->ensureClientAddressTagInHtml($html);
+        $text = $this->ensureClientAddressTagInText($text);
 
         $emailPayload = [
             'sender' => [
@@ -793,6 +797,30 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         return trim(html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8'));
+    }
+
+    protected function ensureClientAddressTagInHtml(string $html): string
+    {
+        if ($html === '' || str_contains($html, self::CLIENT_ADDRESS_TAG)) {
+            return $html;
+        }
+
+        $addressHtml = '<div style="margin-top:8px; text-align:center; color:#7f8fa3; font-size:11px; line-height:1.6;">' . self::CLIENT_ADDRESS_TAG . '</div>';
+
+        if (str_contains(strtolower($html), '</body>')) {
+            return preg_replace('/<\/body>/i', $addressHtml . "\n</body>", $html, 1) ?? ($html . $addressHtml);
+        }
+
+        return $html . "\n" . $addressHtml;
+    }
+
+    protected function ensureClientAddressTagInText(string $text): string
+    {
+        if ($text === '' || str_contains($text, self::CLIENT_ADDRESS_TAG)) {
+            return $text;
+        }
+
+        return rtrim($text) . "\n\n" . self::CLIENT_ADDRESS_TAG;
     }
 
     protected function configurationIssue(): ?string
