@@ -5,7 +5,7 @@ namespace App\Jobs;
 use App\Models\ScheduledVoiceCall;
 use App\Models\User;
 use App\Services\TelnyxAi\ScheduledVoiceCallService;
-use App\Services\TelnyxAi\TelnyxVoiceCallService;
+use App\Services\Voice\VoiceCallService;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -25,7 +25,7 @@ class ScheduledVoiceCallJob implements ShouldQueue
     {
     }
 
-    public function handle(TelnyxVoiceCallService $calls, ScheduledVoiceCallService $scheduledCalls): void
+    public function handle(VoiceCallService $calls, ScheduledVoiceCallService $scheduledCalls): void
     {
         $scheduled = ScheduledVoiceCall::query()->find($this->scheduledVoiceCallId);
         if (!$scheduled || in_array($scheduled->status, [ScheduledVoiceCall::STATUS_CANCELLED, ScheduledVoiceCall::STATUS_COMPLETED, ScheduledVoiceCall::STATUS_EXHAUSTED], true)) {
@@ -58,10 +58,12 @@ class ScheduledVoiceCallJob implements ShouldQueue
                 'last_error' => null,
             ])->save();
 
-            $voiceCall = $calls->dial([
+            $voiceCall = $calls->startOutbound([
                 'to' => $scheduled->target_phone,
                 'from' => $scheduled->from_phone,
                 'related_shoot_id' => $scheduled->related_shoot_id,
+                'assistant_mode' => 'robbie_ai',
+                'source' => 'scheduled_voice_call',
                 'dynamic_variables' => array_merge($scheduled->metadata ?? [], [
                     'scheduled_voice_call_id' => $scheduled->id,
                     'scheduled_call_reason' => $scheduled->reason,

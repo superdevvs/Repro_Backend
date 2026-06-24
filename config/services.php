@@ -289,4 +289,13 @@ return [
         'webhook_secret' => env('CAKEMAIL_WEBHOOK_SECRET'),
     ],
 
+    'vapi' => [
+        'api_key' => env('VAPI_API_KEY'),
+        'api_base' => rtrim(env('VAPI_API_BASE', 'https://api.vapi.ai'), '/'),
+        'assistant_id' => env('VAPI_ASSISTANT_ID'),
+        'phone_number_id' => env('VAPI_PHONE_NUMBER_ID'),
+        'server_secret' => env('VAPI_SERVER_SECRET'),
+        'webhook_url' => env('VAPI_WEBHOOK_URL'),
+    ],
+
 ];

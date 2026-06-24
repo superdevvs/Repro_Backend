@@ -49,10 +49,12 @@ use App\Http\Controllers\API\Voice\VoiceScheduleController;
 use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
 use App\Http\Controllers\API\Voice\VoiceSettingsController;
 use App\Http\Controllers\API\Webhooks\TelnyxVoiceWebhookController;
+use App\Http\Controllers\API\Webhooks\VapiWebhookController;
 use App\Http\Controllers\API\CouponController;
 use App\Http\Controllers\API\GoogleCalendarController;
 use App\Http\Controllers\API\ShootMessageController;
 use App\Http\Controllers\API\TourAnalyticsController;
+use App\Http\Controllers\API\OnboardingEventController;
 use App\Http\Controllers\API\ShootRescheduleRequestController;
 use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\EditingRequestController;
@@ -81,9 +83,7 @@ use App\Http\Controllers\API\IntegrationController;
 use App\Http\Controllers\StripePaymentController;
 
 
-Route::get('/user', function (Request $request) {
-    return $request->user();
-})->middleware('auth:sanctum');
+Route::get('/user', [AuthController::class, 'currentUser'])->middleware('auth:sanctum');
 
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
@@ -104,6 +104,7 @@ Route::middleware('telnyx.toolbridge')
     });
 
 Route::post('/webhooks/telnyx/voice', TelnyxVoiceWebhookController::class);
+Route::post('/webhooks/vapi', VapiWebhookController::class);
 
 Route::middleware(['auth:sanctum', 'permission:voice-calls'])->prefix('voice')->group(function () {
     Route::get('calls', [VoiceCallController::class, 'index']);
@@ -1095,6 +1096,15 @@ Route::get('{shoot}/g-mls', [ShootPublicAssetsController::class, 'publicGenericM
 
 // Public tour analytics tracking (unauthenticated, rate-limited)
 Route::post('public/tour-events', [TourAnalyticsController::class, 'trackEvent'])->middleware('throttle:60,1');
+
+// Onboarding telemetry — authenticated, role-gated to onboarded roles only
+// (admin/superadmin are intentionally excluded; they have no onboarding flow).
+Route::middleware(['auth:sanctum', 'role:client,photographer,salesRep,editing_manager,editor', 'throttle:120,1'])
+    ->post('/onboarding/events', [OnboardingEventController::class, 'store']);
+
+// Onboarding funnel summary — admin/superadmin only (query, no UI).
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])
+    ->get('/onboarding/funnel', [OnboardingEventController::class, 'funnel']);
 
 // Public client portfolio endpoints
 Route::prefix('public')->group(function () {

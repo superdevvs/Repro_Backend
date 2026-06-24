@@ -9,6 +9,7 @@ use App\Services\TelnyxAi\ScheduledVoiceCallService;
 use App\Services\TelnyxAi\TelnyxVoiceCallService;
 use App\Services\TelnyxAi\VoiceCallStatsService;
 use App\Services\TelnyxAi\VoiceIntelligenceService;
+use App\Services\Voice\VoiceCallService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -100,20 +101,24 @@ class VoiceCallController extends Controller
         return response()->json($stats->stats((string) $request->query('range', '7d')));
     }
 
-    public function outbound(Request $request, TelnyxVoiceCallService $service): JsonResponse
+    public function outbound(Request $request, VoiceCallService $service): JsonResponse
     {
         $data = $request->validate([
             'to' => ['required', 'string', 'max:32'],
             'from' => ['nullable', 'string', 'max:32'],
             'assistant_id' => ['nullable', 'string', 'max:255'],
+            'assistant_mode' => ['nullable', 'string', 'max:64'],
+            'source' => ['nullable', 'string', 'max:128'],
+            'contact_id' => ['nullable', 'integer', 'exists:contacts,id'],
+            'vapi_phone_number_id' => ['nullable', 'string', 'max:255'],
             'dynamic_variables' => ['nullable', 'array'],
             'related_shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
         ]);
 
         try {
-            $call = $service->dial($data, (int) $request->user()->id);
+            $call = $service->startOutbound($data, (int) $request->user()->id);
         } catch (\Throwable $exception) {
-            \Log::warning('Telnyx outbound dial failed', [
+            \Log::warning('Vapi outbound dial failed', [
                 'error' => $exception->getMessage(),
                 'to' => $data['to'] ?? null,
             ]);

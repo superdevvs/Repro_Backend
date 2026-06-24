@@ -109,7 +109,7 @@ class VoiceCallStreamController extends Controller
 
     private function isClosed(?VoiceCall $call): bool
     {
-        return $call === null || in_array((string) $call->status, ['completed', 'failed', 'transferred'], true);
+        return $call === null || in_array((string) $call->status, ['completed', 'missed', 'failed', 'cancelled', 'transferred'], true);
     }
 
     private function event(string $event, mixed $data): void

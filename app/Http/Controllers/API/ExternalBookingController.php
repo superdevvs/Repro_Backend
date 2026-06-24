@@ -16,7 +16,7 @@ use App\Services\ShootWorkflowService;
 use App\Services\ShootActivityLogger;
 use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootMutationSupportService;
-use App\Services\Users\ClientDashboardOnboardingService;
+use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -304,7 +304,7 @@ class ExternalBookingController extends Controller
             return $client;
         }
 
-        $metadata = app(ClientDashboardOnboardingService::class)->applyEligibility([], 'external_booking');
+        $metadata = app(DashboardOnboardingService::class)->applyEligibility([], 'client', 'external_booking');
         if (!$createAccount) {
             $metadata['guest_booking'] = true;
             $metadata['guest_booking_source'] = $data['source'] ?? 'external_website';

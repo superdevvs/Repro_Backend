@@ -15,7 +15,7 @@ use Illuminate\Validation\ValidationException;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Users\ClientEmailVerificationLinkService;
-use App\Services\Users\ClientDashboardOnboardingService;
+use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 
 class AuthController extends Controller
@@ -73,7 +73,7 @@ class AuthController extends Controller
             'avatar' => $validated['avatar'] ?? null,
             'bio' => $validated['bio'] ?? null,
             'account_status' => 'active',
-            'metadata' => app(ClientDashboardOnboardingService::class)->applyEligibility([], 'registration'),
+            'metadata' => app(DashboardOnboardingService::class)->applyEligibility([], 'client', 'registration'),
             ...$emailHealthMutation['attributes'],
         ]);
 
@@ -193,6 +193,21 @@ class AuthController extends Controller
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
+        // Re-evaluate dashboard onboarding eligibility on login so existing users
+        // are (re)enrolled when a role's onboarding version is bumped, without
+        // requiring the seed command. No-op for non-onboarded roles or users
+        // already at the current version (see DashboardOnboardingService).
+        $existingMetadata = $user->metadata ?? [];
+        $reevaluatedMetadata = app(DashboardOnboardingService::class)->applyEligibility(
+            $existingMetadata,
+            (string) $user->role,
+            'login'
+        );
+        if ($reevaluatedMetadata !== $existingMetadata) {
+            $user->metadata = $reevaluatedMetadata;
+            $user->save();
+        }
+
         Log::info('[Auth] Login successful', ['email' => $email, 'user_id' => $user->id]);
 
         return response()->json([
@@ -212,6 +227,33 @@ class AuthController extends Controller
     }
 
     /**
+     * Return the authenticated user, re-evaluating onboarding eligibility first.
+     *
+     * For onboarded roles only, this re-runs the eligibility check so that a
+     * backend VERSION_* bump re-triggers onboarding for already-logged-in users
+     * on their next fetch. Persistence happens only when the metadata actually
+     * changes (steady-state requests do zero writes), and the whole thing is
+     * guarded so an eligibility/telemetry hiccup never breaks /api/user.
+     */
+    public function currentUser(Request $request, DashboardOnboardingService $onboarding)
+    {
+        $user = $request->user();
+
+        if ($user && $onboarding->isOnboardedRole($user->role)) {
+            try {
+                $onboarding->refreshEligibilityForUser($user);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to refresh onboarding eligibility on user fetch.', [
+                    'user_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $user;
+    }
+
+    /**
      * Update the authenticated user's profile
      */
     public function updateProfile(Request $request)
@@ -224,7 +266,31 @@ class AuthController extends Controller
             ]);
         }
 
-        $validated = $request->validate([
+        // Build role-aware onboarding validation rules for all onboarded roles.
+        // 'client' keeps its legacy key for backward compatibility.
+        $onboardingKeys = [
+            'clientDashboardOnboarding',
+            'photographerDashboardOnboarding',
+            'salesRepDashboardOnboarding',
+            'editingManagerDashboardOnboarding',
+            'editorDashboardOnboarding',
+        ];
+
+        $onboardingRules = [];
+        foreach ($onboardingKeys as $onboardingKey) {
+            $onboardingRules["preferences.{$onboardingKey}"] = 'nullable|array';
+            $onboardingRules["preferences.{$onboardingKey}.eligible"] = 'nullable|boolean';
+            $onboardingRules["preferences.{$onboardingKey}.version"] = 'nullable|integer|min:1|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.createdAt"] = 'nullable|string|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.startedAt"] = 'nullable|string|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.completedAt"] = 'nullable|string|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.dismissedAt"] = 'nullable|string|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.lastStep"] = 'nullable|integer|min:0|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.source"] = 'nullable|string|max:100';
+            $onboardingRules["preferences.{$onboardingKey}.replayCount"] = 'nullable|integer|min:0|max:100';
+        }
+
+        $validated = $request->validate(array_merge([
             'name' => 'sometimes|string|max:255',
             'email' => ['sometimes', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
             'phonenumber' => 'nullable|string|max:20',
@@ -263,17 +329,8 @@ class AuthController extends Controller
             'preferences.notifications.shootReminders' => 'nullable|boolean',
             'preferences.notifications.paymentReminders' => 'nullable|boolean',
             'preferences.notifications.weeklySummaries' => 'nullable|boolean',
-            'preferences.clientDashboardOnboarding' => 'nullable|array',
-            'preferences.clientDashboardOnboarding.eligible' => 'nullable|boolean',
-            'preferences.clientDashboardOnboarding.version' => 'nullable|integer|min:1|max:100',
-            'preferences.clientDashboardOnboarding.createdAt' => 'nullable|string|max:100',
-            'preferences.clientDashboardOnboarding.startedAt' => 'nullable|string|max:100',
-            'preferences.clientDashboardOnboarding.completedAt' => 'nullable|string|max:100',
-            'preferences.clientDashboardOnboarding.dismissedAt' => 'nullable|string|max:100',
-            'preferences.clientDashboardOnboarding.lastStep' => 'nullable|integer|min:0|max:100',
-            'preferences.clientDashboardOnboarding.source' => 'nullable|string|max:100',
             'email_warning_override' => 'sometimes|boolean',
-        ]);
+        ], $onboardingRules));
 
         $incomingEmail = $validated['email'] ?? null;
         $currentEmail = strtolower((string) $user->email);

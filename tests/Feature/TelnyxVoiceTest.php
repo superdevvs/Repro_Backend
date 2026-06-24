@@ -58,13 +58,14 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_admin_can_place_outbound_voice_call(): void
     {
-        config(['services.telnyx.api_key' => 'test-key']);
+        config(['services.vapi.api_key' => 'test-vapi-key']);
+        config(['services.vapi.assistant_id' => 'asst-123']);
+        config(['services.vapi.phone_number_id' => 'pn-123']);
         Http::fake([
-            'api.telnyx.com/v2/calls' => Http::response([
-                'data' => [
-                    'call_control_id' => 'call-123',
-                    'conversation_id' => 'conv-123',
-                ],
+            'https://api.vapi.ai/call' => Http::response([
+                'id' => 'vapi-call-123',
+                'status' => 'queued',
+                'phoneNumberId' => 'pn-123',
             ]),
         ]);
 
@@ -77,12 +78,14 @@ class TelnyxVoiceTest extends TestCase
                 'dynamic_variables' => ['name' => 'Test'],
             ])
             ->assertCreated()
-            ->assertJsonPath('status', 'dialing')
-            ->assertJsonPath('call_control_id', 'call-123');
+            ->assertJsonPath('status', 'initiating')
+            ->assertJsonPath('vapi_call_id', 'vapi-call-123');
 
         $this->assertDatabaseHas('voice_calls', [
+            'provider' => 'vapi_telnyx',
             'direction' => 'OUTBOUND',
             'to_phone' => '+12025550123',
+            'vapi_call_id' => 'vapi-call-123',
         ]);
     }
 
@@ -279,13 +282,14 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_scheduled_voice_call_job_places_outbound_call(): void
     {
-        config(['services.telnyx.api_key' => 'test-key']);
+        config(['services.vapi.api_key' => 'test-vapi-key']);
+        config(['services.vapi.assistant_id' => 'asst-scheduled']);
+        config(['services.vapi.phone_number_id' => 'pn-scheduled']);
         Http::fake([
-            'api.telnyx.com/v2/calls' => Http::response([
-                'data' => [
-                    'call_control_id' => 'call-scheduled-1',
-                    'conversation_id' => 'conv-scheduled-1',
-                ],
+            'https://api.vapi.ai/call' => Http::response([
+                'id' => 'vapi-scheduled-1',
+                'status' => 'queued',
+                'phoneNumberId' => 'pn-scheduled',
             ]),
         ]);
 
@@ -300,7 +304,7 @@ class TelnyxVoiceTest extends TestCase
         ]);
 
         (new ScheduledVoiceCallJob($scheduled->id))->handle(
-            app(\App\Services\TelnyxAi\TelnyxVoiceCallService::class),
+            app(\App\Services\Voice\VoiceCallService::class),
             app(\App\Services\TelnyxAi\ScheduledVoiceCallService::class),
         );
 
@@ -309,8 +313,10 @@ class TelnyxVoiceTest extends TestCase
         $this->assertNotNull($scheduled->result_voice_call_id);
         $this->assertDatabaseHas('voice_calls', [
             'id' => $scheduled->result_voice_call_id,
+            'provider' => 'vapi_telnyx',
             'direction' => 'OUTBOUND',
             'to_phone' => '+12025550123',
+            'vapi_call_id' => 'vapi-scheduled-1',
         ]);
     }
 

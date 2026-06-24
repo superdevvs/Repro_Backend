@@ -11,8 +11,8 @@ use App\Models\AccountLink;
 use App\Models\UserActivityLog;
 use App\Services\Messaging\AutomationService;
 use App\Services\MailService;
-use App\Services\Users\ClientDashboardOnboardingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
+use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -372,12 +372,11 @@ class UserController extends Controller
             ], fn ($value) => $value !== null));
         }
 
-        if (($validated['role'] ?? null) === 'client') {
-            $validated['metadata'] = app(ClientDashboardOnboardingService::class)->applyEligibility(
-                $validated['metadata'] ?? [],
-                'admin_account_created'
-            );
-        }
+        $validated['metadata'] = app(DashboardOnboardingService::class)->applyEligibility(
+            $validated['metadata'] ?? [],
+            $validated['role'] ?? '',
+            'admin_account_created'
+        );
 
         $user = User::create($validated);
         $pendingEquipmentCount = $user->role === 'photographer'
