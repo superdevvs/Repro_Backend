@@ -43,5 +43,28 @@ return [
 
     // Maximum shoot duration in minutes (for safety cap)
     'max_shoot_duration_minutes' => 240,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Photographer service-radius enforcement (Option B — flag-gated rollout)
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, a photographer is excluded from booking eligibility and
+    | manual/auto assignment when the shoot location's distance exceeds their
+    | `metadata.service_radius_miles`. Distance/availability/service-area logic
+    | is unchanged when this is OFF (the historical default), so production can
+    | stay OFF until product sign-off while local/QA runs with it ON.
+    |
+    |   PHOTOGRAPHER_RADIUS_ENFORCEMENT=true        # enable the gate
+    |   PHOTOGRAPHER_RADIUS_UNLIMITED_WHEN_NULL=    # null/empty radius → unlimited (only if approved)
+    |
+    */
+
+    // Master switch for radius gating. Default OFF (safe for production).
+    'radius_enforcement' => env('PHOTOGRAPHER_RADIUS_ENFORCEMENT', false),
+
+    // When radius is null/empty: treat as unlimited (true) or NOT eligible (false).
+    // Product decision; defaults to NOT eligible per QA spec.
+    'radius_unlimited_when_null' => env('PHOTOGRAPHER_RADIUS_UNLIMITED_WHEN_NULL', false),
 ];
 

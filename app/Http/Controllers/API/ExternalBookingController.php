@@ -18,6 +18,11 @@ use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
+use App\Services\ExternalBooking\Data\ExternalBookingData;
+use App\Services\ExternalBooking\ExternalBookingScheduleNormalizer;
+use App\Services\ExternalBooking\ExternalBookingAutoMapper;
+use App\Services\ExternalBooking\ExternalBookingWarningBuilder;
+use App\Services\ExternalBooking\ExternalBookingNotificationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -31,17 +36,29 @@ class ExternalBookingController extends Controller
     protected ShootActivityLogger $activityLogger;
     protected AutomationService $automationService;
     protected ShootMutationSupportService $shootSupport;
+    protected ExternalBookingScheduleNormalizer $scheduleNormalizer;
+    protected ExternalBookingAutoMapper $autoMapper;
+    protected ExternalBookingWarningBuilder $warningBuilder;
+    protected ExternalBookingNotificationService $notificationService;
 
     public function __construct(
         ShootTaxService $taxService,
         ShootActivityLogger $activityLogger,
         AutomationService $automationService,
-        ShootMutationSupportService $shootSupport
+        ShootMutationSupportService $shootSupport,
+        ExternalBookingScheduleNormalizer $scheduleNormalizer,
+        ExternalBookingAutoMapper $autoMapper,
+        ExternalBookingWarningBuilder $warningBuilder,
+        ExternalBookingNotificationService $notificationService
     ) {
         $this->taxService = $taxService;
         $this->activityLogger = $activityLogger;
         $this->automationService = $automationService;
         $this->shootSupport = $shootSupport;
+        $this->scheduleNormalizer = $scheduleNormalizer;
+        $this->autoMapper = $autoMapper;
+        $this->warningBuilder = $warningBuilder;
+        $this->notificationService = $notificationService;
     }
 
     /**
@@ -55,8 +72,15 @@ class ExternalBookingController extends Controller
     {
         $validated = $request->validated();
 
+        // Build the DTO and run the conservative mapping pipeline BEFORE the transaction.
+        // These collaborators are pure (no DB writes), so they are safe to run up front.
+        $data       = ExternalBookingData::fromRequest($request);
+        $normalized = $this->scheduleNormalizer->normalize($data);
+        $mapping    = $this->autoMapper->map($normalized);
+        $warnings   = $this->warningBuilder->build($normalized, $mapping);
+
         try {
-            $result = DB::transaction(function () use ($validated, $request) {
+            $result = DB::transaction(function () use ($validated, $request, $data, $normalized, $mapping, $warnings) {
                 $createAccount = $this->shouldCreateAccount($validated);
 
                 // 1. Find or create client by email
@@ -73,12 +97,10 @@ class ExternalBookingController extends Controller
                     $validated['coupon_code'] ?? null
                 );
 
-                // 4. Build scheduled_at if preferred date/time provided
-                $scheduledAt = null;
-                if (!empty($validated['preferred_date'])) {
-                    $time = $validated['preferred_time'] ?? '00:00';
-                    $scheduledAt = new \DateTime("{$validated['preferred_date']} {$time}");
-                }
+                // 4. Resolve the shoot-level schedule from the mapping result. The mapper
+                //    honors the no-fabricated-time rule (date without time => null time /
+                //    scheduled_at, never a fabricated 00:00) (2.12, 2.14).
+                $shootScheduledAt = $mapping->shootSchedule['scheduled_at']; // 'Y-m-d H:i:s' | null
 
                 // 5. Look up client's rep from previous shoots
                 $repId = $this->getClientRep($client->id);
@@ -96,7 +118,7 @@ class ExternalBookingController extends Controller
                 $shoot = Shoot::create([
                     'client_id' => $client->id,
                     'rep_id' => $repId,
-                    'photographer_id' => null,
+                    'photographer_id' => $mapping->legacyPhotographerId, // null unless case A (S=1,P=1)
                     'service_id' => $services[0]['id'], // Legacy support
                     'address' => $validated['address'],
                     'city' => $validated['city'],
@@ -104,9 +126,16 @@ class ExternalBookingController extends Controller
                     'zip' => $validated['zip'],
                     'mls_id' => $validated['mls_id'] ?? null,
                     'property_details' => !empty($propertyDetails) ? $propertyDetails : null,
-                    'scheduled_at' => $scheduledAt,
-                    'scheduled_date' => $scheduledAt ? $scheduledAt->format('Y-m-d') : null,
-                    'time' => $scheduledAt ? $scheduledAt->format('H:i') : null,
+                    'scheduled_at' => $mapping->shootSchedule['scheduled_at'],
+                    'scheduled_date' => $mapping->shootSchedule['scheduled_date'],
+                    'time' => $mapping->shootSchedule['time'],
+                    'alternate_scheduled_date' => $mapping->alternateSchedule['alternate_scheduled_date'],
+                    'alternate_time' => $mapping->alternateSchedule['alternate_time'],
+                    'alternate_scheduled_at' => $mapping->alternateSchedule['alternate_scheduled_at'],
+                    'requested_photographers' => $normalized->requested_photographers,
+                    'external_booking_payload' => $data->rawPayload,
+                    'external_booking_warnings' => $warnings,
+                    'external_booking_mapping_status' => $mapping->mappingStatus,
                     'status' => Shoot::STATUS_REQUESTED,
                     'workflow_status' => Shoot::STATUS_REQUESTED,
                     'base_quote' => $pricingCalculation['base_quote'],
@@ -126,8 +155,9 @@ class ExternalBookingController extends Controller
                     'shoot_notes' => $validated['notes'] ?? null,
                 ]);
 
-                // 8. Attach services with catalog prices
-                $this->shootSupport->attachServices($shoot, $services);
+                // 8. Attach services with catalog prices plus per-service photographer /
+                //    schedule assignments where the mapping was safe (null otherwise) (2.17).
+                $this->shootSupport->attachServices($shoot, $this->buildServicesPayload($normalized, $mapping));
 
                 if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
                     $coupon = $this->shootSupport->resolveCoupon($pricingCalculation['coupon_code']);
@@ -144,7 +174,7 @@ class ExternalBookingController extends Controller
                         'by' => $client->name,
                         'source' => $source,
                         'status' => Shoot::STATUS_REQUESTED,
-                        'scheduled_at' => $scheduledAt ? \Carbon\Carbon::instance($scheduledAt)->toIso8601String() : null,
+                        'scheduled_at' => $shootScheduledAt ? \Carbon\Carbon::parse($shootScheduledAt)->toIso8601String() : null,
                     ],
                     null // No authenticated user for external requests
                 );
@@ -170,6 +200,17 @@ class ExternalBookingController extends Controller
             }
 
             ProcessExternalShootRequestedJob::dispatch($shoot->id)->afterCommit();
+
+            // Raise the review notification AFTER the transaction commits. A notification
+            // failure must never roll back the booking, so it is wrapped in try/catch (2.19).
+            try {
+                $this->notificationService->notifyIfNeeded($shoot, $mapping, $warnings);
+            } catch (\Throwable $exception) {
+                Log::warning('External booking review notification failed.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Shoot request submitted successfully. It will be reviewed by our team.',
@@ -200,7 +241,37 @@ class ExternalBookingController extends Controller
     }
 
     /**
-     * Check if an email belongs to an existing client.
+     * Merge each resolved service with the auto-mapper's per-service assignment, producing
+     * the array shape {@see ShootMutationSupportService::attachServices} already understands
+     * (`id`, `quantity`, `photographer_id`, `scheduled_at`). The `photographer_id` and
+     * `scheduled_at` keys are ALWAYS present so the pivot is set explicitly — to the mapped
+     * value where safe, or `null` where the mapping was unsafe/ambiguous (2.17).
+     *
+     * @return array<int, array{id:int, quantity:?int, photographer_id:?int, scheduled_at:?string}>
+     */
+    protected function buildServicesPayload(
+        \App\Services\ExternalBooking\NormalizedBooking $normalized,
+        \App\Services\ExternalBooking\MappingResult $mapping
+    ): array {
+        $payload = [];
+
+        foreach ($normalized->selected_services as $service) {
+            $serviceId = (int) $service['id'];
+            $assignment = $mapping->assignmentFor($serviceId);
+
+            $payload[] = [
+                'id' => $serviceId,
+                'quantity' => $service['quantity'] ?? 1,
+                'photographer_id' => $assignment['photographer_id'],
+                'scheduled_at' => $assignment['scheduled_at'],
+            ];
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Public endpoint for external sites to check if a client exists by email.
      * Returns exists=true + dashboard login URL if found.
      *
      * POST /api/external/check-client

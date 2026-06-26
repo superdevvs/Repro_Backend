@@ -1,0 +1,919 @@
+# Final Implementation Direction: External Booking Auto-Mapping + Assignment Review Notification
+
+We need to update the external booking flow from the reprophotos.com / Lovable site into the dashboard.
+
+The current issue is that external bookings are still being submitted in the older style: preferred date, preferred time, optional selected photographer, and selected services. But the dashboard now supports a more advanced model with:
+
+* Shoot-level scheduling fields.
+* Per-service scheduling on the `shoot_service` pivot.
+* Per-service photographer assignment on the `shoot_service` pivot.
+* Legacy `shoots.photographer_id`.
+* Dashboard shoot details popup for reviewing/editing schedules and assignments.
+
+The goal is to make the external booking flow seamless and backward-compatible without forcing the public site to perfectly match the dashboard’s internal model.
+
+The public site can continue sending bookings in the usual external booking format, but the dashboard backend must convert that booking into the dashboard’s real scheduling and assignment structure.
+
+---
+
+## Core Goal
+
+When a booking is submitted from the external site, the dashboard should:
+
+1. Create the shoot as usual.
+2. Keep status as `STATUS_REQUESTED`.
+3. Preserve all existing legacy behavior: client creation, rep resolution, pricing, services, products, activity logging, etc.
+4. Convert preferred/alternate scheduling into per-service schedule data using safe auto-mapping rules.
+5. Assign photographer only when the mapping is obvious and safe.
+6. Leave unclear photographer/schedule values unassigned instead of guessing incorrectly.
+7. Preserve the original external payload for debugging and future compatibility.
+8. Store warnings explaining what was auto-mapped and what still needs review.
+9. Create a dashboard notification when photographer/schedule review is needed.
+10. Clicking the notification should directly open the shoot details popup focused on photographer/schedule assignments.
+
+---
+
+# 1. Keep Backward Compatibility
+
+Do not break the existing external endpoint:
+
+```txt
+POST /api/external/book-shoot
+```
+
+Existing payloads with only:
+
+```json
+{
+  "preferred_date": "2026-07-08",
+  "preferred_time": "10:00"
+}
+```
+
+must continue working.
+
+Legacy external bookings with no photographer or no alternate date/time should still create a requested shoot as they do now.
+
+The fix should be additive and safe.
+
+---
+
+# 2. External Booking Fields to Support
+
+The backend should continue supporting the old fields:
+
+```txt
+preferred_date
+preferred_time
+```
+
+Add support for optional fields:
+
+```txt
+alternate_date
+alternate_time
+selected_photographer_id / photographer_id
+selected_photographers / requested_photographers
+```
+
+Naming can follow the current frontend payload, but internally normalize them into a consistent structure.
+
+Recommended normalized internal structure:
+
+```json
+{
+  "preferred": {
+    "date": "2026-07-08",
+    "time": "10:00"
+  },
+  "alternate": {
+    "date": "2026-07-09",
+    "time": "14:00"
+  },
+  "requested_photographers": [
+    12,
+    18
+  ],
+  "selected_services": [
+    3,
+    5,
+    7
+  ]
+}
+```
+
+If the frontend eventually sends proper service-level assignments, support that too:
+
+```json
+{
+  "service_assignments": [
+    {
+      "service_id": 3,
+      "photographer_id": 12,
+      "scheduled_date": "2026-07-08",
+      "scheduled_time": "10:00"
+    }
+  ]
+}
+```
+
+But for now, the main requirement is a backend auto-mapper that can work even if the site only sends preferred/alternate schedules and selected photographers.
+
+---
+
+# 3. Do Not Guess Wrong Photographer Assignments
+
+Photographer assignment should be conservative.
+
+Wrong photographer assignment is worse than leaving the service unassigned.
+
+The backend should only auto-assign a photographer when the mapping is obvious.
+
+## Safe photographer assignment rules
+
+### Case A: One service + one selected photographer
+
+If the booking has exactly one selected service and exactly one selected photographer:
+
+```txt
+Assign that photographer to the service pivot.
+```
+
+Example:
+
+```txt
+HDR Photos — John — preferred date/time
+```
+
+Also optionally set the legacy `shoots.photographer_id` to that photographer for compatibility.
+
+---
+
+### Case B: One service + zero selected photographers
+
+Keep the service photographer unassigned.
+
+```txt
+HDR Photos — photographer unassigned
+```
+
+---
+
+### Case C: One service + multiple selected photographers
+
+Do not guess.
+
+Keep the service photographer unassigned.
+
+Store all selected photographers as requested photographers.
+
+Add warning:
+
+```txt
+Multiple photographers were requested for one service. Please review manually.
+```
+
+---
+
+### Case D: Multiple services + one selected photographer
+
+Do not blindly assign that photographer to all services unless eligibility/service rules confirm it is safe.
+
+Preferred behavior:
+
+```txt
+Service 1 — selected photographer, only if safe/eligible
+Service 2+ — photographer unassigned
+```
+
+If there is no eligibility validation available yet, keep all service photographers unassigned and store the selected photographer as requested.
+
+---
+
+### Case E: Multiple services + multiple selected photographers
+
+Do not guess photographer-to-service mapping.
+
+Store selected photographers as requested photographers.
+
+Leave service pivot `photographer_id` null unless the payload contains explicit `service_assignments`.
+
+Add warning:
+
+```txt
+Multiple photographers were requested but not auto-assigned because service-level mapping was not provided.
+```
+
+---
+
+# 4. Scheduling Auto-Mapping Rules
+
+The backend should auto-map preferred and alternate schedule values into per-service schedule fields.
+
+This is the key compatibility bridge.
+
+## Case A: One selected service
+
+If there is exactly one selected service:
+
+```txt
+Service 1 gets preferred date/time.
+```
+
+Also update shoot-level schedule fields from preferred date/time.
+
+Example:
+
+```txt
+Service:
+1. HDR Photos
+
+Preferred:
+July 8, 2026 — 10:00 AM
+
+Result:
+Shoot scheduled_date = July 8, 2026
+Shoot time = 10:00 AM
+Shoot scheduled_at = July 8, 2026 10:00 AM
+
+HDR Photos pivot scheduled_at = July 8, 2026 10:00 AM
+```
+
+---
+
+## Case B: Multiple services + preferred and alternate
+
+If there are multiple selected services:
+
+```txt
+Service 1 gets preferred date/time.
+Service 2 gets alternate date/time, if alternate exists.
+Service 3+ remain unscheduled.
+```
+
+Example:
+
+```txt
+Services:
+1. HDR Photos
+2. Drone
+3. Floor Plan
+
+Preferred:
+July 8, 2026 — 10:00 AM
+
+Alternate:
+July 9, 2026 — 2:00 PM
+
+Result:
+HDR Photos — July 8, 2026 — 10:00 AM
+Drone — July 9, 2026 — 2:00 PM
+Floor Plan — unscheduled
+```
+
+Also store warnings explaining the auto-mapping:
+
+```txt
+Preferred schedule was auto-mapped to the first selected service.
+Alternate schedule was auto-mapped to the second selected service.
+Additional services were left unscheduled for manual review.
+```
+
+---
+
+## Case C: Multiple services + preferred only
+
+If there are multiple selected services but no alternate date/time:
+
+```txt
+Service 1 gets preferred date/time.
+Service 2+ remain unscheduled.
+```
+
+Do not copy the preferred schedule to every service.
+
+Example:
+
+```txt
+HDR Photos — July 8, 2026 — 10:00 AM
+Drone — unscheduled
+Floor Plan — unscheduled
+```
+
+---
+
+## Case D: More than two services
+
+The mapping remains:
+
+```txt
+Service 1 → preferred date/time
+Service 2 → alternate date/time, if available
+Service 3+ → unscheduled
+```
+
+This is predictable and safe.
+
+---
+
+# 5. Never Fabricate Midnight Time
+
+Currently the system may treat a preferred date without preferred time as `00:00`.
+
+This is incorrect.
+
+If a date exists but time is missing, do not create a fake midnight schedule.
+
+## Correct behavior
+
+If preferred date exists but preferred time is missing:
+
+```txt
+shoot.scheduled_date = preferred_date
+shoot.time = null
+shoot.scheduled_at = null
+```
+
+For service pivot:
+
+```txt
+shoot_service.scheduled_at = null
+```
+
+If needed, preserve the date-only preference in metadata/warnings/or a separate field.
+
+Add warning:
+
+```txt
+Preferred date was provided without a time. Time requires manual review.
+```
+
+Same rule applies to alternate date without alternate time:
+
+```txt
+alternate date should be preserved, but alternate_scheduled_at should remain null.
+```
+
+---
+
+# 6. Preserve Raw External Payload
+
+Add a JSON field or use an existing metadata field to preserve the original external booking payload.
+
+Recommended field:
+
+```txt
+shoots.external_booking_payload
+```
+
+This helps debug future Lovable/site changes without losing data.
+
+Also store normalized requested photographers:
+
+```txt
+shoots.requested_photographers
+```
+
+Recommended JSON structure:
+
+```json
+[
+  {
+    "photographer_id": 12,
+    "source": "external_booking"
+  },
+  {
+    "photographer_id": 18,
+    "source": "external_booking"
+  }
+]
+```
+
+Also store mapping warnings:
+
+```txt
+shoots.external_booking_warnings
+```
+
+Example:
+
+```json
+[
+  "Preferred schedule was auto-mapped to the first selected service.",
+  "Alternate schedule was auto-mapped to the second selected service.",
+  "Multiple photographers were requested but not auto-assigned because service-level mapping was not provided.",
+  "Additional services were left unscheduled for manual review."
+]
+```
+
+---
+
+# 7. Suggested Database Additions
+
+If not already available, add these nullable fields to `shoots`:
+
+```txt
+alternate_scheduled_date
+alternate_time
+alternate_scheduled_at
+requested_photographers
+external_booking_payload
+external_booking_warnings
+external_booking_mapping_status
+```
+
+Suggested `external_booking_mapping_status` values:
+
+```txt
+fully_mapped
+partially_mapped
+needs_review
+```
+
+For this workflow, most external bookings with auto-mapped service scheduling should be marked:
+
+```txt
+needs_review
+```
+
+or:
+
+```txt
+partially_mapped
+```
+
+depending on whether all services have valid photographer and schedule assignments.
+
+---
+
+# 8. Shoot-Level Schedule Behavior
+
+Shoot-level schedule should still be set from the preferred date/time when both are available.
+
+If preferred date and preferred time exist:
+
+```txt
+shoot.scheduled_date = preferred_date
+shoot.time = preferred_time
+shoot.scheduled_at = preferred_date + preferred_time
+```
+
+If preferred date exists without time:
+
+```txt
+shoot.scheduled_date = preferred_date
+shoot.time = null
+shoot.scheduled_at = null
+```
+
+If no preferred schedule exists:
+
+```txt
+shoot.scheduled_date = null
+shoot.time = null
+shoot.scheduled_at = null
+```
+
+Do not override existing pricing/client/product behavior.
+
+---
+
+# 9. Service Pivot Behavior
+
+When attaching selected services to the shoot, include schedule/photographer data where safely mapped.
+
+Example pivot creation:
+
+```php
+$shoot->services()->attach($serviceId, [
+    'price' => $price,
+    'photographer_id' => $mappedPhotographerId,
+    'scheduled_at' => $mappedScheduledAt,
+]);
+```
+
+If no safe mapping exists:
+
+```php
+'photographer_id' => null,
+'scheduled_at' => null,
+```
+
+Do not reject the booking just because mapping is incomplete.
+
+The external booking should still be created as `STATUS_REQUESTED`.
+
+---
+
+# 10. Notification Requirement
+
+After creating the external booking and running the auto-mapper, the backend should create a dashboard notification if the shoot requires photographer/schedule review.
+
+This notification is important because otherwise incomplete bookings silently enter the dashboard.
+
+## Notification should be created when any of these are true
+
+```txt
+1. Shoot came from external booking.
+2. Any service photographer is unassigned.
+3. Any service schedule is unassigned.
+4. Preferred schedule was auto-mapped.
+5. Alternate schedule was auto-mapped.
+6. Multiple photographers were requested but not directly assigned.
+7. external_booking_warnings is not empty.
+8. external_booking_mapping_status is needs_review or partially_mapped.
+```
+
+Notification type:
+
+```txt
+shoot_assignment_review
+```
+
+Suggested title:
+
+```txt
+New booking needs photographer/schedule review
+```
+
+Suggested message:
+
+```txt
+External booking was received and some photographer or schedule details need review.
+```
+
+Better contextual message if possible:
+
+```txt
+HDR Photos mapped to preferred time. Drone mapped to alternate time. Some services need assignment.
+```
+
+---
+
+# 11. Notification Payload
+
+The notification should include enough information for the frontend to open the shoot details popup directly.
+
+Example:
+
+```json
+{
+  "type": "shoot_assignment_review",
+  "shoot_id": 123,
+  "title": "New booking needs photographer/schedule review",
+  "message": "External booking was auto-mapped and needs schedule/photographer review.",
+  "action_type": "open_shoot_details_popup",
+  "action_payload": {
+    "shoot_id": 123,
+    "focus": "schedule_assignments"
+  }
+}
+```
+
+The notification should be visible to Admin and Super Admin users, or the existing role group responsible for scheduling/assignment review.
+
+---
+
+# 12. Frontend Notification Click Behavior
+
+When the user clicks the notification:
+
+```txt
+1. Mark the notification as read.
+2. Fetch the shoot details by shoot_id.
+3. Open the existing shoot details popup/modal directly.
+4. Focus or scroll to the photographer/schedule assignment section.
+5. Display external booking warnings clearly inside the popup.
+```
+
+Do not only navigate to the shoot list.
+
+The goal is one-click review:
+
+```txt
+Notification → Shoot Details Popup → Schedule/Photographer section
+```
+
+---
+
+# 13. Shoot Details Popup UI
+
+Inside the shoot details popup, add or expose an “External Booking Mapping” section when the shoot came from the external site.
+
+Suggested display:
+
+```txt
+External Booking Mapping
+
+Preferred schedule:
+July 8, 2026 — 10:00 AM
+
+Alternate schedule:
+July 9, 2026 — 2:00 PM
+
+Auto-mapped services:
+HDR Photos — July 8, 2026 — 10:00 AM — Photographer unassigned
+Drone — July 9, 2026 — 2:00 PM — Photographer unassigned
+Floor Plan — Unscheduled — Photographer unassigned
+
+Requested photographers:
+John, Mike
+
+Warnings:
+- Preferred schedule was auto-mapped to the first selected service.
+- Alternate schedule was auto-mapped to the second selected service.
+- Multiple photographers were requested but not auto-assigned because service-level mapping was not provided.
+```
+
+This section should help the admin understand exactly what happened.
+
+---
+
+# 14. Backend Implementation Structure
+
+Avoid putting all mapping logic directly inside `ExternalBookingController::bookShoot`.
+
+Recommended structure:
+
+```txt
+ExternalBookingRequest
+ExternalBookingData / DTO
+ExternalBookingScheduleNormalizer
+ExternalBookingAutoMapper
+ExternalBookingWarningBuilder
+ExternalBookingNotificationService
+ExternalBookingController
+```
+
+The controller should remain thin:
+
+```php
+public function bookShoot(ExternalBookingRequest $request)
+{
+    return DB::transaction(function () use ($request) {
+        $data = ExternalBookingData::fromRequest($request);
+
+        $mapping = ExternalBookingAutoMapper::map($data);
+
+        $shoot = $this->createShoot($data, $mapping);
+
+        $this->attachServices($shoot, $data, $mapping);
+
+        $this->storeExternalBookingMetadata($shoot, $data, $mapping);
+
+        $this->createReviewNotificationIfNeeded($shoot, $mapping);
+
+        $this->logActivity($shoot);
+
+        return response()->json([
+            'success' => true,
+            'shoot_id' => $shoot->id,
+            'status' => $shoot->status,
+            'warnings' => $shoot->external_booking_warnings,
+        ]);
+    });
+}
+```
+
+---
+
+# 15. Acceptance Criteria
+
+## Legacy behavior
+
+1. Existing external booking payloads still work.
+2. Bookings with only preferred date/time still create requested shoots.
+3. Bookings with no photographer still create requested shoots with no photographer assigned.
+4. Existing client find-or-create behavior is unchanged.
+5. Existing pricing, coupon, tax, service attachment, product status, payment status, and activity logging are unchanged.
+
+---
+
+## Scheduling behavior
+
+6. One service receives preferred date/time on the service pivot.
+7. Multiple services map preferred date/time to the first service.
+8. Multiple services map alternate date/time to the second service if alternate exists.
+9. Third and later services remain unscheduled.
+10. Date-only preferred values do not create `00:00`.
+11. Date-only alternate values do not create `00:00`.
+
+---
+
+## Photographer behavior
+
+12. One service + one photographer assigns that photographer to the service pivot.
+13. One service + multiple photographers keeps service photographer unassigned and stores requested photographers.
+14. Multiple services + multiple photographers does not guess service assignments.
+15. Requested photographers are preserved and visible for review.
+16. No default/random photographer is assigned.
+
+---
+
+## Metadata behavior
+
+17. Raw external payload is saved.
+18. Requested photographers are saved.
+19. External booking warnings are saved.
+20. Mapping status is saved as `fully_mapped`, `partially_mapped`, or `needs_review`.
+
+---
+
+## Notification behavior
+
+21. If review is needed, notification is created.
+22. Notification type is `shoot_assignment_review`.
+23. Notification includes `shoot_id`.
+24. Notification includes action type `open_shoot_details_popup`.
+25. Clicking notification opens the shoot details popup directly.
+26. Popup focuses on schedule/photographer assignment section.
+27. Popup shows external booking warnings.
+
+---
+
+# 16. Testing Scenarios
+
+Please add tests for these cases:
+
+## Test 1: Legacy booking
+
+Input:
+
+```txt
+1 service
+preferred date
+preferred time
+no photographer
+```
+
+Expected:
+
+```txt
+Shoot created as STATUS_REQUESTED
+Shoot-level schedule set
+Service pivot scheduled_at set
+Service photographer_id null
+No crash
+```
+
+---
+
+## Test 2: One service + one photographer
+
+Input:
+
+```txt
+1 service
+1 selected photographer
+preferred date/time
+```
+
+Expected:
+
+```txt
+Service pivot gets preferred scheduled_at
+Service pivot gets photographer_id
+Shoot status remains STATUS_REQUESTED
+```
+
+---
+
+## Test 3: One service + multiple photographers
+
+Input:
+
+```txt
+1 service
+multiple selected photographers
+preferred date/time
+```
+
+Expected:
+
+```txt
+Service pivot gets scheduled_at
+Service photographer_id remains null
+Requested photographers saved
+Warning saved
+Notification created
+```
+
+---
+
+## Test 4: Multiple services + preferred + alternate
+
+Input:
+
+```txt
+3 services
+preferred date/time
+alternate date/time
+multiple selected photographers
+```
+
+Expected:
+
+```txt
+Service 1 gets preferred scheduled_at
+Service 2 gets alternate scheduled_at
+Service 3 scheduled_at null
+Photographer assignments remain null unless explicit safe mapping exists
+Requested photographers saved
+Warnings saved
+Notification created
+```
+
+---
+
+## Test 5: Multiple services + preferred only
+
+Input:
+
+```txt
+3 services
+preferred date/time
+no alternate
+```
+
+Expected:
+
+```txt
+Service 1 gets preferred scheduled_at
+Service 2 scheduled_at null
+Service 3 scheduled_at null
+Warning saved
+Notification created
+```
+
+---
+
+## Test 6: Date without time
+
+Input:
+
+```txt
+preferred_date exists
+preferred_time missing
+```
+
+Expected:
+
+```txt
+shoot.scheduled_date set
+shoot.time null
+shoot.scheduled_at null
+No 00:00 time created
+Warning saved
+```
+
+---
+
+## Test 7: Notification click flow
+
+Input:
+
+```txt
+External booking creates needs_review mapping
+```
+
+Expected:
+
+```txt
+Notification appears for admin/super admin
+Click marks notification read
+Click opens shoot details popup
+Popup focuses schedule_assignments section
+Warnings are visible
+```
+
+---
+
+# 17. Final Product Behavior
+
+The desired final workflow is:
+
+```txt
+Lovable site submits booking
+↓
+Dashboard backend receives legacy/new external payload
+↓
+Backend creates shoot as STATUS_REQUESTED
+↓
+Backend auto-maps preferred schedule to first service
+↓
+Backend auto-maps alternate schedule to second service, if available
+↓
+Backend leaves unclear services/photographers unassigned
+↓
+Backend saves raw payload + requested photographers + warnings
+↓
+Backend creates assignment review notification
+↓
+Admin clicks notification
+↓
+Shoot details popup opens directly
+↓
+Admin confirms/edits photographer and schedule assignments
+```
+
+This gives us a seamless booking flow without risking wrong photographer assignment or fake schedule data.

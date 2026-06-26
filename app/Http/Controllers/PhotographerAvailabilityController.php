@@ -6,6 +6,7 @@ use App\Models\PhotographerAvailability;
 use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\AddressLookupService;
+use App\Services\Photographers\RadiusEligibility;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -1156,6 +1157,25 @@ class PhotographerAvailabilityController extends Controller
                         $isAvailableAtTime = true;
                         break;
                     }
+                }
+            }
+
+            // Option B — service-radius gating (flag-gated; config: availability.radius_enforcement).
+            // When enforcement is ON, exclude a photographer whose service radius does not cover this
+            // shoot's distance. Completely no-op (historical behavior) when the flag is OFF.
+            if (RadiusEligibility::enforced()) {
+                $radiusEval = RadiusEligibility::evaluate(
+                    RadiusEligibility::radiusFromMetadata($metadata),
+                    is_numeric($distanceMiles) ? (float) $distanceMiles : null
+                );
+                if (!$radiusEval['eligible']) {
+                    \Log::debug('Radius gate excluded photographer from for-booking', [
+                        'photographer_id' => $photographerId,
+                        'reason' => $radiusEval['reason'],
+                        'distance' => $radiusEval['distance'],
+                        'radius' => $radiusEval['radius'],
+                    ]);
+                    continue;
                 }
             }
 

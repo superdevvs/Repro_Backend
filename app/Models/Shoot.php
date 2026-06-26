@@ -26,6 +26,8 @@ class Shoot extends Model
         'city',
         'state',
         'zip',
+        'latitude',
+        'longitude',
         'property_slug',
         'dropbox_raw_folder',
         'dropbox_extra_folder',
@@ -154,12 +156,22 @@ class Shoot extends Model
         'photographer_paid_invoice_id',
         'sales_rep_paid_at',
         'sales_rep_paid_invoice_id',
+        // External booking sync fields
+        'alternate_scheduled_date',
+        'alternate_time',
+        'alternate_scheduled_at',
+        'requested_photographers',
+        'external_booking_payload',
+        'external_booking_warnings',
+        'external_booking_mapping_status',
     ];
 
     protected $casts = [
         'scheduled_date' => 'date',
         'scheduled_at' => 'datetime',
         'timezone' => 'string',
+        'latitude' => 'float',
+        'longitude' => 'float',
         'completed_at' => 'datetime',
         'shoot_ready_notified_at' => 'datetime',
         'bypass_paywall' => 'boolean',
@@ -211,6 +223,13 @@ class Shoot extends Model
         'hold_requested_at' => 'datetime',
         'photographer_paid_at' => 'datetime',
         'sales_rep_paid_at' => 'datetime',
+        // External booking sync fields (alternate_time and external_booking_mapping_status
+        // remain plain strings — intentionally not cast).
+        'alternate_scheduled_date' => 'date',
+        'alternate_scheduled_at' => 'datetime',
+        'requested_photographers' => 'array',
+        'external_booking_payload' => 'array',
+        'external_booking_warnings' => 'array',
     ];
 
     // Unified workflow status constants
@@ -234,6 +253,11 @@ class Shoot extends Model
     public const PRODUCT_STATUS_HAS_PRODUCT = 'has_product';
     public const PRODUCT_STATUS_NO_PRODUCT = 'no_product';
     public const PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT = 'zero_dollar_product';
+
+    // External booking auto-mapping status constants
+    public const MAPPING_STATUS_FULLY_MAPPED = 'fully_mapped';
+    public const MAPPING_STATUS_PARTIALLY_MAPPED = 'partially_mapped';
+    public const MAPPING_STATUS_NEEDS_REVIEW = 'needs_review';
 
     public const INTERNAL_NO_CHARGE_SHOOT_TYPES = [
         self::SHOOT_TYPE_COMPLIMENTARY,

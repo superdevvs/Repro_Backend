@@ -41,6 +41,25 @@ class ExternalBookingRequest extends FormRequest
             'preferred_date' => 'nullable|date',
             'preferred_time' => 'nullable|string|max:10',
 
+            // Alternate scheduling (optional — new external form fields)
+            'alternate_date' => 'nullable|date',
+            'alternate_time' => 'nullable|string|max:10',
+
+            // Photographer selection — single (aliases) and list (aliases), all optional
+            'selected_photographer_id' => 'nullable|integer|exists:users,id',
+            'photographer_id' => 'nullable|integer|exists:users,id',
+            'selected_photographers' => 'nullable|array',
+            'selected_photographers.*' => 'integer|exists:users,id',
+            'requested_photographers' => 'nullable|array',
+            'requested_photographers.*' => 'integer|exists:users,id',
+
+            // Explicit per-service assignments (optional)
+            'service_assignments' => 'nullable|array',
+            'service_assignments.*.service_id' => 'required_with:service_assignments.*|exists:services,id',
+            'service_assignments.*.photographer_id' => 'nullable|integer|exists:users,id',
+            'service_assignments.*.scheduled_date' => 'nullable|date',
+            'service_assignments.*.scheduled_time' => 'nullable|string|max:10',
+
             // Property details (optional)
             'sqft' => 'nullable|integer|min:0',
             'bedrooms' => 'nullable|integer|min:0',
