@@ -185,6 +185,7 @@ class ShootResource extends JsonResource
                 'id' => (string) $this->client_id,
                 'name' => $this->client?->name ?? 'Unknown',
                 'email' => $this->client?->email ?? '',
+                'email_verified' => $this->client ? $this->client->email_verified_at !== null : false,
             ],
             'rep' => $this->when($this->rep_id, function () {
                 return [
