@@ -168,7 +168,7 @@ class ExternalBookingNotificationServiceTest extends TestCase
         $this->assertTrue($this->service->needsReview($shoot, $mapping, []));
     }
 
-    /** External + multi-service schedule guess (fully mapped) => needs review. */
+    /** External + multi-service schedule guess (service #1 scheduled, #2 unscheduled) => needs review. */
     #[Test]
     public function external_multi_service_schedule_guess_needs_review(): void
     {
@@ -177,7 +177,8 @@ class ExternalBookingNotificationServiceTest extends TestCase
             status: MappingResult::STATUS_FULLY_MAPPED,
             serviceAssignments: [
                 10 => ['photographer_id' => null, 'scheduled_at' => '2026-03-01 09:00:00'],
-                11 => ['photographer_id' => null, 'scheduled_at' => '2026-03-02 13:00:00'],
+                // Service #2 is no longer assigned the alternate — it is left unscheduled.
+                11 => ['photographer_id' => null, 'scheduled_at' => null],
             ],
         );
 

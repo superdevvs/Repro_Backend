@@ -25,9 +25,14 @@ use Carbon\Carbon;
  *
  *   Schedule (1–4):
  *     1  S==1                       -> preferred -> service + shoot-level
- *     2  S>1, preferred & alternate -> preferred -> s1, alternate -> s2, s3+ unscheduled
+ *     2  S>1, preferred & alternate -> preferred -> s1, s2+ unscheduled; alternate persists
+ *                                      ONLY into the shoot-level alternate field, never a service
  *     3  S>1, preferred only        -> preferred -> s1, s2+ unscheduled (never copy-to-all)
  *     4  explicit service_assignments -> apply per-service schedules directly (inference skipped)
+ *
+ *   Cases 2 and 3 collapse: a multi-service booking with a preferred date always leaves
+ *   services #2..N unscheduled regardless of alternate presence. The alternate date is
+ *   recorded only on the shoot-level alternate field (alternateSchedule).
  *
  *   No-fabricated-time rule (resolveSchedule) applies at both shoot and pivot level: a
  *   date without a time NEVER produces a fabricated midnight — time/scheduled_at stay null.
@@ -123,31 +128,21 @@ final class ExternalBookingAutoMapper
 
         // ---- Schedule decision table (cases 1–3) ----
         $preferredPresent = !empty($booking->preferred['date'] ?? null);
-        $alternatePresent = !empty($booking->alternate['date'] ?? null);
 
         if ($serviceCount === 1) {
             // Case 1 — preferred -> the single service (subject to no-fabricated-time).
             $serviceId = (int) $services[0]['id'];
             $serviceAssignments[$serviceId]['scheduled_at'] = $preferred['scheduled_at'];
         } elseif ($serviceCount > 1 && $preferredPresent) {
-            // Multi-service with scheduling intent.
+            // Multi-service with scheduling intent (cases 2 and 3, now collapsed).
             $firstServiceId = (int) $services[0]['id'];
             $serviceAssignments[$firstServiceId]['scheduled_at'] = $preferred['scheduled_at'];
 
-            if ($alternatePresent) {
-                // Case 2 — alternate -> second service; third and beyond unscheduled.
-                if ($serviceCount >= 2) {
-                    $secondServiceId = (int) $services[1]['id'];
-                    $serviceAssignments[$secondServiceId]['scheduled_at'] = $alternate['scheduled_at'];
-                }
-                for ($position = 3; $position <= $serviceCount; $position++) {
-                    $flags['unscheduledServices'][] = $position;
-                }
-            } else {
-                // Case 3 — preferred only: never copy preferred onto every service.
-                for ($position = 2; $position <= $serviceCount; $position++) {
-                    $flags['unscheduledServices'][] = $position;
-                }
+            // The alternate is NEVER applied to a service. It persists only into the
+            // shoot-level alternate field (alternateSchedule, populated above). Whether or
+            // not an alternate is present, services #2..N are left unscheduled.
+            for ($position = 2; $position <= $serviceCount; $position++) {
+                $flags['unscheduledServices'][] = $position;
             }
         }
         // S>1 with no preferred date => no scheduling intent; leave all unscheduled, no warning.

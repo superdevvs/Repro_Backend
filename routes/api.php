@@ -627,6 +627,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Per-service photographer assignment (multi-photographer per shoot)
     Route::post('/shoots/{shoot}/assign-service-photographer', [ShootController::class, 'assignServicePhotographer']);
     Route::post('/shoots/{shoot}/assign-service-photographers', [ShootController::class, 'assignServicePhotographers']);
+
+    // Apply stored alternate date to the live schedule (internal update, no notifications)
+    Route::post('/shoots/{shoot}/apply-alternate-date', [ShootController::class, 'applyAlternateDate'])
+        ->middleware('role:admin,superadmin,editing_manager');
     
     // Cancellation request endpoints
     Route::post('/shoots/{shoot}/request-cancellation', [ShootWorkflowController::class, 'requestCancellation']);

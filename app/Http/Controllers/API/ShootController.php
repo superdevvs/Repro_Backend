@@ -8,6 +8,7 @@ use App\Http\Requests\UpdateShootStatusRequest;
 use App\Http\Resources\ShootResource;
 use App\Models\Shoot;
 use App\Services\PhotographerAvailabilityService;
+use App\Services\Shoots\Actions\ApplyAlternateDateAction;
 use App\Services\Shoots\Actions\ApproveShootAction;
 use App\Services\Shoots\Actions\AssignServicePhotographerAction;
 use App\Services\Shoots\Actions\CreateShootAction;
@@ -31,6 +32,7 @@ class ShootController extends Controller
         protected ShootPresenter $shootPresenter,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected AssignServicePhotographerAction $assignServicePhotographerAction,
+        protected ApplyAlternateDateAction $applyAlternateDateAction,
         protected CreateShootAction $createShootAction,
         protected ScheduleShootAction $scheduleShootAction,
         protected ApproveShootAction $approveShootAction,
@@ -259,6 +261,33 @@ class ShootController extends Controller
         return response()->json([
             'message' => 'Service photographer assigned successfully',
             'data' => new ShootResource($shoot),
+        ]);
+    }
+
+    public function applyAlternateDate(Request $request, Shoot $shoot)
+    {
+        $user = $request->user();
+        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'scope' => 'nullable|in:main,all_services',
+        ]);
+        $scope = $validated['scope'] ?? 'main';
+
+        try {
+            $shoot = $this->applyAlternateDateAction->execute($shoot, $scope, $user);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'errors' => $e->errors(),
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'Alternate date applied successfully',
+            'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
         ]);
     }
 

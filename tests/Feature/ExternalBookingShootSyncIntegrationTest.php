@@ -314,8 +314,14 @@ class ExternalBookingShootSyncIntegrationTest extends TestCase
         $this->assertSame(Shoot::STATUS_REQUESTED, $shoot->status);
     }
 
-    /** Schedule 2 — 3 services, preferred + alternate: s1 preferred, s2 alternate, s3 unscheduled. */
-    public function test_schedule_2_preferred_and_alternate_maps_first_two_services(): void
+    /**
+     * Schedule 2 — 3 services, preferred + alternate: s1 preferred, s2/s3 unscheduled.
+     *
+     * New contract (shoot-alternate-date-field): the alternate is no longer mapped onto
+     * service #2. It persists only on the shoot's alternate_scheduled_at; services #2..N
+     * are left unscheduled by the alternate.
+     */
+    public function test_schedule_2_preferred_and_alternate_persists_alternate_on_shoot(): void
     {
         $services = $this->makeServices(3);
 
@@ -339,13 +345,25 @@ class ExternalBookingShootSyncIntegrationTest extends TestCase
         $thirdPivot = $this->pivotForService($shoot, $services[2]->id);
 
         $this->assertStringStartsWith($preferredDate, (string) $firstPivot->scheduled_at, 's1 at preferred');
-        $this->assertStringStartsWith($alternateDate, (string) $secondPivot->scheduled_at, 's2 at alternate');
+        $this->assertNull($secondPivot->scheduled_at, 's2 left unscheduled (alternate no longer maps to service #2)');
         $this->assertNull($thirdPivot->scheduled_at, 's3 left unscheduled');
 
+        // The alternate is persisted on the shoot's alternate field instead.
         $this->assertNotNull($shoot->alternate_scheduled_at, 'alternate_scheduled_at persisted on the shoot');
+        $this->assertStringStartsWith(
+            $alternateDate,
+            (string) $shoot->alternate_scheduled_at,
+            'alternate_scheduled_at equals the booking alternate date'
+        );
+
+        $warnings = (array) $shoot->external_booking_warnings;
+        $this->assertContains(
+            'Service #2 could not be scheduled automatically and needs manual scheduling.',
+            $warnings
+        );
         $this->assertContains(
             'Service #3 could not be scheduled automatically and needs manual scheduling.',
-            (array) $shoot->external_booking_warnings
+            $warnings
         );
         $this->assertReviewNotificationCreated($shoot->id);
     }

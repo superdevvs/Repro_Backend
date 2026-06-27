@@ -156,9 +156,12 @@ class ExternalBookingWarningBuilderTest extends TestCase
         );
     }
 
-    /** 2.10 — with an alternate, service #3+ is unscheduled. */
+    /**
+     * 2.10 — with an alternate present, the alternate is no longer mapped onto service #2.
+     * Services #2..N are all left unscheduled by the auto-mapper, so both #2 and #3 are flagged.
+     */
     #[Test]
-    public function emits_unscheduled_service_warning_for_third_service_with_alternate(): void
+    public function emits_unscheduled_service_warnings_for_second_and_third_services_with_alternate(): void
     {
         $warnings = $this->buildFor($this->booking(
             $this->services([10, 11, 12]),
@@ -169,13 +172,14 @@ class ExternalBookingWarningBuilderTest extends TestCase
             '13:00'
         ));
 
+        // The alternate is persisted on the shoot only; it is never applied to a service,
+        // so service #2 is now unscheduled alongside service #3.
         $this->assertContains(
-            'Service #3 could not be scheduled automatically and needs manual scheduling.',
+            'Service #2 could not be scheduled automatically and needs manual scheduling.',
             $warnings
         );
-        // #2 receives the alternate, so it must NOT be flagged unscheduled.
-        $this->assertNotContains(
-            'Service #2 could not be scheduled automatically and needs manual scheduling.',
+        $this->assertContains(
+            'Service #3 could not be scheduled automatically and needs manual scheduling.',
             $warnings
         );
     }

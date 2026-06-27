@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\InvoiceService;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -24,6 +25,9 @@ class ShootEditablePayloadService
             'scheduled_date' => 'nullable|date',
             'scheduled_at' => 'nullable|date',
             'time' => 'nullable|string',
+            'alternate_scheduled_date' => 'nullable|date',
+            'alternate_time' => 'nullable|string',
+            'alternate_scheduled_at' => 'nullable|date',
             'timezone' => 'nullable|string|timezone',
             'services' => 'nullable|array',
             'services.*.id' => 'required_with:services|integer|exists:services,id',
@@ -139,6 +143,30 @@ class ShootEditablePayloadService
         }
         if (array_key_exists('timezone', $validated)) {
             $shoot->timezone = $validated['timezone'];
+        }
+
+        // Persist the shoot-level alternate schedule. Touches no service pivots (Req 3.2).
+        $altDateProvided = array_key_exists('alternate_scheduled_date', $validated);
+        $altTimeProvided = array_key_exists('alternate_time', $validated);
+        $altAtProvided = array_key_exists('alternate_scheduled_at', $validated);
+
+        if ($altDateProvided) {
+            $shoot->alternate_scheduled_date = $validated['alternate_scheduled_date'] ?: null;
+        }
+        if ($altTimeProvided) {
+            $shoot->alternate_time = $validated['alternate_time'] ?: null;
+        }
+        if ($altAtProvided && $validated['alternate_scheduled_at']) {
+            $shoot->alternate_scheduled_at = new \DateTime($validated['alternate_scheduled_at']);
+        } elseif ($altDateProvided || $altTimeProvided) {
+            // Derive from date+time; null time => null scheduled_at (mirrors resolveSchedule).
+            $date = $shoot->alternate_scheduled_date
+                ? $shoot->alternate_scheduled_date->toDateString()
+                : null;
+            $time = $shoot->alternate_time;
+            $shoot->alternate_scheduled_at = ($date && $time)
+                ? Carbon::parse("{$date} {$time}")
+                : null;
         }
 
         if (

@@ -206,6 +206,9 @@ class ShootActivityLogger
             'shoot_updated' => 'Shoot updated' . $by . (isset($metadata['changes']) && is_array($metadata['changes']) ? ': ' . implode(', ', array_keys($metadata['changes'])) : ''),
             'shoot_deleted' => 'Shoot deleted' . $by,
             'rescheduled' => 'Shoot rescheduled' . $by . (isset($metadata['new_date']) ? " to {$metadata['new_date']}" : ''),
+            'apply_alternate_date' => (($metadata['scope'] ?? null) === 'all_services')
+                ? 'Alternate date applied to all service schedules'
+                : 'Alternate date applied to main schedule',
 
             // Hold
             'shoot_put_on_hold' => 'Shoot put on hold' . $by . (isset($metadata['reason']) && $metadata['reason'] ? ": {$metadata['reason']}" : ''),

@@ -167,9 +167,13 @@ class ExternalBookingAutoMapperTest extends TestCase
         $this->assertSame([], $result->flags['unscheduledServices']);
     }
 
-    /** Case 2: S>1 with alternate -> preferred->s1, alternate->s2, s3+ unscheduled (2.10). */
+    /**
+     * Case 2: S>1 with alternate -> preferred->s1, services #2..N unscheduled; the alternate
+     * is NEVER applied to a service and persists only on the shoot-level alternate field (2.10,
+     * 2.1, 2.3, 9.1).
+     */
     #[Test]
-    public function schedule_case_2_multi_service_with_alternate_maps_pref_s1_alt_s2(): void
+    public function schedule_case_2_multi_service_alternate_not_applied_to_services(): void
     {
         $result = $this->mapper->map($this->booking(
             $this->services([10, 11, 12]),
@@ -180,11 +184,14 @@ class ExternalBookingAutoMapperTest extends TestCase
             '13:00'
         ));
 
+        // Service #1 carries the preferred schedule.
         $this->assertSame('2026-03-01 09:00:00', $result->serviceAssignments[10]['scheduled_at']);
-        $this->assertSame('2026-03-02 13:00:00', $result->serviceAssignments[11]['scheduled_at']);
+        // Service #2 is no longer assigned the alternate — it is left unscheduled.
+        $this->assertNull($result->serviceAssignments[11]['scheduled_at']);
         $this->assertNull($result->serviceAssignments[12]['scheduled_at']);
-        $this->assertSame([3], $result->flags['unscheduledServices']);
-        // Alternate persisted on the shoot regardless of per-service mapping.
+        // Both trailing services are flagged unscheduled.
+        $this->assertSame([2, 3], $result->flags['unscheduledServices']);
+        // The alternate is still persisted on the shoot-level alternate field.
         $this->assertSame('2026-03-02 13:00:00', $result->alternateSchedule['alternate_scheduled_at']);
     }
 
@@ -323,12 +330,14 @@ class ExternalBookingAutoMapperTest extends TestCase
     /**
      * Property: across the input domain (S × P × preferred/alternate presence) the mapper
      *  (1) NEVER fabricates a photographer assignment — every assigned pivot id was requested;
-     *  (2) in case 3 (S>1, preferred only) NEVER copies the preferred schedule onto services
-     *      beyond the first;
+     *  (2) for any multi-service booking with a preferred date (cases 2 and 3, now collapsed)
+     *      NEVER copies a schedule onto services beyond the first — and when an alternate is
+     *      present it is NEVER applied to a service but IS persisted on the shoot-level
+     *      alternate field (alternateSchedule);
      *  (3) NEVER fabricates a time when a date has no time;
      *  (4) always produces a valid mapping status.
      *
-     * Validates: Requirements 2.3, 2.6, 2.7, 2.11, 2.12, 2.16
+     * Validates: Requirements 2.3, 2.6, 2.7, 2.11, 2.12, 2.16, 2.1, 9.1
      */
     #[Test]
     public function property_no_fabrication_and_no_copy_to_all_in_case_three(): void
@@ -396,13 +405,15 @@ class ExternalBookingAutoMapperTest extends TestCase
                 $this->assertSame(1, $p, "[$example]: legacy photographer set outside case A.");
             }
 
-            // (2) Case 3: S>1, preferred date present, no alternate -> never copy preferred to all.
-            if ($s > 1 && $withPreferredDate && !$withAlternate) {
+            // (2) Multi-service with a preferred date (cases 2 and 3 collapsed): never copy a
+            //     schedule onto services beyond the first. When an alternate is present it is
+            //     never applied to a service but is persisted on the shoot-level alternate field.
+            if ($s > 1 && $withPreferredDate) {
                 $firstId = $serviceIds[0];
                 for ($idx = 1; $idx < $s; $idx++) {
                     $this->assertNull(
                         $result->serviceAssignments[$serviceIds[$idx]]['scheduled_at'],
-                        "COPY-TO-ALL [$example]: preferred schedule copied onto service beyond the first."
+                        "COPY-TO-ALL [$example]: a schedule was applied to a service beyond the first."
                     );
                 }
                 // The first service should carry the preferred schedule when a time was given.
@@ -412,6 +423,21 @@ class ExternalBookingAutoMapperTest extends TestCase
                         $result->serviceAssignments[$firstId]['scheduled_at'],
                         "[$example]: first service must carry the preferred schedule."
                     );
+                }
+                // The alternate, when present, persists ONLY on the shoot-level alternate field.
+                if ($withAlternate) {
+                    $this->assertSame(
+                        '2026-03-05 15:30:00',
+                        $result->alternateSchedule['alternate_scheduled_at'],
+                        "[$example]: alternate must be persisted on the shoot-level alternate field."
+                    );
+                    foreach ($serviceIds as $serviceId) {
+                        $this->assertNotSame(
+                            '2026-03-05 15:30:00',
+                            $result->serviceAssignments[$serviceId]['scheduled_at'],
+                            "ALTERNATE-ON-SERVICE [$example]: alternate was applied to a service."
+                        );
+                    }
                 }
             }
 

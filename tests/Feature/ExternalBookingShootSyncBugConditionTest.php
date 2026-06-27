@@ -223,11 +223,15 @@ class ExternalBookingShootSyncBugConditionTest extends TestCase
     }
 
     /**
-     * S=2, preferred + alternate → service 2 scheduled at alternate and alternate_scheduled_at
-     * persisted on the shoot (2.10).
-     * Fails today: alternate is dropped and per-service scheduling is collapsed.
+     * S=2, preferred + alternate → the alternate persists ONLY on the shoot's
+     * `alternate_scheduled_at`; it is never mapped onto service #2 (2.10).
+     *
+     * New contract (shoot-alternate-date-field, Task 1.1): the auto-mapper no longer
+     * applies the alternate date to the second service. Services #2..N are left
+     * unscheduled (pivot `scheduled_at` is null) while the alternate is preserved on
+     * the shoot itself. The first service still reflects the preferred date.
      */
-    public function test_case_preferred_and_alternate_two_services_maps_alternate_to_second(): void
+    public function test_case_preferred_and_alternate_two_services_persists_alternate_on_shoot(): void
     {
         $services = $this->makeServices(2);
 
@@ -248,17 +252,30 @@ class ExternalBookingShootSyncBugConditionTest extends TestCase
 
         $shoot = $this->loadShoot((int) $response->json('data.shoot_id'));
 
+        // The alternate is NOT applied to service #2 — it is left unscheduled.
         $secondPivot = $this->pivotForService($shoot, $services[1]->id);
-        $this->assertNotNull($secondPivot->scheduled_at, 'COUNTEREXAMPLE: second service was not scheduled at the alternate slot (alternate dropped today).');
-        $this->assertStringStartsWith(
-            $alternateDate,
-            (string) $secondPivot->scheduled_at,
-            'COUNTEREXAMPLE: second service schedule must equal the alternate date.'
+        $this->assertNull(
+            $secondPivot->scheduled_at,
+            'Under the new contract the alternate must NOT be mapped onto service #2 (it stays unscheduled).'
         );
 
+        // The alternate persists on the shoot itself.
         $this->assertNotNull(
             $shoot->getAttribute('alternate_scheduled_at'),
-            'COUNTEREXAMPLE: alternate_scheduled_at must be persisted (column absent today).'
+            'alternate_scheduled_at must be persisted on the shoot.'
+        );
+        $this->assertStringStartsWith(
+            $alternateDate,
+            (string) $shoot->getAttribute('alternate_scheduled_at'),
+            'alternate_scheduled_at must equal the alternate date.'
+        );
+
+        // The first service still reflects the preferred date.
+        $firstPivot = $this->pivotForService($shoot, $services[0]->id);
+        $this->assertStringStartsWith(
+            $preferredDate,
+            (string) $firstPivot->scheduled_at,
+            'first service must still be scheduled at the preferred date.'
         );
     }
 
