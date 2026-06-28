@@ -90,7 +90,7 @@ surface (`build(Shoot, ?User): array`, `syncShoot()`) is unchanged; only interna
     - **Property 8: Per-service timing block appears iff schedules differ**
     - **Validates: Requirements 7.1, 7.2**
 
-- [-] 7. Checkpoint - Ensure all tests pass
+- [x] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 8. Cancelled shoots: keep-and-update in `GoogleCalendarShootSyncService`
@@ -123,7 +123,7 @@ surface (`build(Shoot, ?User): array`, `syncShoot()`) is unchanged; only interna
       `GoogleCalendarService`
     - **Validates: Requirements 10.1, 10.2, 10.3**
 
-- [ ] 10. Final checkpoint - Ensure all tests pass
+- [x] 10. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

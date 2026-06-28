@@ -75,25 +75,49 @@ class AddressLookupService
         $cacheKey = 'address_search_' . md5($this->provider . '|' . $query . serialize($options));
 
         return Cache::remember($cacheKey, 120, function () use ($query, $options) {
+            // Primary lookup. Prefer Google Places when a key is configured;
+            // otherwise use the configured provider (e.g. LocationIQ/Geoapify).
             if (!empty($this->googleApiKey)) {
                 try {
                     $googleResults = $this->googleAutocomplete($query, $options);
                     if (!empty($googleResults)) {
                         return $googleResults;
                     }
+
+                    Log::warning('Google autocomplete returned no results; falling back to Zillow', [
+                        'query' => $query,
+                    ]);
                 } catch (\Exception $e) {
-                    Log::warning('Google autocomplete failed, falling back to configured provider', [
+                    Log::warning('Google autocomplete failed; falling back to Zillow', [
+                        'query' => $query,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            } elseif ($this->provider !== 'zillow') {
+                // No Google key: try the configured non-Zillow provider first.
+                try {
+                    $providerResults = $this->searchWithConfiguredProvider($query, $options);
+                    if (!empty($providerResults)) {
+                        return $providerResults;
+                    }
+                } catch (\Exception $e) {
+                    Log::warning('Configured address provider autocomplete failed; falling back to Zillow', [
+                        'provider' => $this->provider,
                         'query' => $query,
                         'error' => $e->getMessage(),
                     ]);
                 }
             }
 
+            // Universal fallback: Zillow's public autocomplete endpoint. It needs
+            // no auth and is currently the most reliable source for this app, so
+            // it must run whenever the primary provider yields nothing — including
+            // when the configured provider itself is Google (which previously
+            // dead-ended by retrying Google instead of falling back here).
             try {
-                return $this->searchWithConfiguredProvider($query, $options);
+                return $this->zillowAutocomplete($query, $options);
             } catch (\Exception $e) {
-                Log::warning('Address autocomplete failed', [
-                    'provider' => $this->provider,
+                Log::warning('Zillow fallback autocomplete failed', [
                     'query' => $query,
                     'error' => $e->getMessage(),
                 ]);
