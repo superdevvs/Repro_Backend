@@ -70,7 +70,7 @@ class GoogleCalendarShootSyncService
 
             try {
                 $payload = $this->payloadBuilder->build($shoot, $connection->user);
-                $fingerprint = sha1(json_encode($payload, JSON_THROW_ON_ERROR));
+                $fingerprint = $this->fingerprintFor($shoot, $connection, $payload);
 
                 if (
                     $mapping
@@ -216,9 +216,12 @@ class GoogleCalendarShootSyncService
             strtolower((string) $shoot->workflow_status),
         ]);
 
+        // Cancelled shoots remain syncable (keep-and-update): the existing calendar
+        // event is updated in place with a "CANCELLED - {client}" title rather than
+        // deleted (Requirements 8.1, 8.2). Requested / declined / on_hold / hold_on
+        // stay non-syncable and continue to be removed.
         return !$statuses->contains(fn (string $status) => in_array($status, [
             Shoot::STATUS_REQUESTED,
-            Shoot::STATUS_CANCELLED,
             Shoot::STATUS_DECLINED,
             Shoot::STATUS_ON_HOLD,
             'hold_on',
@@ -293,7 +296,7 @@ class GoogleCalendarShootSyncService
 
         try {
             $payload = $this->payloadBuilder->buildForServiceItem($shoot, $serviceItem, $connection->user);
-            $fingerprint = sha1(json_encode($payload, JSON_THROW_ON_ERROR));
+            $fingerprint = $this->fingerprintFor($shoot, $connection, $payload);
 
             if (
                 $mapping
@@ -371,5 +374,58 @@ class GoogleCalendarShootSyncService
     protected function mappingKey(int|string|null $userId, int|string|null $serviceItemId = null): string
     {
         return (string) $userId . ':' . ($serviceItemId ? (string) $serviceItemId : 'legacy');
+    }
+
+    /**
+     * Compute the broadened sync fingerprint from a canonical signature of the underlying
+     * shoot/connection fields rather than the rendered payload, so update detection is
+     * robust against payload formatting tweaks (Req 9.1-9.3). The signature captures every
+     * tracked field: client name/phone/email, full address, schedule, photographer,
+     * services, per-service times, notes, status, workflow status, cancellation state, and
+     * the target calendar id. The same fingerprint is applied to both the whole-shoot path
+     * (syncShoot) and the per-service-item path (syncServiceItemEvent).
+     *
+     * The address reuses the already-built payload location (formatFullAddress output) to
+     * avoid recomputing it here.
+     */
+    protected function fingerprintFor(Shoot $shoot, GoogleCalendarConnection $connection, array $payload): string
+    {
+        $client = $shoot->client;
+
+        $signature = [
+            'client_name' => $client?->name,
+            'client_phone' => $client?->phone ?: $client?->phonenumber,
+            'client_email' => $client?->email,
+            'address' => $payload['location'] ?? null,
+            'scheduled_at' => optional($shoot->scheduled_at)?->toIso8601String(),
+            'photographer' => $connection->user_id,
+            'services' => $shoot->services->pluck('name')->sort()->values()->all(),
+            'service_times' => $shoot->serviceItems
+                ->mapWithKeys(fn (ShootService $item) => [
+                    $item->id => optional($item->scheduled_at)?->toIso8601String(),
+                ])
+                ->all(),
+            'notes' => $shoot->shoot_notes ?: $shoot->notes,
+            'photographer_notes' => $shoot->photographer_notes,
+            'status' => $shoot->status,
+            'workflow_status' => $shoot->workflow_status,
+            'cancelled' => $this->isCancelledStatus($shoot),
+            'calendar_id' => $connection->calendar_id,
+        ];
+
+        return sha1(json_encode($signature, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * Replicates the payload builder's cancellation check: a shoot is cancelled when its
+     * lowercased status or workflow_status equals Shoot::STATUS_CANCELLED ('cancelled').
+     */
+    protected function isCancelledStatus(Shoot $shoot): bool
+    {
+        $status = strtolower(trim((string) $shoot->status));
+        $workflowStatus = strtolower(trim((string) $shoot->workflow_status));
+
+        return $status === Shoot::STATUS_CANCELLED
+            || $workflowStatus === Shoot::STATUS_CANCELLED;
     }
 }

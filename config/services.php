@@ -56,6 +56,8 @@ return [
             'userinfo_url' => env('GOOGLE_CALENDAR_USERINFO_URL', 'https://openidconnect.googleapis.com/v1/userinfo'),
             'base_url' => env('GOOGLE_CALENDAR_BASE_URL', 'https://www.googleapis.com/calendar/v3'),
             'default_calendar_id' => env('GOOGLE_CALENDAR_DEFAULT_CALENDAR_ID', 'primary'),
+            'dashboard_url' => env('DASHBOARD_URL', 'https://reprodashboard.com'),
+            'mirror_sync_status' => env('GOOGLE_CALENDAR_MIRROR_SYNC_STATUS', false),
         ],
         'upload_sources_google_drive_redirect' => env('GOOGLE_DRIVE_UPLOAD_REDIRECT_URI', env('APP_URL') . '/api/upload-sources/google_drive/callback'),
         'upload_sources_google_photos_redirect' => env('GOOGLE_PHOTOS_UPLOAD_REDIRECT_URI', env('APP_URL') . '/api/upload-sources/google_photos/callback'),

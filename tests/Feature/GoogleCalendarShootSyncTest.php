@@ -362,10 +362,16 @@ class GoogleCalendarShootSyncTest extends TestCase
 
         $payload = app(GoogleCalendarEventPayloadBuilder::class)->build($shoot->fresh('services'), $this->photographer);
 
-        $this->assertSame('HDR Photos + Luxury Highlight Video', $payload['summary']);
-        $this->assertStringContainsString("Services\nHDR Photos + Luxury Highlight Video", (string) $payload['description']);
-        $this->assertStringContainsString("Shoot Notes / Access Information\nneed it fast\nfront gate open", (string) $payload['description']);
-        $this->assertStringContainsString("Photographer Notes\ngreen paint\nbring flash", (string) $payload['description']);
+        $this->assertSame($this->client->name, $payload['summary']);
+
+        $description = (string) $payload['description'];
+        $this->assertStringStartsWith($this->client->name, $description);
+        $this->assertStringContainsString("Shoot Services:\n- HDR Photos\n- Luxury Highlight Video", $description);
+        $this->assertStringContainsString("Shoot Notes:\nneed it fast\nfront gate open", $description);
+        // photographer_notes now surface under "Arrival Instructions:" (description rebuilt by tasks 2-4).
+        $this->assertStringContainsString("Arrival Instructions:\ngreen paint\nbring flash", $description);
+        $this->assertStringContainsString("On-Site Contact:\n{$this->client->name}", $description);
+        $this->assertStringContainsString("View shoot: https://reprodashboard.com/shoots/{$shoot->id}", $description);
     }
 
     protected function createGoogleCalendarConnection(User $user, string $email, string $accessToken): GoogleCalendarConnection
