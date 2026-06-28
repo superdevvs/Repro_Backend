@@ -90,7 +90,7 @@ surface (`build(Shoot, ?User): array`, `syncShoot()`) is unchanged; only interna
     - **Property 8: Per-service timing block appears iff schedules differ**
     - **Validates: Requirements 7.1, 7.2**
 
-- [ ] 7. Checkpoint - Ensure all tests pass
+- [-] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 8. Cancelled shoots: keep-and-update in `GoogleCalendarShootSyncService`
@@ -105,7 +105,7 @@ surface (`build(Shoot, ?User): array`, `syncShoot()`) is unchanged; only interna
       `Shoot Status: Cancelled` present) rather than a delete; mock `GoogleCalendarService`
     - _Requirements: 8.1, 8.2_
 
-- [ ] 9. Broaden sync fingerprint and preserve check-before-create
+- [x] 9. Broaden sync fingerprint and preserve check-before-create
   - [x] 9.1 Implement canonical signature fingerprint in `fingerprintFor()`
     - Build the canonical signature array (client name/phone/email, address, scheduled_at,
       photographer, services, service_times, notes, photographer_notes, status,
@@ -114,10 +114,10 @@ surface (`build(Shoot, ?User): array`, `syncShoot()`) is unchanged; only interna
     - Keep comparison logic: recompute, compare to `mapping->sync_fingerprint`, skip HTTP when
       matched and `calendar_id` unchanged; store new fingerprint via existing `updateOrCreate`
     - _Requirements: 9.1, 9.2, 9.3, 10.1, 10.2, 10.3_
-  - [-] 9.2 Write property test for fingerprint change detection
+  - [x] 9.2 Write property test for fingerprint change detection
     - **Property 9: Fingerprint changes iff a tracked field changes**
     - **Validates: Requirements 9.1, 9.2, 9.3**
-  - [-] 9.3 Write property test for single-mapping idempotency
+  - [x] 9.3 Write property test for single-mapping idempotency
     - **Property 10: One mapping per shoot/photographer (no duplicates)**
     - Re-running identical state yields identical fingerprint and no duplicate create; mock
       `GoogleCalendarService`
