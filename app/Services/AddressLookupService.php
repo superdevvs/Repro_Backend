@@ -130,29 +130,64 @@ class AddressLookupService
     /**
      * Get detailed address information by place ID
      */
-    public function getAddressDetails(string $placeId): ?array
+    public function getAddressDetails(string $placeId, ?string $address = null): ?array
     {
-        $cacheKey = 'address_details_' . $this->provider . '_' . $placeId;
-        return Cache::remember($cacheKey, 3600, function () use ($placeId) {
+        $normalizedAddress = $address !== null ? trim($address) : null;
+        $cacheKey = 'address_details_' . $this->provider . '_' . md5($placeId . '|' . ($normalizedAddress ?? ''));
+
+        return Cache::remember($cacheKey, 3600, function () use ($placeId, $normalizedAddress) {
             try {
+                // 1) Google Places details: provides the canonical formatted address
+                //    and coordinates. When healthy this is the primary source, exactly
+                //    as before.
                 if (!empty($this->googleApiKey)) {
                     $googleDetails = $this->googleDetails($placeId);
                     if ($googleDetails) {
-                        return $this->mergeWithZillowPropertyDetails($googleDetails);
+                        $merged = $this->mergeWithZillowPropertyDetails($googleDetails);
+
+                        // Guarantee property metrics are populated. The Google merge
+                        // resolves metrics through the Bridge address search, which can
+                        // miss; supplement any gaps from the reliable Zillow/Bridge-zpid
+                        // /legacy chain so beds/baths/sqft come back like before.
+                        $needsMetrics = ($merged['bedrooms'] ?? null) === null
+                            || ($merged['bathrooms'] ?? null) === null
+                            || ($merged['sqft'] ?? null) === null;
+
+                        $lookupAddress = $normalizedAddress
+                            ?: ($merged['formatted_address'] ?? $this->formatAddressForApi($merged));
+
+                        if ($needsMetrics && !empty($lookupAddress)) {
+                            $supplement = $this->resolvePropertyDetailsByAddress($lookupAddress, $placeId);
+                            $merged = $this->fillMissingPropertyMetrics($merged, $supplement);
+                        }
+
+                        return $merged;
                     }
                 }
 
+                // 2) Address-based property resolution. Works without Google and
+                //    resolves beds/baths/sqft through the Zillow/Bridge-zpid/legacy
+                //    chain. Primary path for Zillow-sourced suggestions, whose place_id
+                //    is a zpid that Google cannot resolve.
+                if (!empty($normalizedAddress)) {
+                    $byAddress = $this->resolvePropertyDetailsByAddress($normalizedAddress, $placeId);
+                    if ($byAddress) {
+                        return $byAddress;
+                    }
+                }
+
+                // 3) Provider-specific fallback (kept for completeness).
                 switch ($this->provider) {
                     case 'google':
                         if (empty($this->googleApiKey)) {
-                            throw new \Exception('Google Places API key not configured');
+                            return null;
                         }
                         return $this->mergeWithZillowPropertyDetails($this->googleDetails($placeId));
 
                     case 'zillow':
                     default:
                         if (empty($this->zillowServerToken)) {
-                            throw new \Exception('Zillow API token not configured');
+                            return null;
                         }
                         return $this->zillowDetails($placeId);
                 }
@@ -165,6 +200,149 @@ class AddressLookupService
                 return null;
             }
         });
+    }
+
+    /**
+     * Overlay property metrics from a supplemental lookup onto a base details
+     * payload, filling only the fields the base is missing. Used to guarantee
+     * beds/baths/sqft are present on the Google-sourced result.
+     */
+    private function fillMissingPropertyMetrics(?array $base, ?array $supplement): ?array
+    {
+        if (!$base) {
+            return $supplement;
+        }
+        if (!$supplement) {
+            return $base;
+        }
+
+        $metricFields = [
+            'bedrooms',
+            'bathrooms',
+            'sqft',
+            'lot_size',
+            'year_built',
+            'property_type',
+            'garage_cars',
+            'garage_sqft',
+            'mls_id',
+            'price',
+        ];
+
+        $filledSources = [];
+        foreach ($metricFields as $field) {
+            if (($base[$field] ?? null) === null && ($supplement[$field] ?? null) !== null) {
+                $base[$field] = $supplement[$field];
+                $filledSources[$field] = $supplement['source'] ?? 'zillow_legacy';
+            }
+        }
+
+        if (empty($base['property_details']) && !empty($supplement['property_details'])) {
+            $base['property_details'] = $supplement['property_details'];
+        }
+
+        if (!empty($filledSources)) {
+            $base['field_sources'] = array_merge($base['field_sources'] ?? [], $filledSources);
+            $base['property_source_chain'] = array_values(array_unique(array_merge(
+                $base['property_source_chain'] ?? [],
+                $supplement['property_source_chain'] ?? []
+            )));
+
+            // Promote a Google-only result to a combined result now that it carries
+            // real property metrics.
+            if (($base['source'] ?? null) === 'google_places_only') {
+                $base['source'] = 'google_plus_zillow';
+                $base['confidence'] = max((float) ($base['confidence'] ?? 0), 0.7);
+            }
+        }
+
+        return $base;
+    }
+
+    /**
+     * Resolve property metrics (beds/baths/sqft) for an address using the
+     * ZillowPropertyService chain (Bridge -> zpid -> legacy lookup) and shape the
+     * result into the standard address-details payload consumed by the frontend.
+     */
+    private function resolvePropertyDetailsByAddress(string $address, ?string $placeId = null): ?array
+    {
+        $property = $this->zillowPropertyService->fetchPropertyDetails($address);
+        if (!is_array($property) || empty($property)) {
+            return null;
+        }
+
+        $addressParts = is_array($property['address'] ?? null) ? $property['address'] : [];
+        $street = trim(($addressParts['street'] ?? '') . ' ' . ($addressParts['street_name'] ?? ''));
+        $formatted = $addressParts['formatted'] ?? '';
+
+        $bedrooms = $this->firstNumericValue([$property['beds'] ?? null, $property['bedrooms'] ?? null]);
+        $bathrooms = $this->firstNumericValue([$property['baths'] ?? null, $property['bathrooms'] ?? null]);
+        $sqft = $this->firstNumericValue([$property['sqft'] ?? null, $property['squareFeet'] ?? null]);
+
+        // Only treat the lookup as a hit when at least one metric resolved; otherwise
+        // let the caller fall through so the frontend can still autofill from the
+        // suggestion and prompt for manual entry.
+        if ($bedrooms === null && $bathrooms === null && $sqft === null) {
+            return null;
+        }
+
+        $propertyDetails = [
+            'beds' => $bedrooms,
+            'bedrooms' => $bedrooms,
+            'baths' => $bathrooms,
+            'bathrooms' => $bathrooms,
+            'sqft' => $sqft,
+            'squareFeet' => $sqft,
+            'lot_size' => $property['lot_size'] ?? null,
+            'year_built' => $property['year_built'] ?? null,
+            'property_type' => $property['property_type'] ?? null,
+            'garage_cars' => $property['garage_cars'] ?? null,
+            'garage_sqft' => $property['garage_sqft'] ?? null,
+            'mls_id' => $property['mls_id'] ?? null,
+            'price' => $property['price'] ?? null,
+            'zpid' => $property['zpid'] ?? null,
+        ];
+
+        return [
+            'formatted_address' => $formatted !== '' ? $formatted : ($address !== '' ? $address : null),
+            'address' => $street !== '' ? $street : null,
+            'city' => ($addressParts['city'] ?? '') ?: null,
+            'state' => ($addressParts['state'] ?? '') ?: null,
+            'zip' => ($addressParts['zip'] ?? '') ?: null,
+            'country' => 'US',
+            'latitude' => null,
+            'longitude' => null,
+            'bedrooms' => $bedrooms,
+            'bathrooms' => $bathrooms,
+            'sqft' => $sqft,
+            'mls_id' => $property['mls_id'] ?? null,
+            'price' => $property['price'] ?? null,
+            'lot_size' => $property['lot_size'] ?? null,
+            'year_built' => $property['year_built'] ?? null,
+            'property_type' => $property['property_type'] ?? null,
+            'garage_cars' => $property['garage_cars'] ?? null,
+            'garage_sqft' => $property['garage_sqft'] ?? null,
+            'property_details' => $propertyDetails,
+            'zpid' => $property['zpid'] ?? ($placeId ?: null),
+            'source' => $property['source'] ?? 'zillow_legacy',
+            'confidence' => $property['confidence'] ?? 0.6,
+            'field_sources' => $property['field_sources'] ?? [],
+            'property_source_chain' => $property['property_source_chain'] ?? [],
+        ];
+    }
+
+    private function firstNumericValue(array $values): int|float|null
+    {
+        foreach ($values as $value) {
+            if ($value === null || $value === '') {
+                continue;
+            }
+            if (is_numeric($value)) {
+                return $value + 0;
+            }
+        }
+
+        return null;
     }
 
     private function searchWithConfiguredProvider(string $query, array $options = []): array

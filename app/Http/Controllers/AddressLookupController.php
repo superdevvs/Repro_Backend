@@ -88,7 +88,8 @@ class AddressLookupController extends Controller
     public function getAddressDetails(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
-            'place_id' => 'required|string'
+            'place_id' => 'required|string',
+            'address' => 'nullable|string|max:255',
         ]);
 
         if ($validator->fails()) {
@@ -99,7 +100,10 @@ class AddressLookupController extends Controller
         }
 
         try {
-            $details = $this->addressService->getAddressDetails((string) $request->input('place_id'));
+            $details = $this->addressService->getAddressDetails(
+                (string) $request->input('place_id'),
+                $request->filled('address') ? (string) $request->input('address') : null
+            );
 
             // If parcel lookup failed (404 or null), return a successful response with null property metrics
             // This allows the frontend to still populate address fields from autocomplete data
