@@ -54,8 +54,8 @@ class UpdateShootAction
         // Reps are NOT admins: they are assignment-scoped editors handled by the $assignedRep
         // branch below (rep_id === user->id with $repEditableKeys). Including them here would
         // let any rep bypass authorization and edit any shoot, so they must fall through.
-        $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'editing_manager'], true);
-        $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin'], true);
+        $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin', 'editing_manager'], true);
+        $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true);
         $isClient = $user->role === 'client';
         $isRep = in_array($normalizedRole, ['salesrep', 'sales_rep'], true);
         $isPhotographer = $user->role === 'photographer';
