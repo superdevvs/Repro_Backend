@@ -1257,12 +1257,7 @@ class UserController extends Controller
             return false;
         }
 
-        $scope = $scope ?? $this->getSalesRepShootScope($salesRep);
-        if ($photographer->created_by_id !== null && (string) $photographer->created_by_id === (string) $salesRep->id) {
-            return true;
-        }
-
-        return in_array((string) $photographer->id, $scope['photographer_ids'] ?? [], true);
+        return true;
     }
 
     protected function salesRepCanAccessAccount(User $salesRep, User $account, ?array $scope = null): bool
