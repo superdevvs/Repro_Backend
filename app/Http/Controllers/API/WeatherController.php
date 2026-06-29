@@ -7,6 +7,7 @@ use App\Services\WeatherLookupService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 
 class WeatherController extends Controller
@@ -57,27 +58,29 @@ class WeatherController extends Controller
                 'dateTime' => $request->input('dateTime'),
             ]));
 
-            $weather = Cache::remember(
-                $cacheKey,
-                now()->addMinutes(self::CACHE_TTL_MINUTES),
-                fn () => $this->weatherLookupService->lookup([
+            $weather = $this->safeCacheGet($cacheKey);
+
+            if (!$weather) {
+                $weather = $this->weatherLookupService->lookup([
                     'location' => $request->input('location'),
                     'latitude' => $request->input('latitude'),
                     'longitude' => $request->input('longitude'),
                     'dateTime' => $request->input('dateTime'),
-                ]),
-            );
+                ]);
+            }
 
             if (!$weather) {
                 // Do not persist a transient upstream miss: drop the empty entry so the
                 // next request retries upstream rather than serving a cached null.
-                Cache::forget($cacheKey);
+                $this->safeCacheForget($cacheKey);
 
                 return response()->json([
                     'success' => false,
                     'message' => 'Weather data was not available for the requested location.',
                 ], 404);
             }
+
+            $this->safeCachePut($cacheKey, $weather);
 
             return response()->json([
                 'success' => true,
@@ -90,6 +93,44 @@ class WeatherController extends Controller
                 'error' => 'Weather lookup failed',
                 'message' => $e->getMessage(),
             ], 500);
+        }
+    }
+
+    private function safeCacheGet(string $key): mixed
+    {
+        try {
+            return Cache::get($key);
+        } catch (\Throwable $e) {
+            Log::warning('Weather response cache read failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private function safeCachePut(string $key, mixed $value): void
+    {
+        try {
+            Cache::put($key, $value, now()->addMinutes(self::CACHE_TTL_MINUTES));
+        } catch (\Throwable $e) {
+            Log::warning('Weather response cache write failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function safeCacheForget(string $key): void
+    {
+        try {
+            Cache::forget($key);
+        } catch (\Throwable $e) {
+            Log::warning('Weather response cache forget failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 }

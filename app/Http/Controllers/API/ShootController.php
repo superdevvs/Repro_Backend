@@ -67,7 +67,7 @@ class ShootController extends Controller
             'dropboxFolders', 'workflowLogs.user', 'verifiedBy',
         ])->findOrFail($id);
 
-        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, auth()->user())) {
+        if (!$this->shootAuthorizationSupport->canViewShootDetails($shoot, auth()->user())) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

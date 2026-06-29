@@ -460,7 +460,14 @@ class ShootMediaController extends Controller
     {
         $shoot = Shoot::findOrFail($id);
         if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
-            return response()->json(['message' => 'Forbidden'], 403);
+            if (!$this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            return response()->json([
+                'data' => [],
+                'count' => 0,
+            ]);
         }
 
         return response()->json($this->shootMediaReadService->getFilesPayload($shoot, $request));
@@ -470,7 +477,14 @@ class ShootMediaController extends Controller
     {
         $shoot = Shoot::findOrFail($id);
         if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
-            return response()->json(['message' => 'Forbidden'], 403);
+            if (!$this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())) {
+                return response()->json(['message' => 'Forbidden'], 403);
+            }
+
+            return response()->json([
+                'data' => [],
+                'counts' => $this->mediaCounts($shoot),
+            ]);
         }
 
         return response()->json(
@@ -807,6 +821,20 @@ class ShootMediaController extends Controller
         }
 
         return true;
+    }
+
+    private function mediaCounts(Shoot $shoot): array
+    {
+        return [
+            'raw_photo_count' => $shoot->raw_photo_count,
+            'edited_photo_count' => $shoot->edited_photo_count,
+            'extra_photo_count' => $shoot->extra_photo_count,
+            'expected_raw_count' => $shoot->expected_raw_count,
+            'expected_final_count' => $shoot->expected_final_count,
+            'raw_missing_count' => $shoot->raw_missing_count,
+            'edited_missing_count' => $shoot->edited_missing_count,
+            'bracket_mode' => $shoot->bracket_mode,
+        ];
     }
 
     private function isShootSubmittedForReview(Shoot $shoot): bool

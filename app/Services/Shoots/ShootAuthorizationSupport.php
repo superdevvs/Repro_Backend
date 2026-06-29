@@ -140,6 +140,20 @@ class ShootAuthorizationSupport
         return false;
     }
 
+    public function canViewShootDetails(Shoot $shoot, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        if (!$user) {
+            return false;
+        }
+
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
+            return true;
+        }
+
+        return $this->canAccessShootMedia($shoot, $user);
+    }
+
     public function isRawCameraFile(ShootFile $file): bool
     {
         $rawExtensions = ['raw', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw', '3fr', 'fff', 'iiq', 'rwl', 'x3f'];

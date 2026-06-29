@@ -262,7 +262,7 @@ class PhotographerAvailabilityController extends Controller
 
     public function index(Request $request, $photographerId)
     {
-        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $photographerId)) {
+        if ($response = $this->denyUnlessCanViewAvailability($request->user(), (int) $photographerId)) {
             return $response;
         }
 
@@ -349,7 +349,7 @@ class PhotographerAvailabilityController extends Controller
                 'date' => 'required|date',
             ]);
 
-            if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+            if ($response = $this->denyUnlessCanViewAvailability($request->user(), (int) $validated['photographer_id'])) {
                 return $response;
             }
 
@@ -681,7 +681,7 @@ class PhotographerAvailabilityController extends Controller
             'to_date' => 'sometimes|date|after_or_equal:from_date',
         ]);
 
-        if ($response = $this->denyUnlessCanManageAllPhotographers($request->user(), $validated['photographer_ids'])) {
+        if ($response = $this->denyUnlessCanViewAllPhotographers($request->user(), $validated['photographer_ids'])) {
             return $response;
         }
 
@@ -730,7 +730,7 @@ class PhotographerAvailabilityController extends Controller
             'to_date' => 'required|date|after_or_equal:from_date',
         ]);
 
-        if ($response = $this->denyUnlessCanManageAvailability($request->user(), (int) $validated['photographer_id'])) {
+        if ($response = $this->denyUnlessCanViewAvailability($request->user(), (int) $validated['photographer_id'])) {
             return $response;
         }
 
@@ -1376,6 +1376,23 @@ class PhotographerAvailabilityController extends Controller
         return response()->json(['message' => 'Forbidden'], 403);
     }
 
+    protected function denyUnlessCanViewAvailability(?User $user, int $photographerId)
+    {
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        if ($this->isStaffAvailabilityViewer($user)) {
+            return null;
+        }
+
+        if ($user->role === 'photographer' && (int) $user->id === $photographerId) {
+            return null;
+        }
+
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
     protected function denyUnlessCanManageAllPhotographers(?User $user, array $photographerIds)
     {
         if (!$user) {
@@ -1400,9 +1417,38 @@ class PhotographerAvailabilityController extends Controller
         return response()->json(['message' => 'Forbidden'], 403);
     }
 
+    protected function denyUnlessCanViewAllPhotographers(?User $user, array $photographerIds)
+    {
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        if ($this->isStaffAvailabilityViewer($user)) {
+            return null;
+        }
+
+        if ($user->role === 'photographer') {
+            $requestedIds = collect($photographerIds)
+                ->map(fn ($id) => (int) $id)
+                ->unique()
+                ->values();
+
+            if ($requestedIds->count() === 1 && (int) $requestedIds->first() === (int) $user->id) {
+                return null;
+            }
+        }
+
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
     protected function isStaffAvailabilityManager(User $user): bool
     {
         return in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
+    }
+
+    protected function isStaffAvailabilityViewer(User $user): bool
+    {
+        return in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true);
     }
 
 

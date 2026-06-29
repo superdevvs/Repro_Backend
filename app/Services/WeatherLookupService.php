@@ -41,7 +41,7 @@ class WeatherLookupService
 
         $cacheKey = $this->buildResultCacheKey($params);
 
-        $cached = Cache::get($cacheKey);
+        $cached = $this->safeCacheGet($cacheKey);
         if ($cached !== null) {
             // Negative cache sentinel
             if ($cached === '__none__') {
@@ -54,14 +54,14 @@ class WeatherLookupService
         $resolved = $this->resolveCoordinates($params);
 
         if (!$resolved) {
-            Cache::put($cacheKey, '__none__', self::NEGATIVE_CACHE_TTL_SECONDS);
+            $this->safeCachePut($cacheKey, '__none__', self::NEGATIVE_CACHE_TTL_SECONDS);
             return null;
         }
 
         $weather = $this->resolveWeather($resolved['latitude'], $resolved['longitude'], $target);
 
         if (!$weather) {
-            Cache::put($cacheKey, '__none__', self::NEGATIVE_CACHE_TTL_SECONDS);
+            $this->safeCachePut($cacheKey, '__none__', self::NEGATIVE_CACHE_TTL_SECONDS);
             return null;
         }
 
@@ -75,7 +75,7 @@ class WeatherLookupService
             'provider' => $provider,
         ]);
 
-        Cache::put($cacheKey, $result, self::RESULT_CACHE_TTL_SECONDS);
+        $this->safeCachePut($cacheKey, $result, self::RESULT_CACHE_TTL_SECONDS);
 
         return $result;
     }
@@ -147,7 +147,7 @@ class WeatherLookupService
     {
         $cacheKey = 'weather:geocode:fwd:' . md5(strtolower(trim($location)));
 
-        return Cache::remember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($location) {
+        return $this->safeCacheRemember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($location) {
             $response = Http::acceptJson()
                 ->timeout(self::REQUEST_TIMEOUT_SECONDS)
                 ->get(self::GEOCODE_API, [
@@ -191,7 +191,7 @@ class WeatherLookupService
     {
         $cacheKey = 'weather:geocode:rev:' . md5(number_format($latitude, 3, '.', '') . ',' . number_format($longitude, 3, '.', ''));
 
-        return Cache::remember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($latitude, $longitude) {
+        return $this->safeCacheRemember($cacheKey, self::GEOCODE_CACHE_TTL_SECONDS, function () use ($latitude, $longitude) {
             $response = Http::acceptJson()
                 ->timeout(self::REQUEST_TIMEOUT_SECONDS)
                 ->get(self::GEOCODE_API, [
@@ -215,6 +215,46 @@ class WeatherLookupService
                 ?: $this->formatLocationLabel($result)
                 ?: ($result['formatted_address'] ?? null);
         });
+    }
+
+    private function safeCacheGet(string $key): mixed
+    {
+        try {
+            return Cache::get($key);
+        } catch (\Throwable $e) {
+            Log::warning('Weather cache read failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private function safeCachePut(string $key, mixed $value, int $seconds): void
+    {
+        try {
+            Cache::put($key, $value, $seconds);
+        } catch (\Throwable $e) {
+            Log::warning('Weather cache write failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function safeCacheRemember(string $key, int $seconds, callable $callback): mixed
+    {
+        try {
+            return Cache::remember($key, $seconds, $callback);
+        } catch (\Throwable $e) {
+            Log::warning('Weather cache remember failed', [
+                'key' => $key,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $callback();
+        }
     }
 
     private function formatLocationLabel(array $result): ?string
