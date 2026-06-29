@@ -12,9 +12,11 @@ class WeatherLookupService
     private const GEOCODE_API = 'https://maps.googleapis.com/maps/api/geocode/json';
     private const CURRENT_CONDITIONS_API = 'https://weather.googleapis.com/v1/currentConditions:lookup';
     private const HOURLY_FORECAST_API = 'https://weather.googleapis.com/v1/forecast/hours:lookup';
+    private const OPEN_METEO_FORECAST_API = 'https://api.open-meteo.com/v1/forecast';
     private const REQUEST_TIMEOUT_SECONDS = 3;
     private const DEFAULT_FORECAST_HOURS = 24;
     private const MAX_FORECAST_HOURS = 240;
+    private const OPEN_METEO_MAX_FORECAST_DAYS = 16;
     private const RESULT_CACHE_TTL_SECONDS = 900; // 15 minutes
     private const NEGATIVE_CACHE_TTL_SECONDS = 300; // 5 minutes
     private const GEOCODE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
@@ -59,11 +61,14 @@ class WeatherLookupService
             return null;
         }
 
+        $provider = $weather['provider'] ?? 'google_weather';
+        unset($weather['provider']);
+
         $result = array_merge($weather, [
             'location' => $resolved['location'],
             'latitude' => $resolved['latitude'],
             'longitude' => $resolved['longitude'],
-            'provider' => 'google_weather',
+            'provider' => $provider,
         ]);
 
         Cache::put($cacheKey, $result, self::RESULT_CACHE_TTL_SECONDS);
@@ -297,7 +302,11 @@ class WeatherLookupService
 
         $currentConditions = $this->fetchCurrentConditions($latitude, $longitude);
 
-        return $currentConditions ? $this->formatCurrentConditions($currentConditions) : null;
+        if ($currentConditions) {
+            return $this->formatCurrentConditions($currentConditions);
+        }
+
+        return $this->fetchOpenMeteoWeather($latitude, $longitude, $target);
     }
 
     private function fetchCurrentConditions(float $latitude, float $longitude): ?array
@@ -375,6 +384,162 @@ class WeatherLookupService
         return $entries;
     }
 
+    private function fetchOpenMeteoWeather(
+        float $latitude,
+        float $longitude,
+        ?CarbonImmutable $target,
+    ): ?array {
+        $now = CarbonImmutable::now('UTC');
+
+        if (!$target || !$target->greaterThan($now->addMinutes(30))) {
+            return $this->fetchOpenMeteoCurrent($latitude, $longitude);
+        }
+
+        if ($target->greaterThan($now->addDays(self::OPEN_METEO_MAX_FORECAST_DAYS))) {
+            return null;
+        }
+
+        return $this->fetchOpenMeteoHourly($latitude, $longitude, $target);
+    }
+
+    private function fetchOpenMeteoCurrent(float $latitude, float $longitude): ?array
+    {
+        $response = Http::acceptJson()
+            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+            ->get(self::OPEN_METEO_FORECAST_API, [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'current' => implode(',', [
+                    'temperature_2m',
+                    'weather_code',
+                    'precipitation',
+                    'rain',
+                    'showers',
+                    'snowfall',
+                    'cloud_cover',
+                ]),
+                'timezone' => 'UTC',
+            ]);
+
+        if (!$response->ok()) {
+            Log::warning('Open-Meteo current weather lookup failed', [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            return null;
+        }
+
+        $payload = $response->json();
+        $current = $payload['current'] ?? null;
+
+        return is_array($current) ? $this->formatOpenMeteoPayload($current) : null;
+    }
+
+    private function fetchOpenMeteoHourly(
+        float $latitude,
+        float $longitude,
+        CarbonImmutable $target,
+    ): ?array {
+        $response = Http::acceptJson()
+            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+            ->get(self::OPEN_METEO_FORECAST_API, [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'hourly' => implode(',', [
+                    'temperature_2m',
+                    'weather_code',
+                    'precipitation',
+                    'rain',
+                    'showers',
+                    'snowfall',
+                    'cloud_cover',
+                ]),
+                'forecast_days' => self::OPEN_METEO_MAX_FORECAST_DAYS,
+                'timezone' => 'UTC',
+            ]);
+
+        if (!$response->ok()) {
+            Log::warning('Open-Meteo hourly weather lookup failed', [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            return null;
+        }
+
+        $hourly = $response->json('hourly');
+
+        return is_array($hourly) ? $this->formatOpenMeteoClosestHour($hourly, $target) : null;
+    }
+
+    private function formatOpenMeteoClosestHour(array $hourly, CarbonImmutable $target): ?array
+    {
+        $times = $hourly['time'] ?? [];
+        if (!is_array($times) || $times === []) {
+            return null;
+        }
+
+        $bestIndex = null;
+        $bestDiff = null;
+
+        foreach ($times as $index => $time) {
+            if (!is_string($time) || $time === '') {
+                continue;
+            }
+
+            try {
+                $entryTime = CarbonImmutable::parse($time, 'UTC')->utc();
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            $diff = abs($entryTime->getTimestamp() - $target->getTimestamp());
+            if ($bestDiff === null || $diff < $bestDiff) {
+                $bestDiff = $diff;
+                $bestIndex = $index;
+            }
+        }
+
+        if ($bestIndex === null) {
+            return null;
+        }
+
+        return $this->formatOpenMeteoPayload([
+            'temperature_2m' => $hourly['temperature_2m'][$bestIndex] ?? null,
+            'weather_code' => $hourly['weather_code'][$bestIndex] ?? null,
+            'precipitation' => $hourly['precipitation'][$bestIndex] ?? null,
+            'rain' => $hourly['rain'][$bestIndex] ?? null,
+            'showers' => $hourly['showers'][$bestIndex] ?? null,
+            'snowfall' => $hourly['snowfall'][$bestIndex] ?? null,
+            'cloud_cover' => $hourly['cloud_cover'][$bestIndex] ?? null,
+        ]);
+    }
+
+    private function formatOpenMeteoPayload(array $payload): ?array
+    {
+        $tempC = $payload['temperature_2m'] ?? null;
+        if (!is_numeric($tempC)) {
+            return null;
+        }
+
+        $code = is_numeric($payload['weather_code'] ?? null) ? (int) $payload['weather_code'] : null;
+        $description = $this->describeOpenMeteoCode($code);
+        $icon = $this->mapOpenMeteoIcon($code, $payload);
+
+        return array_merge(
+            $this->formatWeatherPayload((float) $tempC, $description, $description),
+            [
+                'icon' => $icon,
+                'provider' => 'open_meteo',
+            ],
+        );
+    }
+
     private function pickClosestForecastHour(array $entries, CarbonImmutable $target): ?array
     {
         $bestEntry = null;
@@ -448,6 +613,66 @@ class WeatherLookupService
             'description' => $description,
             'icon' => $this->mapIcon($description, $type),
         ];
+    }
+
+    private function describeOpenMeteoCode(?int $code): ?string
+    {
+        return match ($code) {
+            0 => 'Clear sky',
+            1 => 'Mainly clear',
+            2 => 'Partly cloudy',
+            3 => 'Overcast',
+            45, 48 => 'Fog',
+            51, 53, 55 => 'Drizzle',
+            56, 57 => 'Freezing drizzle',
+            61, 63, 65 => 'Rain',
+            66, 67 => 'Freezing rain',
+            71, 73, 75 => 'Snow',
+            77 => 'Snow grains',
+            80, 81, 82 => 'Rain showers',
+            85, 86 => 'Snow showers',
+            95 => 'Thunderstorm',
+            96, 99 => 'Thunderstorm with hail',
+            default => null,
+        };
+    }
+
+    private function mapOpenMeteoIcon(?int $code, array $payload): string
+    {
+        if ($code !== null) {
+            if (in_array($code, [71, 73, 75, 77, 85, 86], true)) {
+                return 'snowy';
+            }
+
+            if (
+                in_array($code, [51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99], true)
+            ) {
+                return 'rainy';
+            }
+
+            if ($code === 0 || $code === 1) {
+                return 'sunny';
+            }
+        }
+
+        $snowfall = $payload['snowfall'] ?? 0;
+        if (is_numeric($snowfall) && (float) $snowfall > 0) {
+            return 'snowy';
+        }
+
+        foreach (['precipitation', 'rain', 'showers'] as $key) {
+            $value = $payload[$key] ?? 0;
+            if (is_numeric($value) && (float) $value > 0) {
+                return 'rainy';
+            }
+        }
+
+        $cloudCover = $payload['cloud_cover'] ?? null;
+        if (is_numeric($cloudCover) && (float) $cloudCover < 25) {
+            return 'sunny';
+        }
+
+        return 'cloudy';
     }
 
     private function mapIcon(?string $description, ?string $type): string
