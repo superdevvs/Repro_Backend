@@ -27,6 +27,13 @@ class FeaturedShootApiTest extends TestCase
         $this->withHeader('Authorization', 'Bearer wrong-token')
             ->getJson('/api/v1/featured-shoot')
             ->assertUnauthorized();
+
+        $this->getJson('/api/v1/featured-shoots')
+            ->assertUnauthorized();
+
+        $this->withHeader('Authorization', 'Bearer wrong-token')
+            ->getJson('/api/v1/featured-shoots')
+            ->assertUnauthorized();
     }
 
     #[Test]
@@ -38,6 +45,17 @@ class FeaturedShootApiTest extends TestCase
             ->getJson('/api/v1/featured-shoot')
             ->assertOk()
             ->assertContent('null');
+    }
+
+    #[Test]
+    public function featured_shoots_endpoint_returns_an_empty_list_when_nothing_is_featured(): void
+    {
+        config(['services.repro_dashboard.api_key' => 'secret-token']);
+
+        $this->withHeader('Authorization', 'Bearer secret-token')
+            ->getJson('/api/v1/featured-shoots')
+            ->assertOk()
+            ->assertJson(['shoots' => []]);
     }
 
     #[Test]
@@ -63,6 +81,9 @@ class FeaturedShootApiTest extends TestCase
             'featured_homepage_subtitle' => 'Twilight + Drone',
             'featured_homepage_cta_label' => 'See the shoot',
             'featured_homepage_cta_href' => '/projects/modern-arlington',
+            'package_name' => 'Premium Photos',
+            'service_category' => 'Residential',
+            'listing_type' => 'for_sale',
         ]);
 
         $first = $this->makeShootFile($shoot, $uploader, 'hero-a.jpg', 'shoots/1/hero-a-1920.webp');
@@ -111,15 +132,91 @@ class FeaturedShootApiTest extends TestCase
             ->assertJsonPath('id', 'shoot_' . $shoot->id)
             ->assertJsonPath('title', 'Modern Arlington Townhouse')
             ->assertJsonPath('images.0.alt', 'Kitchen at dusk')
+            ->assertJsonPath('cover_image.alt', 'Kitchen at dusk')
             ->assertJsonPath('images.0.focal', '45% 35%')
             ->assertJsonPath('images.0.sort', 1)
             ->assertJsonPath('images.1.alt', 'Living room at dusk')
             ->assertJsonCount(2, 'images')
+            ->assertJsonPath('tags.0', 'Premium Photos')
+            ->assertJsonPath('tags.1', 'Residential')
+            ->assertJsonPath('tags.2', 'for_sale')
             ->assertJsonPath('cta.href', '/projects/modern-arlington');
     }
 
     #[Test]
-    public function setting_one_shoot_featured_unsets_the_previous_featured_shoot(): void
+    public function featured_shoots_endpoint_returns_multiple_featured_shoots(): void
+    {
+        config(['services.repro_dashboard.api_key' => 'secret-token']);
+        Storage::fake('public');
+        Storage::disk('public')->put('shoots/1/a.webp', 'a');
+        Storage::disk('public')->put('shoots/2/b.webp', 'b');
+
+        $uploader = User::factory()->admin()->create();
+        $older = Shoot::factory()->create([
+            'is_featured' => true,
+            'address' => '100 First Street',
+            'updated_at' => now()->subMinute(),
+        ]);
+        $newer = Shoot::factory()->create([
+            'is_featured' => true,
+            'address' => '200 Second Street',
+            'updated_at' => now(),
+        ]);
+
+        $olderFile = $this->makeShootFile($older, $uploader, 'older.jpg', 'shoots/1/a.webp');
+        $newerFile = $this->makeShootFile($newer, $uploader, 'newer.jpg', 'shoots/2/b.webp');
+
+        FeaturedShootImage::create([
+            'shoot_id' => $older->id,
+            'shoot_file_id' => $olderFile->id,
+            'sort_order' => 1,
+        ]);
+        FeaturedShootImage::create([
+            'shoot_id' => $newer->id,
+            'shoot_file_id' => $newerFile->id,
+            'sort_order' => 1,
+        ]);
+
+        $this->withHeader('Authorization', 'Bearer secret-token')
+            ->getJson('/api/v1/featured-shoots')
+            ->assertOk()
+            ->assertJsonCount(2, 'shoots')
+            ->assertJsonPath('shoots.0.id', 'shoot_' . $newer->id)
+            ->assertJsonPath('shoots.1.id', 'shoot_' . $older->id);
+    }
+
+    #[Test]
+    public function featured_shoots_endpoint_caps_each_gallery_at_ten_images(): void
+    {
+        config(['services.repro_dashboard.api_key' => 'secret-token']);
+        Storage::fake('public');
+
+        $uploader = User::factory()->admin()->create();
+        $shoot = Shoot::factory()->create(['is_featured' => true]);
+
+        for ($index = 1; $index <= 12; $index++) {
+            $path = "shoots/1/gallery-{$index}.webp";
+            Storage::disk('public')->put($path, (string) $index);
+            $file = $this->makeShootFile($shoot, $uploader, "gallery-{$index}.jpg", $path);
+
+            FeaturedShootImage::create([
+                'shoot_id' => $shoot->id,
+                'shoot_file_id' => $file->id,
+                'sort_order' => $index,
+                'alt_text' => "Gallery {$index}",
+            ]);
+        }
+
+        $this->withHeader('Authorization', 'Bearer secret-token')
+            ->getJson('/api/v1/featured-shoots')
+            ->assertOk()
+            ->assertJsonCount(10, 'shoots.0.images')
+            ->assertJsonPath('shoots.0.images.0.alt', 'Gallery 1')
+            ->assertJsonPath('shoots.0.images.9.alt', 'Gallery 10');
+    }
+
+    #[Test]
+    public function setting_one_shoot_featured_preserves_previous_featured_shoots(): void
     {
         $admin = User::factory()->admin()->create();
         Sanctum::actingAs($admin);
@@ -131,8 +228,32 @@ class FeaturedShootApiTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.is_featured', true);
 
-        $this->assertFalse((bool) $previous->fresh()->is_featured);
+        $this->assertTrue((bool) $previous->fresh()->is_featured);
         $this->assertTrue((bool) $next->fresh()->is_featured);
+    }
+
+    #[Test]
+    public function featured_homepage_images_accepts_ten_images(): void
+    {
+        $admin = User::factory()->admin()->create();
+        Sanctum::actingAs($admin);
+
+        $shoot = Shoot::factory()->create();
+        $files = collect(range(1, 10))->map(
+            fn (int $index) => $this->makeShootFile($shoot, $admin, "project-{$index}.jpg", "shoots/1/project-{$index}.webp")
+        );
+
+        $this->patchJson('/api/shoots/' . $shoot->id, [
+            'featured_homepage_images' => $files
+                ->map(fn (ShootFile $file, int $index) => [
+                    'shoot_file_id' => $file->id,
+                    'sort' => $index + 1,
+                ])
+                ->values()
+                ->all(),
+        ])
+            ->assertOk()
+            ->assertJsonCount(10, 'data.featured_homepage_images');
     }
 
     private function makeShootFile(Shoot $shoot, User $uploader, string $filename, string $path, array $overrides = []): ShootFile
@@ -149,6 +270,7 @@ class FeaturedShootApiTest extends TestCase
             'mime_type' => 'image/webp',
             'media_type' => 'image',
             'file_size' => 1234,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'uploaded_by' => $uploader->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
             'metadata' => ['width' => 1920, 'height' => 1080],

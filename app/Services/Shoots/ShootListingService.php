@@ -277,6 +277,14 @@ class ShootListingService
 
     protected function applyTabScope(Builder $query, string $tab): void
     {
+        if ($tab === 'featured') {
+            $query->where(function (Builder $scope) {
+                $scope->where('is_featured', true)
+                    ->orWhereNotNull('featured_requested_at');
+            });
+            return;
+        }
+
         $tabKey = array_key_exists($tab, self::TAB_STATUS_MAP) ? $tab : 'scheduled';
         $statuses = self::TAB_STATUS_MAP[$tabKey] ?? self::TAB_STATUS_MAP['scheduled'];
 
@@ -408,6 +416,11 @@ class ShootListingService
     protected function determineTabOrdering(string $tab): array
     {
         switch ($tab) {
+            case 'featured':
+                return [
+                    ['raw' => 'CASE WHEN is_featured = 0 AND featured_requested_at IS NOT NULL THEN 0 ELSE 1 END ASC'],
+                    ['raw' => 'COALESCE(featured_requested_at, featured_approved_at, admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC'],
+                ];
             case 'delivered':
                 return [
                     ['raw' => 'COALESCE(admin_verified_at, editing_completed_at, scheduled_date) DESC'],

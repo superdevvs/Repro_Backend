@@ -449,6 +449,22 @@ class ShootResource extends JsonResource
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),
             'is_featured' => (bool) ($this->is_featured ?? false),
             'isFeatured' => (bool) ($this->is_featured ?? false),
+            'featured_pending' => !($this->is_featured ?? false) && !empty($this->featured_requested_at),
+            'featuredPending' => !($this->is_featured ?? false) && !empty($this->featured_requested_at),
+            'featured_status' => ($this->is_featured ?? false)
+                ? 'featured'
+                : (!empty($this->featured_requested_at) ? 'pending' : 'none'),
+            'featuredStatus' => ($this->is_featured ?? false)
+                ? 'featured'
+                : (!empty($this->featured_requested_at) ? 'pending' : 'none'),
+            'featured_requested_at' => $this->featured_requested_at?->toIso8601String(),
+            'featuredRequestedAt' => $this->featured_requested_at?->toIso8601String(),
+            'featured_requested_by' => $this->featured_requested_by,
+            'featuredRequestedBy' => $this->featured_requested_by,
+            'featured_approved_at' => $this->featured_approved_at?->toIso8601String(),
+            'featuredApprovedAt' => $this->featured_approved_at?->toIso8601String(),
+            'featured_approved_by' => $this->featured_approved_by,
+            'featuredApprovedBy' => $this->featured_approved_by,
             'featured_homepage_title' => $this->featured_homepage_title,
             'featuredHomepageTitle' => $this->featured_homepage_title,
             'featured_homepage_location' => $this->featured_homepage_location,

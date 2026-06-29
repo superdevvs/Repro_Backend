@@ -78,7 +78,7 @@ class ShootEditablePayloadService
             'featured_homepage_subtitle' => 'nullable|string|max:255',
             'featured_homepage_cta_label' => 'nullable|string|max:80',
             'featured_homepage_cta_href' => 'nullable|string|max:255',
-            'featured_homepage_images' => 'nullable|array|min:0|max:6',
+            'featured_homepage_images' => 'nullable|array|min:0|max:10',
             'featured_homepage_images.*.shoot_file_id' => 'required_with:featured_homepage_images|integer|exists:shoot_files,id',
             'featured_homepage_images.*.sort' => 'nullable|integer|min:1|max:999',
             'featured_homepage_images.*.sort_order' => 'nullable|integer|min:1|max:999',
@@ -377,16 +377,6 @@ class ShootEditablePayloadService
         }
 
         DB::transaction(function () use ($shoot, $validated) {
-            if ((bool) ($shoot->is_featured ?? false)) {
-                DB::table('shoots')
-                    ->where('id', '!=', $shoot->id)
-                    ->where('is_featured', true)
-                    ->update([
-                        'is_featured' => false,
-                        'updated_at' => now(),
-                    ]);
-            }
-
             $shoot->save();
 
             if (array_key_exists('featured_homepage_images', $validated)) {

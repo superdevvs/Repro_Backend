@@ -95,6 +95,10 @@ Route::get('/v1/featured-shoot', FeaturedShootController::class)
     ->middleware('throttle:120,1')
     ->name('api.v1.featured-shoot');
 
+Route::get('/v1/featured-shoots', [FeaturedShootController::class, 'index'])
+    ->middleware('throttle:120,1')
+    ->name('api.v1.featured-shoots');
+
 Route::middleware('telnyx.toolbridge')
     ->prefix('telnyx-ai/tools')
     ->group(function () {

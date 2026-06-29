@@ -55,6 +55,7 @@ class UpdateShootAction
         // branch below (rep_id === user->id with $repEditableKeys). Including them here would
         // let any rep bypass authorization and edit any shoot, so they must fall through.
         $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'editing_manager'], true);
+        $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin'], true);
         $isClient = $user->role === 'client';
         $isRep = in_array($normalizedRole, ['salesrep', 'sales_rep'], true);
         $isPhotographer = $user->role === 'photographer';
@@ -101,6 +102,7 @@ class UpdateShootAction
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
             $assignedPhotographer = $isPhotographer
                 && $this->authorizationSupport->isPhotographerAssignedToShoot($shoot, $user);
+            $salesRepFeaturedRequest = $isRep && $onlyFeaturedFlag;
             $clientCanTogglePrivateListing = $isClient
                 && $onlyPrivateListing
                 && $this->authorizationSupport->canClientAccessShoot($shoot, $user);
@@ -155,7 +157,7 @@ class UpdateShootAction
                 }
             }
 
-            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer && !$clientCanTogglePrivateListing) {
+            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer && !$clientCanTogglePrivateListing && !$salesRepFeaturedRequest) {
                 $this->abortJson('Forbidden', 403);
             }
         }
@@ -256,6 +258,7 @@ class UpdateShootAction
 
         $previousPrivateListing = (bool) ($shoot->is_private_listing ?? false);
         $previousFeaturedState = (bool) ($shoot->is_featured ?? false);
+        $previousFeaturedRequestedAt = $shoot->featured_requested_at?->toIso8601String();
         $previousListingHidden = (bool) ($shoot->is_listing_hidden ?? false);
         $originalStatus = $shoot->status;
         $originalWorkflow = $shoot->workflow_status;
@@ -359,7 +362,17 @@ class UpdateShootAction
             }
         }
 
+        $featuredFlagProvided = array_key_exists('is_featured', $validated);
+        $requestedFeaturedState = $featuredFlagProvided ? (bool) $validated['is_featured'] : null;
+        if ($featuredFlagProvided) {
+            unset($validated['is_featured']);
+        }
+
         $this->editablePayloadService->apply($shoot, $validated);
+        if ($featuredFlagProvided) {
+            $this->applyFeaturedRequestState($shoot, (bool) $requestedFeaturedState, $user, $canApproveFeaturedShoot);
+            $shoot->save();
+        }
         if (($scheduledAtProvided || array_key_exists('timezone', $validated)) && $shoot->scheduled_at) {
             $scheduleScope = app(ScheduleDateScopeService::class);
             $shoot->scheduled_date = $scheduleScope->localDateForShoot($shoot) ?? $shoot->scheduled_date;
@@ -401,6 +414,12 @@ class UpdateShootAction
             }
             if ($previousFeaturedState !== (bool) ($shoot->is_featured ?? false)) {
                 $changes['is_featured'] = ['from' => $previousFeaturedState, 'to' => (bool) ($shoot->is_featured ?? false)];
+            }
+            if ($previousFeaturedRequestedAt !== $shoot->featured_requested_at?->toIso8601String()) {
+                $changes['featured_requested_at'] = [
+                    'from' => $previousFeaturedRequestedAt,
+                    'to' => $shoot->featured_requested_at?->toIso8601String(),
+                ];
             }
             if (array_key_exists('ghost_user_ids', $validated)) {
                 $updatedGhostUserIds = $shoot->ghostUsers->pluck('id')->map(fn ($id) => (string) $id)->sort()->values()->all();
@@ -597,6 +616,46 @@ class UpdateShootAction
             $photographerChanged,
             $photographerNewlyAssigned
         )->afterCommit();
+    }
+
+    protected function applyFeaturedRequestState(Shoot $shoot, bool $requestedFeaturedState, User $user, bool $canApproveFeaturedShoot): void
+    {
+        if ($canApproveFeaturedShoot) {
+            $shoot->is_featured = $requestedFeaturedState;
+
+            if ($requestedFeaturedState) {
+                $shoot->featured_approved_at = now();
+                $shoot->featured_approved_by = $user->id;
+                $shoot->featured_requested_at = $shoot->featured_requested_at ?? now();
+                $shoot->featured_requested_by = $shoot->featured_requested_by ?? $user->id;
+            } else {
+                $shoot->featured_requested_at = null;
+                $shoot->featured_requested_by = null;
+                $shoot->featured_approved_at = null;
+                $shoot->featured_approved_by = null;
+            }
+
+            return;
+        }
+
+        if ((bool) ($shoot->is_featured ?? false)) {
+            return;
+        }
+
+        if ($requestedFeaturedState) {
+            $shoot->is_featured = false;
+            $shoot->featured_requested_at = now();
+            $shoot->featured_requested_by = $user->id;
+            $shoot->featured_approved_at = null;
+            $shoot->featured_approved_by = null;
+            return;
+        }
+
+        $shoot->is_featured = false;
+        $shoot->featured_requested_at = null;
+        $shoot->featured_requested_by = null;
+        $shoot->featured_approved_at = null;
+        $shoot->featured_approved_by = null;
     }
 
     protected function normalizeTourLinks(mixed $tourLinks): array

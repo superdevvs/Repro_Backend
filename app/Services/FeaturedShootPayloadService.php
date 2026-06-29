@@ -11,21 +11,33 @@ use Illuminate\Support\Str;
 
 class FeaturedShootPayloadService
 {
+    private const MAX_IMAGES_PER_SHOOT = 10;
+
     public function payload(): ?array
     {
-        $shoot = Shoot::query()
+        return $this->payloads()[0] ?? null;
+    }
+
+    public function payloads(): array
+    {
+        return Shoot::query()
             ->with(['featuredHomepageImages.file'])
             ->where('is_featured', true)
             ->latest('updated_at')
-            ->first();
+            ->get()
+            ->map(fn (Shoot $shoot) => $this->serializeShoot($shoot))
+            ->filter()
+            ->sortByDesc(fn (array $payload) => $payload['updated_at'] ?? '')
+            ->values()
+            ->all();
+    }
 
-        if (!$shoot) {
-            return null;
-        }
-
+    protected function serializeShoot(Shoot $shoot): ?array
+    {
         $images = $shoot->featuredHomepageImages
             ->filter(fn (FeaturedShootImage $image) => $this->isUsableImage($image->file))
             ->sortBy('sort_order')
+            ->take(self::MAX_IMAGES_PER_SHOOT)
             ->values()
             ->map(fn (FeaturedShootImage $image) => $this->serializeImage($image, $shoot))
             ->filter()
@@ -42,7 +54,9 @@ class FeaturedShootPayloadService
             'location' => $shoot->featured_homepage_location ?: $this->defaultLocation($shoot),
             'subtitle' => $shoot->featured_homepage_subtitle,
             'updated_at' => $this->updatedAt($shoot)?->toIso8601String(),
+            'cover_image' => $images[0],
             'images' => $images,
+            'tags' => $this->tags($shoot),
             'cta' => [
                 'label' => $shoot->featured_homepage_cta_label ?: 'See the shoot',
                 'href' => $shoot->featured_homepage_cta_href ?: $this->defaultCtaHref($shoot),
@@ -163,6 +177,20 @@ class FeaturedShootPayloadService
     protected function defaultAlt(ShootFile $file, Shoot $shoot): string
     {
         return trim((string) ($file->filename ?: $shoot->address ?: 'Featured shoot image'));
+    }
+
+    protected function tags(Shoot $shoot): array
+    {
+        return collect([
+            $shoot->package_name,
+            $shoot->service_category,
+            $shoot->listing_type,
+        ])
+            ->filter(fn ($value) => is_string($value) && trim($value) !== '')
+            ->map(fn (string $value) => trim($value))
+            ->unique()
+            ->values()
+            ->all();
     }
 
     protected function metadataInt(ShootFile $file, string $key): ?int

@@ -267,7 +267,24 @@ class CreateShootAction
             && $result->scheduledAt !== null
             && $result->shoot->hasCubiCasaEligibleService()
         ) {
-            CreateCubiCasaOrderJob::dispatch($result->shoot->id, 'booking')->afterCommit();
+            // CubiCasa order creation is a post-booking side effect: it must run when the
+            // booking is complete, but must NEVER block or fail the booking itself. On a
+            // synchronous queue the dispatched job executes at destruct time, so a transient
+            // CubiCasa failure (which the job throws to enable retries on a real queue) would
+            // otherwise bubble up and 500 the booking after the shoot was already created.
+            // Contain it here so the client always reaches the success page; on an async queue
+            // the job is simply queued (no inline throw) and retries normally.
+            try {
+                $pending = CreateCubiCasaOrderJob::dispatch($result->shoot->id, 'booking')->afterCommit();
+                // Force the PendingDispatch to resolve here (inside the try) so any synchronous
+                // execution throw is caught rather than surfacing at end-of-scope destruct.
+                unset($pending);
+            } catch (\Throwable $e) {
+                Log::warning('CubiCasa auto-create failed during booking; booking completed regardless.', [
+                    'shoot_id' => $result->shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $this->googleCalendarSyncDispatcher->dispatchShootSync($result->shoot->id);

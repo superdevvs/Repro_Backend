@@ -498,6 +498,20 @@ class ShootPresenter
         $shoot->is_private_listing = $shoot->is_private_listing ?? false;
         $shoot->is_featured = $shoot->is_featured ?? false;
         $shoot->isFeatured = (bool) ($shoot->is_featured ?? false);
+        $shoot->featured_pending = !($shoot->is_featured ?? false) && !empty($shoot->featured_requested_at);
+        $shoot->featuredPending = (bool) $shoot->featured_pending;
+        $shoot->featured_status = $shoot->isFeatured
+            ? 'featured'
+            : ($shoot->featuredPending ? 'pending' : 'none');
+        $shoot->featuredStatus = $shoot->featured_status;
+        $shoot->featured_requested_at = $shoot->featured_requested_at?->toIso8601String();
+        $shoot->featuredRequestedAt = $shoot->featured_requested_at;
+        $shoot->featured_requested_by = $shoot->featured_requested_by;
+        $shoot->featuredRequestedBy = $shoot->featured_requested_by;
+        $shoot->featured_approved_at = $shoot->featured_approved_at?->toIso8601String();
+        $shoot->featuredApprovedAt = $shoot->featured_approved_at;
+        $shoot->featured_approved_by = $shoot->featured_approved_by;
+        $shoot->featuredApprovedBy = $shoot->featured_approved_by;
         $shoot->is_listing_hidden = $shoot->is_listing_hidden ?? false;
         $shoot->isListingHidden = (bool) ($shoot->is_listing_hidden ?? false);
         $shoot->mmm_status = $shoot->mmm_status;
