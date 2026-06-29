@@ -31,8 +31,12 @@ class WeatherLookupService
 
     public function lookup(array $params): ?array
     {
-        if (empty($this->googleApiKey)) {
-            throw new \RuntimeException('Google API key is not configured for weather lookups.');
+        $hasCoordinates = isset($params['latitude'], $params['longitude'])
+            && is_numeric($params['latitude'])
+            && is_numeric($params['longitude']);
+
+        if (!$hasCoordinates && empty($this->googleApiKey)) {
+            throw new \RuntimeException('Google API key is not configured for location-based weather lookups.');
         }
 
         $cacheKey = $this->buildResultCacheKey($params);
@@ -127,7 +131,7 @@ class WeatherLookupService
             return [
                 'latitude' => $latitude,
                 'longitude' => $longitude,
-                'location' => $this->reverseGeocode($latitude, $longitude),
+                'location' => $this->googleApiKey ? $this->reverseGeocode($latitude, $longitude) : null,
             ];
         }
 
@@ -285,7 +289,7 @@ class WeatherLookupService
     ): ?array {
         $now = CarbonImmutable::now('UTC');
 
-        if ($target && $target->greaterThan($now->addMinutes(30))) {
+        if ($this->googleApiKey && $target && $target->greaterThan($now->addMinutes(30))) {
             $hoursAhead = max(0, (int) ceil(($target->getTimestamp() - $now->getTimestamp()) / 3600));
             $hoursToRequest = min(
                 self::MAX_FORECAST_HOURS,
@@ -300,10 +304,12 @@ class WeatherLookupService
             }
         }
 
-        $currentConditions = $this->fetchCurrentConditions($latitude, $longitude);
+        if ($this->googleApiKey) {
+            $currentConditions = $this->fetchCurrentConditions($latitude, $longitude);
 
-        if ($currentConditions) {
-            return $this->formatCurrentConditions($currentConditions);
+            if ($currentConditions) {
+                return $this->formatCurrentConditions($currentConditions);
+            }
         }
 
         return $this->fetchOpenMeteoWeather($latitude, $longitude, $target);
@@ -311,15 +317,25 @@ class WeatherLookupService
 
     private function fetchCurrentConditions(float $latitude, float $longitude): ?array
     {
-        $response = Http::acceptJson()
-            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-            ->get(self::CURRENT_CONDITIONS_API, [
-                'key' => $this->googleApiKey,
-                'location.latitude' => $latitude,
-                'location.longitude' => $longitude,
-                'unitsSystem' => 'METRIC',
-                'languageCode' => 'en',
+        try {
+            $response = Http::acceptJson()
+                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                ->get(self::CURRENT_CONDITIONS_API, [
+                    'key' => $this->googleApiKey,
+                    'location.latitude' => $latitude,
+                    'location.longitude' => $longitude,
+                    'unitsSystem' => 'METRIC',
+                    'languageCode' => 'en',
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('Google current weather lookup failed', [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'error' => $e->getMessage(),
             ]);
+
+            return null;
+        }
 
         if (!$response->ok()) {
             Log::warning('Google current weather lookup failed', [
@@ -358,9 +374,20 @@ class WeatherLookupService
                 $params['pageToken'] = $pageToken;
             }
 
-            $response = Http::acceptJson()
-                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-                ->get(self::HOURLY_FORECAST_API, $params);
+            try {
+                $response = Http::acceptJson()
+                    ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                    ->get(self::HOURLY_FORECAST_API, $params);
+            } catch (\Throwable $e) {
+                Log::warning('Google hourly weather lookup failed', [
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'hours' => $hours,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return [];
+            }
 
             if (!$response->ok()) {
                 Log::warning('Google hourly weather lookup failed', [
@@ -404,22 +431,32 @@ class WeatherLookupService
 
     private function fetchOpenMeteoCurrent(float $latitude, float $longitude): ?array
     {
-        $response = Http::acceptJson()
-            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-            ->get(self::OPEN_METEO_FORECAST_API, [
+        try {
+            $response = Http::acceptJson()
+                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                ->get(self::OPEN_METEO_FORECAST_API, [
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'current' => implode(',', [
+                        'temperature_2m',
+                        'weather_code',
+                        'precipitation',
+                        'rain',
+                        'showers',
+                        'snowfall',
+                        'cloud_cover',
+                    ]),
+                    'timezone' => 'UTC',
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('Open-Meteo current weather lookup failed', [
                 'latitude' => $latitude,
                 'longitude' => $longitude,
-                'current' => implode(',', [
-                    'temperature_2m',
-                    'weather_code',
-                    'precipitation',
-                    'rain',
-                    'showers',
-                    'snowfall',
-                    'cloud_cover',
-                ]),
-                'timezone' => 'UTC',
+                'error' => $e->getMessage(),
             ]);
+
+            return null;
+        }
 
         if (!$response->ok()) {
             Log::warning('Open-Meteo current weather lookup failed', [
@@ -443,23 +480,33 @@ class WeatherLookupService
         float $longitude,
         CarbonImmutable $target,
     ): ?array {
-        $response = Http::acceptJson()
-            ->timeout(self::REQUEST_TIMEOUT_SECONDS)
-            ->get(self::OPEN_METEO_FORECAST_API, [
+        try {
+            $response = Http::acceptJson()
+                ->timeout(self::REQUEST_TIMEOUT_SECONDS)
+                ->get(self::OPEN_METEO_FORECAST_API, [
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'hourly' => implode(',', [
+                        'temperature_2m',
+                        'weather_code',
+                        'precipitation',
+                        'rain',
+                        'showers',
+                        'snowfall',
+                        'cloud_cover',
+                    ]),
+                    'forecast_days' => self::OPEN_METEO_MAX_FORECAST_DAYS,
+                    'timezone' => 'UTC',
+                ]);
+        } catch (\Throwable $e) {
+            Log::warning('Open-Meteo hourly weather lookup failed', [
                 'latitude' => $latitude,
                 'longitude' => $longitude,
-                'hourly' => implode(',', [
-                    'temperature_2m',
-                    'weather_code',
-                    'precipitation',
-                    'rain',
-                    'showers',
-                    'snowfall',
-                    'cloud_cover',
-                ]),
-                'forecast_days' => self::OPEN_METEO_MAX_FORECAST_DAYS,
-                'timezone' => 'UTC',
+                'error' => $e->getMessage(),
             ]);
+
+            return null;
+        }
 
         if (!$response->ok()) {
             Log::warning('Open-Meteo hourly weather lookup failed', [

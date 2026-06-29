@@ -21,6 +21,38 @@ class WeatherLookupServiceTest extends TestCase
     }
 
     #[Test]
+    public function it_uses_open_meteo_for_coordinates_when_google_keys_are_missing(): void
+    {
+        config()->set('services.google.places_api_key', null);
+        config()->set('services.google.maps_api_key', null);
+
+        Http::fake([
+            'api.open-meteo.com/v1/forecast*' => Http::response([
+                'current' => [
+                    'temperature_2m' => 18.2,
+                    'weather_code' => 3,
+                    'precipitation' => 0,
+                    'rain' => 0,
+                    'showers' => 0,
+                    'snowfall' => 0,
+                    'cloud_cover' => 90,
+                ],
+            ]),
+        ]);
+
+        $weather = app(WeatherLookupService::class)->lookup([
+            'latitude' => 40.7128,
+            'longitude' => -74.006,
+        ]);
+
+        $this->assertSame('open_meteo', $weather['provider']);
+        $this->assertSame(18, $weather['temperatureC']);
+        $this->assertSame(65, $weather['temperatureF']);
+        $this->assertSame('Overcast', $weather['description']);
+        $this->assertNull($weather['location']);
+    }
+
+    #[Test]
     public function it_falls_back_to_open_meteo_when_google_weather_is_denied(): void
     {
         Http::fake([
