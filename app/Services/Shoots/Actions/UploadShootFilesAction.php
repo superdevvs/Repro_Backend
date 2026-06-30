@@ -186,7 +186,15 @@ class UploadShootFilesAction
         }
 
         $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
-        $isEditedUploadManager = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true);
+        $isEditor = $user && $user->role === 'editor';
+        // An editor may upload edited revisions only for shoots they are assigned to
+        // (admin tiers stay unrestricted). This scopes post-delivery revision uploads to
+        // the assigned editor and blocks unassigned editors. Mirrors the assignment gate
+        // already used for photographers above and for media access in
+        // ShootAuthorizationSupport.
+        $editorHasEditingAssignment = $isEditor
+            && app(\App\Services\Shoots\ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user);
+        $isEditedUploadManager = $isAdmin || $editorHasEditingAssignment;
         // Photographers may upload raw revisions even after delivery (client revision
         // requests). Service-item / assignment scoping is already enforced above, so a
         // photographer reaching this point is assigned to the shoot/service item.
@@ -209,7 +217,9 @@ class UploadShootFilesAction
                 'status' => 403,
                 'payload' => [
                     'error_type' => 'forbidden',
-                    'message' => 'You do not have permission to upload edited files',
+                    'message' => $isEditor
+                        ? 'You can only upload edited files for shoots assigned to you'
+                        : 'You do not have permission to upload edited files',
                     'current_status' => $shoot->workflow_status,
                     'upload_limits' => $uploadLimits,
                 ],
