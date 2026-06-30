@@ -18,25 +18,31 @@
 @section('content')
 <p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#a9b8cb;"><strong class="dark-strong" style="color:#e8edf5;">Welcome to the R/E Pro Photos dashboard.</strong></p>
 
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:18px 0 8px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0 8px;">
+        @if(!empty($verificationLink))
         <tr>
-            @if(!empty($verificationLink))
-            <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
-                <a href="{{ $verificationLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Verify Email</a>
+            <td align="center" style="padding-bottom:10px;">
+                <a href="{{ $verificationLink }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Verify Email</a>
             </td>
-            @endif
-            @if(!empty($resetLink) && !empty($includePasswordCreationLink))
-            <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
-                <a href="{{ $resetLink }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Create Password</a>
+        </tr>
+        @endif
+        @if(!empty($resetLink) && !empty($includePasswordCreationLink))
+        <tr>
+            <td align="center" style="padding-bottom:10px;">
+                <a href="{{ $resetLink }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Create Password</a>
             </td>
-            @endif
-            @if(!empty($equipmentVerificationUrl))
-            <td style="border-radius:999px; background-color:#1463ff; padding-right:10px;" bgcolor="#1463ff">
-                <a href="{{ $equipmentVerificationUrl }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Verify Equipment</a>
+        </tr>
+        @endif
+        @if(!empty($equipmentVerificationUrl))
+        <tr>
+            <td align="center" style="padding-bottom:10px;">
+                <a href="{{ $equipmentVerificationUrl }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Verify Equipment</a>
             </td>
-            @endif
-            <td style="border-radius:999px; background-color:#1463ff;" bgcolor="#1463ff">
-                <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" style="display:inline-block; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none;">Open Dashboard</a>
+        </tr>
+        @endif
+        <tr>
+            <td align="center">
+                <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Open Dashboard</a>
             </td>
         </tr>
     </table>
