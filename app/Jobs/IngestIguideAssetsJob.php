@@ -146,6 +146,17 @@ class IngestIguideAssetsJob implements ShouldQueue
 
                 $ingestedFileIds[] = $shootFile->id;
 
+                // Generate a renderable preview (PDF -> page JPGs, or link image) so the
+                // floorplan shows a thumbnail instead of an empty card. Non-fatal.
+                try {
+                    app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($shootFile);
+                } catch (\Throwable $e) {
+                    Log::warning('IngestIguideAssetsJob: floorplan preview generation failed', [
+                        'shoot_file_id' => $shootFile->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
                 // Mirror into Dropbox if enabled (mirrors how regular media is synced).
                 try {
                     SyncShootFileToDropboxJob::dispatch($shootFile->id);

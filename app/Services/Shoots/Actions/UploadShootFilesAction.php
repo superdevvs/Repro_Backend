@@ -345,9 +345,22 @@ class UploadShootFilesAction
                         $rawSequenceIndex++;
                     }
 
+                    // Generate a renderable preview for floorplan uploads (PDF -> page JPGs,
+                    // or link the image) so they don't render as empty cards. Non-fatal.
+                    if ($shootFile->media_type === 'floorplan') {
+                        try {
+                            app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($shootFile);
+                            $shootFile->refresh();
+                        } catch (\Throwable $e) {
+                            Log::warning('Floorplan preview generation failed on upload', [
+                                'shoot_file_id' => $shootFile->id,
+                                'error' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+
                     $thumbUrl = $shootFile->thumbnail_path ? Storage::disk('public')->url($shootFile->thumbnail_path) : null;
                     $webUrl = $shootFile->web_path ? Storage::disk('public')->url($shootFile->web_path) : null;
-
                     $uploadedFiles[] = [
                         'id' => $shootFile->id,
                         'filename' => $shootFile->filename,
