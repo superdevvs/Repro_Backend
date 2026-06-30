@@ -363,6 +363,9 @@ class ShootPublicAssetsService
     {
         $editedFiles = $shoot->files()
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
+            ->where(function ($q) {
+                $q->where('media_type', '!=', 'floorplan')->orWhereNull('media_type');
+            })
             ->where(function ($query) {
                 $query->where(function ($mimeQuery) {
                     $mimeQuery->where('file_type', 'like', 'image/%')
@@ -471,6 +474,13 @@ class ShootPublicAssetsService
         $heroPhotos = [];
         $videos = [];
         foreach ($chosen as $file) {
+            // Floorplans have their own "Floor Plans" section and must never appear in
+            // the property photo gallery or hero. (They now carry a generated preview
+            // web_path, so they must be excluded explicitly here.)
+            if (strtolower((string) $file->media_type) === 'floorplan') {
+                continue;
+            }
+
             $url = $this->resolvePublicAssetFileUrl($file);
             if (!$url) {
                 continue;
