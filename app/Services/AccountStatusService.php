@@ -175,11 +175,37 @@ class AccountStatusService
             $user->restore();
         }
 
-        $user->forceFill([
+        $restoreUpdates = [
             'locked_at' => null,
             'account_status' => self::STATUS_ACTIVE,
             'password_reset_required' => true,
-        ])->save();
+        ];
+
+        // Recover the original email/username that were freed at delete time, but only if
+        // no other account has since claimed them (e.g. a new account created with the
+        // reused email). Otherwise the restored account keeps its tombstoned identifiers
+        // and an admin can set new ones.
+        $metadata = is_array($user->metadata) ? $user->metadata : [];
+
+        if (!empty($metadata['deleted_original_email'])) {
+            $originalEmail = $metadata['deleted_original_email'];
+            $taken = User::where('email', $originalEmail)->where('id', '!=', $user->id)->exists();
+            if (!$taken) {
+                $restoreUpdates['email'] = $originalEmail;
+                unset($metadata['deleted_original_email']);
+            }
+        }
+        if (!empty($metadata['deleted_original_username'])) {
+            $originalUsername = $metadata['deleted_original_username'];
+            $taken = User::where('username', $originalUsername)->where('id', '!=', $user->id)->exists();
+            if (!$taken) {
+                $restoreUpdates['username'] = $originalUsername;
+                unset($metadata['deleted_original_username']);
+            }
+        }
+        $restoreUpdates['metadata'] = $metadata;
+
+        $user->forceFill($restoreUpdates)->save();
 
         // Invalidate any lingering tokens so the restored user must re-authenticate.
         $user->tokens()->delete();
@@ -200,8 +226,27 @@ class AccountStatusService
 
     private function softDelete(User $user): void
     {
-        // Keep the legacy string column meaningful for the retained (soft-deleted) row.
-        $user->forceFill(['account_status' => self::STATUS_DELETED])->save();
+        // Free the email + username so the SAME address can be used to create a brand-new
+        // account after deletion, while retaining this row (and its shoot/invoice history
+        // and FK references) for referential integrity. The originals are stashed in
+        // metadata so a later restore can recover them when still available.
+        $metadata = is_array($user->metadata) ? $user->metadata : [];
+        $tombstone = 'deleted_' . $user->id . '_' . now()->timestamp;
+
+        $updates = ['account_status' => self::STATUS_DELETED];
+
+        if (!empty($user->email)) {
+            $metadata['deleted_original_email'] = $user->email;
+            $updates['email'] = $tombstone . '@deleted.invalid';
+        }
+        if (!empty($user->username)) {
+            $metadata['deleted_original_username'] = $user->username;
+            $updates['username'] = $tombstone;
+        }
+
+        $updates['metadata'] = $metadata;
+
+        $user->forceFill($updates)->save();
         $user->delete();
     }
 
