@@ -348,21 +348,58 @@ class InvoiceController extends Controller
             'description' => ['required', 'string', 'max:500'],
             'amount' => ['required', 'numeric', 'min:0'],
             'quantity' => ['nullable', 'integer', 'min:1'],
+            // When true the adjustment is added to the client payable (shoot.total_quote).
+            // Defaults to false so adjustments never silently increase what a client owes.
+            'bills_client' => ['nullable', 'boolean'],
+            // Free-form classifier, e.g. "misc" or "virtual_staging".
+            'charge_type' => ['nullable', 'string', 'max:50'],
+            // Optional client-supplied idempotency key to prevent double-submit duplicates.
+            'dedupe_key' => ['nullable', 'string', 'max:100'],
         ]);
+
+        $quantity = $data['quantity'] ?? 1;
+        $billsClient = (bool) ($data['bills_client'] ?? false);
+        $chargeType = $data['charge_type'] ?? 'misc';
+        $dedupeKey = $data['dedupe_key'] ?? null;
+        $totalAmount = round($quantity * (float) $data['amount'], 2);
 
         try {
             DB::beginTransaction();
 
+            // Idempotency guard: if an identical dedupe_key already exists on this invoice,
+            // return the existing item instead of creating a duplicate (double-click / retry).
+            if ($dedupeKey !== null) {
+                $existing = $invoice->items()
+                    ->where('type', InvoiceItem::TYPE_EXPENSE)
+                    ->where('meta->source', 'admin_misc')
+                    ->where('meta->dedupe_key', $dedupeKey)
+                    ->first();
+
+                if ($existing) {
+                    DB::commit();
+
+                    return response()->json([
+                        'message' => 'Misc item already added',
+                        'item' => $existing,
+                        'invoice' => $invoice->fresh(['items', 'user']),
+                    ], 200);
+                }
+            }
+
             $item = $invoice->items()->create([
+                'shoot_id' => $invoice->shoot_id,
                 'type' => InvoiceItem::TYPE_EXPENSE,
                 'description' => $data['description'],
-                'quantity' => $data['quantity'] ?? 1,
+                'quantity' => $quantity,
                 'unit_amount' => $data['amount'],
-                'total_amount' => ($data['quantity'] ?? 1) * $data['amount'],
+                'total_amount' => $totalAmount,
                 'recorded_at' => now(),
-                'meta' => [
+                'meta' => array_filter([
                     'source' => 'admin_misc',
-                ],
+                    'bills_client' => $billsClient,
+                    'charge_type' => $chargeType,
+                    'dedupe_key' => $dedupeKey,
+                ], fn ($value) => $value !== null),
             ]);
 
             $invoice->refreshTotals();
@@ -370,6 +407,11 @@ class InvoiceController extends Controller
                 'modified_by' => $request->user()?->id,
                 'modified_at' => now(),
             ]);
+
+            // Only billable adjustments move the canonical client payable.
+            if ($billsClient) {
+                $this->syncShootPayableForBillableDelta($invoice, $totalAmount);
+            }
 
             DB::commit();
 
@@ -392,6 +434,110 @@ class InvoiceController extends Controller
         }
     }
 
+    public function updateMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
+    {
+        if ($item->invoice_id !== $invoice->id) {
+            return response()->json(['message' => 'Item does not belong to this invoice'], 422);
+        }
+
+        $source = is_array($item->meta) ? ($item->meta['source'] ?? null) : null;
+        if ($item->type !== InvoiceItem::TYPE_EXPENSE || $source !== 'admin_misc') {
+            return response()->json(['message' => 'Item is not an admin misc item'], 422);
+        }
+
+        $data = $request->validate([
+            'description' => ['required', 'string', 'max:500'],
+            'amount' => ['required', 'numeric', 'min:0'],
+            'quantity' => ['nullable', 'integer', 'min:1'],
+            'bills_client' => ['nullable', 'boolean'],
+            'charge_type' => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $meta = is_array($item->meta) ? $item->meta : [];
+        $quantity = $data['quantity'] ?? 1;
+        $newBillsClient = array_key_exists('bills_client', $data)
+            ? (bool) $data['bills_client']
+            : (bool) ($meta['bills_client'] ?? false);
+        $newChargeType = $data['charge_type'] ?? ($meta['charge_type'] ?? 'misc');
+        $newTotal = round($quantity * (float) $data['amount'], 2);
+
+        // Billable contribution before vs after so we can apply the precise payable delta.
+        $oldBillable = ((bool) ($meta['bills_client'] ?? false)) ? (float) $item->total_amount : 0.0;
+        $newBillable = $newBillsClient ? $newTotal : 0.0;
+
+        try {
+            DB::beginTransaction();
+
+            $meta['source'] = 'admin_misc';
+            $meta['bills_client'] = $newBillsClient;
+            $meta['charge_type'] = $newChargeType;
+
+            $item->update([
+                'description' => $data['description'],
+                'quantity' => $quantity,
+                'unit_amount' => $data['amount'],
+                'total_amount' => $newTotal,
+                'meta' => $meta,
+            ]);
+
+            $invoice->refreshTotals();
+            $invoice->update([
+                'modified_by' => $request->user()?->id,
+                'modified_at' => now(),
+            ]);
+
+            $this->syncShootPayableForBillableDelta($invoice, $newBillable - $oldBillable);
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Misc item updated successfully',
+                'item' => $item->fresh(),
+                'invoice' => $invoice->fresh(['items', 'user']),
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to update misc item on invoice', [
+                'invoice_id' => $invoice->id,
+                'item_id' => $item->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to update misc item',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Keep shoot.total_quote (the canonical client payable) in sync with billable admin
+     * invoice adjustments, then recompute the shoot payment status. Display-only
+     * adjustments pass a zero delta and never reach this method.
+     */
+    private function syncShootPayableForBillableDelta(Invoice $invoice, float $billableDelta): void
+    {
+        if (abs($billableDelta) < 0.01) {
+            return;
+        }
+
+        $shoot = $invoice->shoot;
+        if (!$shoot) {
+            return;
+        }
+
+        $newTotalQuote = round(max((float) ($shoot->total_quote ?? 0) + $billableDelta, 0), 2);
+        $shoot->total_quote = $newTotalQuote;
+
+        // A shoot that now carries a real balance should not stay auto-bypassed/paid.
+        if ($newTotalQuote > 0.01 && $shoot->bypass_paywall) {
+            $shoot->bypass_paywall = false;
+        }
+
+        $shoot->save();
+        $shoot->syncPaymentStatusFromRecords();
+    }
+
     public function removeMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
     {
         if ($item->invoice_id !== $invoice->id) {
@@ -406,12 +552,18 @@ class InvoiceController extends Controller
         try {
             DB::beginTransaction();
 
+            $meta = is_array($item->meta) ? $item->meta : [];
+            $billableContribution = ((bool) ($meta['bills_client'] ?? false)) ? (float) $item->total_amount : 0.0;
+
             $item->delete();
             $invoice->refreshTotals();
             $invoice->update([
                 'modified_by' => $request->user()?->id,
                 'modified_at' => now(),
             ]);
+
+            // Reverse the client payable only if this adjustment was billable.
+            $this->syncShootPayableForBillableDelta($invoice, -$billableContribution);
 
             DB::commit();
 

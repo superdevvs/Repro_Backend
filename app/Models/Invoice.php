@@ -145,7 +145,21 @@ class Invoice extends Model
         $items = $this->items()->get();
 
         $charges = $items->where('type', InvoiceItem::TYPE_CHARGE)->sum('total_amount');
-        $expenses = $items->where('type', InvoiceItem::TYPE_EXPENSE)->sum('total_amount');
+        // Admin adjustments (meta.source === 'admin_misc') only affect the client payable
+        // when explicitly flagged billable (meta.bills_client === true). Display-only
+        // adjustments still appear as line items on the invoice/PDF but must not change
+        // what the client owes. All other expense items (e.g. photographer/sales-rep
+        // invoice expenses) keep their existing behavior and are always counted.
+        $expenses = $items
+            ->where('type', InvoiceItem::TYPE_EXPENSE)
+            ->reject(function ($item) {
+                $meta = is_array($item->meta) ? $item->meta : [];
+                $isAdminMisc = ($meta['source'] ?? null) === 'admin_misc';
+                $billsClient = (bool) ($meta['bills_client'] ?? false);
+
+                return $isAdminMisc && !$billsClient;
+            })
+            ->sum('total_amount');
         $payments = $items->where('type', InvoiceItem::TYPE_PAYMENT)->sum('total_amount');
 
         $totalCharges = $charges + $expenses;

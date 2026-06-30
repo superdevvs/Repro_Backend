@@ -567,6 +567,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
     Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
     Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
+    Route::match(['put', 'patch'], 'invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
     Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
 
     // Invoice approval endpoints
