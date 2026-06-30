@@ -39,18 +39,12 @@ class ShootIssueParsingService
             return $requests;
         }
 
-        $legacyAssignedRole = null;
-        if (preg_match('/\[Assigned: (editor|photographer)\]/', $shoot->admin_issue_notes, $assignMatches)) {
-            $legacyAssignedRole = $assignMatches[1];
-        }
-
         $notes = $this->splitRequestEntries($shoot->admin_issue_notes);
         foreach ($notes as $index => $note) {
             $parsedRequest = $this->parseRequestEntry(
                 $shoot,
                 $note,
                 $index,
-                $legacyAssignedRole,
             );
 
             if ($parsedRequest === null) {
@@ -290,8 +284,7 @@ class ShootIssueParsingService
     protected function parseRequestEntry(
         Shoot $shoot,
         string $entry,
-        int $index,
-        ?string $legacyAssignedRole = null
+        int $index
     ): ?array {
         $lines = preg_split("/\R/", trim($entry)) ?: [];
         if (empty($lines)) {
@@ -360,10 +353,6 @@ class ShootIssueParsingService
             }
 
             $noteParts[] = $trimmedLine;
-        }
-
-        if (!$assignedToRole && !$requestId && $legacyAssignedRole) {
-            $assignedToRole = $legacyAssignedRole;
         }
 
         return [
