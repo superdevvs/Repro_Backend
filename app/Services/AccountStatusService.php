@@ -168,9 +168,27 @@ class AccountStatusService
      *
      * Restoring a previously-deleted (or locked) user clears the lifecycle flags, revokes any
      * lingering tokens, flags the account for a forced password reset, and sends a reset link.
+     *
+     * Restore safety (account lifecycle):
+     *   - Blocked once the 14-day restore window has elapsed (`restore_until` in the past).
+     *   - The original email is reclaimed only when still free. If a brand-new account has
+     *     since reused it, restore is refused with a clear conflict unless the admin supplies
+     *     an alternative `$overrideEmail`. The deleted account is NEVER merged into the new one.
+     *
+     * @param string|null $overrideEmail When the original email is taken, the admin-supplied
+     *                                    replacement email to assign to the restored account.
      */
-    public function restore(User $user): void
+    public function restore(User $user, ?string $overrideEmail = null): void
     {
+        // Enforce the 14-day restore window for soft-deleted accounts. A locked account has no
+        // window (it was never deleted), so only guard when the row is trashed.
+        if ($user->trashed()
+            && Schema::hasColumn('users', 'restore_until')
+            && $user->restore_until !== null
+            && now()->greaterThan($user->restore_until)) {
+            throw new AuthorizationException('The 14-day restore window for this account has expired.');
+        }
+
         if ($user->trashed()) {
             $user->restore();
         }
@@ -181,20 +199,42 @@ class AccountStatusService
             'password_reset_required' => true,
         ];
 
-        // Recover the original email/username that were freed at delete time, but only if
-        // no other account has since claimed them (e.g. a new account created with the
-        // reused email). Otherwise the restored account keeps its tombstoned identifiers
-        // and an admin can set new ones.
+        if (Schema::hasColumn('users', 'restore_until')) {
+            $restoreUpdates['restore_until'] = null; // close the window — account is active again
+        }
+
         $metadata = is_array($user->metadata) ? $user->metadata : [];
 
-        if (!empty($metadata['deleted_original_email'])) {
-            $originalEmail = $metadata['deleted_original_email'];
-            $taken = User::where('email', $originalEmail)->where('id', '!=', $user->id)->exists();
-            if (!$taken) {
-                $restoreUpdates['email'] = $originalEmail;
-                unset($metadata['deleted_original_email']);
+        // Resolve the email to restore with.
+        $originalEmail = $metadata['deleted_original_email'] ?? null;
+
+        if ($overrideEmail !== null && $overrideEmail !== '') {
+            // Admin chose to restore under a different email. Validate uniqueness against
+            // every other account (including other trashed rows).
+            $overrideTaken = User::withTrashed()
+                ->where('email', $overrideEmail)
+                ->where('id', '!=', $user->id)
+                ->exists();
+            if ($overrideTaken) {
+                throw ValidationException::withMessages([
+                    'email' => 'That email is already in use. Choose a different one.',
+                ]);
             }
+            $restoreUpdates['email'] = $overrideEmail;
+            unset($metadata['deleted_original_email']);
+        } elseif ($originalEmail) {
+            // No override: try to reclaim the original email, but only if it is still free.
+            $taken = User::where('email', $originalEmail)->where('id', '!=', $user->id)->exists();
+            if ($taken) {
+                throw ValidationException::withMessages([
+                    'email' => 'This email is already used by a new account. Restore with a different email or cancel.',
+                ]);
+            }
+            $restoreUpdates['email'] = $originalEmail;
+            unset($metadata['deleted_original_email']);
         }
+
+        // Reclaim the original username only if still free; otherwise keep the tombstone.
         if (!empty($metadata['deleted_original_username'])) {
             $originalUsername = $metadata['deleted_original_username'];
             $taken = User::where('username', $originalUsername)->where('id', '!=', $user->id)->exists();
@@ -216,6 +256,122 @@ class AccountStatusService
         $this->sendPasswordReset($user);
     }
 
+    /**
+     * Restore a soft-deleted/locked account on behalf of an admin, with auditing and an optional
+     * email override (used when the original email has been reused by a new account).
+     *
+     * Surfaces the same exceptions as {@see restore()}:
+     *   - AuthorizationException → expired 14-day window.
+     *   - ValidationException → email conflict / override already in use.
+     */
+    public function restoreAccount(User $user, User $actor, ?string $overrideEmail = null): User
+    {
+        $previous = $this->currentStatus($user);
+
+        DB::transaction(function () use ($user, $actor, $overrideEmail, $previous): void {
+            $this->restore($user, $overrideEmail);
+            $this->auditLog->record('account.restored', $actor, $user, [
+                'previous' => $previous,
+            ]);
+        });
+
+        return $user->refresh();
+    }
+
+    /**
+     * Permanently purge a deleted account after its restore window has elapsed.
+     *
+     * This NEVER force-deletes the user row (doing so would cascade and wipe business history
+     * such as shoots, invoices, payments, media and payouts). Instead it:
+     *   - anonymizes the surviving row so it reads as "Deleted User" wherever it is still
+     *     referenced (old shoots/invoices/logs), scrubbing all personal fields;
+     *   - removes the original email/username (and other PII) from metadata and stamps
+     *     metadata.purged_at;
+     *   - deletes the user's personal child data (OAuth/calendar/onboarding/branding/etc.).
+     *
+     * Idempotent: a row already carrying metadata.purged_at is left untouched.
+     */
+    public function purge(User $user): void
+    {
+        $metadata = is_array($user->metadata) ? $user->metadata : [];
+        if (!empty($metadata['purged_at'])) {
+            return; // already purged
+        }
+
+        DB::transaction(function () use ($user): void {
+            $userId = $user->getKey();
+            $tombstone = 'purged_' . $userId . '_' . now()->timestamp;
+
+            // Delete personal child data. Business/audit history is intentionally retained.
+            foreach (self::PERSONAL_CHILD_TABLES as $child) {
+                try {
+                    if (Schema::hasTable($child['table'])
+                        && Schema::hasColumn($child['table'], $child['column'])) {
+                        DB::table($child['table'])->where($child['column'], $userId)->delete();
+                    }
+                } catch (\Throwable $e) {
+                    Log::warning('Unable to purge personal child table.', [
+                        'table' => $child['table'],
+                        'user_id' => $userId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            // Anonymize the surviving row. Strip every personal field, keeping only what is
+            // needed for the row to read as an anonymized historical actor.
+            $scrub = [
+                'name' => 'Deleted User',
+                'email' => $tombstone . '@purged.invalid',
+                'username' => $tombstone,
+                'phonenumber' => null,
+                'phone' => null,
+                'avatar' => null,
+                'bio' => null,
+                'about' => null,
+                'address' => null,
+                'city' => null,
+                'state' => null,
+                'zip' => null,
+                'company_name' => null,
+                'company_notes' => null,
+                'license_number' => null,
+                'facebook_url' => null,
+                'twitter_url' => null,
+                'linkedin_url' => null,
+                'pinterest_url' => null,
+                'remember_token' => null,
+                'password' => bcrypt(bin2hex(random_bytes(16))),
+                'account_status' => self::STATUS_DELETED,
+            ];
+
+            if (Schema::hasColumn('users', 'restore_until')) {
+                $scrub['restore_until'] = null;
+            }
+
+            // Drop PII from metadata and stamp the purge.
+            $purgedMetadata = is_array($user->metadata) ? $user->metadata : [];
+            unset(
+                $purgedMetadata['deleted_original_email'],
+                $purgedMetadata['deleted_original_username']
+            );
+            $purgedMetadata['purged_at'] = now()->toIso8601String();
+            $scrub['metadata'] = $purgedMetadata;
+
+            // Only scrub columns that actually exist on this schema.
+            $scrub = array_filter(
+                $scrub,
+                fn ($key) => Schema::hasColumn('users', $key),
+                ARRAY_FILTER_USE_KEY
+            );
+
+            $user->forceFill($scrub)->saveQuietly();
+        });
+
+        // Revoke any external credentials that may have re-appeared (defensive; idempotent).
+        $this->revokeExternalCredentials($user);
+    }
+
     private function lock(User $user): void
     {
         $user->forceFill([
@@ -223,6 +379,31 @@ class AccountStatusService
             'account_status' => self::STATUS_LOCKED,
         ])->save();
     }
+
+    /** Length of the restore window before a deleted account is purged/anonymized. */
+    public const RESTORE_WINDOW_DAYS = 14;
+
+    /**
+     * Personal child tables that hold a deleted user's private data and must be removed at
+     * purge time. Business/audit history (shoots, invoices, payments, shoot_files, payouts,
+     * etc.) is intentionally NOT listed — those rows are kept and the user row survives as an
+     * anonymized historical actor. Each entry is guarded with Schema::hasTable.
+     *
+     * @var array<int, array{table: string, column: string}>
+     */
+    private const PERSONAL_CHILD_TABLES = [
+        ['table' => 'oauth_tokens', 'column' => 'user_id'],
+        ['table' => 'google_calendar_connections', 'column' => 'user_id'],
+        ['table' => 'onboarding_events', 'column' => 'user_id'],
+        ['table' => 'photographer_service_areas', 'column' => 'user_id'],
+        ['table' => 'user_branding_clients', 'column' => 'user_id'],
+        ['table' => 'user_branding', 'column' => 'user_id'],
+        ['table' => 'ai_chat_sessions', 'column' => 'user_id'],
+        ['table' => 'account_links', 'column' => 'user_id'],
+        ['table' => 'shoot_ghost_users', 'column' => 'user_id'],
+        ['table' => 'user_activity_logs', 'column' => 'user_id'],
+        ['table' => 'google_calendar_event_mappings', 'column' => 'user_id'],
+    ];
 
     private function softDelete(User $user): void
     {
@@ -246,8 +427,43 @@ class AccountStatusService
 
         $updates['metadata'] = $metadata;
 
+        // Open the 14-day restore window. After this deadline the scheduled
+        // users:purge-deleted command anonymizes the row and removes personal data.
+        if (Schema::hasColumn('users', 'restore_until')) {
+            $updates['restore_until'] = now()->addDays(self::RESTORE_WINDOW_DAYS);
+        }
+
         $user->forceFill($updates)->save();
         $user->delete();
+
+        // Revoke external credentials immediately so a deleted account cannot keep a live
+        // OAuth/calendar connection during the restore window. These are personal and are
+        // re-established on restore via the normal reconnect flow.
+        $this->revokeExternalCredentials($user);
+    }
+
+    /**
+     * Delete a deleted user's external OAuth / calendar credentials. Safe to call repeatedly.
+     */
+    private function revokeExternalCredentials(User $user): void
+    {
+        $userId = $user->getKey();
+
+        try {
+            if (Schema::hasTable('oauth_tokens')) {
+                DB::table('oauth_tokens')->where('user_id', $userId)->delete();
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Unable to revoke oauth_tokens on delete.', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
+
+        try {
+            if (Schema::hasTable('google_calendar_connections')) {
+                DB::table('google_calendar_connections')->where('user_id', $userId)->delete();
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Unable to revoke google_calendar_connections on delete.', ['user_id' => $userId, 'error' => $e->getMessage()]);
+        }
     }
 
     private function sendPasswordReset(User $user): void

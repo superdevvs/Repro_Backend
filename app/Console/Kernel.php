@@ -9,6 +9,7 @@ use App\Console\Commands\ImportShootHistory;
 use App\Console\Commands\PaymentRemindersSweep;
 use App\Console\Commands\ProcessInvoiceReminders;use App\Console\Commands\ProcessPropertyContactReminders;
 use App\Console\Commands\ProcessShootReminders;
+use App\Console\Commands\PurgeDeletedAccounts;
 use App\Console\Commands\RetryStuckQueuedMessages;
 use App\Console\Commands\RunSystemAutomations;
 use App\Console\Commands\SetupBrightMlsTest;
@@ -37,6 +38,7 @@ class Kernel extends ConsoleKernel
         ProcessPropertyContactReminders::class,
         ProcessInvoiceReminders::class,
         PaymentRemindersSweep::class,
+        PurgeDeletedAccounts::class,
         RetryStuckQueuedMessages::class,
         SendWeeklyInvoiceSummaries::class,
         SetupBrightMlsTest::class,
@@ -66,6 +68,12 @@ class Kernel extends ConsoleKernel
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(1, '05:00');
         $schedule->command('reports:sales:weekly')->weeklyOn(1, '05:30');
+
+        // Account lifecycle stage 3: purge/anonymize soft-deleted accounts whose 14-day
+        // restore window has elapsed. NOT scheduled yet — purge/anonymization is irreversible,
+        // so it is run manually (php artisan users:purge-deleted [--dry-run]) and will only be
+        // enabled here after the first production dry-run is reviewed and approved.
+        // $schedule->command('users:purge-deleted')->dailyAt('02:00')->withoutOverlapping();
 
         // Re-attempt iGUIDE sync for shoots whose iguide may have been
         // created on youriguide.com after raw upload (no webhook reached us).

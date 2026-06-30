@@ -419,6 +419,8 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permis
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/convert-type', [AccountStatusController::class, 'convertType']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/status', [AccountStatusController::class, 'setStatus'])->withTrashed();
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->get('/admin/users/deleted-accounts', [AccountStatusController::class, 'deletedAccounts']);
+Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{user}/restore', [AccountStatusController::class, 'restore'])->withTrashed();
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->post('/admin/users/{id}/resend-verification', [UserController::class, 'resendVerificationEmail']);

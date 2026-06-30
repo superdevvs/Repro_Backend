@@ -29,6 +29,72 @@ class AccountStatusController extends Controller
     }
 
     /**
+     * List soft-deleted accounts that are still within (or recently past) the restore window,
+     * for the Settings → Deleted Accounts panel. Already-purged rows are excluded.
+     */
+    public function deletedAccounts(Request $request): JsonResponse
+    {
+        $now = now();
+
+        $accounts = User::onlyTrashed()
+            ->orderByDesc('deleted_at')
+            ->get()
+            ->filter(function (User $user) {
+                $metadata = is_array($user->metadata) ? $user->metadata : [];
+                return empty($metadata['purged_at']); // hide already-anonymized rows
+            })
+            ->map(function (User $user) use ($now) {
+                $metadata = is_array($user->metadata) ? $user->metadata : [];
+                $restoreUntil = $user->restore_until;
+                $daysRemaining = $restoreUntil
+                    ? max(0, (int) ceil($now->floatDiffInDays($restoreUntil, false)))
+                    : null;
+
+                return [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'original_email' => $metadata['deleted_original_email'] ?? null,
+                    'original_username' => $metadata['deleted_original_username'] ?? null,
+                    'role' => $user->role,
+                    'deleted_at' => optional($user->deleted_at)->toIso8601String(),
+                    'restore_until' => optional($restoreUntil)->toIso8601String(),
+                    'days_remaining' => $daysRemaining,
+                    'restorable' => $restoreUntil === null || $now->lessThanOrEqualTo($restoreUntil),
+                ];
+            })
+            ->values();
+
+        return response()->json(['data' => $accounts]);
+    }
+
+    /**
+     * Restore a soft-deleted account within its 14-day window.
+     *
+     * Accepts an optional `email` override for when the original email has been reused by a new
+     * account. Maps service exceptions:
+     *   - AuthorizationException → 403 (expired window / privilege) via the global handler.
+     *   - ValidationException → 422 (email conflict / override already in use).
+     */
+    public function restore(Request $request, User $user): JsonResponse
+    {
+        $validated = $request->validate([
+            'email' => ['sometimes', 'nullable', 'email'],
+        ]);
+
+        $updated = $this->accountStatus->restoreAccount(
+            $user,
+            $request->user(),
+            $validated['email'] ?? null
+        );
+
+        return response()->json([
+            'id' => $updated->id,
+            'status' => $this->accountStatus->currentStatus($updated),
+            'email' => $updated->email,
+        ]);
+    }
+
+    /**
      * Set a user's account status to active, locked, or deleted (Req 16, 17).
      *
      * Delegates the transition, safety guards, session invalidation, and audit logging to
