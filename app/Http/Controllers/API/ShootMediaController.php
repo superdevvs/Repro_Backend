@@ -459,15 +459,15 @@ class ShootMediaController extends Controller
     public function getFiles($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
-        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
-            if (!$this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())) {
-                return response()->json(['message' => 'Forbidden'], 403);
-            }
-
-            return response()->json([
-                'data' => [],
-                'count' => 0,
-            ]);
+        // Media listing is a read-only view. Sales reps can view full shoot
+        // details (overview, tours, floorplans) for any shoot, so the photo
+        // media listing must be visible to them too. Download / share / album /
+        // AI actions remain gated by canAccessShootMedia (assigned shoots only).
+        if (
+            !$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())
+            && !$this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())
+        ) {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
 
         return response()->json($this->shootMediaReadService->getFilesPayload($shoot, $request));
@@ -476,15 +476,11 @@ class ShootMediaController extends Controller
     public function listMedia($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
-        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
-            if (!$this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())) {
-                return response()->json(['message' => 'Forbidden'], 403);
-            }
-
-            return response()->json([
-                'data' => [],
-                'counts' => $this->mediaCounts($shoot),
-            ]);
+        if (
+            !$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())
+            && !$this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())
+        ) {
+            return response()->json(['message' => 'Forbidden'], 403);
         }
 
         return response()->json(
