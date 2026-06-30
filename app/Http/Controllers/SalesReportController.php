@@ -75,6 +75,29 @@ class SalesReportController extends Controller
     }
 
     /**
+     * Get inactive-client hit list for authenticated sales rep.
+     */
+    public function myInactiveClients(Request $request)
+    {
+        $user = $request->user();
+
+        if (!$this->salesReportService->isSalesRep($user)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $validated = $request->validate([
+            'days' => ['nullable', 'integer', 'min:1', 'max:730'],
+        ]);
+
+        return response()->json(
+            $this->salesReportService->generateInactiveClientsForSalesRep(
+                $user,
+                (int) ($validated['days'] ?? 90),
+            ),
+        );
+    }
+
+    /**
      * Admin: Get weekly sales report for a specific sales rep
      */
     public function salesRepReport(Request $request, $salesRepId)

@@ -53,7 +53,7 @@
                     @if(!empty($paymentLink))
                         Complete the remaining balance to unlock the full delivery, then return to the dashboard to review and download everything for this property.
                     @else
-                        Preview the completed files, download the final media, and manage everything for this property from the dashboard.
+                        Preview the completed files, download MLS Optimized images for listing uploads, use Print Resolution images for large-format or design needs, and manage everything for this property from the dashboard.
                     @endif
                 </p>
             </td>

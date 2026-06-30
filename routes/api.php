@@ -923,6 +923,7 @@ Route::middleware('auth:sanctum')->prefix('reports/invoices')->group(function ()
 // Sales rep reports
 Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('reports/sales')->group(function () {
     Route::get('summary', [App\Http\Controllers\SalesReportController::class, 'mySummary']);
+    Route::get('inactive-clients', [App\Http\Controllers\SalesReportController::class, 'myInactiveClients']);
     Route::get('weekly', [App\Http\Controllers\SalesReportController::class, 'myWeeklyReport']);
 });
 

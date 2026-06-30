@@ -163,6 +163,57 @@ class SalesReportService
     }
 
     /**
+     * Build the rep hit list for clients with no recent orders.
+     */
+    public function generateInactiveClientsForSalesRep(User $salesRep, int $days = 90): array
+    {
+        $days = max(1, min($days, 730));
+        $cutoff = now()->subDays($days)->startOfDay();
+
+        $repShoots = Shoot::query()
+            ->with(['client:id,name,email,created_at,created_by_id,metadata'])
+            ->where('rep_id', $salesRep->id)
+            ->get();
+
+        $clientScope = $this->buildSalesRepClientScope($salesRep, $repShoots);
+
+        $clients = $clientScope
+            ->filter(function (array $client) use ($cutoff) {
+                $lastShootDate = $client['last_shoot_date'] ?? null;
+
+                return !$lastShootDate || $lastShootDate->lte($cutoff);
+            })
+            ->sortBy(function (array $client) {
+                $lastShootDate = $client['last_shoot_date'] ?? null;
+
+                return $lastShootDate?->getTimestamp() ?? 0;
+            })
+            ->map(function (array $client) use ($cutoff) {
+                $lastShootDate = $client['last_shoot_date'] ?? null;
+
+                return [
+                    'client_id' => $client['client_id'],
+                    'client_name' => $client['client_name'],
+                    'first_known_relationship_at' => $this->formatOptionalDate($client['first_known_relationship_at'] ?? null),
+                    'last_shoot_date' => $this->formatOptionalDate($lastShootDate),
+                    'days_since_last_shoot' => $lastShootDate ? $lastShootDate->diffInDays(now()->startOfDay()) : null,
+                    'reason' => $lastShootDate
+                        ? 'No shoot since ' . $cutoff->toDateString()
+                        : 'No completed shoot found',
+                ];
+            })
+            ->values()
+            ->all();
+
+        return [
+            'cutoff_days' => $days,
+            'cutoff_date' => $cutoff->toDateString(),
+            'total' => count($clients),
+            'clients' => $clients,
+        ];
+    }
+
+    /**
      * Generate weekly sales report for a sales rep
      */
     public function generateWeeklyReportForSalesRep(User $salesRep, Carbon $startDate, Carbon $endDate): array

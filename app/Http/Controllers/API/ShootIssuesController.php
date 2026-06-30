@@ -110,6 +110,7 @@ class ShootIssuesController extends Controller
                 $requestId,
                 'open',
                 $assignedToRole,
+                isset($validated['assignedToUserId']) ? (int) $validated['assignedToUserId'] : null,
             )
         );
 
@@ -164,6 +165,7 @@ class ShootIssuesController extends Controller
             $shoot,
             (string) $issueId,
             $validated['assignedToRole'],
+            isset($validated['assignedToUserId']) ? (int) $validated['assignedToUserId'] : null,
         );
 
         if (!$updatedRequest) {

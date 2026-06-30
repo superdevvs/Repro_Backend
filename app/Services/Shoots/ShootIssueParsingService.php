@@ -65,6 +65,7 @@ class ShootIssueParsingService
             $mediaIds = $parsedRequest['mediaIds'];
             $noteText = $parsedRequest['note'];
             $assignedToRole = $parsedRequest['assignedToRole'];
+            $assignedToUserId = $parsedRequest['assignedToUserId'];
             $requestStatus = $parsedRequest['status'];
 
             $mediaFiles = [];
@@ -84,6 +85,7 @@ class ShootIssueParsingService
             }
 
             $raisedByUser = User::where('name', $raisedByName)->first();
+            $assignedToUser = $assignedToUserId ? User::find($assignedToUserId) : null;
 
             $requests[] = [
                 'id' => $parsedRequest['id'],
@@ -98,6 +100,11 @@ class ShootIssueParsingService
                     'role' => $raisedByUser?->role ?? 'client',
                 ],
                 'assignedToRole' => $assignedToRole,
+                'assignedToUser' => $assignedToUser ? [
+                    'id' => (string) $assignedToUser->id,
+                    'name' => $assignedToUser->name,
+                    'role' => $assignedToUser->role,
+                ] : null,
                 'status' => $requestStatus,
                 'resolvedAt' => $parsedRequest['resolvedAt'],
                 'dismissedAt' => $parsedRequest['dismissedAt'],
@@ -158,7 +165,7 @@ class ShootIssueParsingService
         return 'req_' . $shoot->id . '_' . Str::lower(Str::random(10));
     }
 
-    public function buildRequestEntry(User $user, string $note, array $mediaIds = [], ?string $requestId = null, string $status = 'open', ?string $assignedToRole = null): string
+    public function buildRequestEntry(User $user, string $note, array $mediaIds = [], ?string $requestId = null, string $status = 'open', ?string $assignedToRole = null, ?int $assignedToUserId = null): string
     {
         $requestEntry = '[Request from ' . $user->name . ']: ' . trim($note);
         if ($requestId) {
@@ -169,6 +176,9 @@ class ShootIssueParsingService
         }
         if ($assignedToRole && in_array($assignedToRole, ['editor', 'photographer'], true)) {
             $requestEntry .= "\n[Assigned: {$assignedToRole}]";
+        }
+        if ($assignedToUserId) {
+            $requestEntry .= "\n[AssignedUserId: {$assignedToUserId}]";
         }
         if (!empty($mediaIds)) {
             $requestEntry .= "\n[MediaIds: " . implode(',', $mediaIds) . ']';
@@ -231,7 +241,7 @@ class ShootIssueParsingService
             ->firstWhere('id', $issueId);
     }
 
-    public function assignIssueRole(Shoot $shoot, string $issueId, string $assignedTo): ?array
+    public function assignIssueRole(Shoot $shoot, string $issueId, string $assignedTo, ?int $assignedToUserId = null): ?array
     {
         if (!$shoot->admin_issue_notes || !in_array($assignedTo, ['editor', 'photographer'], true)) {
             return null;
@@ -247,6 +257,7 @@ class ShootIssueParsingService
             }
 
             $parsed['assignedToRole'] = $assignedTo;
+            $parsed['assignedToUserId'] = $assignedToUserId;
             $entries[$index] = $this->serializeRequestEntry($parsed);
             $updated = true;
             break;
@@ -301,6 +312,7 @@ class ShootIssueParsingService
 
         $mediaIds = [];
         $assignedToRole = null;
+        $assignedToUserId = null;
         $requestId = null;
         $status = null;
         $resolvedAt = null;
@@ -327,6 +339,11 @@ class ShootIssueParsingService
                 continue;
             }
 
+            if (preg_match('/^\[AssignedUserId:\s*(\d+)\]$/', $trimmedLine, $assignedUserMatches)) {
+                $assignedToUserId = (int) $assignedUserMatches[1];
+                continue;
+            }
+
             if (preg_match('/^\[Status:\s*(open|in-progress|resolved|dismissed)\]$/', $trimmedLine, $statusMatches)) {
                 $status = $statusMatches[1];
                 continue;
@@ -345,7 +362,7 @@ class ShootIssueParsingService
             $noteParts[] = $trimmedLine;
         }
 
-        if (!$assignedToRole && $legacyAssignedRole) {
+        if (!$assignedToRole && !$requestId && $legacyAssignedRole) {
             $assignedToRole = $legacyAssignedRole;
         }
 
@@ -355,6 +372,7 @@ class ShootIssueParsingService
             'note' => trim(implode("\n", $noteParts)),
             'mediaIds' => $mediaIds,
             'assignedToRole' => $assignedToRole,
+            'assignedToUserId' => $assignedToUserId,
             'status' => $status ?: ($shoot->is_flagged ? 'open' : 'resolved'),
             'resolvedAt' => $resolvedAt,
             'dismissedAt' => $dismissedAt,
@@ -383,6 +401,10 @@ class ShootIssueParsingService
 
         if (!empty($request['assignedToRole']) && in_array($request['assignedToRole'], ['editor', 'photographer'], true)) {
             $entry .= "\n[Assigned: " . $request['assignedToRole'] . ']';
+        }
+
+        if (!empty($request['assignedToUserId'])) {
+            $entry .= "\n[AssignedUserId: " . (int) $request['assignedToUserId'] . ']';
         }
 
         if (!empty($request['mediaIds'])) {

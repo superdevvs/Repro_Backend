@@ -1379,8 +1379,8 @@ class MessagingSystemSeeder extends Seeder
 
             <div class="change-card">
                 <div class="change-card-title">Delivery Links</div>
-                <p style="margin-top: 0;"><strong>Small / MLS Images:</strong> <a href="[small_zip_link]">[small_zip_link]</a></p>
-                <p><strong>Full Resolution Images:</strong> <a href="[full_zip_link]">[full_zip_link]</a></p>
+                <p style="margin-top: 0;"><strong>MLS Optimized Images:</strong> <a href="[small_zip_link]">[small_zip_link]</a></p>
+                <p><strong>Print Resolution Images:</strong> <a href="[full_zip_link]">[full_zip_link]</a></p>
                 <p><strong>MLS Tour:</strong> <a href="[mls_tour_link]">[mls_tour_link]</a></p>
                 <p style="margin-bottom: 0;"><strong>Branded Tour:</strong> <a href="[branded_tour_link]">[branded_tour_link]</a></p>
             </div>
@@ -1529,15 +1529,15 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>📥 Download Links:</strong></p>
             
             <div style="margin: 20px 0;">
-                <p style="margin: 10px 0;"><strong>Small/MLS-Size Images Download Link</strong></p>
+                <p style="margin: 10px 0;"><strong>MLS Optimized Images Download Link</strong></p>
                 <p><a href="[small_zip_link]" class="button" style="display: inline-block; padding: 10px 20px; font-size: 14px;">[small_zip_link]</a></p>
                 <p style="font-size: 13px; color: #666;">Great for uploading to MLS. Also great for email, Facebook, Twitter, Websites, etc.</p>
             </div>
             
             <div style="margin: 20px 0;">
-                <p style="margin: 10px 0;"><strong>Full-Size Images Download Link</strong></p>
+                <p style="margin: 10px 0;"><strong>Print Resolution Images Download Link</strong></p>
                 <p><a href="[full_zip_link]" class="button" style="display: inline-block; padding: 10px 20px; font-size: 14px;">[full_zip_link]</a></p>
-                <p style="font-size: 13px; color: #666;">Great for print, or if your company system requires full-size photos when uploading listings.</p>
+                <p style="font-size: 13px; color: #666;">Large files for print or design. Use MLS Optimized images for standard MLS uploads.</p>
             </div>
             
             <p><strong>🏠 Virtual Tour Links:</strong></p>
@@ -1991,8 +1991,8 @@ Scheduled Shoot Time: [shoot_time]
 Services: [services_provided]
 
 Dashboard: [portal_url]
-Small / MLS Images: [small_zip_link]
-Full Resolution Images: [full_zip_link]
+MLS Optimized Images: [small_zip_link]
+Print Resolution Images: [full_zip_link]
 MLS Tour: [mls_tour_link]
 Branded Tour: [branded_tour_link]
 
@@ -2049,8 +2049,8 @@ One of your photo shoots is ready!
 Location: [shoot_location]
 [services_provided]
 
-Small/MLS-Size Images: [small_zip_link]
-Full-Size Images: [full_zip_link]
+MLS Optimized Images: [small_zip_link]
+Print Resolution Images: [full_zip_link]
 
 MLS-Compliant Tour: [mls_tour_link]
 Branded Tour: [branded_tour_link]
