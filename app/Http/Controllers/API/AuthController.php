@@ -726,7 +726,7 @@ class AuthController extends Controller
             'account' => $user,
         ];
 
-        $role = strtolower((string) $user->role);
+        $role = strtolower(str_replace(['-', '_', ' '], '', (string) $user->role));
         if ($role === 'client') {
             $context['client'] = $user;
         } elseif ($role === 'photographer') {

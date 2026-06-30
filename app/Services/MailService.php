@@ -68,7 +68,7 @@ class MailService
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
                 'meta' => [
-                    'recipient_type' => $this->accountCreatedRecipientType($user),
+                    'recipient_type' => $this->accountRecipientType($user),
                     'pending_equipment_count' => $pendingEquipmentCount,
                     'include_password_creation_link' => $includePasswordCreationLink,
                     'event_version' => sha1($accountPasswordLink . '|' . ($verificationLink ?? '') . '|' . ($equipmentVerificationLink ?? '') . '|' . $pendingEquipmentCount . '|' . (int) $includePasswordCreationLink),
@@ -255,13 +255,13 @@ class MailService
             . '/photographer-account?' . http_build_query($query);
     }
 
-    private function accountCreatedRecipientType(User $user): string
+    private function accountRecipientType(User $user): string
     {
-        return match ($user->role) {
+        return match (strtolower(str_replace(['-', '_', ' '], '', (string) $user->role))) {
             'client' => 'client',
             'photographer' => 'photographer',
-            'salesRep' => 'rep',
-            'admin', 'superadmin', 'editing_manager' => 'admin',
+            'salesrep' => 'rep',
+            'admin', 'superadmin', 'editingmanager' => 'admin',
             default => 'other',
         };
     }
@@ -293,7 +293,7 @@ class MailService
                     'dashboard' => rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/'),
                 ],
                 'meta' => [
-                    'recipient_type' => $user->role === 'client' ? 'client' : 'other',
+                    'recipient_type' => $this->accountRecipientType($user),
                     'event_version' => 'verification_token_' . $verificationToken->id,
                     'verification_token_id' => $verificationToken->id,
                     'verification_expires_at' => $verificationToken->expires_at?->toIso8601String(),
@@ -348,7 +348,7 @@ class MailService
                     'settings' => $dashboardUrl . '/settings',
                 ],
                 'meta' => [
-                    'recipient_type' => 'client',
+                    'recipient_type' => $this->accountRecipientType($user),
                     'event_version' => $eventVersion,
                     'verification_token_id' => $verificationTokenId,
                 ],

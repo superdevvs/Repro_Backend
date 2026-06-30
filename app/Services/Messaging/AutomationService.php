@@ -806,12 +806,12 @@ class AutomationService
             'account' => $user,
         ];
 
-        $role = strtolower((string) $user->role);
+        $role = strtolower(str_replace(['-', '_', ' '], '', (string) $user->role));
         if ($role === 'client') {
             $context['client'] = $user;
         } elseif ($role === 'photographer') {
             $context['photographer'] = $user;
-        } elseif (in_array($role, array_map('strtolower', self::SALES_REP_ROLES), true)) {
+        } elseif ($role === 'salesrep') {
             $context['rep'] = $user;
         } else {
             $context['client'] = $user;
@@ -1224,4 +1224,3 @@ class AutomationService
         ];
     }
 }
-

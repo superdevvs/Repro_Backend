@@ -55,8 +55,8 @@ class EmailTypeRegistry
 
         return $this->definitions = [
             'ACCOUNT_CREATED' => new EmailTypeDefinition('ACCOUNT_CREATED', 1, 'account', 'emails.account_created', 'v1', $account, ['client', 'photographer', 'rep', 'admin']),
-            'CLIENT_EMAIL_VERIFICATION' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFICATION', 1, 'account', 'emails.client_email_verification', 'v1', $account, ['client']),
-            'CLIENT_EMAIL_VERIFIED' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFIED', 1, 'account', 'emails.client_email_verified', 'v1', $account, ['client']),
+            'CLIENT_EMAIL_VERIFICATION' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFICATION', 1, 'account', 'emails.client_email_verification', 'v1', $account, ['client', 'photographer', 'rep']),
+            'CLIENT_EMAIL_VERIFIED' => new EmailTypeDefinition('CLIENT_EMAIL_VERIFIED', 1, 'account', 'emails.client_email_verified', 'v1', $account, ['client', 'photographer', 'rep']),
             'PHOTOGRAPHER_EQUIPMENT_VERIFICATION' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_VERIFICATION', 1, 'account', 'emails.photographer_equipment_verification', 'v1', $account, ['photographer']),
             'PHOTOGRAPHER_EQUIPMENT_APPROVED' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_APPROVED', 1, 'account', 'emails.photographer_equipment_approved', 'v1', $account, ['photographer']),
             'PHOTOGRAPHER_EQUIPMENT_REJECTED' => new EmailTypeDefinition('PHOTOGRAPHER_EQUIPMENT_REJECTED', 1, 'account', 'emails.photographer_equipment_rejected', 'v1', $account, ['photographer']),

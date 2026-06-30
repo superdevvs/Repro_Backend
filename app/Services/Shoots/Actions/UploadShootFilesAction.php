@@ -187,8 +187,12 @@ class UploadShootFilesAction
 
         $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
         $isEditedUploadManager = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true);
+        // Photographers may upload raw revisions even after delivery (client revision
+        // requests). Service-item / assignment scoping is already enforced above, so a
+        // photographer reaching this point is assigned to the shoot/service item.
+        $canBypassRawStage = $isAdmin || ($user && $user->role === 'photographer');
 
-        if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
+        if ($uploadType === 'raw' && !$canBypassRawStage && !$shoot->canUploadPhotos()) {
             return [
                 'status' => 400,
                 'payload' => [
@@ -218,7 +222,9 @@ class UploadShootFilesAction
             Shoot::STATUS_READY,
         ];
 
-        if ($uploadType === 'edited' && !$isAdmin && !in_array($shoot->workflow_status, $allowedEditedUploadStatuses, true)) {
+        // Editors (and admin tiers) may upload edited revisions at any stage, including
+        // after delivery, so client-requested revisions can be delivered post-handoff.
+        if ($uploadType === 'edited' && !$isEditedUploadManager && !in_array($shoot->workflow_status, $allowedEditedUploadStatuses, true)) {
             return [
                 'status' => 400,
                 'payload' => [
