@@ -80,7 +80,11 @@ class ShootPublicAssetsService
         $assets['iguide_tour_url'] = $iguideUrl;
         $assets['iguide_url'] = $iguideUrl;
         $assets['iguide_floorplans'] = $shoot->iguide_floorplans;
-        $assets['floorplans'] = $shoot->iguide_floorplans;
+        // Prefer localized floorplan files (with generated preview images) so the tour
+        // shows real previews. Fall back to the iGUIDE JSON (external URLs) when no local
+        // floorplan files exist; the frontend renders a clean fallback for those.
+        $localFloorplans = $this->buildFloorplanAssets($shoot);
+        $assets['floorplans'] = !empty($localFloorplans) ? $localFloorplans : $shoot->iguide_floorplans;
         $assets['matterport_url'] = $type === 'branded'
             ? ($tourLinks['matterport_branded'] ?? $tourLinks['matterport'] ?? null)
             : ($tourLinks['matterport_mls'] ?? $tourLinks['matterport'] ?? null);
@@ -852,5 +856,57 @@ class ShootPublicAssetsService
         }
 
         return null;
+    }
+
+    /**
+     * Build public floorplan entries from localized floorplan files, each with a real
+     * preview image (generated JPG for PDFs, or the image itself) plus the original for
+     * download. Returns [] when the shoot has no localized floorplan files.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function buildFloorplanAssets(Shoot $shoot): array
+    {
+        $files = \App\Models\ShootFile::query()
+            ->where('shoot_id', $shoot->id)
+            ->where('media_type', 'floorplan')
+            ->orderBy('id')
+            ->get();
+
+        $out = [];
+        foreach ($files as $file) {
+            $meta = is_array($file->metadata) ? $file->metadata : [];
+            $image = $this->resolveLocalPublicUrl($file->web_path ?: $file->thumbnail_path);
+            $original = $this->resolveLocalPublicUrl($file->path ?: $file->storage_path);
+
+            if (!$image && !$original) {
+                continue;
+            }
+
+            $pages = [];
+            if (!empty($meta['preview_images']) && is_array($meta['preview_images'])) {
+                foreach ($meta['preview_images'] as $previewPath) {
+                    $resolved = is_string($previewPath) ? $this->resolveLocalPublicUrl($previewPath) : null;
+                    if ($resolved) {
+                        $pages[] = $resolved;
+                    }
+                }
+            }
+
+            $isPdf = str_contains(strtolower((string) ($file->file_type ?? '')), 'pdf')
+                || str_ends_with(strtolower((string) $file->filename), '.pdf');
+
+            $out[] = [
+                'label' => $meta['floor_name'] ?? $meta['label'] ?? $file->filename,
+                'filename' => $file->filename,
+                'url' => $original ?: $image,
+                'original_url' => $original,
+                'image' => $image,
+                'preview_images' => $pages,
+                'type' => $isPdf ? 'pdf' : 'image',
+            ];
+        }
+
+        return $out;
     }
 }
