@@ -254,6 +254,8 @@ class ShootController extends Controller
         $validated = $request->validate([
             'service_id' => 'required|integer',
             'photographer_id' => 'nullable|exists:users,id',
+            'override' => 'nullable|boolean',
+            'override_reason' => 'nullable|string|max:500',
         ]);
 
         $shoot = $this->assignServicePhotographerAction->execute($shoot, $validated, $user);
@@ -322,10 +324,14 @@ class ShootController extends Controller
             'services' => 'nullable|array',
             'services.*.service_id' => 'required|integer',
             'services.*.photographer_id' => 'nullable|exists:users,id',
+            'override' => 'nullable|boolean',
+            'override_reason' => 'nullable|string|max:500',
         ]);
 
         $shoot = $this->assignServicePhotographerAction->execute($shoot, [
             'service_photographers' => $assignments,
+            'override' => $request->input('override'),
+            'override_reason' => $request->input('override_reason'),
         ], $user);
 
         return response()->json([
