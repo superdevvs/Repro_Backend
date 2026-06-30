@@ -412,6 +412,7 @@ class InvoiceController extends Controller
             if ($billsClient) {
                 $this->syncShootPayableForBillableDelta($invoice, $totalAmount);
             }
+            $this->refreshInvoiceStatusFromBalance($invoice);
 
             DB::commit();
 
@@ -487,6 +488,7 @@ class InvoiceController extends Controller
             ]);
 
             $this->syncShootPayableForBillableDelta($invoice, $newBillable - $oldBillable);
+            $this->refreshInvoiceStatusFromBalance($invoice);
 
             DB::commit();
 
@@ -538,6 +540,27 @@ class InvoiceController extends Controller
         $shoot->syncPaymentStatusFromRecords();
     }
 
+    /**
+     * Recompute the invoice paid flag/status from its current balance so the
+     * client/admin invoice view reflects a balance created or cleared by an
+     * adjustment. Only flips a previously "paid" invoice back to "sent" when a
+     * real balance appears; never force-marks an unpaid invoice as paid here.
+     */
+    private function refreshInvoiceStatusFromBalance(Invoice $invoice): void
+    {
+        $invoice->refresh();
+        $balance = (float) ($invoice->balance_due ?? 0);
+        $isPaid = $balance <= 0.01;
+
+        $invoice->is_paid = $isPaid;
+        if ($isPaid && $invoice->status !== Invoice::STATUS_PAID) {
+            $invoice->status = Invoice::STATUS_PAID;
+        } elseif (!$isPaid && $invoice->status === Invoice::STATUS_PAID) {
+            $invoice->status = Invoice::STATUS_SENT;
+        }
+        $invoice->save();
+    }
+
     public function removeMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
     {
         if ($item->invoice_id !== $invoice->id) {
@@ -564,6 +587,7 @@ class InvoiceController extends Controller
 
             // Reverse the client payable only if this adjustment was billable.
             $this->syncShootPayableForBillableDelta($invoice, -$billableContribution);
+            $this->refreshInvoiceStatusFromBalance($invoice);
 
             DB::commit();
 
