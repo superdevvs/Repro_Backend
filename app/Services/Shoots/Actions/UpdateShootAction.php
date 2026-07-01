@@ -71,6 +71,7 @@ class UpdateShootAction
             'bathrooms',
             'sqft',
             'tour_links',
+            'property_details',
         ];
         $repEditableKeys = [
             'is_private_listing',
@@ -92,6 +93,14 @@ class UpdateShootAction
             'property_mls',
             'property_price',
             'property_lot_size',
+        ];
+        // Property-access fields a client may self-serve (text/code only, no media).
+        $clientEditablePropertyDetailKeys = [
+            'presenceOption',
+            'lockboxCode',
+            'lockboxLocation',
+            'accessContactName',
+            'accessContactPhone',
         ];
         $repEditableTourLinkKeys = [
             'realtor_client_id',
@@ -122,6 +131,24 @@ class UpdateShootAction
                 $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $clientEditableTourLinkKeys);
                 if (!empty($invalidTourLinkKeys)) {
                     $this->abortJson('Forbidden', 403);
+                }
+
+                // A client may only submit the whitelisted access-info fields via
+                // property_details (lockbox/access contact). Reject any attempt to
+                // overwrite price, MLS, description, or other property metadata.
+                if ($request->has('property_details')) {
+                    $requestedPropertyDetails = $request->input('property_details', []);
+                    if (!is_array($requestedPropertyDetails)) {
+                        $this->abortJson('Invalid property_details payload', 422);
+                    }
+
+                    $invalidPropertyDetailKeys = array_diff(
+                        array_keys($requestedPropertyDetails),
+                        $clientEditablePropertyDetailKeys
+                    );
+                    if (!empty($invalidPropertyDetailKeys)) {
+                        $this->abortJson('Forbidden', 403);
+                    }
                 }
             } elseif ($assignedRep) {
                 $onlyRepEditableFields = $assignedRep

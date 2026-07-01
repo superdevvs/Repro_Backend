@@ -1330,6 +1330,51 @@ class ShootMutationActionsTest extends TestCase
         $this->assertFalse((bool) $shoot->fresh()->is_featured);
     }
 
+    public function test_client_owner_can_submit_access_info_but_not_other_property_details(): void
+    {
+        Sanctum::actingAs($this->client);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'property_details' => [
+                'price' => '$500,000',
+                'mls_id' => 'MLS-KEEP',
+            ],
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        // Access-info-only update is allowed for the owning client.
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'property_details' => [
+                'presenceOption' => 'lockbox',
+                'lockboxCode' => '4821',
+                'lockboxLocation' => 'On the front gate',
+            ],
+        ])->assertOk();
+
+        $details = $shoot->fresh()->property_details;
+        $this->assertSame('lockbox', $details['presenceOption'] ?? null);
+        $this->assertSame('4821', $details['lockboxCode'] ?? null);
+        $this->assertSame('On the front gate', $details['lockboxLocation'] ?? null);
+        // Existing metadata must be preserved (merge, not overwrite).
+        $this->assertSame('$500,000', $details['price'] ?? null);
+        $this->assertSame('MLS-KEEP', $details['mls_id'] ?? null);
+
+        // Attempting to change a non-access property_details key is forbidden.
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'property_details' => [
+                'price' => '$1',
+            ],
+        ])->assertForbidden();
+
+        $this->assertSame('$500,000', $shoot->fresh()->property_details['price'] ?? null);
+    }
+
     public function test_linked_client_owner_can_mark_shared_delivered_shoot_private_exclusive(): void
     {
         $ownerClient = User::factory()->create([
