@@ -286,6 +286,15 @@ class Shoot extends Model
     // Backwards compatibility - 'completed' maps to 'uploaded'
     const STATUS_COMPLETED = self::STATUS_UPLOADED;
 
+    /**
+     * Whether this shoot is an internal/simulator test shoot. Test shoots must never
+     * dispatch real client/photographer notifications (test-mode safety, feature #5).
+     */
+    public function isInternalTestShoot(): bool
+    {
+        return $this->shoot_type === self::SHOOT_TYPE_INTERNAL_TEST;
+    }
+
     public function client()
     {
         return $this->belongsTo(User::class, 'client_id');

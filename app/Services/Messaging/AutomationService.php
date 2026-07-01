@@ -304,6 +304,21 @@ class AutomationService
      */
     public function handleEvent(string $triggerType, array $context): array
     {
+        // Test-mode safety guard (feature #5): internal_test / simulator shoots must NEVER
+        // dispatch real client or photographer messages. Short-circuit here — the single entry
+        // point for every automation event — and report the event as "handled" (non-zero rule
+        // count + sent flags) so downstream fallback direct-sends in the dispatch service /
+        // shoot actions also skip. Nothing is actually sent.
+        $eventShoot = $context['shoot'] ?? null;
+        if ($eventShoot instanceof Shoot && $eventShoot->isInternalTestShoot()) {
+            Log::info('Automation suppressed for internal test shoot (test mode)', [
+                'trigger_type' => $triggerType,
+                'shoot_id' => $eventShoot->id,
+            ]);
+
+            return $this->suppressedTestShootSummary($triggerType);
+        }
+
         try {
             return $this->workflowExecutor->executeEventTrigger($triggerType, $context);
         } catch (\Throwable $exception) {
@@ -314,6 +329,22 @@ class AutomationService
 
             return $this->emptyDispatchSummary($triggerType, $exception->getMessage());
         }
+    }
+
+    /**
+     * Dispatch summary for a suppressed test-shoot event: marked handled with a non-zero rule
+     * count and "sent" flags so {@see shouldUseFallback()} returns false and callers skip their
+     * fallback direct-send paths. No message is actually dispatched.
+     */
+    private function suppressedTestShootSummary(string $triggerType): array
+    {
+        return array_merge($this->emptyDispatchSummary($triggerType), [
+            'active_rule_count' => 1,
+            'handled' => true,
+            'suppressed_test_shoot' => true,
+            'client_email_sent' => true,
+            'photographer_email_sent' => true,
+        ]);
     }
 
     public function shouldUseFallback(string $triggerType, ?array $dispatchResult = null): bool
