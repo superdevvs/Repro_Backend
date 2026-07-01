@@ -71,6 +71,69 @@ class InvoiceFeatureTest extends TestCase
         $this->assertEquals(345.0, (float) $invoice->amount_paid);
     }
 
+    public function test_regenerating_weekly_invoices_is_idempotent_and_creates_no_duplicates(): void
+    {
+        // Reproduces the weekly-invoice duplicate bug: billing_period_* is stored as a
+        // datetime ("Y-m-d 00:00:00"), so the existing-invoice guard using a date-only
+        // equality (`where(..., toDateString())`) never matched and every regeneration
+        // created a duplicate. The fix switches the guard to whereDate().
+        $photographer = User::factory()->photographer()->create();
+        $rep = User::factory()->create([
+            'role' => 'salesRep',
+            'metadata' => ['repDetails' => ['commissionPercentage' => 15]],
+        ]);
+        $client = User::factory()->create();
+        $service = Service::factory()->create(['exclude_from_sales_commission' => false]);
+
+        $start = Carbon::now()->subWeek()->startOfWeek(Carbon::SUNDAY);
+        $end = $start->copy()->addDays(6)->endOfDay();
+
+        $shoot = Shoot::factory()->create([
+            'photographer_id' => $photographer->id,
+            'client_id' => $client->id,
+            'rep_id' => $rep->id,
+            'service_id' => $service->id,
+            'scheduled_date' => $start->copy()->addDays(2),
+            'completed_at' => $start->copy()->addDays(2)->setTime(14, 0),
+            'admin_verified_at' => $start->copy()->addDays(2)->setTime(14, 0),
+            'workflow_status' => Shoot::WORKFLOW_COMPLETED,
+            'base_quote' => 200,
+            'tax_amount' => 0,
+            'total_quote' => 200,
+        ]);
+        $shoot->services()->attach($service->id, [
+            'price' => 200,
+            'quantity' => 1,
+            'photographer_pay' => 90,
+            'photographer_id' => $photographer->id,
+        ]);
+
+        $svc = app(InvoiceService::class);
+
+        // Generate twice (simulates manual run overlapping the scheduled weekly run).
+        $svc->generateForPeriod($start, $end);
+        $svc->generateForPeriod($start, $end);
+        $svc->generateSalesRepInvoicesForPeriod($start, $end);
+        $svc->generateSalesRepInvoicesForPeriod($start, $end);
+
+        $this->assertSame(
+            1,
+            Invoice::where('photographer_id', $photographer->id)->where('role', Invoice::ROLE_PHOTOGRAPHER)->count(),
+            'Photographer weekly invoice must not duplicate on regeneration.'
+        );
+        $this->assertSame(
+            1,
+            Invoice::where('sales_rep_id', $rep->id)->whereNull('photographer_id')->count(),
+            'Sales-rep weekly invoice must not duplicate on regeneration.'
+        );
+
+        // Amounts still correct after idempotent recalculation.
+        $photogInvoice = Invoice::where('photographer_id', $photographer->id)->first();
+        $this->assertEquals(90.0, (float) $photogInvoice->total_amount);
+        $repInvoice = Invoice::where('sales_rep_id', $rep->id)->whereNull('photographer_id')->first();
+        $this->assertEquals(30.0, (float) $repInvoice->total_amount); // 200 * 15%
+    }
+
     public function test_admin_can_list_and_mark_invoice_paid(): void
     {
         $admin = User::factory()->admin()->create();

@@ -138,8 +138,8 @@ class InvoiceService
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('photographer_id', $photographerId)
                     ->where('role', Invoice::ROLE_PHOTOGRAPHER)
-                    ->where('billing_period_start', $start->toDateString())
-                    ->where('billing_period_end', $end->toDateString())
+                    ->whereDate('billing_period_start', $start->toDateString())
+                    ->whereDate('billing_period_end', $end->toDateString())
                     ->first();
 
                 if ($existingInvoice) {
@@ -541,8 +541,8 @@ class InvoiceService
                 // Check if invoice already exists
                 $existingInvoice = Invoice::where('sales_rep_id', $repId)
                     ->whereNull('photographer_id')
-                    ->where('billing_period_start', $start->toDateString())
-                    ->where('billing_period_end', $end->toDateString())
+                    ->whereDate('billing_period_start', $start->toDateString())
+                    ->whereDate('billing_period_end', $end->toDateString())
                     ->first();
 
                 if ($existingInvoice) {
