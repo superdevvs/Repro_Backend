@@ -457,6 +457,9 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/clients', [UserController::class, 'getClients']);
 
+// Inactive-client report (feature #9) — admins see all clients, sales reps see their own.
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/reports/inactive-clients', [App\Http\Controllers\SalesReportController::class, 'inactiveClientsReport']);
+
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,client,salesRep'])->get('/admin/photographers', [UserController::class, 'getPhotographers']);
 // Public lightweight list for dropdowns
 Route::get('/photographers', [UserController::class, 'simplePhotographers']);

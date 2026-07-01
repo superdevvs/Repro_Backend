@@ -87,14 +87,54 @@ class SalesReportController extends Controller
 
         $validated = $request->validate([
             'days' => ['nullable', 'integer', 'min:1', 'max:730'],
+            'state' => ['nullable', 'string', 'max:50'],
         ]);
 
         return response()->json(
             $this->salesReportService->generateInactiveClientsForSalesRep(
                 $user,
                 (int) ($validated['days'] ?? 90),
+                $validated['state'] ?? null,
             ),
         );
+    }
+
+    /**
+     * Inactive-client report (feature #9) for admins (all clients) or sales reps (own clients).
+     * Filters: `days` (default 90), `state`, and admin-only `sales_rep_id`.
+     */
+    public function inactiveClientsReport(Request $request)
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'days' => ['nullable', 'integer', 'min:1', 'max:730'],
+            'state' => ['nullable', 'string', 'max:50'],
+            'sales_rep_id' => ['nullable', 'integer'],
+        ]);
+
+        $days = (int) ($validated['days'] ?? 90);
+        $state = $validated['state'] ?? null;
+
+        $isAdmin = $user && in_array(strtolower((string) $user->role), self::ADMIN_ROLES, true);
+
+        if ($isAdmin) {
+            return response()->json(
+                $this->salesReportService->generateInactiveClientsForAdmin(
+                    $days,
+                    $state,
+                    $validated['sales_rep_id'] ?? null,
+                ),
+            );
+        }
+
+        if ($this->salesReportService->isSalesRep($user)) {
+            return response()->json(
+                $this->salesReportService->generateInactiveClientsForSalesRep($user, $days, $state),
+            );
+        }
+
+        return response()->json(['message' => 'Unauthorized'], 403);
     }
 
     /**

@@ -165,7 +165,10 @@ class SalesReportService
     /**
      * Build the rep hit list for clients with no recent orders.
      */
-    public function generateInactiveClientsForSalesRep(User $salesRep, int $days = 90): array
+    /** @var array<string, array{id: int|null, name: string|null}> Cache of resolved rep id → info. */
+    protected array $repResolutionCache = [];
+
+    public function generateInactiveClientsForSalesRep(User $salesRep, int $days = 90, ?string $state = null): array
     {
         $days = max(1, min($days, 730));
         $cutoff = now()->subDays($days)->startOfDay();
@@ -177,7 +180,7 @@ class SalesReportService
 
         $clientScope = $this->buildSalesRepClientScope($salesRep, $repShoots);
 
-        $clients = $clientScope
+        $filtered = $clientScope
             ->filter(function (array $client) use ($cutoff) {
                 $lastShootDate = $client['last_shoot_date'] ?? null;
 
@@ -188,20 +191,54 @@ class SalesReportService
 
                 return $lastShootDate?->getTimestamp() ?? 0;
             })
-            ->map(function (array $client) use ($cutoff) {
+            ->values();
+
+        $clientIds = $filtered->pluck('client_id')->all();
+        $clientModels = User::whereIn('id', $clientIds)->get()->keyBy('id');
+        $shootCounts = Shoot::whereIn('client_id', $clientIds)
+            ->selectRaw('client_id, COUNT(*) as cnt')
+            ->groupBy('client_id')
+            ->pluck('cnt', 'client_id');
+
+        $normalizedState = $state ? strtoupper(trim($state)) : null;
+
+        $clients = $filtered
+            ->map(function (array $client) use ($cutoff, $clientModels, $shootCounts) {
                 $lastShootDate = $client['last_shoot_date'] ?? null;
+                $total = (int) ($shootCounts[$client['client_id']] ?? 0);
+                $model = $clientModels->get($client['client_id']);
+
+                if ($model) {
+                    return $this->enrichInactiveClientRow(
+                        $model,
+                        $lastShootDate,
+                        $client['first_known_relationship_at'] ?? null,
+                        $total,
+                        $cutoff
+                    );
+                }
 
                 return [
                     'client_id' => $client['client_id'],
                     'client_name' => $client['client_name'],
+                    'email' => null,
+                    'phone' => null,
+                    'state' => null,
+                    'sales_rep' => null,
+                    'sales_rep_id' => null,
                     'first_known_relationship_at' => $this->formatOptionalDate($client['first_known_relationship_at'] ?? null),
                     'last_shoot_date' => $this->formatOptionalDate($lastShootDate),
+                    'last_login' => null,
+                    'total_shoots' => $total,
                     'days_since_last_shoot' => $lastShootDate ? $lastShootDate->diffInDays(now()->startOfDay()) : null,
                     'reason' => $lastShootDate
                         ? 'No shoot since ' . $cutoff->toDateString()
                         : 'No completed shoot found',
                 ];
             })
+            ->when($normalizedState, fn ($rows) => $rows->filter(
+                fn (array $row) => strtoupper((string) ($row['state'] ?? '')) === $normalizedState
+            ))
             ->values()
             ->all();
 
@@ -211,6 +248,139 @@ class SalesReportService
             'total' => count($clients),
             'clients' => $clients,
         ];
+    }
+
+    /**
+     * Admin/company-wide inactive-client report over ALL clients (feature #9), with optional
+     * region/state and sales-rep filters. A client is "inactive" when their most recent shoot is
+     * older than the cutoff (or they have no shoot). Read-only aggregate — no data mutation.
+     */
+    public function generateInactiveClientsForAdmin(int $days = 90, ?string $state = null, ?int $salesRepId = null): array
+    {
+        $days = max(1, min($days, 730));
+        $cutoff = now()->subDays($days)->startOfDay();
+        $normalizedState = $state ? strtoupper(trim($state)) : null;
+
+        $clientsQuery = User::query()->where('role', 'client');
+        if ($normalizedState) {
+            $clientsQuery->whereRaw('UPPER(TRIM(state)) = ?', [$normalizedState]);
+        }
+        $clients = $clientsQuery->get();
+
+        $aggregates = Shoot::query()
+            ->whereNotNull('client_id')
+            ->selectRaw('client_id, COUNT(*) as cnt, MAX(scheduled_date) as last_scheduled, MAX(created_at) as last_created')
+            ->groupBy('client_id')
+            ->get()
+            ->keyBy('client_id');
+
+        $rows = [];
+        foreach ($clients as $client) {
+            $agg = $aggregates->get($client->id);
+            $lastShootDate = null;
+            if ($agg) {
+                if (!empty($agg->last_scheduled)) {
+                    $lastShootDate = Carbon::parse((string) $agg->last_scheduled)->startOfDay();
+                } elseif (!empty($agg->last_created)) {
+                    $lastShootDate = Carbon::parse((string) $agg->last_created)->startOfDay();
+                }
+            }
+            $total = $agg ? (int) $agg->cnt : 0;
+
+            // Active clients (shoot within the window) are excluded.
+            if ($lastShootDate && $lastShootDate->gt($cutoff)) {
+                continue;
+            }
+
+            $row = $this->enrichInactiveClientRow(
+                $client,
+                $lastShootDate,
+                $this->toCarbonDate($client->created_at),
+                $total,
+                $cutoff
+            );
+
+            if ($salesRepId && (int) ($row['sales_rep_id'] ?? 0) !== $salesRepId) {
+                continue;
+            }
+
+            $rows[] = $row;
+        }
+
+        usort($rows, function (array $a, array $b) {
+            return strcmp((string) ($a['last_shoot_date'] ?? ''), (string) ($b['last_shoot_date'] ?? ''));
+        });
+
+        return [
+            'cutoff_days' => $days,
+            'cutoff_date' => $cutoff->toDateString(),
+            'total' => count($rows),
+            'clients' => $rows,
+        ];
+    }
+
+    /**
+     * Build one enriched inactive-client row (name/email/phone/state/rep/total shoots/last shoot).
+     * `last_login` is included as null — there is no login timestamp source yet (documented).
+     */
+    protected function enrichInactiveClientRow(User $client, ?Carbon $lastShootDate, ?Carbon $firstDate, int $totalShoots, Carbon $cutoff): array
+    {
+        $rep = $this->resolveClientRep($client);
+
+        return [
+            'client_id' => $client->id,
+            'client_name' => $client->name ?: 'Unknown Client',
+            'email' => $client->email,
+            'phone' => $client->phonenumber ?: $client->phone,
+            'state' => $client->state,
+            'sales_rep' => $rep['name'],
+            'sales_rep_id' => $rep['id'],
+            'first_known_relationship_at' => $this->formatOptionalDate($firstDate),
+            'last_shoot_date' => $this->formatOptionalDate($lastShootDate),
+            'last_login' => null,
+            'total_shoots' => $totalShoots,
+            'days_since_last_shoot' => $lastShootDate ? $lastShootDate->diffInDays(now()->startOfDay()) : null,
+            'reason' => $lastShootDate
+                ? 'No shoot since ' . $cutoff->toDateString()
+                : 'No completed shoot found',
+        ];
+    }
+
+    /**
+     * Resolve the sales rep associated with a client, using the same precedence as the accounts
+     * list: metadata rep id → most recent shoot rep_id → created_by. Cached per rep id.
+     *
+     * @return array{id: int|null, name: string|null}
+     */
+    protected function resolveClientRep(User $client): array
+    {
+        $repId = $this->extractMetadataSalesRepId($client);
+
+        if (!$repId) {
+            $latestShoot = Shoot::where('client_id', $client->id)
+                ->whereNotNull('rep_id')
+                ->orderByDesc('created_at')
+                ->first();
+            $repId = $latestShoot?->rep_id;
+        }
+
+        if (!$repId && $client->created_by_id) {
+            $repId = $client->created_by_id;
+        }
+
+        if (!$repId) {
+            return ['id' => null, 'name' => $client->created_by_name ?: null];
+        }
+
+        $key = (string) $repId;
+        if (!array_key_exists($key, $this->repResolutionCache)) {
+            $rep = User::find(is_numeric($repId) ? (int) $repId : $repId);
+            $this->repResolutionCache[$key] = $rep
+                ? ['id' => (int) $rep->id, 'name' => $rep->name]
+                : ['id' => null, 'name' => $client->created_by_name ?: null];
+        }
+
+        return $this->repResolutionCache[$key];
     }
 
     /**
