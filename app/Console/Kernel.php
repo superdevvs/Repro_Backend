@@ -65,6 +65,11 @@ class Kernel extends ConsoleKernel
         // Run weekly — shorter than the look-ahead window in AutomationService — so the next
         // last-Sunday reminder is always materialized before it is due.
         $schedule->command('messaging:payment-reminders-sweep')->weeklyOn(1, '04:30');
+        // Generate the last completed week's photographer + sales-rep invoice rows FIRST,
+        // so the summary/payout/sales-report jobs below have invoices to work with. Runs with
+        // --no-email (those downstream jobs own the notifications); idempotent (whereDate guard)
+        // so it is safe alongside any manual run.
+        $schedule->command('invoices:generate --weekly --no-email')->weeklyOn(1, '02:00')->withoutOverlapping();
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(1, '05:00');
         $schedule->command('reports:sales:weekly')->weeklyOn(1, '05:30');
