@@ -886,6 +886,20 @@ class ShootPublicAssetsService
         $out = [];
         foreach ($files as $file) {
             $meta = is_array($file->metadata) ? $file->metadata : [];
+            $hasPreviewImages = !empty($meta['preview_images']) && is_array($meta['preview_images']);
+            if (!$file->web_path && !$file->thumbnail_path && !$hasPreviewImages) {
+                try {
+                    app(FloorplanPreviewService::class)->ensurePreview($file);
+                    $file->refresh();
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Failed to ensure public floorplan preview', [
+                        'shoot_file_id' => $file->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            $meta = is_array($file->metadata) ? $file->metadata : [];
             $image = $this->resolveLocalPublicUrl($file->web_path ?: $file->thumbnail_path);
             $original = $this->resolveLocalPublicUrl($file->path ?: $file->storage_path);
 

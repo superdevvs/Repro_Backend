@@ -294,10 +294,7 @@ class SalesRepInvoiceController extends Controller
      */
     private function canBeModifiedBySalesRep(Invoice $invoice): bool
     {
-        return in_array($invoice->approval_status, [
-            Invoice::APPROVAL_STATUS_PENDING,
-            Invoice::APPROVAL_STATUS_REJECTED,
-        ]) && $invoice->status === Invoice::STATUS_DRAFT;
+        return $invoice->canBeModifiedByPayee();
     }
 
     private function isSalesRep($user): bool

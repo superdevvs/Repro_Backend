@@ -355,6 +355,7 @@ class ShootMediaReadService
 
     protected function formatFile(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
     {
+        $file = $this->ensureFloorplanPreviewForRead($file);
         $needsWatermark = $needsWatermark && $file->shouldBeWatermarked();
         $url = null;
         $thumbUrl = null;
@@ -521,6 +522,31 @@ class ShootMediaReadService
         }
 
         return $fileData;
+    }
+
+    protected function ensureFloorplanPreviewForRead(ShootFile $file): ShootFile
+    {
+        if (strtolower((string) $file->media_type) !== 'floorplan') {
+            return $file;
+        }
+
+        $metadata = is_array($file->metadata) ? $file->metadata : [];
+        $hasPreviewImages = !empty($metadata['preview_images']) && is_array($metadata['preview_images']);
+        if ($file->web_path || $file->thumbnail_path || $hasPreviewImages) {
+            return $file;
+        }
+
+        try {
+            app(FloorplanPreviewService::class)->ensurePreview($file);
+            $file->refresh();
+        } catch (\Throwable $e) {
+            Log::warning('Failed to ensure floorplan preview while formatting media payload', [
+                'shoot_file_id' => $file->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return $file;
     }
 
     protected function ensureWatermarkedPreviewAvailable(ShootFile $file): ShootFile

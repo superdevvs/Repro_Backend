@@ -339,18 +339,24 @@ class ShootPresenter
 
         if ($shoot->client && !$isEditorRole) {
             if ($isPhotographerRole) {
+                $clientPhone = $this->isShootLocalDateToday($shoot)
+                    ? ($shoot->client->phonenumber ?? $shoot->client->phone ?? null)
+                    : null;
                 $clientData = [
                     'id' => $shoot->client->id,
                     'name' => $shoot->client->name,
-                    'phonenumber' => $shoot->client->phonenumber ?? $shoot->client->phone ?? null,
+                    'phone' => $clientPhone,
+                    'phonenumber' => $clientPhone,
                 ];
             } else {
+                $clientPhone = $shoot->client->phonenumber ?? $shoot->client->phone ?? null;
                 $clientData = [
                     'id' => $shoot->client->id,
                     'name' => $shoot->client->name,
                     'email' => $shoot->client->email,
                     'company_name' => $shoot->client->company_name ?? $shoot->client->company ?? null,
-                    'phonenumber' => $shoot->client->phonenumber ?? $shoot->client->phone ?? null,
+                    'phone' => $clientPhone,
+                    'phonenumber' => $clientPhone,
                 ];
 
                 $clientMetadata = $shoot->client->metadata ?? [];
@@ -857,6 +863,21 @@ class ShootPresenter
             'favorites' => $shoot->files->where('is_favorite', true)->count(),
             'delivered' => $shoot->files->where('workflow_stage', ShootFile::STAGE_VERIFIED)->count(),
         ];
+    }
+
+    protected function isShootLocalDateToday(Shoot $shoot): bool
+    {
+        $scheduledDate = $shoot->scheduled_date;
+        if (!$scheduledDate) {
+            return false;
+        }
+
+        $timezone = trim((string) ($shoot->timezone ?: config('app.timezone', 'UTC'))) ?: 'UTC';
+        try {
+            return $scheduledDate->toDateString() === now($timezone)->toDateString();
+        } catch (\Throwable) {
+            return $scheduledDate->toDateString() === now()->toDateString();
+        }
     }
 
     protected function resolveHeroImage(Shoot $shoot, bool $allowDropboxCalls = true): ?string

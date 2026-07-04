@@ -255,10 +255,29 @@ class Invoice extends Model
      */
     public function canBeModifiedByPhotographer(): bool
     {
+        return $this->canBeModifiedByPayee();
+    }
+
+    /**
+     * Check if a payee-facing weekly invoice can still be edited.
+     *
+     * Weekly payout invoices may be marked as sent by legacy/accounting flows
+     * while they are still awaiting the photographer or sales rep decision. The
+     * approval lifecycle is the lock source: payees can edit pending/rejected
+     * invoices until payout/accounting approval has closed the invoice.
+     */
+    public function canBeModifiedByPayee(): bool
+    {
+        $isPaidFlag = filter_var($this->attributes['is_paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $paidAt = $this->attributes['paid_at'] ?? null;
+
         return in_array($this->approval_status, [
             self::APPROVAL_STATUS_PENDING,
             self::APPROVAL_STATUS_REJECTED,
-        ]) && $this->status !== self::STATUS_PAID;
+        ], true)
+            && $this->status !== self::STATUS_PAID
+            && ! $isPaidFlag
+            && empty($paidAt);
     }
 
     /**
