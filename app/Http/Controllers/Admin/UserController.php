@@ -1454,6 +1454,7 @@ class UserController extends Controller
         // Map database fields to frontend field names
         if (isset($payload['phonenumber'])) {
             $payload['phone'] = $payload['phonenumber'];
+            $payload['phone_number'] = $payload['phonenumber'];
         }
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
@@ -1752,6 +1753,7 @@ class UserController extends Controller
         // Map database fields to frontend field names
         if (isset($payload['phonenumber'])) {
             $payload['phone'] = $payload['phonenumber'];
+            $payload['phone_number'] = $payload['phonenumber'];
         }
         if (isset($payload['company_name'])) {
             $payload['company'] = $payload['company_name'];
