@@ -58,6 +58,8 @@ class DashboardController extends Controller
                     'photographer:id,name,avatar',
                     'service:id,name,icon,category_id',
                     'service.category:id,name,icon',
+                    'services:id,name,icon,category_id',
+                    'services.category:id,name,icon',
                 ],
             ),
             $today
@@ -139,6 +141,8 @@ class DashboardController extends Controller
                     'photographer:id,name,avatar',
                     'service:id,name,icon,category_id',
                     'service.category:id,name,icon',
+                    'services:id,name,icon,category_id',
+                    'services.category:id,name,icon',
                 ])
                 ->whereNotNull('cancellation_requested_at')
                 ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
@@ -568,6 +572,8 @@ class DashboardController extends Controller
                         'photographer:id,name,avatar',
                         'service:id,name,icon,category_id',
                         'service.category:id,name,icon',
+                        'services:id,name,icon,category_id',
+                        'services.category:id,name,icon',
                     ]);
             
             // For delivered/ready column, check both workflow_status AND status columns
@@ -591,6 +597,8 @@ class DashboardController extends Controller
                         'photographer:id,name,avatar',
                         'service:id,name,icon,category_id',
                         'service.category:id,name,icon',
+                        'services:id,name,icon,category_id',
+                        'services.category:id,name,icon',
                     ],
                     function ($scopedQuery) use ($column) {
                         $scopedQuery->whereIn('workflow_status', $column['statuses']);
@@ -623,30 +631,22 @@ class DashboardController extends Controller
 
     protected function buildServiceTags(Shoot $shoot): array
     {
-        $tags = [];
+        $services = $shoot->relationLoaded('services') ? $shoot->services : collect();
 
-        if ($shoot->service && $shoot->service->name) {
-            $tags[] = [
-                'label' => $shoot->service->name,
-                'type' => 'primary',
-                'icon' => $shoot->service->icon ?? null,
-            ];
+        if ($services->isEmpty() && $shoot->service) {
+            $services = collect([$shoot->service]);
         }
 
-        if ($shoot->service_category) {
-            // Try to resolve category icon from the service's category relation
-            $categoryIcon = null;
-            if ($shoot->service && $shoot->service->category) {
-                $categoryIcon = $shoot->service->category->icon ?? null;
-            }
-            $tags[] = [
-                'label' => $shoot->service_category,
-                'type' => 'secondary',
-                'icon' => $categoryIcon,
-            ];
-        }
-
-        return $tags;
+        return $services
+            ->filter(fn ($service) => filled($service->name))
+            ->unique(fn ($service) => $service->id ?: Str::slug($service->name))
+            ->map(fn ($service) => [
+                'label' => $service->name,
+                'type' => $service->id ? 'service_' . $service->id : Str::slug($service->name, '_'),
+                'icon' => $service->icon ?? $service->category?->icon,
+            ])
+            ->values()
+            ->all();
     }
 
     protected function formatLocationLine(Shoot $shoot): string
