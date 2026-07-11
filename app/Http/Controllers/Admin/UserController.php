@@ -15,6 +15,7 @@ use App\Services\MailService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
+use App\Services\Users\AccountCreatedNotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
@@ -470,8 +471,8 @@ class UserController extends Controller
             }
 
             $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-            $accountCreatedEmailSent = collect($accountCreatedDispatch['email_sent_to'] ?? [])
-                ->contains(fn ($email) => strtolower(trim((string) $email)) === strtolower(trim((string) $user->email)));
+            $accountNotifications = app(AccountCreatedNotificationService::class);
+            $accountCreatedEmailSent = $accountNotifications->emailWasSentTo($accountCreatedDispatch, $user->email);
             if (!$accountCreatedEmailSent || $automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
                 $accountCreatedEmailSent = $mailService->sendAccountCreatedEmail(
                     $user,
@@ -537,37 +538,7 @@ class UserController extends Controller
             ]);
         }
 
-        if ($notificationDelivery['sms']['attempted']) {
-            try {
-                $phone = $this->normalizeAccountNotificationPhone((string) $user->phonenumber);
-                app(MessagingService::class)->sendSms([
-                    'to' => $phone,
-                    'body_text' => sprintf(
-                        'R/E Pro Photos: Your %s account has been created. Check %s for your setup and verification links. Sign in at %s',
-                        $this->formatRoleLabel($user->role),
-                        $user->email,
-                        rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
-                    ),
-                    'send_source' => 'ACCOUNT_CREATED',
-                    'contact_phone' => $phone,
-                    'contact_email' => $user->email,
-                    'contact_name' => $user->name,
-                    'contact_type' => $this->normalizeRole($user->role),
-                    'contact_user_id' => $user->id,
-                    'contact_account_id' => $user->id,
-                    'related_account_id' => $user->id,
-                    'user_id' => $admin->id,
-                ]);
-                $notificationDelivery['sms']['sent'] = true;
-            } catch (\Throwable $exception) {
-                $notificationDelivery['sms']['error'] = $exception->getMessage();
-                \Log::warning('Failed to send account creation SMS', [
-                    'user_id' => $user->id,
-                    'phone' => $user->phonenumber,
-                    'error' => $exception->getMessage(),
-                ]);
-            }
-        }
+        $notificationDelivery['sms'] = app(AccountCreatedNotificationService::class)->sendSms($user, $admin);
 
         $deliveryFailed = collect([
             $notificationDelivery['email']['account_created'],

@@ -18,6 +18,7 @@ use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
+use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\ExternalBooking\Data\ExternalBookingData;
 use App\Services\ExternalBooking\ExternalBookingScheduleNormalizer;
 use App\Services\ExternalBooking\ExternalBookingAutoMapper;
@@ -431,6 +432,10 @@ class ExternalBookingController extends Controller
                 'error' => $exception->getMessage(),
             ]);
         }
+
+        // Keep SMS independent from email so either provider can fail without
+        // suppressing the other account-setup channel.
+        app(AccountCreatedNotificationService::class)->sendSms($client, $client);
     }
 
     protected function generateUniqueUsername(string $name, string $email): string

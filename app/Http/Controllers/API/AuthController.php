@@ -17,6 +17,7 @@ use App\Services\Messaging\AutomationService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
+use App\Services\Users\AccountCreatedNotificationService;
 
 class AuthController extends Controller
 {
@@ -127,16 +128,19 @@ class AuthController extends Controller
         $accountCreatedContext['verification_link'] = $verificationLink;
 
         $accountCreatedDispatch = $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-        if ($this->automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-            $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
+        $accountNotifications = app(AccountCreatedNotificationService::class);
+        $accountCreatedEmailSent = $accountNotifications->emailWasSentTo($accountCreatedDispatch, $user->email);
+        if (!$accountCreatedEmailSent || $this->automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
+            $accountCreatedEmailSent = $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
         }
 
-        if ($this->mailService->sendClientEmailVerificationEmail($user, [
+        $verificationEmailSent = $this->mailService->sendClientEmailVerificationEmail($user, [
             'issued_context' => 'registration',
             'issued_by' => $user->id,
             'verification_token' => $verificationToken,
             'verification_link' => $verificationLink,
-        ])) {
+        ]);
+        if ($verificationEmailSent) {
             $this->emailHealthService->markVerificationSent($user);
             $this->recordUserActivity(
                 $user,
@@ -150,10 +154,22 @@ class AuthController extends Controller
             );
         }
 
+        $smsDelivery = $accountNotifications->sendSms($user, $user);
+        $notificationDelivery = [
+            'email' => [
+                'account_created' => ['attempted' => true, 'sent' => $accountCreatedEmailSent, 'error' => $accountCreatedEmailSent ? null : 'The email provider did not accept the account-created message.'],
+                'verification' => ['attempted' => true, 'sent' => $verificationEmailSent, 'error' => $verificationEmailSent ? null : 'The email provider did not accept the verification message.'],
+            ],
+            'sms' => $smsDelivery,
+        ];
+        $deliveryFailed = collect([$notificationDelivery['email']['account_created'], $notificationDelivery['email']['verification'], $smsDelivery])
+            ->contains(fn (array $channel) => $channel['attempted'] && !$channel['sent']);
+
         return response()->json([
-            'message' => 'User registered successfully.',
+            'message' => $deliveryFailed ? 'User registered, but one or more notifications failed.' : 'User registered successfully.',
             'user' => $user->fresh(),
             'token' => $token,
+            'notification_delivery' => $notificationDelivery,
         ], 201);
     }
 

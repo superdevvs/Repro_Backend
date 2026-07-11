@@ -535,6 +535,64 @@ class UserEmailHealthTest extends TestCase
         ]);
     }
 
+    public function test_public_registration_dispatches_welcome_sms_and_reports_each_channel(): void
+    {
+        $this->partialMock(MailService::class, function (MockInterface $mock) {
+            $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
+        });
+
+        $this->mock(MessagingService::class, function (MockInterface $mock) {
+            $mock->shouldReceive('sendSms')->once()->withArgs(function (array $payload): bool {
+                return ($payload['to'] ?? null) === '+12025550123'
+                    && ($payload['send_source'] ?? null) === 'ACCOUNT_CREATED'
+                    && ($payload['contact_type'] ?? null) === 'client'
+                    && str_contains((string) ($payload['body_text'] ?? ''), 'registered.sms@example.com');
+            })->andReturn(new Message());
+        });
+
+        $response = $this->postJson('/api/register', [
+            'name' => 'Registered SMS',
+            'email' => 'registered.sms@example.com',
+            'phonenumber' => '(202) 555-0123',
+            'password' => 'secret123',
+            'password_confirmation' => 'secret123',
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('notification_delivery.email.account_created.sent', true)
+            ->assertJsonPath('notification_delivery.email.verification.sent', true)
+            ->assertJsonPath('notification_delivery.sms.attempted', true)
+            ->assertJsonPath('notification_delivery.sms.sent', true)
+            ->assertJsonPath('notification_delivery.sms.error', null);
+    }
+
+    public function test_public_registration_reports_sms_failure_without_rolling_back_account(): void
+    {
+        $this->partialMock(MailService::class, function (MockInterface $mock) {
+            $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
+        });
+        $this->mock(MessagingService::class, function (MockInterface $mock) {
+            $mock->shouldReceive('sendSms')->once()->andThrow(new \RuntimeException('provider unavailable'));
+        });
+
+        $response = $this->postJson('/api/register', [
+            'name' => 'Registered SMS Failure',
+            'email' => 'registered.sms.failure@example.com',
+            'phonenumber' => '202-555-0199',
+            'password' => 'secret123',
+            'password_confirmation' => 'secret123',
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('notification_delivery.email.account_created.sent', true)
+            ->assertJsonPath('notification_delivery.sms.attempted', true)
+            ->assertJsonPath('notification_delivery.sms.sent', false)
+            ->assertJsonPath('notification_delivery.sms.error', 'provider unavailable');
+        $this->assertDatabaseHas('users', ['email' => 'registered.sms.failure@example.com']);
+    }
+
     public function test_resend_flow_generates_a_v2_verification_link_that_can_be_opened(): void
     {
         $client = User::factory()->create([
