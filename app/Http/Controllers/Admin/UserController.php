@@ -16,6 +16,7 @@ use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 use App\Services\Users\AccountCreatedNotificationService;
+use App\Services\Users\PhoneNumberChangedNotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
@@ -426,123 +427,30 @@ class UserController extends Controller
             $this->demoteOtherSuperAdmins($user);
         }
 
-        $notificationDelivery = [
-            'email' => [
-                'account_created' => ['attempted' => true, 'sent' => false, 'error' => null],
-                'verification' => [
-                    'attempted' => $this->shouldRequireEmailVerificationForRole($user->role),
-                    'sent' => false,
-                    'error' => null,
-                ],
-            ],
-            'sms' => [
-                'attempted' => filled($user->phonenumber),
-                'sent' => false,
-                'error' => null,
-            ],
-        ];
+        $notificationDelivery = app(AccountCreatedNotificationService::class)->dispatch($user, [
+            'actor' => $admin,
+            'issued_context' => 'admin_account_created',
+            'include_password_creation_link' => true,
+            'pending_equipment_count' => $pendingEquipmentCount,
+            'send_equipment_email' => true,
+        ]);
 
-        // Send account creation email with password reset link.
-        try {
-            $mailService = app(MailService::class);
-            $automationService = app(AutomationService::class);
-            $resetLink = $mailService->generateStoredPasswordResetLink($user);
-            $accountCreatedContext = $automationService->buildUserContext($user);
-            $accountCreatedContext['client'] = $user;
-            $accountCreatedContext['password_reset_link'] = $resetLink;
-            $accountCreatedContext['include_password_creation_link'] = true;
-            $equipmentVerificationLink = $pendingEquipmentCount > 0
-                ? $mailService->equipmentVerificationLink($user)
-                : null;
-            if ($equipmentVerificationLink !== null) {
-                $accountCreatedContext['equipment_verification_link'] = $equipmentVerificationLink;
-                $accountCreatedContext['pending_equipment_count'] = $pendingEquipmentCount;
-            }
-            $verificationToken = null;
-            $verificationLink = null;
-
-            if ($this->shouldRequireEmailVerificationForRole($user->role)) {
-                $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
-                    'issued_context' => 'admin_account_created',
-                    'issued_by' => $admin->id,
-                ]);
-                $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
-                $accountCreatedContext['verification_link'] = $verificationLink;
-            }
-
-            $accountCreatedDispatch = $automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-            $accountNotifications = app(AccountCreatedNotificationService::class);
-            $accountCreatedEmailSent = $accountNotifications->emailWasSentTo($accountCreatedDispatch, $user->email);
-            if (!$accountCreatedEmailSent || $automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-                $accountCreatedEmailSent = $mailService->sendAccountCreatedEmail(
-                    $user,
-                    $resetLink,
-                    $verificationLink,
-                    $equipmentVerificationLink,
-                    $pendingEquipmentCount,
-                    true
-                );
-            }
-            $notificationDelivery['email']['account_created']['sent'] = $accountCreatedEmailSent;
-            if (!$accountCreatedEmailSent) {
-                $notificationDelivery['email']['account_created']['error'] = 'The email provider did not accept the account-created message.';
-            }
-
-            $equipmentVerificationEmailSent = false;
-            if ($pendingEquipmentCount > 0 && $user->role === 'photographer') {
-                $equipmentVerificationEmailSent = $mailService->sendPhotographerEquipmentVerificationEmail($user, $pendingEquipmentCount);
-            }
-
-            if ($pendingEquipmentCount > 0 && ($equipmentVerificationEmailSent || ($equipmentVerificationLink !== null && $accountCreatedEmailSent))) {
-                PhotographerEquipment::query()
-                    ->where('photographer_id', $user->id)
-                    ->whereIn('status', [PhotographerEquipment::STATUS_PENDING, PhotographerEquipment::STATUS_REJECTED])
-                    ->whereNull('verification_requested_at')
-                    ->update(['verification_requested_at' => now()]);
-            }
-
-            $verificationEmailSent = $verificationToken !== null && $mailService->sendClientEmailVerificationEmail($user, [
-                'issued_context' => 'admin_account_created',
-                'issued_by' => $admin->id,
-                'verification_token' => $verificationToken,
-                'verification_link' => $verificationLink,
-            ]);
-            $notificationDelivery['email']['verification']['sent'] = $verificationEmailSent;
-            if ($notificationDelivery['email']['verification']['attempted'] && !$verificationEmailSent) {
-                $notificationDelivery['email']['verification']['error'] = 'The email provider did not accept the verification message.';
-            }
-
-            if ($verificationEmailSent) {
-                $this->emailHealthService->markVerificationSent($user);
-                $this->logUserActivity(
-                    $user,
-                    'email_verification_requested',
-                    'Email verification sent',
-                    'A verification email was sent to the account address.',
-                    $admin,
-                    [
-                        'email' => $user->email,
-                        'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
-                    ]
-                );
-            }
-        } catch (\Exception $e) {
-            $notificationDelivery['email']['account_created']['error'] = $e->getMessage();
-            if ($notificationDelivery['email']['verification']['attempted']) {
-                $notificationDelivery['email']['verification']['error'] ??= $e->getMessage();
-            }
-            \Log::warning('Failed to send account creation email', [
-                'user_id' => $user->id,
-                'email' => $user->email,
-                'error' => $e->getMessage(),
-            ]);
+        if ($pendingEquipmentCount > 0 && (
+            ($notificationDelivery['email']['equipment']['sent'] ?? false)
+            || (($notificationDelivery['links']['equipment'] ?? null) && ($notificationDelivery['email']['account_created']['sent'] ?? false))
+        )) {
+            PhotographerEquipment::query()
+                ->where('photographer_id', $user->id)
+                ->whereIn('status', [PhotographerEquipment::STATUS_PENDING, PhotographerEquipment::STATUS_REJECTED])
+                ->whereNull('verification_requested_at')
+                ->update(['verification_requested_at' => now()]);
         }
-
-        $notificationDelivery['sms'] = app(AccountCreatedNotificationService::class)->sendSms($user, $admin);
+        unset($notificationDelivery['links']);
 
         $deliveryFailed = collect([
             $notificationDelivery['email']['account_created'],
             $notificationDelivery['email']['verification'],
+            $notificationDelivery['email']['equipment'],
             $notificationDelivery['sms'],
         ])->contains(fn (array $channel) => ($channel['attempted'] ?? false) && !($channel['sent'] ?? false));
 
@@ -883,6 +791,7 @@ class UserController extends Controller
             : [];
         $oldRoleForNotification = (string) $user->role;
         $oldSecondaryRolesForNotification = $user->secondary_roles ?? [];
+        $previousPhoneForNotification = trim((string) ($user->phonenumber ?: $user->phone));
 
         $user->fill($validated);
         $changedFields = collect(array_keys($user->getDirty()))
@@ -945,6 +854,13 @@ class UserController extends Controller
                 ]);
             }
         }
+
+        $phoneNotificationDelivery = app(PhoneNumberChangedNotificationService::class)->dispatch(
+            $user,
+            $previousPhoneForNotification,
+            trim((string) ($user->phonenumber ?: $user->phone)),
+            $admin
+        );
 
         if ($emailHealthMutation['warning_override']) {
             $this->logUserActivity(
@@ -1009,6 +925,7 @@ class UserController extends Controller
         return response()->json([
             'message' => 'User updated successfully.',
             'user' => $this->presentUserForViewer($user, $admin),
+            'phone_notification_delivery' => $phoneNotificationDelivery,
         ]);
     }
 

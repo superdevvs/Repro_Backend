@@ -112,57 +112,12 @@ class AuthController extends Controller
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
-        // Send account created email
-        $resetLink = $this->mailService->generateStoredPasswordResetLink($user);
-        $accountCreatedContext = $this->buildUserContext($user);
-        $accountCreatedContext['client'] = $user;
-        $accountCreatedContext['password_reset_link'] = $resetLink;
-        $verificationToken = null;
-        $verificationLink = null;
-
-        $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($user, [
+        $notificationDelivery = app(AccountCreatedNotificationService::class)->dispatch($user, [
+            'actor' => $user,
             'issued_context' => 'registration',
-            'issued_by' => $user->id,
         ]);
-        $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($user, $verificationToken);
-        $accountCreatedContext['verification_link'] = $verificationLink;
-
-        $accountCreatedDispatch = $this->automationService->handleEvent('ACCOUNT_CREATED', $accountCreatedContext);
-        $accountNotifications = app(AccountCreatedNotificationService::class);
-        $accountCreatedEmailSent = $accountNotifications->emailWasSentTo($accountCreatedDispatch, $user->email);
-        if (!$accountCreatedEmailSent || $this->automationService->shouldUseFallback('ACCOUNT_CREATED', $accountCreatedDispatch) !== false) {
-            $accountCreatedEmailSent = $this->mailService->sendAccountCreatedEmail($user, $resetLink, $verificationLink);
-        }
-
-        $verificationEmailSent = $this->mailService->sendClientEmailVerificationEmail($user, [
-            'issued_context' => 'registration',
-            'issued_by' => $user->id,
-            'verification_token' => $verificationToken,
-            'verification_link' => $verificationLink,
-        ]);
-        if ($verificationEmailSent) {
-            $this->emailHealthService->markVerificationSent($user);
-            $this->recordUserActivity(
-                $user,
-                'email_verification_requested',
-                'Email verification sent',
-                'A verification email was sent to the account address after registration.',
-                [
-                    'email' => $user->email,
-                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
-                ]
-            );
-        }
-
-        $smsDelivery = $accountNotifications->sendSms($user, $user);
-        $notificationDelivery = [
-            'email' => [
-                'account_created' => ['attempted' => true, 'sent' => $accountCreatedEmailSent, 'error' => $accountCreatedEmailSent ? null : 'The email provider did not accept the account-created message.'],
-                'verification' => ['attempted' => true, 'sent' => $verificationEmailSent, 'error' => $verificationEmailSent ? null : 'The email provider did not accept the verification message.'],
-            ],
-            'sms' => $smsDelivery,
-        ];
-        $deliveryFailed = collect([$notificationDelivery['email']['account_created'], $notificationDelivery['email']['verification'], $smsDelivery])
+        unset($notificationDelivery['links']);
+        $deliveryFailed = collect([$notificationDelivery['email']['account_created'], $notificationDelivery['email']['verification'], $notificationDelivery['sms']])
             ->contains(fn (array $channel) => $channel['attempted'] && !$channel['sent']);
 
         return response()->json([

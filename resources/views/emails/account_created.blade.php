@@ -7,6 +7,8 @@
     // New Account uses a single URL type (Dashboard); hide the Website tile to
     // avoid showing both the company website and the dashboard URL.
     $showWebsiteTile = false;
+    $normalizedRole = strtolower(str_replace(['_', '-', ' '], '', (string) ($user->role ?? '')));
+    $isPhotographer = $normalizedRole === 'photographer';
 @endphp
 
 @section('hero')
@@ -18,31 +20,38 @@
 @section('content')
 <p class="dark-body" style="margin:0 0 16px; font-size:16px; line-height:1.75; color:#a9b8cb;"><strong class="dark-strong" style="color:#e8edf5;">Welcome to the R/E Pro Photos dashboard.</strong></p>
 
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0 8px;">
+    @if($isPhotographer)
+    <p class="dark-heading" style="margin:18px 0 12px; font-size:18px; line-height:1.4; color:#e8edf5; font-weight:800;">Complete your photographer onboarding</p>
+    @endif
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0 8px; table-layout:fixed;">
         @if(!empty($verificationLink))
+        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">1. Verify your email</td></tr>@endif
         <tr>
             <td align="center" style="padding-bottom:10px;">
-                <a href="{{ $verificationLink }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Verify Email</a>
+                <a href="{{ $verificationLink }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Verify Email</a>
             </td>
         </tr>
         @endif
         @if(!empty($resetLink) && !empty($includePasswordCreationLink))
+        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">2. Create your password</td></tr>@endif
         <tr>
             <td align="center" style="padding-bottom:10px;">
-                <a href="{{ $resetLink }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Create Password</a>
+                <a href="{{ $resetLink }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Create Password</a>
             </td>
         </tr>
         @endif
         @if(!empty($equipmentVerificationUrl))
+        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">3. Review and verify equipment</td></tr>@endif
         <tr>
             <td align="center" style="padding-bottom:10px;">
-                <a href="{{ $equipmentVerificationUrl }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Verify Equipment</a>
+                <a href="{{ $equipmentVerificationUrl }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Verify Equipment</a>
             </td>
         </tr>
         @endif
+        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">4. Open your photographer dashboard</td></tr>@endif
         <tr>
             <td align="center">
-                <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" style="display:block; width:100%; padding:14px 22px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.2; text-decoration:none; text-align:center; white-space:nowrap;">Open Dashboard</a>
+                <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Open Dashboard</a>
             </td>
         </tr>
     </table>
@@ -76,8 +85,8 @@
         <tr>
             <td class="callout-bg" style="padding:18px 20px; border-radius:14px; border:1px solid #24344d; background-color:#16233a;">
                 <p class="dark-heading" style="margin:0 0 8px; font-size:16px; line-height:1.4; color:#e8edf5; font-weight:800;">Your next step</p>
-                @if(!empty($equipmentVerificationUrl))
-                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Open the dashboard to verify {{ ($equipmentCount ?? 0) > 1 ? 'your assigned equipments' : 'your assigned equipment' }} by uploading clear photos from your profile settings. This lets the admin team approve your equipment record before upcoming work.</p>
+                @if($isPhotographer)
+                <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Verify your email, create your password, then review the Equipments tab. Upload clear photos for each assigned item so the admin team can approve it before upcoming work.</p>
                 @elseif(!empty($verificationLink) && !empty($resetLink) && !empty($includePasswordCreationLink))
                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#a9b8cb;">Verify your email, then create your password to access the dashboard. If you already verified your email and need to return later, use Create Password from this email.</p>
                 @elseif(!empty($resetLink) && !empty($includePasswordCreationLink))

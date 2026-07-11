@@ -99,6 +99,36 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringNotContainsString('https://reprodashboard.com/reset-password?token=test', $html);
     }
 
+    public function test_photographer_account_email_has_ordered_mobile_safe_onboarding_steps(): void
+    {
+        $user = (object) [
+            'name' => 'QA Photographer',
+            'email' => 'photographer@example.com',
+            'role' => 'photographer',
+            'company_name' => 'R/E Pro Photos QA',
+            'phonenumber' => '202-555-0100',
+        ];
+
+        $html = view('emails.account_created', [
+            'user' => $user,
+            'resetLink' => 'https://reprodashboard.com/reset-password?token=test',
+            'verificationLink' => 'https://reprodashboard.com/verify/test',
+            'equipmentVerificationUrl' => 'https://reprodashboard.com/photographer-account?tab=equipments',
+            'includePasswordCreationLink' => true,
+        ])->render();
+
+        foreach (['1. Verify your email', '2. Create your password', '3. Review and verify equipment', '4. Open your photographer dashboard'] as $step) {
+            $this->assertStringContainsString($step, $html);
+        }
+        $this->assertTrue(strpos($html, 'Verify Email') < strpos($html, 'Create Password'));
+        $this->assertTrue(strpos($html, 'Create Password') < strpos($html, 'Verify Equipment'));
+        $this->assertTrue(strpos($html, 'Verify Equipment') < strpos($html, 'Open Dashboard'));
+        $this->assertStringContainsString('box-sizing:border-box', $html);
+        $this->assertStringContainsString('max-width:100%', $html);
+        $this->assertStringContainsString('white-space:normal', $html);
+        $this->assertStringNotContainsString('white-space:nowrap', $html);
+    }
+
     public function test_client_email_verified_confirmation_uses_dashboard_and_settings_actions(): void
     {
         $user = (object) [

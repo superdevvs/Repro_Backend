@@ -157,6 +157,12 @@ class ImportController extends Controller
                 if (!$dryRun) {
                     try {
                         $newUser = User::create($userData);
+                        $notificationDelivery = app(\App\Services\Users\AccountCreatedNotificationService::class)->dispatch($newUser, [
+                            'actor' => auth()->user(),
+                            'issued_context' => 'api_import',
+                            'include_password_creation_link' => true,
+                        ]);
+                        unset($notificationDelivery['links']);
                         $imported++;
                         $importedUsers[] = [
                             'action' => 'created',
@@ -164,6 +170,7 @@ class ImportController extends Controller
                             'name' => $name,
                             'email' => $email,
                             'role' => $role,
+                            'notification_delivery' => $notificationDelivery,
                         ];
                     } catch (\Exception $e) {
                         $errors[] = "Row {$row}: Failed to import {$email} - " . $e->getMessage();

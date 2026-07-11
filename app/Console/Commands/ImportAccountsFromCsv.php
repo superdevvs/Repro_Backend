@@ -159,9 +159,15 @@ class ImportAccountsFromCsv extends Command
 
             if (!$dryRun) {
                 try {
-                    User::create($userData);
+                    $newUser = User::create($userData);
+                    $delivery = app(\App\Services\Users\AccountCreatedNotificationService::class)->dispatch($newUser, [
+                        'issued_context' => 'artisan_import',
+                        'include_password_creation_link' => true,
+                    ]);
+                    unset($delivery['links']);
                     $imported++;
                     $this->line("  ✓ Imported: {$name} <{$email}> as {$role}");
+                    $this->line('    Notifications: '.json_encode($delivery, JSON_UNESCAPED_SLASHES));
                 } catch (\Exception $e) {
                     $errors[] = "Row {$row}: Failed to import {$email} - " . $e->getMessage();
                     $skipped++;

@@ -409,33 +409,16 @@ class ExternalBookingController extends Controller
 
     protected function sendNewExternalClientAccountSetup(User $client, Shoot $shoot): void
     {
-        try {
-            $mailService = app(MailService::class);
-            $resetLink = $mailService->generateStoredPasswordResetLink($client);
-            $verificationToken = app(ClientEmailVerificationLinkService::class)->issueVerificationToken($client, [
-                'issued_context' => 'external_booking',
-                'shoot_id' => $shoot->id,
-            ]);
-            $verificationLink = app(ClientEmailVerificationLinkService::class)->buildUrlForIssuedToken($client, $verificationToken);
-
-            $mailService->sendAccountCreatedEmail($client, $resetLink, $verificationLink, null, 0, true);
-            $mailService->sendClientEmailVerificationEmail($client, [
-                'issued_context' => 'external_booking',
-                'shoot_id' => $shoot->id,
-                'verification_token' => $verificationToken,
-                'verification_link' => $verificationLink,
-            ]);
-        } catch (\Throwable $exception) {
-            Log::warning('External booking client account setup email failed.', [
-                'shoot_id' => $shoot->id,
-                'client_id' => $client->id,
-                'error' => $exception->getMessage(),
-            ]);
-        }
-
-        // Keep SMS independent from email so either provider can fail without
-        // suppressing the other account-setup channel.
-        app(AccountCreatedNotificationService::class)->sendSms($client, $client);
+        $delivery = app(AccountCreatedNotificationService::class)->dispatch($client, [
+            'actor' => $client,
+            'issued_context' => 'external_booking',
+            'include_password_creation_link' => true,
+        ]);
+        Log::info('External booking account-created notification dispatch completed.', [
+            'shoot_id' => $shoot->id,
+            'client_id' => $client->id,
+            'delivery' => ['email' => $delivery['email'], 'sms' => $delivery['sms']],
+        ]);
     }
 
     protected function generateUniqueUsername(string $name, string $email): string
