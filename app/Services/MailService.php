@@ -261,6 +261,7 @@ class MailService
             'client' => 'client',
             'photographer' => 'photographer',
             'salesrep' => 'rep',
+            'editor' => 'editor',
             'admin', 'superadmin', 'editingmanager' => 'admin',
             default => 'other',
         };

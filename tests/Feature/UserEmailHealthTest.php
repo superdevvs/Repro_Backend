@@ -8,6 +8,7 @@ use App\Models\MessageChannel;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Services\MailService;
+use App\Services\Messaging\MessagingService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -276,6 +277,9 @@ class UserEmailHealthTest extends TestCase
 
             $response->assertCreated();
             $response->assertJsonPath('user.role', $role);
+            $response->assertJsonPath('notification_delivery.email.account_created.attempted', true);
+            $response->assertJsonPath('notification_delivery.email.account_created.sent', true);
+            $response->assertJsonPath('notification_delivery.sms.attempted', false);
 
             $userId = $response->json('user.id');
             $this->assertDatabaseHas('users', [
@@ -311,6 +315,44 @@ class UserEmailHealthTest extends TestCase
                 ]);
             }
         }
+    }
+
+    public function test_admin_created_account_dispatches_welcome_sms_and_reports_delivery(): void
+    {
+        $admin = User::factory()->admin()->create();
+
+        $this->partialMock(MailService::class, function (MockInterface $mock) {
+            $mock->shouldReceive('sendAccountCreatedEmail')->once()->andReturnTrue();
+            $mock->shouldReceive('sendClientEmailVerificationEmail')->once()->andReturnTrue();
+        });
+
+        $this->mock(MessagingService::class, function (MockInterface $mock) {
+            $mock->shouldReceive('sendSms')
+                ->once()
+                ->withArgs(function (array $payload): bool {
+                    return ($payload['to'] ?? null) === '+12075737634'
+                        && ($payload['send_source'] ?? null) === 'ACCOUNT_CREATED'
+                        && str_contains(strtolower((string) ($payload['body_text'] ?? '')), 'photographer account has been created')
+                        && str_contains((string) ($payload['body_text'] ?? ''), 'sms.account@example.com');
+                })
+                ->andReturn(new Message());
+        });
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->postJson('/api/admin/users', [
+            'name' => 'SMS Account',
+            'email' => 'sms.account@example.com',
+            'phone_number' => '(207) 573-7634',
+            'role' => 'photographer',
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('notification_delivery.email.account_created.sent', true)
+            ->assertJsonPath('notification_delivery.email.verification.sent', true)
+            ->assertJsonPath('notification_delivery.sms.attempted', true)
+            ->assertJsonPath('notification_delivery.sms.sent', true)
+            ->assertJsonPath('notification_delivery.sms.error', null);
     }
 
     public function test_admin_cannot_resend_verification_for_already_verified_client(): void

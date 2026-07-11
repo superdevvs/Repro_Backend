@@ -10,6 +10,7 @@ use App\Models\User;
 use App\Models\AccountLink;
 use App\Models\UserActivityLog;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\MessagingService;
 use App\Services\MailService;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
@@ -424,7 +425,23 @@ class UserController extends Controller
             $this->demoteOtherSuperAdmins($user);
         }
 
-        // Send account creation email with password reset link
+        $notificationDelivery = [
+            'email' => [
+                'account_created' => ['attempted' => true, 'sent' => false, 'error' => null],
+                'verification' => [
+                    'attempted' => $this->shouldRequireEmailVerificationForRole($user->role),
+                    'sent' => false,
+                    'error' => null,
+                ],
+            ],
+            'sms' => [
+                'attempted' => filled($user->phonenumber),
+                'sent' => false,
+                'error' => null,
+            ],
+        ];
+
+        // Send account creation email with password reset link.
         try {
             $mailService = app(MailService::class);
             $automationService = app(AutomationService::class);
@@ -465,6 +482,10 @@ class UserController extends Controller
                     true
                 );
             }
+            $notificationDelivery['email']['account_created']['sent'] = $accountCreatedEmailSent;
+            if (!$accountCreatedEmailSent) {
+                $notificationDelivery['email']['account_created']['error'] = 'The email provider did not accept the account-created message.';
+            }
 
             $equipmentVerificationEmailSent = false;
             if ($pendingEquipmentCount > 0 && $user->role === 'photographer') {
@@ -479,12 +500,18 @@ class UserController extends Controller
                     ->update(['verification_requested_at' => now()]);
             }
 
-            if ($verificationToken !== null && $mailService->sendClientEmailVerificationEmail($user, [
+            $verificationEmailSent = $verificationToken !== null && $mailService->sendClientEmailVerificationEmail($user, [
                 'issued_context' => 'admin_account_created',
                 'issued_by' => $admin->id,
                 'verification_token' => $verificationToken,
                 'verification_link' => $verificationLink,
-            ])) {
+            ]);
+            $notificationDelivery['email']['verification']['sent'] = $verificationEmailSent;
+            if ($notificationDelivery['email']['verification']['attempted'] && !$verificationEmailSent) {
+                $notificationDelivery['email']['verification']['error'] = 'The email provider did not accept the verification message.';
+            }
+
+            if ($verificationEmailSent) {
                 $this->emailHealthService->markVerificationSent($user);
                 $this->logUserActivity(
                     $user,
@@ -499,6 +526,10 @@ class UserController extends Controller
                 );
             }
         } catch (\Exception $e) {
+            $notificationDelivery['email']['account_created']['error'] = $e->getMessage();
+            if ($notificationDelivery['email']['verification']['attempted']) {
+                $notificationDelivery['email']['verification']['error'] ??= $e->getMessage();
+            }
             \Log::warning('Failed to send account creation email', [
                 'user_id' => $user->id,
                 'email' => $user->email,
@@ -506,9 +537,50 @@ class UserController extends Controller
             ]);
         }
 
+        if ($notificationDelivery['sms']['attempted']) {
+            try {
+                $phone = $this->normalizeAccountNotificationPhone((string) $user->phonenumber);
+                app(MessagingService::class)->sendSms([
+                    'to' => $phone,
+                    'body_text' => sprintf(
+                        'R/E Pro Photos: Your %s account has been created. Check %s for your setup and verification links. Sign in at %s',
+                        $this->formatRoleLabel($user->role),
+                        $user->email,
+                        rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/')
+                    ),
+                    'send_source' => 'ACCOUNT_CREATED',
+                    'contact_phone' => $phone,
+                    'contact_email' => $user->email,
+                    'contact_name' => $user->name,
+                    'contact_type' => $this->normalizeRole($user->role),
+                    'contact_user_id' => $user->id,
+                    'contact_account_id' => $user->id,
+                    'related_account_id' => $user->id,
+                    'user_id' => $admin->id,
+                ]);
+                $notificationDelivery['sms']['sent'] = true;
+            } catch (\Throwable $exception) {
+                $notificationDelivery['sms']['error'] = $exception->getMessage();
+                \Log::warning('Failed to send account creation SMS', [
+                    'user_id' => $user->id,
+                    'phone' => $user->phonenumber,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        $deliveryFailed = collect([
+            $notificationDelivery['email']['account_created'],
+            $notificationDelivery['email']['verification'],
+            $notificationDelivery['sms'],
+        ])->contains(fn (array $channel) => ($channel['attempted'] ?? false) && !($channel['sent'] ?? false));
+
         return response()->json([
-            'message' => 'User created successfully.',
+            'message' => $deliveryFailed
+                ? 'User created, but one or more notifications failed. Review notification_delivery for details.'
+                : 'User created and all attempted notifications were sent successfully.',
             'user' => $this->presentUserForViewer($user, $admin),
+            'notification_delivery' => $notificationDelivery,
         ], 201);
     }
 
@@ -1413,6 +1485,21 @@ class UserController extends Controller
     protected function shouldRequireEmailVerificationForRole(?string $role): bool
     {
         return !in_array($role, ['admin', 'superadmin'], true);
+    }
+
+    protected function normalizeAccountNotificationPhone(string $phone): string
+    {
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+
+        if (strlen($digits) === 10) {
+            return '+1' . $digits;
+        }
+
+        if (strlen($digits) === 11 && str_starts_with($digits, '1')) {
+            return '+' . $digits;
+        }
+
+        return str_starts_with(trim($phone), '+') ? trim($phone) : '+' . $digits;
     }
 
     protected function normalizeClientDiscount(?string $role, mixed $discountType, mixed $discountValue): array
