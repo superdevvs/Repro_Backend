@@ -28,28 +28,28 @@ return [
         'enabled' => env('DROPBOX_ENABLED', false),
         'client_id' => env('DROPBOX_CLIENT_ID'),
         'client_secret' => env('DROPBOX_CLIENT_SECRET'),
-        'redirect' => env('APP_URL') . '/api/dropbox/callback',
+        'redirect' => env('APP_URL').'/api/dropbox/callback',
         'access_token' => env('DROPBOX_ACCESS_TOKEN'),
         'refresh_token' => env('DROPBOX_REFRESH_TOKEN'),
     ],
 
     'stripe' => [
-        'secret_key'      => env('STRIPE_SECRET_KEY'),
+        'secret_key' => env('STRIPE_SECRET_KEY'),
         'publishable_key' => env('STRIPE_PUBLISHABLE_KEY'),
-        'webhook_secret'  => env('STRIPE_WEBHOOK_SECRET'),
-        'currency'        => env('STRIPE_CURRENCY', 'USD'),
+        'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+        'currency' => env('STRIPE_CURRENCY', 'USD'),
     ],
 
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID', env('GOOGLE_CALENDAR_CLIENT_ID')),
         'client_secret' => env('GOOGLE_CLIENT_SECRET', env('GOOGLE_CALENDAR_CLIENT_SECRET')),
-        'redirect' => env('GOOGLE_REDIRECT_URI', env('GOOGLE_CALENDAR_REDIRECT_URI', env('APP_URL') . '/api/google-calendar/callback')),
+        'redirect' => env('GOOGLE_REDIRECT_URI', env('GOOGLE_CALENDAR_REDIRECT_URI', env('APP_URL').'/api/google-calendar/callback')),
         'places_api_key' => env('GOOGLE_PLACES_API_KEY'),
         'maps_api_key' => env('GOOGLE_MAPS_API_KEY'),
         'calendar' => [
             'client_id' => env('GOOGLE_CALENDAR_CLIENT_ID', env('GOOGLE_CLIENT_ID')),
             'client_secret' => env('GOOGLE_CALENDAR_CLIENT_SECRET', env('GOOGLE_CLIENT_SECRET')),
-            'redirect' => env('GOOGLE_CALENDAR_REDIRECT_URI', env('GOOGLE_REDIRECT_URI', env('APP_URL') . '/api/google-calendar/callback')),
+            'redirect' => env('GOOGLE_CALENDAR_REDIRECT_URI', env('GOOGLE_REDIRECT_URI', env('APP_URL').'/api/google-calendar/callback')),
             'scope' => env('GOOGLE_CALENDAR_SCOPE', 'openid email https://www.googleapis.com/auth/calendar.events'),
             'auth_url' => env('GOOGLE_CALENDAR_AUTH_URL', 'https://accounts.google.com/o/oauth2/v2/auth'),
             'token_url' => env('GOOGLE_CALENDAR_TOKEN_URL', 'https://oauth2.googleapis.com/token'),
@@ -59,14 +59,14 @@ return [
             'dashboard_url' => env('DASHBOARD_URL', 'https://reprodashboard.com'),
             'mirror_sync_status' => env('GOOGLE_CALENDAR_MIRROR_SYNC_STATUS', false),
         ],
-        'upload_sources_google_drive_redirect' => env('GOOGLE_DRIVE_UPLOAD_REDIRECT_URI', env('APP_URL') . '/api/upload-sources/google_drive/callback'),
-        'upload_sources_google_photos_redirect' => env('GOOGLE_PHOTOS_UPLOAD_REDIRECT_URI', env('APP_URL') . '/api/upload-sources/google_photos/callback'),
+        'upload_sources_google_drive_redirect' => env('GOOGLE_DRIVE_UPLOAD_REDIRECT_URI', env('APP_URL').'/api/upload-sources/google_drive/callback'),
+        'upload_sources_google_photos_redirect' => env('GOOGLE_PHOTOS_UPLOAD_REDIRECT_URI', env('APP_URL').'/api/upload-sources/google_photos/callback'),
     ],
 
     'microsoft' => [
         'client_id' => env('MICROSOFT_CLIENT_ID'),
         'client_secret' => env('MICROSOFT_CLIENT_SECRET'),
-        'redirect' => env('MICROSOFT_UPLOAD_REDIRECT_URI', env('APP_URL') . '/api/upload-sources/onedrive/callback'),
+        'redirect' => env('MICROSOFT_UPLOAD_REDIRECT_URI', env('APP_URL').'/api/upload-sources/onedrive/callback'),
     ],
 
     // LocationIQ (OSM-backed) for address autocomplete/geocoding
@@ -161,13 +161,16 @@ return [
             'assistant_id' => env('TELNYX_VOICE_ASSISTANT_ID'),
             'connection_id' => env('TELNYX_VOICE_CONNECTION_ID'),
             'webhook_url' => env('TELNYX_VOICE_WEBHOOK_URL'),
+            // This enables consent-gated Call Control recording. The assistant's
+            // own automatic recording remains disabled by the sync service.
             'recording_enabled' => env('TELNYX_VOICE_RECORDING_ENABLED', true),
             'support_handoff_number' => env('TELNYX_VOICE_SUPPORT_HANDOFF_NUMBER'),
             'allow_unverified_transfer' => env('TELNYX_VOICE_ALLOW_UNVERIFIED_TRANSFER', true),
-            'disclosure_text' => env('TELNYX_VOICE_DISCLOSURE_TEXT', "Hi, this is Robbie, RePro's AI assistant. This call may be recorded and transcribed to help manage your booking. Stay on the line to continue, or say 'human' to reach a person."),
+            'disclosure_text' => env('TELNYX_VOICE_DISCLOSURE_TEXT', "Hi, this is Robbie, RePro's AI assistant. With your permission, this call can be recorded and transcribed to help manage your booking. Say yes to consent, no to continue without recording, or say human to reach a person."),
         ],
         'tool_bridge' => [
             'secret' => env('TELNYX_TOOL_BRIDGE_SECRET'),
+            'base_url' => env('TELNYX_TOOL_BRIDGE_BASE_URL'),
             'tolerance_seconds' => (int) env('TELNYX_TOOL_BRIDGE_TOLERANCE_SECONDS', 300),
             'idempotency_ttl_seconds' => (int) env('TELNYX_TOOL_BRIDGE_IDEMPOTENCY_TTL', 86400),
             'debug_capture' => env('TELNYX_TOOL_BRIDGE_DEBUG_CAPTURE', false),
@@ -215,7 +218,7 @@ return [
         'app_token' => env('IGUIDE_APP_TOKEN'),
         'base_url' => env('IGUIDE_API_URL', 'https://manage.youriguide.com/api/v1'),
         'legacy_base_url' => env('IGUIDE_LEGACY_API_URL', 'https://api.iguide.com'),
-        'webhook_url' => env('IGUIDE_WEBHOOK_URL', env('APP_URL') . '/iguide_webhook.php'),
+        'webhook_url' => env('IGUIDE_WEBHOOK_URL', env('APP_URL').'/iguide_webhook.php'),
         // Optional shared secret used to verify HMAC-SHA256 signature on webhook bodies.
         'webhook_secret' => env('IGUIDE_WEBHOOK_SECRET'),
     ],
@@ -267,7 +270,7 @@ return [
         'start_point' => env('MMM_START_POINT', 'category'),
         'to_identity' => env('MMM_TO_IDENTITY', ''),
         'sender_identity' => env('MMM_SENDER_IDENTITY', ''),
-        'url_return' => env('MMM_URL_RETURN', env('APP_URL') . '/api/integrations/mmm/return'),
+        'url_return' => env('MMM_URL_RETURN', env('APP_URL').'/api/integrations/mmm/return'),
         'return_redirect_url' => env('MMM_RETURN_REDIRECT_URL'),
         'timeout' => env('MMM_TIMEOUT', 20),
     ],
@@ -298,6 +301,17 @@ return [
         'phone_number_id' => env('VAPI_PHONE_NUMBER_ID'),
         'server_secret' => env('VAPI_SERVER_SECRET'),
         'webhook_url' => env('VAPI_WEBHOOK_URL'),
+    ],
+
+    'voice' => [
+        'provider' => strtolower((string) env('VOICE_PROVIDER', 'telnyx')),
+        // Canary mode is fail-closed. Disable it only after the controlled rollout
+        // has passed and the assistant version has been promoted deliberately.
+        'canary_mode' => filter_var(env('VOICE_CANARY_MODE', true), FILTER_VALIDATE_BOOL),
+        'canary_numbers' => array_values(array_filter(array_map(
+            static fn ($number) => trim((string) $number),
+            explode(',', (string) env('VOICE_CANARY_NUMBERS', '')),
+        ))),
     ],
 
 ];

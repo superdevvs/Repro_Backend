@@ -7,10 +7,17 @@ use App\Events\VoiceCallTransferred;
 use App\Models\MessageThread;
 use App\Models\VoiceCall;
 use App\Services\TelnyxAi\ScheduledVoiceCallService;
-use Illuminate\Support\Facades\Http;
+use App\Services\TelnyxAi\TelnyxVoiceCallService;
+use App\Services\TelnyxAi\VoiceSettingsService;
 
 class HandoffTools
 {
+    public function __construct(
+        private readonly ScheduledVoiceCallService $scheduledCalls,
+        private readonly TelnyxVoiceCallService $telnyxCalls,
+        private readonly VoiceSettingsService $settings,
+    ) {}
+
     public function handoffToStaff(array $params, array $context): array
     {
         $threadId = $context['sms_thread_id'] ?? $params['thread_id'] ?? null;
@@ -33,7 +40,7 @@ class HandoffTools
         if ($voiceCallId) {
             $voiceCall = VoiceCall::query()->find($voiceCallId);
             if ($voiceCall) {
-                $scheduled = app(ScheduledVoiceCallService::class)->createCallbackForCall(
+                $scheduled = $this->scheduledCalls->createCallbackForCall(
                     $voiceCall,
                     (string) ($params['reason'] ?? 'ai_handoff_requested')
                 );
@@ -68,34 +75,27 @@ class HandoffTools
             return ['ok' => false, 'error' => 'tool_blocked'];
         }
 
-        $callControlId = (string) ($context['call_control_id'] ?? $params['call_control_id'] ?? '');
-        $to = (string) ($params['to'] ?? config('services.telnyx.voice.support_handoff_number', ''));
+        $callControlId = (string) ($context['call_control_id'] ?? '');
+        $to = (string) ($this->settings->all()['support_handoff_number'] ?? '');
 
         if ($callControlId === '' || $to === '') {
             return ['ok' => false, 'error' => 'missing_transfer_target'];
         }
 
-        $apiKey = (string) config('services.telnyx.api_key', '');
-        $base = rtrim((string) config('services.telnyx.api_base', 'https://api.telnyx.com/v2'), '/');
-
-        $transferOk = true;
-        $transferStatus = null;
-        if ($apiKey !== '') {
-            $response = Http::withToken($apiKey)->post("{$base}/calls/{$callControlId}/actions/transfer", [
-                'to' => $to,
-            ]);
-            $transferOk = $response->successful();
-            $transferStatus = $response->status();
-        }
-
         $voiceCall = VoiceCall::query()
             ->where('call_control_id', $callControlId)
-            ->orWhere('id', $context['voice_call_id'] ?? $params['voice_call_id'] ?? null)
             ->first();
 
+        if (! $voiceCall || (int) $voiceCall->id !== (int) ($context['voice_call_id'] ?? 0)) {
+            return ['ok' => false, 'error' => 'trusted_call_not_found'];
+        }
+
+        $transferOk = $this->telnyxCalls->transfer($voiceCall, $to);
+        $transferStatus = $voiceCall->fresh()->last_telnyx_command_status['status'] ?? null;
+
         if ($voiceCall) {
-            if (!$transferOk) {
-                $scheduled = app(ScheduledVoiceCallService::class)->createCallbackForCall($voiceCall, 'transfer_failed');
+            if (! $transferOk) {
+                $scheduled = $this->scheduledCalls->createCallbackForCall($voiceCall, 'transfer_failed');
                 $voiceCall->forceFill([
                     'status' => 'callback_needed',
                     'disposition' => 'callback_needed',

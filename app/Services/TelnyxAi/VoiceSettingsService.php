@@ -12,7 +12,9 @@ class VoiceSettingsService
     {
         $stored = $this->stored();
 
-        return array_merge([
+        $settings = array_merge([
+            'provider' => config('services.voice.provider', 'telnyx'),
+            'canary_mode' => (bool) config('services.voice.canary_mode', true),
             'enabled' => (bool) config('services.telnyx.voice.enabled', false),
             'assistant_id' => config('services.telnyx.voice.assistant_id'),
             'webhook_url' => config('services.telnyx.voice.webhook_url'),
@@ -26,24 +28,24 @@ class VoiceSettingsService
             'fallback_menu_delay_seconds' => 15,
             'human_transfer_confirmation_text' => "Sure, I'll connect you to a teammate. Please stay on the line.",
             'out_of_hours_message' => "Our team is offline right now \u2014 but I can schedule a callback for the next business morning.",
-            'holiday_message' => "Our office is closed today for {holiday_label}. I can help you now or schedule a callback.",
-            'outbound_intro_text' => "Hi {caller_first_name}, this is Robbie from RePro Photos. Quick call about {topic}.",
+            'holiday_message' => 'Our office is closed today for {holiday_label}. I can help you now or schedule a callback.',
+            'outbound_intro_text' => 'Hi {caller_first_name}, this is Robbie from RePro Photos. Quick call about {topic}.',
             'outbound_script_presets' => [
                 ['id' => 'greeting', 'label' => 'Friendly intro', 'intent' => 'general_support', 'prompt' => "Hi {caller_first_name}, this is Robbie from RePro Photos. I'm calling to check in \u2014 how can I help today?"],
-                ['id' => 'booking_confirmation', 'label' => 'Booking confirmation', 'intent' => 'booking_or_reschedule', 'prompt' => "Hi {caller_first_name}, calling to confirm your shoot on {shoot_date}. Does that time still work for you?"],
-                ['id' => 'payment_reminder', 'label' => 'Payment reminder', 'intent' => 'billing_payment', 'prompt' => "Hi {caller_first_name}, this is a quick reminder that invoice {invoice_number} is due. Want me to email a payment link?"],
+                ['id' => 'booking_confirmation', 'label' => 'Booking confirmation', 'intent' => 'booking_or_reschedule', 'prompt' => 'Hi {caller_first_name}, calling to confirm your shoot on {shoot_date}. Does that time still work for you?'],
+                ['id' => 'payment_reminder', 'label' => 'Payment reminder', 'intent' => 'billing_payment', 'prompt' => 'Hi {caller_first_name}, this is a quick reminder that invoice {invoice_number} is due. Want me to email a payment link?'],
                 ['id' => 'reschedule', 'label' => 'Reschedule offer', 'intent' => 'booking_or_reschedule', 'prompt' => "Hi {caller_first_name}, I'm reaching out about your shoot on {shoot_date}. We need to reschedule \u2014 what days work for you this week?"],
             ],
             'business_hours' => [
                 'timezone' => config('app.timezone', 'UTC'),
                 'weekly' => [
-                    'monday'    => [['09:00', '18:00']],
-                    'tuesday'   => [['09:00', '18:00']],
+                    'monday' => [['09:00', '18:00']],
+                    'tuesday' => [['09:00', '18:00']],
                     'wednesday' => [['09:00', '18:00']],
-                    'thursday'  => [['09:00', '18:00']],
-                    'friday'    => [['09:00', '18:00']],
-                    'saturday'  => [['10:00', '14:00']],
-                    'sunday'    => [],
+                    'thursday' => [['09:00', '18:00']],
+                    'friday' => [['09:00', '18:00']],
+                    'saturday' => [['10:00', '14:00']],
+                    'sunday' => [],
                 ],
             ],
             'holidays' => [],
@@ -87,6 +89,13 @@ class VoiceSettingsService
             'confirmation_gated_tools' => ToolBridgeRegistry::CONFIRMATION_GATED,
             'debug_capture' => (bool) config('services.telnyx.tool_bridge.debug_capture', false),
         ], $stored);
+
+        $settings['tool_allowlist'] = array_values(array_unique(array_merge(
+            is_array($settings['tool_allowlist'] ?? null) ? $settings['tool_allowlist'] : [],
+            ['set_recording_consent'],
+        )));
+
+        return $settings;
     }
 
     public function update(array $settings): array
@@ -139,6 +148,7 @@ class VoiceSettingsService
         try {
             $value = Setting::query()->where('key', self::SETTINGS_KEY)->value('value');
             $decoded = is_string($value) ? json_decode($value, true) : null;
+
             return is_array($decoded) ? $decoded : [];
         } catch (\Throwable $e) {
             return [];

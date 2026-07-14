@@ -3,11 +3,13 @@
 namespace App\Services\TelnyxAi;
 
 use App\Models\AiChatSession;
+use App\Models\AiMessage;
 use App\Models\TelnyxWebhookEvent;
 use App\Models\User;
 use App\Models\VoiceCall;
+use App\Models\VoiceCallTranscript;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Carbon;
+use RuntimeException;
 use Throwable;
 
 class VoiceWebhookProcessor
@@ -17,8 +19,7 @@ class VoiceWebhookProcessor
         private readonly VoiceRoutingService $routing,
         private readonly VoiceLiveStreamService $liveStream,
         private readonly VoiceIntelligenceService $intelligence,
-    ) {
-    }
+    ) {}
 
     public function process(array $payload, string $rawBody): array
     {
@@ -65,8 +66,13 @@ class VoiceWebhookProcessor
             'call.initiated' => $this->handleInitiated($data),
             'call.gather.ended', 'call.dtmf.received' => $this->handleMenuInput($data),
             'call.assistant.transcript' => $this->handleTranscript($data),
+            'call.ai_assistant.message_history.updated',
+            'call.ai_assistant.message_history_updated',
+            'call.assistant.message_history.updated' => $this->handleMessageHistory($data),
             'call.recording.saved' => $this->handleRecording($data),
             'call.summary.created' => $this->handleSummary($data),
+            'call.conversation.ended' => $this->handleConversationEnded($data),
+            'call.conversation_insights.generated' => $this->handleConversationInsights($data),
             'call.transfer.failed' => $this->handleTransferFailed($data),
             'call.hangup', 'call.ended' => $this->handleHangup($data),
             'call.failed', 'call.no_answer' => $this->handleMissed($data),
@@ -82,45 +88,49 @@ class VoiceWebhookProcessor
         $payload = $this->payload($data);
         $from = (string) ($payload['from'] ?? $payload['from_phone_number'] ?? '');
         $to = (string) ($payload['to'] ?? $payload['to_phone_number'] ?? '');
-        $resolved = $this->calls->resolveCaller($from);
+        $voiceCall = $this->findCall($data);
+        $direction = strtoupper((string) ($voiceCall?->direction ?? $this->directionFrom($payload)));
+        $callerPhone = $direction === 'OUTBOUND' ? $to : $from;
+        $resolved = $this->calls->resolveCaller($callerPhone);
 
-        $voiceCall = VoiceCall::query()->firstOrCreate(
-            ['call_control_id' => $payload['call_control_id'] ?? null],
-            [
-                'direction' => 'INBOUND',
-                'status' => 'active',
+        if (! $voiceCall) {
+            $voiceCall = VoiceCall::query()->create([
+                'provider' => 'telnyx',
+                'direction' => $direction,
+                'status' => $direction === 'INBOUND' ? 'active' : 'dialing',
+                'external_provider_status' => 'initiated',
+                'handled_by' => 'ai',
                 'from_phone' => $from,
                 'to_phone' => $to,
                 'caller_user_id' => $resolved['user']?->id,
                 'caller_contact_id' => $resolved['contact']?->id,
                 'assistant_id' => config('services.telnyx.voice.assistant_id'),
+                'call_control_id' => $payload['call_control_id'] ?? null,
                 'telnyx_conversation_id' => $payload['conversation_id'] ?? $payload['telnyx_conversation_id'] ?? null,
+                'client_state' => $payload['client_state'] ?? null,
                 'started_at' => now(),
+                'provider_event_last_seen_at' => now(),
                 'metadata' => ['raw_initiated' => $payload],
-            ]
-        );
+            ]);
+        } else {
+            $voiceCall->forceFill([
+                'provider' => 'telnyx',
+                'call_control_id' => $payload['call_control_id'] ?? $voiceCall->call_control_id,
+                'external_provider_status' => 'initiated',
+                'provider_event_last_seen_at' => now(),
+                'caller_user_id' => $voiceCall->caller_user_id ?: $resolved['user']?->id,
+                'caller_contact_id' => $voiceCall->caller_contact_id ?: $resolved['contact']?->id,
+                'metadata' => array_merge($voiceCall->metadata ?? [], ['raw_initiated' => $payload]),
+            ])->save();
+        }
 
-        $session = AiChatSession::query()->create([
-            'user_id' => $voiceCall->caller_user_id ?: $this->fallbackSessionUserId(),
-            'title' => 'Voice call ' . $voiceCall->id,
-            'topic' => 'general',
-            'state' => [],
-            'meta' => [
-                'assistant_id' => $voiceCall->assistant_id,
-                'telnyx_conversation_id' => $voiceCall->telnyx_conversation_id,
-                'call_control_id' => $voiceCall->call_control_id,
-                'voice_call_id' => $voiceCall->id,
-                'verified' => false,
-            ],
-            'engine' => 'telnyx_voice',
-            'channel' => 'VOICE',
-            'phone_e164' => $resolved['phone_e164'] ?? $from,
-            'contact_id' => $voiceCall->caller_contact_id,
-            'last_inbound_at' => now(),
-        ]);
-
-        $voiceCall->forceFill(['ai_chat_session_id' => $session->id])->save();
-        $this->routing->beginInboundCall($voiceCall, $resolved);
+        $this->ensureSession($voiceCall, $resolved, $callerPhone);
+        if ($direction === 'INBOUND' && empty(($voiceCall->metadata ?? [])['inbound_routing_started_at'])) {
+            $voiceCall->forceFill([
+                'metadata' => array_merge($voiceCall->metadata ?? [], ['inbound_routing_started_at' => now()->toIso8601String()]),
+            ])->save();
+            $this->routing->beginInboundCall($voiceCall, $resolved);
+        }
 
         return $voiceCall->fresh();
     }
@@ -128,7 +138,7 @@ class VoiceWebhookProcessor
     private function handleMenuInput(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
@@ -140,19 +150,19 @@ class VoiceWebhookProcessor
     private function handleTranscript(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
         $payload = $this->payload($data);
         $line = trim((string) ($payload['transcript'] ?? $payload['text'] ?? ''));
         if ($line !== '') {
-            // Layer 1: persist a structured realtime chunk (also keeps the flat
-            // transcript column in sync) and let intelligence triggers evaluate.
-            $voiceCall = $this->liveStream->recordTranscriptChunk($voiceCall, [
+            $voiceCall = $this->persistTranscript($voiceCall, [
+                'id' => $payload['message_id'] ?? $payload['id'] ?? null,
                 'text' => $line,
                 'speaker' => $this->speakerFrom($payload),
                 'confidence' => $payload['confidence'] ?? $payload['telnyx_confidence'] ?? null,
+                'occurred_at' => $payload['occurred_at'] ?? null,
                 'sentiment' => $payload['sentiment'] ?? null,
             ]);
         }
@@ -163,7 +173,7 @@ class VoiceWebhookProcessor
     private function handleRecording(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
@@ -178,7 +188,7 @@ class VoiceWebhookProcessor
     private function handleSummary(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
@@ -188,10 +198,111 @@ class VoiceWebhookProcessor
         return $voiceCall;
     }
 
+    private function handleMessageHistory(array $data): ?VoiceCall
+    {
+        $voiceCall = $this->findCall($data);
+        if (! $voiceCall) {
+            return null;
+        }
+
+        $payload = $this->payload($data);
+        $messages = $payload['message_history'] ?? $payload['messages'] ?? $payload['message'] ?? [];
+        if (isset($messages['role']) || isset($messages['content'])) {
+            $messages = [$messages];
+        }
+
+        foreach (is_array($messages) ? $messages : [] as $message) {
+            if (! is_array($message)) {
+                continue;
+            }
+            $text = $this->messageText($message['content'] ?? $message['text'] ?? '');
+            $role = strtolower((string) ($message['role'] ?? $message['speaker'] ?? ''));
+            if ($text === '' || ! in_array($role, ['user', 'customer', 'assistant', 'agent'], true)) {
+                continue;
+            }
+            $voiceCall = $this->persistTranscript($voiceCall, [
+                'id' => $message['id'] ?? $message['message_id'] ?? null,
+                'text' => $text,
+                'speaker' => in_array($role, ['assistant', 'agent'], true) ? 'assistant' : 'customer',
+                'confidence' => $message['confidence'] ?? null,
+                'occurred_at' => $message['created_at'] ?? $message['occurred_at'] ?? null,
+            ]);
+        }
+
+        return $voiceCall->fresh();
+    }
+
+    private function handleConversationEnded(array $data): ?VoiceCall
+    {
+        $voiceCall = $this->findCall($data);
+        if (! $voiceCall) {
+            return null;
+        }
+
+        $payload = $this->payload($data);
+        $voiceCall->forceFill([
+            'status' => 'completed',
+            'external_provider_status' => 'conversation_ended',
+            'provider_event_last_seen_at' => now(),
+            'telnyx_conversation_id' => $payload['conversation_id'] ?? $voiceCall->telnyx_conversation_id,
+            'duration_seconds' => $payload['duration_sec'] ?? $payload['duration_seconds'] ?? $voiceCall->duration_seconds,
+            'ended_at' => $voiceCall->ended_at ?: now(),
+            'metadata' => array_merge($voiceCall->metadata ?? [], [
+                'telnyx_conversation' => array_filter([
+                    'llm_model' => $payload['llm_model'] ?? null,
+                    'stt_model' => $payload['stt_model'] ?? null,
+                    'tts_provider' => $payload['tts_provider'] ?? null,
+                    'tts_model_id' => $payload['tts_model_id'] ?? null,
+                    'tts_voice_id' => $payload['tts_voice_id'] ?? null,
+                ], static fn ($value) => $value !== null),
+            ]),
+        ])->save();
+
+        $this->mergeSessionMeta($voiceCall, [
+            'telnyx_conversation_id' => $payload['conversation_id'] ?? $voiceCall->telnyx_conversation_id,
+            'conversation_ended_at' => now()->toIso8601String(),
+            'closed_at' => now()->toIso8601String(),
+            'duration_seconds' => $payload['duration_sec'] ?? $payload['duration_seconds'] ?? $voiceCall->duration_seconds,
+            'conversation_end_reason' => $payload['reason'] ?? null,
+        ]);
+
+        return $voiceCall->fresh();
+    }
+
+    private function handleConversationInsights(array $data): ?VoiceCall
+    {
+        $voiceCall = $this->findCall($data);
+        if (! $voiceCall) {
+            return null;
+        }
+
+        $payload = $this->payload($data);
+        $results = is_array($payload['results'] ?? null) ? $payload['results'] : [];
+        $summary = collect($results)
+            ->pluck('result')
+            ->filter(fn ($value) => is_string($value) && trim($value) !== '')
+            ->implode("\n");
+        $voiceCall->forceFill([
+            'summary' => $summary !== '' ? $summary : $voiceCall->summary,
+            'summary_generated_at' => now(),
+            'provider_event_last_seen_at' => now(),
+            'metadata' => array_merge($voiceCall->metadata ?? [], ['telnyx_insights' => $results]),
+        ])->save();
+
+        $this->mergeSessionMeta($voiceCall, [
+            'summary' => $summary !== '' ? $summary : $voiceCall->summary,
+            'telnyx_insights' => $results,
+            'insight_group_id' => $payload['insight_group_id'] ?? null,
+            'insights_generated_at' => now()->toIso8601String(),
+        ]);
+
+        return $voiceCall->fresh();
+    }
+
     private function handleHangup(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
@@ -199,7 +310,7 @@ class VoiceWebhookProcessor
         $started = $voiceCall->started_at;
         $ended = now();
         $disposition = $voiceCall->disposition ?: 'caller_hangup';
-        if ($voiceCall->intent === 'routing' && $voiceCall->menu_digit === null && !$voiceCall->ai_chat_session_id) {
+        if ($voiceCall->intent === 'routing' && $voiceCall->menu_digit === null && ! $voiceCall->ai_chat_session_id) {
             $disposition = 'missed';
         }
 
@@ -229,13 +340,16 @@ class VoiceWebhookProcessor
     private function handleAnswered(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
         $voiceCall->forceFill([
             'status' => 'active',
+            'external_provider_status' => 'answered',
+            'provider_event_last_seen_at' => now(),
             'started_at' => $voiceCall->started_at ?: now(),
+            'answered_at' => $voiceCall->answered_at ?: now(),
         ])->save();
 
         // Telnyx's POST /v2/calls does NOT auto-start the AI assistant when
@@ -246,15 +360,19 @@ class VoiceWebhookProcessor
         // call.initiated time and do not need this step.
         if (
             strtoupper((string) $voiceCall->direction) === 'OUTBOUND'
-            && !empty($voiceCall->assistant_id)
-            && !empty($voiceCall->call_control_id)
+            && ! empty($voiceCall->assistant_id)
+            && ! empty($voiceCall->call_control_id)
         ) {
             $resolved = $this->calls->resolveCaller((string) ($voiceCall->to_phone ?: $voiceCall->from_phone));
             $dynamicVariables = $this->calls->buildDynamicVariables($voiceCall, $resolved);
             $existing = (array) ($voiceCall->metadata['dynamic_variables'] ?? []);
             $merged = array_merge($existing, $dynamicVariables);
 
-            $this->calls->startAssistant($voiceCall, $merged);
+            if (! $this->calls->startAssistant($voiceCall, $merged)) {
+                // Leave this webhook unprocessed so Telnyx can retry the same
+                // answered event after a transient Call Control failure.
+                throw new RuntimeException('Telnyx AI assistant start failed.');
+            }
         }
 
         return $voiceCall->fresh();
@@ -263,7 +381,7 @@ class VoiceWebhookProcessor
     private function handleTransferFailed(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
@@ -273,7 +391,7 @@ class VoiceWebhookProcessor
     private function handleMissed(array $data): ?VoiceCall
     {
         $voiceCall = $this->findCall($data);
-        if (!$voiceCall) {
+        if (! $voiceCall) {
             return null;
         }
 
@@ -284,6 +402,7 @@ class VoiceWebhookProcessor
     {
         $voiceCall = $this->findCall($data);
         $voiceCall?->forceFill(['status' => $status])->save();
+
         return $voiceCall;
     }
 
@@ -291,6 +410,7 @@ class VoiceWebhookProcessor
     {
         $voiceCall = $this->findCall($data);
         $voiceCall?->forceFill(['status' => 'transferred', 'disposition' => $disposition])->save();
+
         return $voiceCall;
     }
 
@@ -301,11 +421,21 @@ class VoiceWebhookProcessor
         $conversationId = $payload['conversation_id'] ?? $payload['telnyx_conversation_id'] ?? null;
         $clientState = $payload['client_state'] ?? null;
 
-        return VoiceCall::query()
-            ->when($callControlId, fn ($q) => $q->orWhere('call_control_id', $callControlId))
-            ->when($conversationId, fn ($q) => $q->orWhere('telnyx_conversation_id', $conversationId))
-            ->when($clientState, fn ($q) => $q->orWhere('client_state', $clientState))
-            ->first();
+        if (! $callControlId && ! $conversationId && ! $clientState) {
+            return null;
+        }
+
+        return VoiceCall::query()->where(function ($query) use ($callControlId, $conversationId, $clientState): void {
+            if ($callControlId) {
+                $query->orWhere('call_control_id', $callControlId);
+            }
+            if ($conversationId) {
+                $query->orWhere('telnyx_conversation_id', $conversationId);
+            }
+            if ($clientState) {
+                $query->orWhere('client_state', $clientState);
+            }
+        })->first();
     }
 
     private function payload(array $data): array
@@ -319,6 +449,7 @@ class VoiceWebhookProcessor
         if (str_contains($role, 'assistant') || str_contains($role, 'agent') || str_contains($role, 'bot')) {
             return 'assistant';
         }
+
         return 'customer';
     }
 
@@ -344,5 +475,150 @@ class VoiceWebhookProcessor
             ->value('id');
 
         return (int) $userId;
+    }
+
+    private function ensureSession(VoiceCall $voiceCall, array $resolved, string $phone): void
+    {
+        if ($voiceCall->ai_chat_session_id) {
+            return;
+        }
+
+        $session = AiChatSession::query()->create([
+            'user_id' => $voiceCall->caller_user_id ?: $resolved['contact']?->user_id ?: $this->fallbackSessionUserId(),
+            'title' => 'Voice call '.$voiceCall->id,
+            'topic' => 'general',
+            'state' => [],
+            'meta' => [
+                'assistant_id' => $voiceCall->assistant_id,
+                'telnyx_conversation_id' => $voiceCall->telnyx_conversation_id,
+                'call_control_id' => $voiceCall->call_control_id,
+                'voice_call_id' => $voiceCall->id,
+                'verified' => false,
+            ],
+            'engine' => 'telnyx_voice',
+            'channel' => 'VOICE',
+            'phone_e164' => $resolved['phone_e164'] ?? $phone,
+            'contact_id' => $voiceCall->caller_contact_id,
+            'last_inbound_at' => now(),
+        ]);
+
+        $voiceCall->forceFill(['ai_chat_session_id' => $session->id])->save();
+    }
+
+    private function directionFrom(array $payload): string
+    {
+        $direction = strtolower((string) ($payload['direction'] ?? $payload['call_direction'] ?? ''));
+
+        return str_contains($direction, 'out') ? 'OUTBOUND' : 'INBOUND';
+    }
+
+    private function persistTranscript(VoiceCall $voiceCall, array $message): VoiceCall
+    {
+        $text = trim((string) ($message['text'] ?? ''));
+        if ($text === '') {
+            return $voiceCall;
+        }
+
+        $providerId = (string) ($message['id'] ?? '');
+        if ($providerId === '') {
+            $providerId = hash('sha256', implode('|', [
+                (string) $voiceCall->telnyx_conversation_id,
+                (string) ($message['speaker'] ?? ''),
+                $text,
+                (string) ($message['occurred_at'] ?? ''),
+            ]));
+        }
+
+        $exists = VoiceCallTranscript::query()
+            ->where('voice_call_id', $voiceCall->id)
+            ->where('provider_message_id', $providerId)
+            ->exists();
+        if ($exists) {
+            $this->persistSessionMessage($voiceCall, $providerId, $message, $text);
+
+            return $voiceCall;
+        }
+
+        VoiceCallTranscript::query()->create([
+            'voice_call_id' => $voiceCall->id,
+            'provider_message_id' => $providerId,
+            'speaker' => $message['speaker'] ?? 'customer',
+            'transcript_type' => 'final',
+            'text' => $text,
+            'confidence' => $message['confidence'] ?? null,
+            'occurred_at' => $message['occurred_at'] ?? now(),
+        ]);
+
+        $this->persistSessionMessage($voiceCall, $providerId, $message, $text);
+
+        return $this->liveStream->recordTranscriptChunk($voiceCall, [
+            'text' => $text,
+            'speaker' => $message['speaker'] ?? 'customer',
+            'confidence' => $message['confidence'] ?? null,
+            'sentiment' => $message['sentiment'] ?? null,
+        ]);
+    }
+
+    private function persistSessionMessage(VoiceCall $voiceCall, string $providerId, array $message, string $text): void
+    {
+        if (! $voiceCall->ai_chat_session_id) {
+            return;
+        }
+
+        $sender = ($message['speaker'] ?? null) === 'assistant' ? 'assistant' : 'user';
+        $exists = AiMessage::query()
+            ->where('chat_session_id', $voiceCall->ai_chat_session_id)
+            ->where('metadata->provider_message_id', $providerId)
+            ->exists();
+        if ($exists) {
+            return;
+        }
+
+        AiMessage::query()->create([
+            'chat_session_id' => $voiceCall->ai_chat_session_id,
+            'sender' => $sender,
+            'content' => $text,
+            'metadata' => [
+                'channel' => 'VOICE',
+                'provider' => 'telnyx',
+                'provider_message_id' => $providerId,
+                'voice_call_id' => $voiceCall->id,
+                'confidence' => $message['confidence'] ?? null,
+                'occurred_at' => $message['occurred_at'] ?? null,
+            ],
+        ]);
+    }
+
+    private function mergeSessionMeta(VoiceCall $voiceCall, array $values): void
+    {
+        $session = $voiceCall->aiChatSession;
+        if (! $session) {
+            return;
+        }
+
+        $session->forceFill([
+            'meta' => array_merge(
+                $session->meta ?? [],
+                array_filter($values, static fn ($value) => $value !== null),
+            ),
+        ])->save();
+    }
+
+    private function messageText(mixed $content): string
+    {
+        if (is_string($content)) {
+            return trim($content);
+        }
+        if (! is_array($content)) {
+            return '';
+        }
+
+        return trim(collect($content)->map(function ($part): string {
+            if (is_string($part)) {
+                return $part;
+            }
+
+            return is_array($part) ? (string) ($part['text'] ?? $part['content'] ?? '') : '';
+        })->filter()->implode(' '));
     }
 }

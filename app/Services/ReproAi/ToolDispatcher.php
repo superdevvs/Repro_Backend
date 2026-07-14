@@ -25,24 +25,25 @@ class ToolDispatcher
         'verify_caller' => ['IdentityTools', 'verifyCaller'],
         'handoff_to_staff' => ['HandoffTools', 'handoffToStaff'],
         'transfer_to_staff' => ['HandoffTools', 'transferToStaff'],
+        'set_recording_consent' => ['RecordingConsentTools', 'setConsent'],
     ];
 
     public function dispatch(string $toolName, array $params, array $context = []): array
     {
-        if (!isset(self::TOOL_MAPPING[$toolName])) {
+        if (! isset(self::TOOL_MAPPING[$toolName])) {
             throw new \InvalidArgumentException("Unknown tool: {$toolName}");
         }
 
         [$toolClass, $methodName] = self::TOOL_MAPPING[$toolName];
         $className = "App\\Services\\ReproAi\\Tools\\{$toolClass}";
 
-        if (!class_exists($className)) {
+        if (! class_exists($className)) {
             throw new \RuntimeException("Tool class not found: {$className}");
         }
 
         $toolHandler = app($className);
 
-        if (!method_exists($toolHandler, $methodName)) {
+        if (! method_exists($toolHandler, $methodName)) {
             throw new \RuntimeException("Tool method not found: {$methodName} in {$className}");
         }
 

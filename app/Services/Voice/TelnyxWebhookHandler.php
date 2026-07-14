@@ -9,9 +9,7 @@ use Illuminate\Support\Arr;
 
 class TelnyxWebhookHandler
 {
-    public function __construct(private readonly VoiceWebhookProcessor $legacyProcessor)
-    {
-    }
+    public function __construct(private readonly VoiceWebhookProcessor $legacyProcessor) {}
 
     public function process(array $payload, string $rawBody): array
     {
@@ -20,7 +18,7 @@ class TelnyxWebhookHandler
         $eventId = (string) ($data['id'] ?? $payload['id'] ?? hash('sha256', $rawBody));
 
         $event = VoiceCallEvent::query()->firstOrCreate(
-            ['idempotency_key' => 'telnyx:' . $eventId],
+            ['idempotency_key' => 'telnyx:'.$eventId],
             [
                 'provider' => 'telnyx',
                 'event_type' => $eventType,
@@ -55,7 +53,7 @@ class TelnyxWebhookHandler
             'telnyx_conversation_id' => $payload['conversation_id'] ?? $payload['telnyx_conversation_id'] ?? $call->telnyx_conversation_id,
         ];
 
-        if (in_array($eventType, ['call.failed', 'call.no_answer', 'call.hangup'], true) && !in_array($call->status, ['completed'], true)) {
+        if (in_array($eventType, ['call.failed', 'call.no_answer', 'call.hangup'], true) && ! in_array($call->status, ['completed'], true)) {
             $fields['status'] = $eventType === 'call.no_answer' ? 'missed' : 'failed';
             $fields['telnyx_failure_code'] = $payload['failure_code'] ?? $payload['hangup_cause'] ?? $payload['sip_hangup_cause'] ?? null;
             $fields['carrier_failure_reason'] = $payload['failure_reason'] ?? $payload['hangup_source'] ?? $payload['cause'] ?? null;
@@ -73,6 +71,10 @@ class TelnyxWebhookHandler
         $payload = Arr::get($data, 'payload', Arr::get($data, 'data.payload', $data));
         $callControlId = $payload['call_control_id'] ?? null;
         $conversationId = $payload['conversation_id'] ?? $payload['telnyx_conversation_id'] ?? null;
+
+        if (! $callControlId && ! $conversationId) {
+            return null;
+        }
 
         return VoiceCall::query()
             ->when($callControlId, fn ($query) => $query->orWhere('call_control_id', $callControlId))

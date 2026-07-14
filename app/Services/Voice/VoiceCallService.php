@@ -4,8 +4,8 @@ namespace App\Services\Voice;
 
 use App\Models\VoiceCall;
 use App\Services\Messaging\AiSms\SmsContextResolverService;
+use App\Services\TelnyxAi\TelnyxVoiceCallService;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
 use Throwable;
 
 class VoiceCallService
@@ -13,11 +13,20 @@ class VoiceCallService
     public function __construct(
         private readonly VapiClient $vapi,
         private readonly SmsContextResolverService $resolver,
-    ) {
-    }
+        private readonly TelnyxVoiceCallService $telnyx,
+    ) {}
 
     public function startOutbound(array $data, int $createdByUserId): VoiceCall
     {
+        $provider = strtolower((string) config('services.voice.provider', 'telnyx'));
+        if ($provider === 'telnyx') {
+            return $this->telnyx->dial($data, $createdByUserId);
+        }
+
+        if ($provider !== 'vapi') {
+            throw new \RuntimeException("Unsupported voice provider [{$provider}].");
+        }
+
         $to = (string) $data['to'];
         $from = (string) ($data['from'] ?? config('services.telnyx.from_number', ''));
         $assistantId = (string) ($data['assistant_id'] ?? config('services.vapi.assistant_id', ''));
@@ -87,6 +96,25 @@ class VoiceCallService
         return $call->fresh();
     }
 
+    /** @return list<string> */
+    public function outboundBlockers(?string $to = null, ?string $from = null, ?string $assistantId = null): array
+    {
+        $provider = strtolower((string) config('services.voice.provider', 'telnyx'));
+        if ($provider === 'telnyx') {
+            return $this->telnyx->outboundBlockers($to, $from, $assistantId);
+        }
+
+        if ($provider === 'vapi') {
+            return array_values(array_filter([
+                config('services.vapi.api_key') ? null : 'VAPI_API_KEY is not configured.',
+                config('services.vapi.assistant_id') ? null : 'VAPI_ASSISTANT_ID is not configured.',
+                config('services.vapi.phone_number_id') ? null : 'VAPI_PHONE_NUMBER_ID is not configured.',
+            ]));
+        }
+
+        return ["Unsupported voice provider [{$provider}]."];
+    }
+
     public function upsertFromVapiCall(array $vapiCall, array $attributes = []): ?VoiceCall
     {
         $vapiCallId = $this->vapiCallId($vapiCall);
@@ -99,7 +127,7 @@ class VoiceCallService
         $resolved = $this->resolveCaller($direction === 'OUTBOUND' ? $to : $from);
 
         $call = VoiceCall::query()->firstOrNew(['vapi_call_id' => $vapiCallId]);
-        if (!$call->exists) {
+        if (! $call->exists) {
             $call->fill([
                 'provider' => 'vapi_telnyx',
                 'direction' => $direction,
@@ -144,6 +172,7 @@ class VoiceCallService
     private function vapiCallId(array $vapiCall): ?string
     {
         $id = $vapiCall['id'] ?? $vapiCall['callId'] ?? null;
+
         return is_string($id) && $id !== '' ? $id : null;
     }
 

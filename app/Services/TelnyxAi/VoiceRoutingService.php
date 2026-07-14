@@ -15,8 +15,7 @@ class VoiceRoutingService
         private readonly VoiceMemoryService $memory,
         private readonly BusinessScheduleService $schedule,
         private readonly VoiceIntelligenceService $intelligence,
-    ) {
-    }
+    ) {}
 
     public function beginInboundCall(VoiceCall $voiceCall, array $resolved): VoiceCall
     {
@@ -43,7 +42,7 @@ class VoiceRoutingService
         $this->calls->answer($voiceCall);
         $gatherStarted = $this->calls->gatherUsingSpeak($voiceCall);
 
-        if (!$gatherStarted) {
+        if (! $gatherStarted) {
             $this->startAssistant($voiceCall, 'general_support', ['gather_failed' => true], $resolved);
         }
 
@@ -86,7 +85,7 @@ class VoiceRoutingService
 
         $transferred = $to !== '' && $this->calls->transfer($voiceCall, $to);
 
-        if (!$transferred) {
+        if (! $transferred) {
             return $this->createCallback($voiceCall, 'transfer_failed');
         }
 
@@ -127,7 +126,7 @@ class VoiceRoutingService
             'menu_digit' => $extraVariables['menu_digit'] ?? $voiceCall->menu_digit,
             'metadata' => array_merge($voiceCall->metadata ?? [], [
                 'assistant_started_for_intent' => $intent,
-                'assistant_started_at' => now()->toIso8601String(),
+                'assistant_requested_at' => now()->toIso8601String(),
             ]),
         ])->save();
 

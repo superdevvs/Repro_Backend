@@ -2,16 +2,16 @@
 
 namespace Tests\Feature;
 
-use App\Models\Setting;
+use App\Jobs\ScheduledVoiceCallJob;
 use App\Models\ScheduledVoiceCall;
+use App\Models\Setting;
 use App\Models\SmsNumber;
 use App\Models\TelnyxWebhookEvent;
 use App\Models\User;
 use App\Models\VoiceCall;
-use App\Jobs\ScheduledVoiceCallJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class TelnyxVoiceTest extends TestCase
@@ -58,15 +58,12 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_admin_can_place_outbound_voice_call(): void
     {
-        config(['services.vapi.api_key' => 'test-vapi-key']);
-        config(['services.vapi.assistant_id' => 'asst-123']);
-        config(['services.vapi.phone_number_id' => 'pn-123']);
+        $this->configureDirectTelnyx('+12025550123');
         Http::fake([
-            'https://api.vapi.ai/call' => Http::response([
-                'id' => 'vapi-call-123',
-                'status' => 'queued',
-                'phoneNumberId' => 'pn-123',
-            ]),
+            'https://api.telnyx.com/v2/calls' => Http::response(['data' => [
+                'call_control_id' => 'telnyx-call-123',
+                'result' => 'ok',
+            ]]),
         ]);
 
         $admin = User::factory()->create(['role' => 'admin']);
@@ -78,15 +75,20 @@ class TelnyxVoiceTest extends TestCase
                 'dynamic_variables' => ['name' => 'Test'],
             ])
             ->assertCreated()
-            ->assertJsonPath('status', 'initiating')
-            ->assertJsonPath('vapi_call_id', 'vapi-call-123');
+            ->assertJsonPath('status', 'dialing')
+            ->assertJsonPath('provider', 'telnyx')
+            ->assertJsonPath('call_control_id', 'telnyx-call-123');
 
         $this->assertDatabaseHas('voice_calls', [
-            'provider' => 'vapi_telnyx',
+            'provider' => 'telnyx',
             'direction' => 'OUTBOUND',
             'to_phone' => '+12025550123',
-            'vapi_call_id' => 'vapi-call-123',
+            'call_control_id' => 'telnyx-call-123',
         ]);
+        Http::assertSent(fn ($request) => $request->url() === 'https://api.telnyx.com/v2/calls'
+            && filled($request['command_id'] ?? null)
+            && ! isset($request['assistant_id'])
+            && ! isset($request['dynamic_variables']));
     }
 
     public function test_voice_webhook_initiated_is_idempotent(): void
@@ -282,15 +284,12 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_scheduled_voice_call_job_places_outbound_call(): void
     {
-        config(['services.vapi.api_key' => 'test-vapi-key']);
-        config(['services.vapi.assistant_id' => 'asst-scheduled']);
-        config(['services.vapi.phone_number_id' => 'pn-scheduled']);
+        $this->configureDirectTelnyx('+12025550123');
         Http::fake([
-            'https://api.vapi.ai/call' => Http::response([
-                'id' => 'vapi-scheduled-1',
-                'status' => 'queued',
-                'phoneNumberId' => 'pn-scheduled',
-            ]),
+            'https://api.telnyx.com/v2/calls' => Http::response(['data' => [
+                'call_control_id' => 'telnyx-scheduled-1',
+                'result' => 'ok',
+            ]]),
         ]);
 
         $admin = User::factory()->create(['role' => 'admin']);
@@ -313,11 +312,186 @@ class TelnyxVoiceTest extends TestCase
         $this->assertNotNull($scheduled->result_voice_call_id);
         $this->assertDatabaseHas('voice_calls', [
             'id' => $scheduled->result_voice_call_id,
-            'provider' => 'vapi_telnyx',
+            'provider' => 'telnyx',
             'direction' => 'OUTBOUND',
             'to_phone' => '+12025550123',
-            'vapi_call_id' => 'vapi-scheduled-1',
+            'call_control_id' => 'telnyx-scheduled-1',
         ]);
+    }
+
+    public function test_outbound_answer_starts_assistant_once_with_current_telnyx_contract(): void
+    {
+        config(['services.telnyx.public_key' => null, 'services.telnyx.api_key' => 'test-key']);
+        Http::fake(['*' => Http::response(['data' => ['result' => 'ok', 'conversation_id' => 'conv-new']])]);
+        $call = VoiceCall::query()->create([
+            'provider' => 'telnyx',
+            'direction' => 'OUTBOUND',
+            'status' => 'dialing',
+            'from_phone' => '+12025550100',
+            'to_phone' => '+12025550123',
+            'assistant_id' => 'assistant-1',
+            'call_control_id' => 'call-answer-1',
+            'client_state' => base64_encode('answer-test'),
+            'metadata' => ['dynamic_variables' => ['reason' => 'test']],
+        ]);
+
+        foreach (['answered-1', 'answered-2'] as $eventId) {
+            $this->postJson('/api/webhooks/telnyx/voice', [
+                'data' => [
+                    'id' => $eventId,
+                    'event_type' => 'call.answered',
+                    'payload' => ['call_control_id' => 'call-answer-1'],
+                ],
+            ])->assertOk();
+        }
+
+        Http::assertSentCount(1);
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/calls/call-answer-1/actions/ai_assistant_start')
+            && ($request['assistant']['id'] ?? null) === 'assistant-1'
+            && ($request['send_message_history_updates'] ?? null) === true
+            && filled($request['command_id'] ?? null));
+        $this->assertSame('conv-new', $call->fresh()->telnyx_conversation_id);
+        $this->assertNotNull($call->fresh()->answered_at);
+    }
+
+    public function test_answered_event_retries_after_a_transient_assistant_start_failure(): void
+    {
+        config(['services.telnyx.public_key' => null, 'services.telnyx.api_key' => 'test-key']);
+        Http::fakeSequence()
+            ->push(['errors' => [['detail' => 'temporary failure']]], 500)
+            ->push(['data' => ['result' => 'ok', 'conversation_id' => 'conv-retried']], 200);
+        $call = VoiceCall::query()->create([
+            'provider' => 'telnyx',
+            'direction' => 'OUTBOUND',
+            'status' => 'dialing',
+            'from_phone' => '+12025550100',
+            'to_phone' => '+12025550123',
+            'assistant_id' => 'assistant-1',
+            'call_control_id' => 'call-answer-retry',
+            'client_state' => base64_encode('answer-retry-test'),
+        ]);
+        $payload = [
+            'data' => [
+                'id' => 'answered-retry-1',
+                'event_type' => 'call.answered',
+                'payload' => ['call_control_id' => 'call-answer-retry'],
+            ],
+        ];
+
+        $this->postJson('/api/webhooks/telnyx/voice', $payload)->assertServerError();
+        $this->assertDatabaseHas('telnyx_webhook_events', [
+            'telnyx_event_id' => 'answered-retry-1',
+            'processed_at' => null,
+        ]);
+
+        $this->postJson('/api/webhooks/telnyx/voice', $payload)->assertOk();
+
+        Http::assertSentCount(2);
+        $this->assertSame('conv-retried', $call->fresh()->telnyx_conversation_id);
+        $this->assertDatabaseMissing('telnyx_webhook_events', [
+            'telnyx_event_id' => 'answered-retry-1',
+            'processed_at' => null,
+        ]);
+    }
+
+    public function test_unidentified_provider_event_never_updates_an_unrelated_call(): void
+    {
+        config(['services.telnyx.public_key' => null]);
+        $call = VoiceCall::query()->create([
+            'provider' => 'telnyx',
+            'direction' => 'INBOUND',
+            'status' => 'active',
+            'from_phone' => '+12025550123',
+            'to_phone' => '+12025550100',
+        ]);
+
+        $this->postJson('/api/webhooks/telnyx/voice', [
+            'data' => [
+                'id' => 'unidentified-event-1',
+                'event_type' => 'call.unknown',
+                'payload' => ['reason' => 'no identifiers'],
+            ],
+        ])->assertOk();
+
+        $this->assertNull($call->fresh()->provider_event_last_seen_at);
+    }
+
+    public function test_current_conversation_events_persist_transcript_summary_and_duration(): void
+    {
+        config(['services.telnyx.public_key' => null]);
+        User::factory()->create(['role' => 'admin']);
+        $call = VoiceCall::query()->create([
+            'provider' => 'telnyx',
+            'direction' => 'OUTBOUND',
+            'status' => 'active',
+            'from_phone' => '+12025550100',
+            'to_phone' => '+12025550123',
+            'call_control_id' => 'call-conversation-1',
+            'telnyx_conversation_id' => 'conv-1',
+            'started_at' => now()->subSeconds(30),
+        ]);
+
+        $this->postJson('/api/webhooks/telnyx/voice', [
+            'data' => [
+                'id' => 'conversation-initiated-1',
+                'event_type' => 'call.initiated',
+                'payload' => [
+                    'call_control_id' => 'call-conversation-1',
+                    'from' => '+12025550100',
+                    'to' => '+12025550123',
+                    'direction' => 'outbound',
+                ],
+            ],
+        ])->assertOk();
+
+        $this->postJson('/api/webhooks/telnyx/voice', [
+            'data' => [
+                'id' => 'history-1',
+                'event_type' => 'call.ai_assistant.message_history_updated',
+                'payload' => [
+                    'call_control_id' => 'call-conversation-1',
+                    'message_history' => [
+                        ['id' => 'message-1', 'role' => 'user', 'content' => 'I need my shoot status.'],
+                        ['id' => 'message-2', 'role' => 'assistant', 'content' => 'I can help with that.'],
+                    ],
+                ],
+            ],
+        ])->assertOk();
+
+        $this->postJson('/api/webhooks/telnyx/voice', [
+            'data' => [
+                'id' => 'conversation-ended-1',
+                'event_type' => 'call.conversation.ended',
+                'payload' => [
+                    'call_control_id' => 'call-conversation-1',
+                    'conversation_id' => 'conv-1',
+                    'duration_sec' => 42,
+                    'llm_model' => 'moonshotai/Kimi-K2.5',
+                ],
+            ],
+        ])->assertOk();
+
+        $this->postJson('/api/webhooks/telnyx/voice', [
+            'data' => [
+                'id' => 'conversation-insights-1',
+                'event_type' => 'call.conversation_insights.generated',
+                'payload' => [
+                    'call_control_id' => 'call-conversation-1',
+                    'results' => [['insight_id' => 'summary', 'result' => 'Caller requested shoot status.']],
+                ],
+            ],
+        ])->assertOk();
+
+        $call->refresh();
+        $this->assertSame('completed', $call->status);
+        $this->assertSame(42, $call->duration_seconds);
+        $this->assertSame('Caller requested shoot status.', $call->summary);
+        $this->assertStringContainsString('I need my shoot status.', (string) $call->transcript);
+        $this->assertSame(2, $call->transcriptRows()->count());
+        $this->assertSame(2, $call->aiChatSession->messages()->count());
+        $this->assertSame('conv-1', $call->aiChatSession->meta['telnyx_conversation_id']);
+        $this->assertSame('Caller requested shoot status.', $call->aiChatSession->meta['summary']);
+        $this->assertNotEmpty($call->aiChatSession->meta['closed_at']);
     }
 
     public function test_voice_number_flags_can_be_updated(): void
@@ -341,6 +515,21 @@ class TelnyxVoiceTest extends TestCase
             'id' => $number->id,
             'voice_ai_enabled' => true,
             'voice_assistant_id_override' => 'assistant-1',
+        ]);
+    }
+
+    private function configureDirectTelnyx(string $canaryNumber): void
+    {
+        config([
+            'services.voice.provider' => 'telnyx',
+            'services.voice.canary_mode' => true,
+            'services.voice.canary_numbers' => [$canaryNumber],
+            'services.telnyx.api_key' => 'test-telnyx-key',
+            'services.telnyx.from_number' => '+12025550100',
+            'services.telnyx.voice.enabled' => true,
+            'services.telnyx.voice.assistant_id' => 'assistant-direct-1',
+            'services.telnyx.voice.connection_id' => 'connection-1',
+            'services.telnyx.voice.webhook_url' => 'https://api.example.test/api/webhooks/telnyx/voice',
         ]);
     }
 }

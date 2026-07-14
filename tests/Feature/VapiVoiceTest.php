@@ -144,8 +144,9 @@ class VapiVoiceTest extends TestCase
         $this->assertSame(1, VoiceCall::query()->where('vapi_call_id', 'vapi-call-1')->count());
     }
 
-    public function test_outbound_endpoint_calls_vapi(): void
+    public function test_vapi_outbound_remains_available_only_when_explicitly_selected(): void
     {
+        config(['services.voice.provider' => 'vapi']);
         config(['services.vapi.api_key' => 'test-vapi-key']);
         config(['services.vapi.assistant_id' => 'asst-1']);
         config(['services.vapi.phone_number_id' => 'pn-1']);

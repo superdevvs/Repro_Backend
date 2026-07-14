@@ -2,7 +2,6 @@
 
 namespace App\Http\Middleware;
 
-use App\Models\ToolBridgeInvocation;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -14,7 +13,7 @@ class TelnyxToolBridgeAuth
         $secret = (string) config('services.telnyx.tool_bridge.secret', '');
 
         if ($secret === '') {
-            if (!app()->environment(['local', 'testing'])) {
+            if (! app()->environment(['local', 'testing'])) {
                 abort(403, 'Tool Bridge secret is not configured.');
             }
 
@@ -22,7 +21,7 @@ class TelnyxToolBridgeAuth
         }
 
         $bearer = (string) $request->bearerToken();
-        if (!hash_equals($secret, $bearer)) {
+        if (! hash_equals($secret, $bearer)) {
             abort(401, 'Invalid Tool Bridge bearer token.');
         }
 
@@ -43,20 +42,11 @@ class TelnyxToolBridgeAuth
             abort(401, 'Stale Tool Bridge signature.');
         }
 
-        $payload = $timestamp . '.' . $idempotencyKey . '.' . $request->getContent();
-        $expected = 'sha256=' . hash_hmac('sha256', $payload, $secret);
+        $payload = $timestamp.'.'.$idempotencyKey.'.'.$request->getContent();
+        $expected = 'sha256='.hash_hmac('sha256', $payload, $secret);
 
-        if (!hash_equals($expected, $signature)) {
+        if (! hash_equals($expected, $signature)) {
             abort(401, 'Invalid Tool Bridge signature.');
-        }
-
-        $existing = ToolBridgeInvocation::query()
-            ->where('idempotency_key', $idempotencyKey)
-            ->whereNotNull('response_json')
-            ->first();
-
-        if ($existing) {
-            return response()->json($existing->response_json, 200);
         }
 
         return $next($request);

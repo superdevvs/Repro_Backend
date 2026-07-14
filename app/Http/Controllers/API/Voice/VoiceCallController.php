@@ -85,7 +85,7 @@ class VoiceCallController extends Controller
 
     public function recordingUrl(VoiceCall $call): JsonResponse
     {
-        if (!$call->recording_url || !$call->recording_consent_given) {
+        if (! $call->recording_url || ! $call->recording_consent_given) {
             return response()->json(['url' => null]);
         }
 
@@ -115,10 +115,23 @@ class VoiceCallController extends Controller
             'related_shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
         ]);
 
+        $blockers = $service->outboundBlockers(
+            (string) $data['to'],
+            isset($data['from']) ? (string) $data['from'] : null,
+            isset($data['assistant_id']) ? (string) $data['assistant_id'] : null,
+        );
+        if ($blockers !== []) {
+            return response()->json([
+                'message' => 'Outbound voice calling is not ready.',
+                'error' => $blockers[0],
+                'blockers' => $blockers,
+            ], 422);
+        }
+
         try {
             $call = $service->startOutbound($data, (int) $request->user()->id);
         } catch (\Throwable $exception) {
-            \Log::warning('Vapi outbound dial failed', [
+            \Log::warning('Outbound voice dial failed', [
                 'error' => $exception->getMessage(),
                 'to' => $data['to'] ?? null,
             ]);
