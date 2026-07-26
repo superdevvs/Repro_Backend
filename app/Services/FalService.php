@@ -259,14 +259,14 @@ class FalService
 
         return Http::withHeaders([
             'Authorization' => 'Key ' . $this->key,
-        ])->get('https://queue.fal.run/' . ltrim($model, '/') . '/requests/' . $requestId . '/status');
+        ])->get('https://queue.fal.run/' . $this->queueBasePath($model) . '/requests/' . $requestId . '/status');
     }
 
     private function fetchQueueResult(string $model, string $requestId): array
     {
         $this->ensureConfigured();
 
-        $baseUrl = 'https://queue.fal.run/' . ltrim($model, '/') . '/requests/' . $requestId;
+        $baseUrl = 'https://queue.fal.run/' . $this->queueBasePath($model) . '/requests/' . $requestId;
         $headers = ['Authorization' => 'Key ' . $this->key];
 
         $response = Http::withHeaders($headers)->get($baseUrl . '/response');
@@ -279,6 +279,13 @@ class FalService
         }
 
         return $response->json() ?? [];
+    }
+
+    private function queueBasePath(string $model): string
+    {
+        $segments = array_values(array_filter(explode('/', trim($model, '/')), static fn ($segment) => $segment !== ''));
+
+        return implode('/', array_slice($segments, 0, 2));
     }
 
     private function buildImageEditPayload(string $imageUrl, string $editingType, array $params): array
