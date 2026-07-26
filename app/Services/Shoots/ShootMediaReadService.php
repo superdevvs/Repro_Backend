@@ -454,6 +454,14 @@ class ShootMediaReadService
             'sequence' => $file->sequence,
             'is_hidden' => $file->is_hidden ?? false,
             'media_type' => $file->media_type,
+            // AI editing provenance so the Media tabs can tag results produced by
+            // the AI Editing workspace (fal.ai / Autoenhance) with an "AI" badge.
+            'is_ai_edited' => (bool) $file->is_ai_edited,
+            'isAiEdited' => (bool) $file->is_ai_edited,
+            'ai_editing_job_id' => $file->ai_editing_job_id,
+            'aiEditingJobId' => $file->ai_editing_job_id,
+            'ai_editing_metadata' => $file->ai_editing_metadata,
+            'aiEditingMetadata' => $file->ai_editing_metadata,
             'thumbnail_path' => $needsWatermark ? null : $file->thumbnail_path,
             'web_path' => $needsWatermark ? null : $file->web_path,
             'placeholder_path' => $needsWatermark ? null : $file->placeholder_path,

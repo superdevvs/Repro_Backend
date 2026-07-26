@@ -324,7 +324,12 @@ class FalService
             'sky_replace' => $base . ' Replace dull or overcast skies with a clean realistic blue sky and keep lighting believable.',
             'vertical_correction' => $base . ' Correct perspective and straighten vertical architectural lines without cropping important room details.',
             'window_pull' => $base . ' Balance bright windows so exterior detail is visible while keeping the interior naturally exposed.',
-            default => $base . ' Improve exposure, contrast, white balance, clarity, and overall polish without making the image look artificial.',
+            default => $base . ' Deliver a high-quality HDR real estate photograph with professional magazine-grade retouching:'
+                . ' bright, evenly exposed interiors with recovered shadow and highlight detail, balanced window exposure,'
+                . ' neutral accurate white balance that removes colour casts from mixed lighting, crisp natural sharpness and clarity,'
+                . ' rich but true-to-life colour, clean straight lines, and a bright inviting finish.'
+                . ' Keep it photorealistic — no HDR halos, no over-saturation, no plastic or over-processed look,'
+                . ' and do not add, remove, or move any objects, furniture, or fixtures.',
         };
     }
 
