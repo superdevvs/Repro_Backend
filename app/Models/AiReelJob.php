@@ -18,10 +18,15 @@ class AiReelJob extends Model
     public const STATUS_CANCELLED = 'cancelled';
 
     protected $fillable = [
+        'project_id',
+        'request_id',
         'shoot_id',
         'user_id',
         'provider',
         'selected_file_ids',
+        'source_media_refs',
+        'workflow_config',
+        'brand_state',
         'status',
         'outputs',
         'error_message',
@@ -31,10 +36,18 @@ class AiReelJob extends Model
 
     protected $casts = [
         'selected_file_ids' => 'array',
+        'source_media_refs' => 'array',
+        'workflow_config' => 'array',
+        'brand_state' => 'array',
         'outputs' => 'array',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
     ];
+
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
+    }
 
     public function shoot(): BelongsTo
     {

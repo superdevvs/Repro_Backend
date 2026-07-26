@@ -66,7 +66,14 @@ use App\Http\Controllers\API\AutoenhanceController;
 use App\Http\Controllers\API\HiggsFieldController;
 use App\Http\Controllers\API\ListingVideoController;
 use App\Http\Controllers\API\ReelController;
+use App\Http\Controllers\API\StudioBrandController;
+use App\Http\Controllers\API\StudioDeepLinkController;
 use App\Http\Controllers\API\StudioMetricsController;
+use App\Http\Controllers\API\StudioProjectController;
+use App\Http\Controllers\API\StudioQueueController;
+use App\Http\Controllers\API\StudioSearchController;
+use App\Http\Controllers\API\StudioSourceController;
+use App\Http\Controllers\API\StudioTemplateController;
 use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
@@ -832,12 +839,40 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/jobs/{job}/cancel', [ReelController::class, 'cancel']);
     });
 
-    // Studio Metrics aggregation endpoints (read-only across photo + video jobs)
-    Route::prefix('studio/metrics')->middleware('role:admin,superadmin,editing_manager,editor')->group(function () {
-        Route::get('/hero', [StudioMetricsController::class, 'hero']);
-        Route::get('/recent-projects', [StudioMetricsController::class, 'recentProjects']);
-        Route::get('/active-queue', [StudioMetricsController::class, 'activeQueue']);
-    });
+    // AI Editing Studio endpoints. Endpoint-specific behavior is implemented by
+    // the focused controllers while this group preserves one auth/role boundary.
+    Route::prefix('studio')
+        ->middleware('role:admin,superadmin,editing_manager,editor')
+        ->name('studio.')
+        ->group(function () {
+            Route::prefix('metrics')->name('metrics.')->group(function () {
+                Route::get('/hero', [StudioMetricsController::class, 'hero'])->name('hero');
+                Route::get('/recent-projects', [StudioMetricsController::class, 'recentProjects'])->name('recent-projects');
+                Route::get('/active-queue', [StudioMetricsController::class, 'activeQueue'])->name('active-queue');
+                Route::get('/summary', [StudioMetricsController::class, 'summary'])->name('summary');
+            });
+
+            Route::get('/search', [StudioSearchController::class, 'index'])->name('search');
+            Route::get('/queue', [StudioQueueController::class, 'index'])->name('queue.index');
+            Route::get('/queue/{id}', [StudioQueueController::class, 'show'])->name('queue.show');
+
+            Route::get('/projects', [StudioProjectController::class, 'index'])->name('projects.index');
+            Route::post('/projects', [StudioProjectController::class, 'store'])->name('projects.store');
+            Route::get('/projects/{project}', [StudioProjectController::class, 'show'])->name('projects.show');
+
+            Route::get('/shoots/search', [StudioSourceController::class, 'searchShoots'])->name('shoots.search');
+            Route::get('/shoots/{shoot}/media', [StudioSourceController::class, 'shootMedia'])->name('shoots.media');
+            Route::post('/uploads', [StudioSourceController::class, 'upload'])->name('uploads.store');
+
+            Route::get('/templates', [StudioTemplateController::class, 'index'])->name('templates.index');
+            Route::post('/templates', [StudioTemplateController::class, 'store'])->name('templates.store');
+            Route::put('/templates/{template}', [StudioTemplateController::class, 'update'])->name('templates.update');
+            Route::delete('/templates/{template}', [StudioTemplateController::class, 'destroy'])->name('templates.destroy');
+
+            Route::get('/brand', [StudioBrandController::class, 'show'])->name('brand.show');
+            Route::put('/brand', [StudioBrandController::class, 'update'])->name('brand.update');
+            Route::post('/deep-links/resolve', [StudioDeepLinkController::class, 'resolve'])->name('deep-links.resolve');
+        });
 
     // Higgsfield AI Video Generation endpoints
     Route::prefix('higgsfield')->group(function () {

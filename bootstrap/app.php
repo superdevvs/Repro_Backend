@@ -117,7 +117,7 @@ return Application::configure(basePath: dirname(__DIR__))
                     }
                 }
                 
-                return response()->json([
+                $payload = [
                     'message' => $e->getMessage() ?: 'An error occurred',
                     'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
                     'debug' => config('app.debug') ? [
@@ -125,7 +125,15 @@ return Application::configure(basePath: dirname(__DIR__))
                         'line' => $e->getLine(),
                         'class' => get_class($e),
                     ] : null,
-                ], $status)
+                ];
+
+                // Preserve Laravel's validation field map so rule-driven rejections
+                // still identify the invalid field(s) for API clients.
+                if ($e instanceof \Illuminate\Validation\ValidationException) {
+                    $payload['errors'] = $e->errors();
+                }
+
+                return response()->json($payload, $status)
                 ->header('Access-Control-Allow-Origin', $origin)
                 ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
                 ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route')

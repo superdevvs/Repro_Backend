@@ -599,6 +599,11 @@ class Shoot extends Model
         return $this->hasMany(ShootFile::class);
     }
 
+    public function projects()
+    {
+        return $this->hasMany(Project::class);
+    }
+
     public function featuredHomepageImages()
     {
         return $this->hasMany(FeaturedShootImage::class)->orderBy('sort_order');

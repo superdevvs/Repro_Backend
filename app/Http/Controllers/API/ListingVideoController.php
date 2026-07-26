@@ -217,6 +217,10 @@ class ListingVideoController extends Controller
             return [];
         }
 
+        if ($job->failIfStale()) {
+            $job->refresh();
+        }
+
         $sourceFiles = ShootFile::whereIn('id', $job->selected_file_ids ?? [])->get()->keyBy('id');
         $orderedFiles = collect($job->selected_file_ids ?? [])
             ->map(fn ($id) => $sourceFiles->get((int) $id))

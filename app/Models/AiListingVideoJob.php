@@ -18,10 +18,15 @@ class AiListingVideoJob extends Model
     public const STATUS_CANCELLED = 'cancelled';
 
     protected $fillable = [
+        'project_id',
+        'request_id',
         'shoot_id',
         'user_id',
         'provider',
         'selected_file_ids',
+        'source_media_refs',
+        'workflow_config',
+        'brand_state',
         'target_seconds',
         'status',
         'total_clips',
@@ -36,6 +41,9 @@ class AiListingVideoJob extends Model
 
     protected $casts = [
         'selected_file_ids' => 'array',
+        'source_media_refs' => 'array',
+        'workflow_config' => 'array',
+        'brand_state' => 'array',
         'outputs' => 'array',
         'provider_request_ids' => 'array',
         'target_seconds' => 'integer',
@@ -45,6 +53,11 @@ class AiListingVideoJob extends Model
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
     ];
+
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
+    }
 
     public function shoot(): BelongsTo
     {
@@ -103,5 +116,23 @@ class AiListingVideoJob extends Model
             'status' => self::STATUS_CANCELLED,
             'completed_at' => now(),
         ])->save();
+    }
+
+    public function failIfStale(): bool
+    {
+        if (! $this->isActive()) {
+            return false;
+        }
+
+        $lastActivity = $this->updated_at ?? $this->started_at ?? $this->created_at;
+        $staleAfterSeconds = max(60, (int) config('services.fal.video_job_stale_after', 2100));
+
+        if (! $lastActivity || $lastActivity->gt(now()->subSeconds($staleAfterSeconds))) {
+            return false;
+        }
+
+        $this->markAsFailed('Video generation stopped responding and was closed. Please try again.');
+
+        return true;
     }
 }

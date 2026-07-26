@@ -11,6 +11,8 @@ class AiEditingJob extends Model
     use HasFactory;
 
     protected $fillable = [
+        'project_id',
+        'request_id',
         'shoot_id',
         'shoot_file_id',
         'user_id',
@@ -57,6 +59,11 @@ class AiEditingJob extends Model
     const TYPE_COLOR_CORRECTION = 'color_correction';
     const TYPE_EXPOSURE_FIX = 'exposure_fix';
     const TYPE_WHITE_BALANCE = 'white_balance';
+
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
+    }
 
     /**
      * Get the shoot that owns this editing job

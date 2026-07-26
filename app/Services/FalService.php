@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -86,7 +87,7 @@ class FalService
     {
         $this->ensureConfigured();
 
-        $init = Http::withHeaders([
+        $init = $this->request()->withHeaders([
             'Authorization' => 'Key ' . $this->key,
             'Content-Type' => 'application/json',
         ])->post('https://rest.alpha.fal.ai/storage/upload/initiate', [
@@ -104,7 +105,9 @@ class FalService
             throw new RuntimeException('fal.ai storage did not return upload/file URLs.');
         }
 
-        $put = Http::withBody($binary, $mime)->put($uploadUrl);
+        $put = $this->request((int) config('services.fal.upload_timeout', 120))
+            ->withBody($binary, $mime)
+            ->put($uploadUrl);
         if (! $put->successful()) {
             throw new RuntimeException('fal.ai storage upload failed: ' . $put->status());
         }
@@ -116,7 +119,7 @@ class FalService
     {
         $this->ensureConfigured();
 
-        $response = Http::withHeaders([
+        $response = $this->request()->withHeaders([
             'Authorization' => 'Key ' . $this->key,
             'Content-Type' => 'application/json',
         ])->post('https://queue.fal.run/' . $this->model, [
@@ -182,10 +185,12 @@ class FalService
         $response = $this->getQueueStatus($this->model, $requestId);
 
         if (! $response->successful()) {
-            return 'IN_PROGRESS';
+            throw new RuntimeException(
+                "fal.ai status check failed for request {$requestId} (HTTP {$response->status()})."
+            );
         }
 
-        return (string) ($response->json('status') ?? 'IN_PROGRESS');
+        return strtoupper((string) ($response->json('status') ?? 'IN_PROGRESS'));
     }
 
     public function result(string $requestId): string
@@ -247,7 +252,7 @@ class FalService
     {
         $this->ensureConfigured();
 
-        return Http::withHeaders([
+        return $this->request()->withHeaders([
             'Authorization' => 'Key ' . $this->key,
             'Content-Type' => 'application/json',
         ])->post('https://queue.fal.run/' . ltrim($model, '/'), $payload);
@@ -257,9 +262,12 @@ class FalService
     {
         $this->ensureConfigured();
 
-        return Http::withHeaders([
-            'Authorization' => 'Key ' . $this->key,
-        ])->get('https://queue.fal.run/' . $this->queueBasePath($model) . '/requests/' . $requestId . '/status');
+        return $this->request(20)
+            ->retry(3, 500, throw: false)
+            ->withHeaders([
+                'Authorization' => 'Key ' . $this->key,
+            ])
+            ->get('https://queue.fal.run/' . $this->queueBasePath($model) . '/requests/' . $requestId . '/status');
     }
 
     private function fetchQueueResult(string $model, string $requestId): array
@@ -269,9 +277,9 @@ class FalService
         $baseUrl = 'https://queue.fal.run/' . $this->queueBasePath($model) . '/requests/' . $requestId;
         $headers = ['Authorization' => 'Key ' . $this->key];
 
-        $response = Http::withHeaders($headers)->get($baseUrl . '/response');
+        $response = $this->request()->withHeaders($headers)->get($baseUrl . '/response');
         if (! $response->successful()) {
-            $response = Http::withHeaders($headers)->get($baseUrl);
+            $response = $this->request()->withHeaders($headers)->get($baseUrl);
         }
 
         if (! $response->successful()) {
@@ -279,6 +287,12 @@ class FalService
         }
 
         return $response->json() ?? [];
+    }
+
+    private function request(?int $timeout = null): PendingRequest
+    {
+        return Http::connectTimeout((int) config('services.fal.connect_timeout', 10))
+            ->timeout($timeout ?? (int) config('services.fal.http_timeout', 60));
     }
 
     private function queueBasePath(string $model): string

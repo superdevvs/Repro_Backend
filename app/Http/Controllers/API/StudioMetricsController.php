@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\API;
 
-use App\Http\Controllers\Controller;
 use App\Models\AiEditingJob;
 use App\Models\AiListingVideoJob;
 use App\Models\Shoot;
@@ -26,12 +25,8 @@ use Illuminate\Http\Request;
  * subsequent tasks (1.2-1.4); this class provides the shared scoping and
  * status-bucket helpers they build on.
  */
-class StudioMetricsController extends Controller
+class StudioMetricsController extends StudioController
 {
-    /**
-     * Roles privileged to see every job regardless of ownership.
-     */
-    private const PRIVILEGED_ROLES = ['admin', 'superadmin', 'editing_manager'];
 
     /**
      * Photo (AiEditingJob) statuses that count as active / non-terminal.
@@ -269,26 +264,131 @@ class StudioMetricsController extends Controller
     }
 
     /**
-     * Resolve the user_id scope for aggregation queries.
+     * GET /studio/metrics/summary
      *
-     * Returns null for privileged roles (admin/superadmin/editing_manager) so
-     * that all jobs are aggregated, and the user's own id for editors so the
-     * aggregation is self-scoped. Mirrors the scoping in ListingVideoController.
-     *
-     * @param  \App\Models\User|\Illuminate\Contracts\Auth\Authenticatable|null  $user
-     * @return int|null  null = all jobs (no user_id filter); otherwise the user id to scope by
+     * Returns the four truthful Studio metrics for the server-computed trailing
+     * 30-day window. Terminal metrics use completed_at (the point at which a job
+     * entered its terminal state), while project activity accepts any persisted
+     * job timestamp in the window. All source records are team-scoped and editor
+     * requests are additionally limited to records owned by that editor.
      */
-    protected function scopeUserId($user): ?int
+    public function summary(Request $request): JsonResponse
     {
-        if (! $user) {
-            return null;
+        $user = $request->user();
+        $windowEnd = now();
+        $windowStart = $windowEnd->copy()->subDays(30);
+
+        $photo = $this->scopeMetricJobs(AiEditingJob::query(), $user);
+        $video = $this->scopeMetricJobs(AiListingVideoJob::query(), $user);
+
+        $activityInWindow = fn ($query) => $query
+            ->whereBetween('created_at', [$windowStart, $windowEnd])
+            ->orWhereBetween('updated_at', [$windowStart, $windowEnd])
+            ->orWhereBetween('completed_at', [$windowStart, $windowEnd]);
+
+        $projectIds = (clone $photo)
+            ->whereNotNull('project_id')
+            ->where($activityInWindow)
+            ->distinct()
+            ->pluck('project_id')
+            ->merge(
+                (clone $video)
+                    ->whereNotNull('project_id')
+                    ->where($activityInWindow)
+                    ->distinct()
+                    ->pluck('project_id')
+            )
+            ->unique()
+            ->values();
+
+        $terminalJobs = (clone $photo)
+            ->whereBetween('completed_at', [$windowStart, $windowEnd])
+            ->get(['id', 'project_id', 'status'])
+            ->concat(
+                (clone $video)
+                    ->whereBetween('completed_at', [$windowStart, $windowEnd])
+                    ->get(['id', 'project_id', 'status'])
+            );
+
+        $rateEligibleJobs = $terminalJobs->reject(
+            fn ($job) => $this->isExcludedFromSuccessRate((string) $job->status)
+        );
+        $successfulJobs = $rateEligibleJobs->filter(
+            fn ($job) => $this->isTerminalSuccess((string) $job->status)
+        );
+        $failedJobs = $rateEligibleJobs->filter(
+            fn ($job) => $this->isTerminalFailure((string) $job->status)
+        );
+
+        $completed = $successfulJobs->count();
+        $failed = $failedJobs->count();
+        $denominator = $completed + $failed;
+        $successRate = $denominator > 0
+            ? round($completed / $denominator * 100, 1)
+            : 0;
+
+        $successfulProjectIds = $successfulJobs
+            ->pluck('project_id')
+            ->filter()
+            ->unique()
+            ->values();
+
+        $mediaOutputs = 0;
+        if ($successfulProjectIds->isNotEmpty()) {
+            $mediaOutputs = \App\Models\ProjectMedia::query()
+                ->where('team_id', $this->scopeTeamId($user))
+                ->where('kind', 'output')
+                ->whereIn('project_id', $successfulProjectIds->all())
+                ->whereBetween('created_at', [$windowStart, $windowEnd])
+                ->whereHas('project', function ($project) use ($user): void {
+                    $this->scopeStudioQuery($project, $user);
+                })
+                ->count();
         }
 
-        if (in_array($user->role, self::PRIVILEGED_ROLES, true)) {
-            return null;
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'projectsProcessed' => $projectIds->count(),
+                'aiJobsCompleted' => $completed,
+                'successRate' => $successRate,
+                'mediaOutputs' => $mediaOutputs,
+                'windowStart' => $windowStart->toIso8601String(),
+                'windowEnd' => $windowEnd->toIso8601String(),
+            ],
+        ]);
+    }
+
+    /**
+     * Scope a metrics job query to the requester's team and, for editors, owner.
+     * New Studio jobs derive team authorization from Project; legacy projectless
+     * jobs derive it from the owning user's team metadata.
+     */
+    protected function scopeMetricJobs($query, $user)
+    {
+        $teamId = $this->scopeTeamId($user);
+
+        $query->where(function ($scope) use ($teamId): void {
+            $scope->whereHas('project', fn ($project) => $project->where('team_id', $teamId))
+                ->orWhere(function ($legacy) use ($teamId): void {
+                    $legacy->whereNull('project_id')
+                        ->whereHas('user', function ($owner) use ($teamId): void {
+                            $owner->where(function ($teamOwner) use ($teamId): void {
+                                $teamOwner->where('metadata->team_id', $teamId)
+                                    ->orWhere(function ($fallbackOwner) use ($teamId): void {
+                                        $fallbackOwner->whereKey($teamId)
+                                            ->whereNull('metadata->team_id');
+                                    });
+                            });
+                        });
+                });
+        });
+
+        if (($userId = $this->scopeUserId($user)) !== null) {
+            $query->where('user_id', $userId);
         }
 
-        return (int) $user->id;
+        return $query;
     }
 
     /**

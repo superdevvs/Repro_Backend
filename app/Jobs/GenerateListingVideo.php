@@ -15,13 +15,15 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 use Symfony\Component\Process\Process;
+use Throwable;
 
 class GenerateListingVideo implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $timeout = 7200;
+    public int $timeout = 1800;
     public int $tries = 1;
+    public bool $failOnTimeout = true;
 
     private const NATIVE_CLIP_SECONDS = 5;
 
@@ -32,6 +34,8 @@ class GenerateListingVideo implements ShouldQueue
     public function handle(FalService $fal, ShootFileAccessService $fileAccess): void
     {
         $job = AiListingVideoJob::findOrFail($this->jobId);
+        $tempImages = [];
+        $tempClips = [];
 
         if ($job->status === AiListingVideoJob::STATUS_CANCELLED) {
             return;
@@ -43,13 +47,15 @@ class GenerateListingVideo implements ShouldQueue
             $prompt = 'Slow, smooth cinematic camera glide through the space. Gentle forward dolly motion, photorealistic, natural lighting, no distortion, like a luxury property tour.';
             $clipSources = [];
             $requestIds = [];
-            $tempImages = [];
-            $tempClips = [];
+            $sources = [
+                ...($job->selected_file_ids ?? []),
+                ...($job->source_media_refs ?? []),
+            ];
 
             if (config('services.fal.test_mode')) {
-                foreach ($job->selected_file_ids as $fileId) {
+                foreach ($sources as $fileId) {
                     $this->stopIfCancelled($job);
-                    $imagePath = $this->resolveImagePath((int) $fileId, $fileAccess, $tempImages);
+                    $imagePath = $this->resolveImagePath($fileId, $fileAccess, $tempImages);
                     $clipPath = $this->fakeClipFromImage($imagePath);
                     $tempClips[] = $clipPath;
                     $clipSources[] = $clipPath;
@@ -57,9 +63,9 @@ class GenerateListingVideo implements ShouldQueue
                     sleep(1);
                 }
             } else {
-                foreach ($job->selected_file_ids as $fileId) {
+                foreach ($sources as $fileId) {
                     $this->stopIfCancelled($job);
-                    $imagePath = $this->resolveImagePath((int) $fileId, $fileAccess, $tempImages);
+                    $imagePath = $this->resolveImagePath($fileId, $fileAccess, $tempImages);
                     $bytes = file_get_contents($imagePath);
                     if ($bytes === false) {
                         throw new RuntimeException("Could not read image {$fileId}.");
@@ -70,24 +76,47 @@ class GenerateListingVideo implements ShouldQueue
                     $job->forceFill(['provider_request_ids' => $requestIds])->save();
                 }
 
-                foreach ($requestIds as $requestId) {
-                    while (true) {
-                        $this->stopIfCancelled($job);
+                $clipSourcesByRequest = [];
+                $pendingRequestIds = array_fill_keys($requestIds, true);
+                $pollDeadline = microtime(true) + max(
+                    1,
+                    (int) config('services.fal.video_poll_timeout', 900)
+                );
+                $pollInterval = max(1, (int) config('services.fal.video_poll_interval', 5));
+
+                while ($pendingRequestIds !== []) {
+                    $this->stopIfCancelled($job);
+
+                    if (microtime(true) >= $pollDeadline) {
+                        throw new RuntimeException(
+                            'Video generation timed out while waiting for fal.ai. Please try again.'
+                        );
+                    }
+
+                    foreach (array_keys($pendingRequestIds) as $requestId) {
                         $status = $fal->status($requestId);
 
                         if ($status === 'COMPLETED') {
-                            $clipSources[] = $fal->result($requestId);
+                            $clipSourcesByRequest[$requestId] = $fal->result($requestId);
+                            unset($pendingRequestIds[$requestId]);
                             $this->incrementCompleted($job);
-                            break;
+                            continue;
                         }
 
-                        if (in_array($status, ['FAILED', 'ERROR'], true)) {
+                        if (in_array($status, ['FAILED', 'ERROR', 'CANCELLED'], true)) {
                             throw new RuntimeException("A clip failed to generate ({$requestId}).");
                         }
+                    }
 
-                        sleep(8);
+                    if ($pendingRequestIds !== []) {
+                        sleep($pollInterval);
                     }
                 }
+
+                $clipSources = array_map(
+                    fn (string $requestId): string => $clipSourcesByRequest[$requestId],
+                    $requestIds
+                );
             }
 
             $this->stopIfCancelled($job);
@@ -95,22 +124,9 @@ class GenerateListingVideo implements ShouldQueue
             $outputs = $this->stitch($job, $clipSources);
             $job->markAsCompleted($outputs);
 
-            foreach ($tempImages as $tempImage) {
-                @unlink($tempImage);
-            }
-            foreach ($tempClips as $tempClip) {
-                @unlink($tempClip);
-            }
-        } catch (\Throwable $e) {
-            foreach ($tempImages as $tempImage) {
-                @unlink($tempImage);
-            }
-            foreach ($tempClips as $tempClip) {
-                @unlink($tempClip);
-            }
-
+        } catch (Throwable $e) {
             if ($job->fresh()?->status !== AiListingVideoJob::STATUS_CANCELLED) {
-                $job->markAsFailed($e->getMessage());
+                $job->markAsFailed($this->failureMessage($e));
                 Log::error('GenerateListingVideo failed', [
                     'job_id' => $job->id,
                     'error' => $e->getMessage(),
@@ -118,11 +134,61 @@ class GenerateListingVideo implements ShouldQueue
 
                 throw $e;
             }
+        } finally {
+            foreach ($tempImages as $tempImage) {
+                @unlink($tempImage);
+            }
+            foreach ($tempClips as $tempClip) {
+                @unlink($tempClip);
+            }
         }
     }
 
-    private function resolveImagePath(int $fileId, ShootFileAccessService $fileAccess, array &$tempImages): string
+    public function failed(?Throwable $exception = null): void
     {
+        $job = AiListingVideoJob::find($this->jobId);
+        if (! $job || ! $job->isActive()) {
+            return;
+        }
+
+        $job->markAsFailed($this->failureMessage(
+            $exception ?? new RuntimeException('The listing video worker stopped unexpectedly.')
+        ));
+    }
+
+    private function failureMessage(Throwable $exception): string
+    {
+        if (str_contains(strtolower($exception->getMessage()), 'timed out')) {
+            return 'Video generation took too long and was stopped. Please try again.';
+        }
+
+        return $exception->getMessage();
+    }
+
+    private function resolveImagePath(int|string $source, ShootFileAccessService $fileAccess, array &$tempImages): string
+    {
+        if (is_string($source) && !ctype_digit($source)) {
+            $disk = Storage::disk((string) config('studio_uploads.disk', 'public'));
+            if (!$disk->exists($source)) {
+                throw new RuntimeException("Uploaded photo {$source} missing.");
+            }
+            try {
+                $path = $disk->path($source);
+                if (is_file($path)) {
+                    return $path;
+                }
+            } catch (\Throwable) {
+                // Remote disks are copied to a temporary local file below.
+            }
+            $path = tempnam(sys_get_temp_dir(), 'listing-source-');
+            if ($path === false || file_put_contents($path, $disk->get($source)) === false) {
+                throw new RuntimeException("Could not resolve uploaded photo {$source}.");
+            }
+            $tempImages[] = $path;
+            return $path;
+        }
+
+        $fileId = (int) $source;
         $file = ShootFile::find($fileId);
         if (! $file) {
             throw new RuntimeException("Photo {$fileId} missing.");

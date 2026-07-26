@@ -256,6 +256,12 @@ return [
         'model' => env('FAL_MODEL', 'fal-ai/wan-pro/image-to-video'),
         'image_model' => env('FAL_IMAGE_MODEL', 'fal-ai/flux-kontext/dev'),
         'test_mode' => env('FAL_TEST_MODE', false),
+        'connect_timeout' => env('FAL_CONNECT_TIMEOUT', 10),
+        'http_timeout' => env('FAL_HTTP_TIMEOUT', 60),
+        'upload_timeout' => env('FAL_UPLOAD_TIMEOUT', 120),
+        'video_poll_interval' => env('FAL_VIDEO_POLL_INTERVAL', 5),
+        'video_poll_timeout' => env('FAL_VIDEO_POLL_TIMEOUT', 900),
+        'video_job_stale_after' => env('FAL_VIDEO_JOB_STALE_AFTER', 2100),
     ],
 
     // MyMarketingMatters (MMM) Punchout/SSO Integration

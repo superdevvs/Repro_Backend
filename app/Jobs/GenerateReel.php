@@ -47,20 +47,24 @@ class GenerateReel implements ShouldQueue
             $prompt = 'Energetic, dynamic short-form vertical reel motion. Smooth camera movement showcasing the space, photorealistic, natural lighting, no distortion, social-media ready property highlight.';
             $clipSources = [];
             $requestIds = [];
+            $sources = [
+                ...($job->selected_file_ids ?? []),
+                ...($job->source_media_refs ?? []),
+            ];
 
             if (config('services.fal.test_mode')) {
-                foreach ($job->selected_file_ids as $fileId) {
+                foreach ($sources as $fileId) {
                     $this->stopIfCancelled($job);
-                    $imagePath = $this->resolveImagePath((int) $fileId, $fileAccess, $tempImages);
+                    $imagePath = $this->resolveImagePath($fileId, $fileAccess, $tempImages);
                     $clipPath = $this->fakeClipFromImage($imagePath);
                     $tempClips[] = $clipPath;
                     $clipSources[] = $clipPath;
                     sleep(1);
                 }
             } else {
-                foreach ($job->selected_file_ids as $fileId) {
+                foreach ($sources as $fileId) {
                     $this->stopIfCancelled($job);
-                    $imagePath = $this->resolveImagePath((int) $fileId, $fileAccess, $tempImages);
+                    $imagePath = $this->resolveImagePath($fileId, $fileAccess, $tempImages);
                     $bytes = file_get_contents($imagePath);
                     if ($bytes === false) {
                         throw new RuntimeException("Could not read image {$fileId}.");
@@ -110,8 +114,30 @@ class GenerateReel implements ShouldQueue
         }
     }
 
-    private function resolveImagePath(int $fileId, ShootFileAccessService $fileAccess, array &$tempImages): string
+    private function resolveImagePath(int|string $source, ShootFileAccessService $fileAccess, array &$tempImages): string
     {
+        if (is_string($source) && !ctype_digit($source)) {
+            $disk = Storage::disk((string) config('studio_uploads.disk', 'public'));
+            if (!$disk->exists($source)) {
+                throw new RuntimeException("Uploaded photo {$source} missing.");
+            }
+            try {
+                $path = $disk->path($source);
+                if (is_file($path)) {
+                    return $path;
+                }
+            } catch (\Throwable) {
+                // Remote disks are copied to a temporary local file below.
+            }
+            $path = tempnam(sys_get_temp_dir(), 'reel-source-');
+            if ($path === false || file_put_contents($path, $disk->get($source)) === false) {
+                throw new RuntimeException("Could not resolve uploaded photo {$source}.");
+            }
+            $tempImages[] = $path;
+            return $path;
+        }
+
+        $fileId = (int) $source;
         $file = ShootFile::find($fileId);
         if (! $file) {
             throw new RuntimeException("Photo {$fileId} missing.");
