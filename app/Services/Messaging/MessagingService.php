@@ -27,13 +27,30 @@ use Illuminate\Support\Str;
 
 class MessagingService
 {
+    /**
+     * Resolved on first email use, never at construction.
+     *
+     * Constructor-injecting the Cakemail provider meant a missing CAKEMAIL_PASSWORD
+     * took down the whole service: SMS dispatch, scheduled messaging and any flow that
+     * merely touched MessagingService failed with a TypeError from the email provider's
+     * constructor. Email configuration must only be able to break email.
+     */
+    private ?Providers\CakemailProvider $cakemailProvider = null;
+
     public function __construct(
         private readonly TemplateRenderer $renderer,
         private readonly Providers\TelnyxSmsProvider $telnyxProvider,
-        private readonly Providers\CakemailProvider $cakemailProvider,
         private readonly Providers\LocalSmtpProvider $localSmtpProvider,
         private readonly OutboundDeliveryGuard $deliveryGuard,
     ) {
+    }
+
+    /**
+     * Container-resolved so the testing fake binding still applies.
+     */
+    protected function cakemail(): Providers\CakemailProvider
+    {
+        return $this->cakemailProvider ??= app(Providers\CakemailProvider::class);
     }
 
     /**
@@ -828,7 +845,7 @@ class MessagingService
     {
         return match (strtoupper((string) $channel->provider)) {
             'LOCAL_SMTP' => $this->localSmtpProvider,
-            'CAKEMAIL' => $this->cakemailProvider,
+            'CAKEMAIL' => $this->cakemail(),
             default => $this->logAndReturnCakeMailProvider($channel),
         };
     }
@@ -840,7 +857,7 @@ class MessagingService
             'provider' => $channel->provider,
         ]);
 
-        return $this->cakemailProvider;
+        return $this->cakemail();
     }
 
     /**
@@ -848,7 +865,7 @@ class MessagingService
      */
     public function getCakemailProvider(): Providers\CakemailProvider
     {
-        return $this->cakemailProvider;
+        return $this->cakemail();
     }
 
     public function dispatchScheduledMessage(Message $message): Message

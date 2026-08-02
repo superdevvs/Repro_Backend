@@ -210,16 +210,34 @@ class BookShootFlow implements FlowHandlerInterface
 
         // first time we enter this step (no property yet)
         if (empty($data['property_address'])) {
-            // Detect intent-trigger phrases that should NOT be treated as a property address
-            $intentTriggers = [
-                'book a new shoot', 'book a shoot', 'book new shoot', 'book another shoot',
-                'book shoot', 'new shoot', 'schedule a shoot', 'schedule shoot',
-                'let\'s book', 'i want to book',
-            ];
-            $messageLower = strtolower(trim($message));
-            $isIntentTrigger = in_array($messageLower, $intentTriggers, true);
-            
-            if ($isIntentTrigger) {
+            // The opening message is decomposed rather than assigned wholesale to the
+            // first empty slot. Previously the intent list was matched with an exact
+            // in_array(), so anything phrased slightly differently — "I want to book a
+            // shoot", or a sentence that already carried the date and address — became
+            // the property address verbatim, and the user was then asked for a date they
+            // had already given.
+            $opening = $this->extractOpeningSlots($message);
+
+            // A date with no property: keep the date, still ask which property.
+            if ($opening['kind'] === 'schedule_only') {
+                $this->applyOpeningSchedule($data, $opening['schedule_text']);
+                $suggestions = $this->recentPropertySuggestions($suggestionClientId);
+                if (empty($suggestions)) {
+                    $suggestions = ['Enter new address'];
+                }
+
+                $noted = $data['date_label'] ?? $opening['schedule_text'];
+
+                return FlowTransition::stay([
+                    'assistant_messages' => [[
+                        'content'  => "Got it — {$noted}. Which property is this for?",
+                        'metadata' => ['step' => 'ask_property'],
+                    ]],
+                    'suggestions' => $suggestions,
+                ], $data);
+            }
+
+            if ($opening['kind'] === 'intent_only') {
                 $suggestions = $this->recentPropertySuggestions($suggestionClientId);
                 if (empty($suggestions)) {
                     $suggestions = ['Enter new address'];
@@ -233,24 +251,28 @@ class BookShootFlow implements FlowHandlerInterface
                 ], $data);
             }
 
+            // Only the address portion is used from here on; any date/time the user
+            // supplied in the same sentence is applied separately below.
+            $addressMessage = $opening['address'] ?? trim($message);
+
             // Check if message matches a suggested address
             $suggestions = $this->recentPropertySuggestions($suggestionClientId);
             $matchedAddress = null;
-            
+
             foreach ($suggestions as $suggestion) {
-                if (strtolower(trim($message)) === strtolower(trim($suggestion))) {
+                if (strtolower(trim($addressMessage)) === strtolower(trim($suggestion))) {
                     // User selected a suggested address, try to find it in shoots
                     $matchedShoot = Shoot::where(function ($query) use ($suggestionClientId) {
                         $query->where('client_id', $suggestionClientId)
                               ->orWhere('rep_id', $suggestionClientId);
                     })
-                    ->where(function ($query) use ($message) {
-                        $parts = explode(',', $message);
+                    ->where(function ($query) use ($addressMessage) {
+                        $parts = explode(',', $addressMessage);
                         if (count($parts) >= 2) {
                             $query->where('address', 'like', '%' . trim($parts[0]) . '%')
                                   ->where('city', 'like', '%' . trim($parts[1]) . '%');
                         } else {
-                            $query->where('address', 'like', '%' . trim($message) . '%');
+                            $query->where('address', 'like', '%' . trim($addressMessage) . '%');
                         }
                     })
                     ->orderBy('created_at', 'desc')
@@ -270,17 +292,50 @@ class BookShootFlow implements FlowHandlerInterface
             
             // If no match found, treat as new address
             if (!$matchedAddress) {
-                $data['property_label'] = $message;
+                $data['property_label'] = $addressMessage;
                 // Try to parse address components if it looks like an address
-                $parts = array_map('trim', explode(',', $message));
+                $parts = array_map('trim', explode(',', $addressMessage));
                 if (count($parts) >= 2) {
                     $data['property_address'] = $parts[0];
                     $data['property_city'] = $parts[1] ?? '';
                     $data['property_state'] = $parts[2] ?? '';
                     $data['property_zip'] = $parts[3] ?? '';
                 } else {
-                    $data['property_address'] = $message;
+                    $data['property_address'] = $addressMessage;
                 }
+            }
+
+            // A date supplied alongside the address must not be thrown away and asked
+            // for again. This is the "next Friday afternoon at 400 Oak Street" case.
+            $supplied = $this->applyOpeningSchedule($data, $opening['schedule_text']);
+
+            if ($supplied === 'date_and_time') {
+                return FlowTransition::next('ask_services', [
+                    'assistant_messages' => [[
+                        'content'  => "Got it — {$data['date_label']} for **{$data['property_label']}**. What services would you like?",
+                        'metadata' => ['step' => 'ask_services'],
+                    ]],
+                    'suggestions' => [
+                        'Photos only',
+                        'Photos + video',
+                        'Photos + drone',
+                        'Full package (photos, video, drone, floorplan)',
+                    ],
+                ], $data);
+            }
+
+            if ($supplied === 'date') {
+                return FlowTransition::next('ask_time', [
+                    'assistant_messages' => [[
+                        'content'  => "Got it — {$data['date_label']} for **{$data['property_label']}**. What time of day works best?",
+                        'metadata' => ['step' => 'ask_time'],
+                    ]],
+                    'suggestions' => [
+                        'Morning',
+                        'Afternoon',
+                        'Golden hour',
+                    ],
+                ], $data);
             }
 
             return FlowTransition::next('ask_date', [
@@ -845,6 +900,107 @@ class BookShootFlow implements FlowHandlerInterface
             $data['property_state'] ?? '',
         ]);
         return implode(', ', $parts) ?: 'Property';
+    }
+
+    /**
+     * Phrases that only announce the intent to book and carry no slot data.
+     *
+     * Stripped from the front of an opening message so the remainder can be read as
+     * real content. Matched as a prefix rather than with an exact string compare,
+     * which is what let "I want to book a shoot" fall through and be stored as a
+     * property address.
+     */
+    protected const OPENING_INTENT_PATTERNS = [
+        '/^\s*(?:hi|hello|hey)\b[,!.\s]*/i',
+        '/^\s*(?:i\s+(?:would\s+like|want|wanna|need)\s+to\s+|i\'?d\s+like\s+to\s+|let\'?s\s+|please\s+|can\s+you\s+|could\s+you\s+)?'
+            . '(?:book|schedule|arrange|set\s*up)\s+(?:me\s+)?(?:a|an|another|new|the)?\s*'
+            . '(?:new\s+)?(?:photo\s*shoot|photoshoot|shoot|session|appointment)?\s*(?:for|on|at)?\s*/i',
+    ];
+
+    /**
+     * Split an opening booking message into an address and a schedule phrase.
+     *
+     * Returns `kind` as one of:
+     *  - `intent_only`    nothing but "I want to book a shoot"
+     *  - `schedule_only`  a date/time but no property
+     *  - `address`        an address, optionally with a schedule phrase alongside it
+     *
+     * A street address is recognised by a leading house number, which is also what
+     * keeps "6-6 at 5pm" out of the address slot: "5pm" is not a house number.
+     */
+    protected function extractOpeningSlots(string $message): array
+    {
+        $remainder = trim($message);
+
+        foreach (self::OPENING_INTENT_PATTERNS as $pattern) {
+            $stripped = preg_replace($pattern, '', $remainder, 1);
+            if (is_string($stripped) && trim($stripped) !== $remainder) {
+                $remainder = trim($stripped);
+            }
+        }
+
+        $remainder = trim($remainder, " \t\n\r\0\x0B,.");
+
+        if ($remainder === '') {
+            return ['kind' => 'intent_only', 'address' => null, 'schedule_text' => ''];
+        }
+
+        // "<schedule> at <house number> <street>" — the most common combined form.
+        if (preg_match('/^(?<schedule>.*?)\b(?:at|on)\s+(?<address>\d+\s+\S.*)$/i', $remainder, $m)) {
+            $schedule = trim($m['schedule']);
+            $address = trim($m['address']);
+
+            if ($address !== '') {
+                return ['kind' => 'address', 'address' => $address, 'schedule_text' => $schedule];
+            }
+        }
+
+        // A bare address already starts with its house number.
+        if (preg_match('/^\d+\s+\S/', $remainder)) {
+            return ['kind' => 'address', 'address' => $remainder, 'schedule_text' => ''];
+        }
+
+        // No address shape: if it reads as a date, treat it as one rather than
+        // storing "next Friday afternoon" as a property.
+        if ($this->parseDateFromMessage($remainder) !== null) {
+            return ['kind' => 'schedule_only', 'address' => null, 'schedule_text' => $remainder];
+        }
+
+        // Anything else stays a property label, preserving the previous behaviour for
+        // named properties that are not street addresses.
+        return ['kind' => 'address', 'address' => $remainder, 'schedule_text' => ''];
+    }
+
+    /**
+     * Apply a schedule phrase lifted out of the opening message.
+     *
+     * Returns 'date_and_time', 'date' or 'none' so the caller knows which question is
+     * already answered and must not be asked again.
+     */
+    protected function applyOpeningSchedule(array &$data, string $scheduleText): string
+    {
+        $scheduleText = trim($scheduleText);
+        if ($scheduleText === '') {
+            return 'none';
+        }
+
+        $date = $this->parseDateFromMessage($scheduleText);
+        if ($date === null) {
+            return 'none';
+        }
+
+        $data['date'] = $date;
+        $data['date_label'] = $scheduleText;
+
+        $time = $this->parseTimeFromMessage($scheduleText);
+        if ($time) {
+            $data['time_label'] = $time;
+            $data['time_window'] = $time;
+
+            return 'date_and_time';
+        }
+
+        return 'date';
     }
 
     /**

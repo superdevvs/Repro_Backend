@@ -23,8 +23,14 @@ class CakemailProvider implements EmailProviderInterface
     {
         $configuredBaseUrl = trim((string) config('services.cakemail.base_url', ''));
         $this->baseUrl = $configuredBaseUrl !== '' ? rtrim($configuredBaseUrl, '/') : null;
-        $this->username = config('services.cakemail.username', '');
-        $this->password = config('services.cakemail.password', '');
+        // config('services.cakemail.*') resolves to null when the env var is absent:
+        // the key itself always exists (it is declared in config/services.php), so the
+        // default argument never applies. Assigning that null to a typed string property
+        // threw a TypeError during construction — and because MessagingService used to
+        // depend on this class, that broke every messaging flow, SMS included, rather
+        // than just email. Normalise here and let configurationIssue() report the gap.
+        $this->username = (string) (config('services.cakemail.username') ?? '');
+        $this->password = (string) (config('services.cakemail.password') ?? '');
         $this->defaultSenderId = config('services.cakemail.sender_id');
         $listId = config('services.cakemail.list_id');
         $this->defaultListId = $listId ? (int) $listId : null;
@@ -825,6 +831,14 @@ class CakemailProvider implements EmailProviderInterface
 
     protected function configurationIssue(): ?string
     {
+        // Credentials are checked before the URL: a blank username/password is the
+        // failure that used to surface as a TypeError at construction time, and the
+        // operator needs to be told which variable is missing rather than seeing a
+        // generic authentication failure.
+        if (trim($this->username) === '' || trim($this->password) === '') {
+            return 'Cakemail credentials are not configured. Set CAKEMAIL_USERNAME and CAKEMAIL_PASSWORD before sending transactional email.';
+        }
+
         if (!$this->baseUrl) {
             return 'Cakemail base URL is not configured. Set CAKEMAIL_BASE_URL before sending transactional email.';
         }
