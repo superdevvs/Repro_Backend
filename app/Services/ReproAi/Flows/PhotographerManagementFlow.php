@@ -590,6 +590,15 @@ class PhotographerManagementFlow
 
     private function parseDateFromMessage(string $message): ?string
     {
+        // Shared interpreter, so this flow reads dates the same way the booking
+        // flows do rather than carrying its own copy of the logic.
+        $interpreted = \App\Services\ReproAi\DateInterpreter::interpret($message)
+            ->futureOnly()
+            ->date;
+        if ($interpreted !== null) {
+            return $interpreted;
+        }
+
         $messageLower = strtolower(trim($message));
         
         if (str_contains($messageLower, 'tomorrow')) {

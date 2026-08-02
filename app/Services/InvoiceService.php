@@ -102,10 +102,20 @@ class InvoiceService
                     continue;
                 }
                 
+                // Precedence: an explicit per-shoot override always wins, then the
+                // service's own configuration. Going through
+                // getPhotographerPayForSqft() (rather than reading
+                // photographer_pay directly) is what lets a service configured as
+                // a percentage of its price resolve correctly here.
                 $pivotPay = $service->pivot->photographer_pay ?? null;
-                $pay = ($pivotPay !== null && $pivotPay !== '')
-                    ? (float) $pivotPay
-                    : (float) ($service->photographer_pay ?? 0);
+                if ($pivotPay !== null && $pivotPay !== '') {
+                    $pay = (float) $pivotPay;
+                } else {
+                    $resolvedPay = method_exists($service, 'getPhotographerPayForSqft')
+                        ? $service->getPhotographerPayForSqft($this->extractShootSqft($shoot))
+                        : null;
+                    $pay = (float) ($resolvedPay ?? $service->photographer_pay ?? 0);
+                }
                 $qty = (int) ($service->pivot->quantity ?? 1);
                 
                 $serviceRows->push([

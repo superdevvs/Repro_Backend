@@ -1346,18 +1346,25 @@ class StripePaymentController extends Controller
                 return response()->json(['error' => 'This payment was not processed via Stripe.'], 400);
             }
 
-            $existingDetails = is_array($paymentRecord->payment_details) ? $paymentRecord->payment_details : [];
-            if (
-                $paymentRecord->status === Payment::STATUS_REFUNDED
-                || !empty($existingDetails['refunded_at'])
-                || !empty($existingDetails['refund_status'])
-            ) {
-                return response()->json(['error' => 'This Stripe payment has already been refunded.'], 400);
+            // Partial refunds are supported, so "already refunded" now means the
+            // payment has been refunded in FULL. A payment with a partial refund
+            // against it stays refundable up to its remainder.
+            if ($paymentRecord->isFullyRefunded()) {
+                return response()->json(['error' => 'This Stripe payment has already been fully refunded.'], 400);
             }
 
-            $refundAmount = round((float) $request->input('amount', $paymentRecord->amount), 2);
-            if ($refundAmount > ((float) $paymentRecord->amount + 0.01)) {
-                return response()->json(['error' => 'Refund amount cannot exceed the recorded payment amount.'], 422);
+            $remainder = $paymentRecord->refundableRemainder();
+            $refundAmount = round((float) $request->input('amount', $remainder), 2);
+
+            if ($refundAmount <= 0) {
+                return response()->json(['error' => 'Refund amount must be greater than zero.'], 422);
+            }
+
+            if ($refundAmount > ($remainder + 0.01)) {
+                return response()->json([
+                    'error' => 'Refund amount cannot exceed the unrefunded remainder of this payment.',
+                    'refundable_remainder' => $remainder,
+                ], 422);
             }
 
             $refundParams = [
@@ -1368,15 +1375,32 @@ class StripePaymentController extends Controller
             $refund = Refund::create($refundParams);
 
             if (in_array($refund->status, ['succeeded', 'pending'])) {
-                $responsePayload = DB::transaction(function () use ($paymentRecord, $refund, $refundAmount) {
-                    $paymentRecord->status = Payment::STATUS_REFUNDED;
+                $responsePayload = DB::transaction(function () use ($paymentRecord, $refund, $refundAmount, $request) {
+                    // Record the refund as its own row. This is what makes the
+                    // paid total correct for partial refunds: the payment keeps
+                    // contributing its remainder instead of dropping out entirely.
+                    $paymentRecord->refunds()->create([
+                        'shoot_id' => $paymentRecord->shoot_id,
+                        'amount' => $refundAmount,
+                        'provider' => 'stripe',
+                        'provider_refund_id' => $refund->id ?? null,
+                        'reason' => $request->input('reason'),
+                        'created_by' => $request->user()?->id,
+                    ]);
+                    $paymentRecord->load('refunds');
+
+                    // Only a fully returned payment stops counting as completed.
+                    if ($paymentRecord->isFullyRefunded()) {
+                        $paymentRecord->status = Payment::STATUS_REFUNDED;
+                    }
+
                     $paymentRecord->payment_details = $this->stripePaymentMetadataService->mergeRefundDetails(
                         $paymentRecord,
                         $refund,
                         $refundAmount
                     );
                     $paymentRecord->save();
-                    $paymentRecord = $paymentRecord->fresh() ?? $paymentRecord;
+                    $paymentRecord = $paymentRecord->fresh(['refunds']) ?? $paymentRecord;
 
                     $shoot = $paymentRecord->shoot;
                     $payload = [

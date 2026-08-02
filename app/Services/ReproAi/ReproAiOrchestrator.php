@@ -144,6 +144,16 @@ class ReproAiOrchestrator
         $prompt .= "- User: {$userName}\n";
         $prompt .= "- Role: {$userRole}\n\n";
 
+        // Clients write dates as "June 5", "6-6 at 5pm" or "next Tuesday". Asking
+        // them for YYYY-MM-DD pushes the parsing burden onto the person, which is
+        // exactly what the 26 Jul 2026 review flagged. Tool arguments still use
+        // ISO; the conversion is the assistant's job, not the client's.
+        $prompt .= "Dates and times:\n";
+        $prompt .= "- NEVER ask the user for a machine date format such as YYYY-MM-DD.\n";
+        $prompt .= "- Ask naturally (e.g. \"What day works for you?\") and accept whatever they write: \"June 5\", \"5th June\", \"6-6\", \"6/6 at 5pm\", \"next Tuesday\", \"tomorrow morning\".\n";
+        $prompt .= "- Convert to YYYY-MM-DD yourself when calling a tool.\n";
+        $prompt .= "- Numeric dates are month-first (US). If a date is genuinely ambiguous, state your interpretation and ask the user to confirm before booking or rescheduling.\n\n";
+
         $config = $context['robbie_config'] ?? [];
         if (!empty($config)) {
             $features = $config['features'] ?? [];

@@ -6,6 +6,7 @@ use App\Models\ShootFile;
 use App\Jobs\ProcessImageJob;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class ProcessExistingImages extends Command
 {
@@ -25,6 +26,12 @@ class ProcessExistingImages extends Command
             $query->whereNull('processed_at')
                 ->orWhereNull('thumbnail_path')
                 ->orWhereNull('web_path');
+
+            // Pick up files that predate the `grid` rendition so a single run of
+            // this command backfills the sharper desktop derivative.
+            if (Schema::hasColumn('shoot_files', 'grid_path')) {
+                $query->orWhereNull('grid_path');
+            }
         });
 
         if (!$force) {

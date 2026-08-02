@@ -1451,6 +1451,15 @@ class ManageBookingFlow implements FlowHandlerInterface
 
     private function parseDateFromMessage(string $message): ?string
     {
+        // Shared interpreter: "June 5", "6-6", "5/6/27" and relative phrases all
+        // resolve identically here and in every other flow.
+        $interpreted = \App\Services\ReproAi\DateInterpreter::interpret($message)
+            ->futureOnly()
+            ->date;
+        if ($interpreted !== null) {
+            return $interpreted;
+        }
+
         $messageLower = strtolower(trim($message));
         
         if (str_contains($messageLower, 'tomorrow')) {

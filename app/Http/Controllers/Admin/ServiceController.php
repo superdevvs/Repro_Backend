@@ -26,6 +26,8 @@ class ServiceController extends Controller
             'icon' => 'nullable|string',
             'photographer_required' => 'nullable|boolean',
             'photographer_pay' => 'nullable|numeric|min:0',
+            'photographer_pay_type' => 'nullable|in:fixed,percent',
+            'photographer_pay_percent' => 'nullable|numeric|min:0|max:100',
             'exclude_from_sales_commission' => 'nullable|boolean',
             'photo_count' => 'nullable|integer|min:0',
             'quantity' => 'nullable|integer|min:0',
@@ -35,6 +37,8 @@ class ServiceController extends Controller
             'sqft_ranges.*.duration' => 'nullable|integer|min:0',
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
+            'sqft_ranges.*.photographer_pay_type' => 'nullable|in:fixed,percent',
+            'sqft_ranges.*.photographer_pay_percent' => 'nullable|numeric|min:0|max:100',
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
         ];
 
@@ -146,6 +150,8 @@ class ServiceController extends Controller
             'icon' => 'nullable|string',
             'photographer_required' => 'nullable|boolean',
             'photographer_pay' => 'nullable|numeric|min:0',
+            'photographer_pay_type' => 'nullable|in:fixed,percent',
+            'photographer_pay_percent' => 'nullable|numeric|min:0|max:100',
             'exclude_from_sales_commission' => 'nullable|boolean',
             'photo_count' => 'nullable|integer|min:0',
             'quantity' => 'nullable|integer|min:0',
@@ -156,6 +162,8 @@ class ServiceController extends Controller
             'sqft_ranges.*.duration' => 'nullable|integer|min:0',
             'sqft_ranges.*.price' => 'required_with:sqft_ranges|numeric|min:0',
             'sqft_ranges.*.photographer_pay' => 'nullable|numeric|min:0',
+            'sqft_ranges.*.photographer_pay_type' => 'nullable|in:fixed,percent',
+            'sqft_ranges.*.photographer_pay_percent' => 'nullable|numeric|min:0|max:100',
             'sqft_ranges.*.photo_count' => 'nullable|integer|min:0',
         ];
 
@@ -203,6 +211,8 @@ class ServiceController extends Controller
                                 'duration' => $range['duration'] ?? null,
                                 'price' => $range['price'],
                                 'photographer_pay' => $range['photographer_pay'] ?? null,
+                                'photographer_pay_type' => $range['photographer_pay_type'] ?? 'fixed',
+                                'photographer_pay_percent' => $range['photographer_pay_percent'] ?? null,
                                 'photo_count' => $range['photo_count'] ?? null,
                             ]);
                     } else {
@@ -343,3 +353,4 @@ class ServiceController extends Controller
         ]);
     }
 }
+

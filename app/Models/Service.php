@@ -24,6 +24,8 @@ class Service extends Model
         'photographer_required',
         'requires_editing',
         'photographer_pay',
+        'photographer_pay_type',
+        'photographer_pay_percent',
         'exclude_from_sales_commission',
         'photo_count',
         'quantity',
@@ -36,6 +38,7 @@ class Service extends Model
         'photographer_required' => 'boolean',
         'requires_editing' => 'boolean',
         'photographer_pay' => 'decimal:2',
+        'photographer_pay_percent' => 'decimal:2',
         'exclude_from_sales_commission' => 'boolean',
         'photo_count' => 'integer',
         'allow_multiple' => 'boolean',
@@ -150,13 +153,47 @@ class Service extends Model
         return $range ? (float) $range->price : (float) $this->price;
     }
 
+    /** Pay is a flat dollar amount (the historical behaviour). */
+    public const PAY_TYPE_FIXED = 'fixed';
+
+    /** Pay is a percentage of the applicable price. */
+    public const PAY_TYPE_PERCENT = 'percent';
+
+    /**
+     * Resolve a payout from either a flat amount or a percentage of a price.
+     *
+     * Accepts the service itself or one of its sqft ranges — both carry the same
+     * trio of columns — so the flat/percent decision lives in exactly one place.
+     * Returns null when nothing is configured, which callers treat as "no pay
+     * defined" rather than zero.
+     */
+    private static function resolvePayFrom(object $source, float $price): ?float
+    {
+        $type = $source->photographer_pay_type ?? self::PAY_TYPE_FIXED;
+
+        if ($type === self::PAY_TYPE_PERCENT) {
+            $percent = $source->photographer_pay_percent ?? null;
+            if ($percent === null || $percent === '') {
+                return null;
+            }
+
+            return round($price * ((float) $percent / 100), 2);
+        }
+
+        return $source->photographer_pay !== null ? (float) $source->photographer_pay : null;
+    }
+
     /**
      * Get the photographer pay for a given square footage.
+     *
+     * Supports both a flat amount and a percentage of the price that applies at
+     * that square footage (Requirement 1.4/1.5). Services left on the default
+     * `fixed` type behave exactly as before.
      */
     public function getPhotographerPayForSqft(?int $sqft): ?float
     {
         if ($this->pricing_type !== 'variable' || $sqft === null) {
-            return $this->photographer_pay !== null ? (float) $this->photographer_pay : null;
+            return self::resolvePayFrom($this, (float) $this->price);
         }
 
         $range = $this->sqftRanges()
@@ -164,11 +201,15 @@ class Service extends Model
             ->where('sqft_to', '>=', $sqft)
             ->first();
 
-        if ($range && $range->photographer_pay !== null) {
-            return (float) $range->photographer_pay;
+        if ($range) {
+            // A percentage on the tier applies to that tier's price.
+            $tierPay = self::resolvePayFrom($range, (float) ($range->price ?? $this->price));
+            if ($tierPay !== null) {
+                return $tierPay;
+            }
         }
 
-        return $this->photographer_pay !== null ? (float) $this->photographer_pay : null;
+        return self::resolvePayFrom($this, (float) $this->getPriceForSqft($sqft));
     }
 
     /**
