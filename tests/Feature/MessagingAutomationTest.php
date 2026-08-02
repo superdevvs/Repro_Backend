@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
@@ -31,6 +32,17 @@ class MessagingAutomationTest extends TestCase
 {
     use MockeryPHPUnitIntegration;
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Asserts external-email dispatch and provider-failure handling, so the
+        // message has to reach the mocked provider instead of being withheld by
+        // the delivery guard. The provider is a double; nothing leaves the
+        // process (see MessagingSafetyServiceProvider).
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+    }
 
     public function test_non_admin_compose_creates_internal_message(): void
     {

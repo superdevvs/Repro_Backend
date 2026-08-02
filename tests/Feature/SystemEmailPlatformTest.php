@@ -11,6 +11,7 @@ use App\Models\SystemEmailDispatch;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationWorkflowExecutor;
+use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\LocalSmtpProvider;
 use App\Services\SystemEmails\EmailContextBuilder;
 use App\Services\SystemEmails\SystemEmailOrchestrator;
@@ -22,6 +23,16 @@ use Tests\TestCase;
 class SystemEmailPlatformTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Asserts canonical dispatch records and delivery metadata, so the mail
+        // has to travel the full path rather than being withheld by the delivery
+        // guard. Mail::fake() and the fake providers still absorb it.
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+    }
 
     public function test_mail_service_records_canonical_dispatch_and_deduplicates_account_created_email(): void
     {

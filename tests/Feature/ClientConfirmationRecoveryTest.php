@@ -18,6 +18,16 @@ class ClientConfirmationRecoveryTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // The replay test asserts a confirmation is actually re-sent and marked
+        // recovered, so it needs the send pipeline rather than the guard's
+        // blocked-by-default posture. The provider remains a fake.
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+    }
+
     /** @test */
     public function admin_can_list_client_confirmation_recovery_candidates(): void
     {

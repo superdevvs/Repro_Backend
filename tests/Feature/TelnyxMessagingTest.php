@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\TelnyxSmsProvider;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -34,6 +35,13 @@ class TelnyxMessagingTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // This suite asserts the send pipeline itself (SENT status, provider id,
+        // handled 422 on provider rejection), so it needs messages to reach the
+        // injected Mockery double rather than being withheld by the delivery
+        // guard. The double is not a live provider, and the concrete provider
+        // remains bound to a fake, so nothing leaves the process.
+        OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
 
         if (!extension_loaded('sodium')) {
             // Webhook signing tests still need libsodium to forge signed fixtures.

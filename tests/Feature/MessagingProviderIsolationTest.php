@@ -37,6 +37,14 @@ class MessagingProviderIsolationTest extends TestCase
 
         FakeSmsProvider::reset();
         FakeEmailProvider::reset();
+
+        // Scoped to this suite rather than installed globally by the service
+        // provider: a fake registered during application boot outranks any fake
+        // a test registers later, so a global one silently replaces other
+        // suites' fixtures. Here it is exactly what we want — any messaging
+        // request that escapes fails loudly instead of reaching a vendor.
+        Http::preventStrayRequests();
+        Http::fake();
     }
 
     public function test_the_container_resolves_fake_providers_in_testing(): void
@@ -108,6 +116,46 @@ class MessagingProviderIsolationTest extends TestCase
         $this->assertStringContainsString('blocked', strtolower((string) $message->error_message));
         $this->assertSame([], FakeSmsProvider::sent(), 'The provider should not be reached at all.');
         Http::assertNothingSent();
+    }
+
+    public function test_the_pipeline_opt_in_defaults_to_off_for_every_test(): void
+    {
+        // Other suites in this run (TelnyxMessagingTest, MessagingAutomationTest)
+        // switch the pipeline on for themselves. This asserts the switch is reset
+        // per test, so their opt-in cannot silently unblock an unrelated test.
+        $guard = app(\App\Services\Messaging\OutboundDeliveryGuard::class);
+
+        $this->assertFalse($guard->allows('SMS', '+14155230000'));
+        $this->assertSame(
+            \App\Services\Messaging\OutboundDeliveryGuard::REASON_BLOCKED_TESTING,
+            $guard->decide('SMS', '+14155230000')['reason']
+        );
+    }
+
+    public function test_the_pipeline_opt_in_never_reaches_a_real_provider(): void
+    {
+        // Even with the pipeline allowed, the provider is still a fake and no
+        // request reaches a messaging vendor.
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+
+        SmsNumber::query()->forceCreate([
+            'phone_number' => '+15550000002',
+            'label' => 'A1 isolation test 3',
+            'is_default' => true,
+        ]);
+
+        $message = app(MessagingService::class)->sendSms([
+            'to' => '+14155230002',
+            'body_text' => 'Balance reminder',
+            'send_source' => 'AUTOMATION',
+        ]);
+
+        $this->assertSame('SENT', $message->status, 'The opt-in should let the pipeline complete.');
+        $this->assertInstanceOf(FakeSmsProvider::class, app(TelnyxSmsProvider::class));
+        $this->assertCount(1, FakeSmsProvider::sent(), 'The fake, not Telnyx, took the send.');
+        Http::assertNothingSent();
+
+        \App\Services\Messaging\OutboundDeliveryGuard::resetTestingOverrides();
     }
 
     public function test_the_blocked_record_stores_no_credential_material(): void

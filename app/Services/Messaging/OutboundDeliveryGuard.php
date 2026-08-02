@@ -26,14 +26,47 @@ class OutboundDeliveryGuard
 {
     public const REASON_ALLOWED_PRODUCTION = 'allowed_production';
     public const REASON_ALLOWED_OPT_IN = 'allowed_opt_in_allowlisted';
+    public const REASON_ALLOWED_TEST_PIPELINE = 'allowed_testing_fake_provider_pipeline';
     public const REASON_BLOCKED_TESTING = 'blocked_testing_environment';
     public const REASON_BLOCKED_NO_OPT_IN = 'blocked_non_production_default';
     public const REASON_BLOCKED_NOT_ALLOWLISTED = 'blocked_recipient_not_allowlisted';
     public const REASON_BLOCKED_FIXTURE = 'blocked_fixture_recipient';
     public const REASON_BLOCKED_NO_RECIPIENT = 'blocked_missing_recipient';
 
+    /**
+     * Lets a test exercise the send pipeline end to end.
+     *
+     * Blocking every send in `testing` is the right default, but it also hides
+     * the pipeline itself: the suites that assert a send is recorded as SENT, or
+     * that a provider rejection surfaces as a handled 422, need the message to
+     * actually reach their injected double. Those doubles are Mockery mocks and
+     * in-memory fakes, so honouring this flag cannot produce a live call — the
+     * concrete providers stay bound to fakes and the vendor hosts stay faked by
+     * {@see \App\Providers\MessagingSafetyServiceProvider} either way.
+     *
+     * Reset before every test by that provider, so it can never leak between
+     * tests or be left on by accident.
+     */
+    private static bool $allowFakeProviderPipeline = false;
+
     public function __construct(private readonly Application $app)
     {
+    }
+
+    /**
+     * Opt a single test into the full send pipeline. Ignored outside `testing`.
+     */
+    public static function allowFakeProviderPipelineForTesting(bool $allow = true): void
+    {
+        self::$allowFakeProviderPipeline = $allow;
+    }
+
+    /**
+     * Restore the blocked-by-default posture.
+     */
+    public static function resetTestingOverrides(): void
+    {
+        self::$allowFakeProviderPipeline = false;
     }
 
     /**
@@ -55,6 +88,12 @@ class OutboundDeliveryGuard
         // Tests never talk to a provider. Checked before anything else so no
         // configuration mistake can opt a test run into real delivery.
         if ($this->app->environment('testing')) {
+            // Only reachable when a test opted in explicitly; the providers are
+            // still fakes, so this permits the pipeline, not a live call.
+            if (self::$allowFakeProviderPipeline) {
+                return $this->verdict(true, self::REASON_ALLOWED_TEST_PIPELINE, $environment);
+            }
+
             return $this->verdict(false, self::REASON_BLOCKED_TESTING, $environment);
         }
 

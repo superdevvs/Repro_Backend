@@ -308,9 +308,13 @@ class ShootFilesTest extends TestCase
             'file_ids' => [$third->id, $first->id, $second->id],
         ])->assertOk();
 
-        $this->assertSame(0, $third->fresh()->sort_order);
-        $this->assertSame(1, $first->fresh()->sort_order);
-        $this->assertSame(2, $second->fresh()->sort_order);
+        // Positions are 1-based. The media tab decides whether a shoot has a
+        // saved arrangement with `(sort_order ?? 0) > 0`, so a first item stored
+        // as 0 was indistinguishable from an unset column and the manual order
+        // was discarded and re-derived. See ShootMediaInteractionService::reorderFiles.
+        $this->assertSame(1, $third->fresh()->sort_order);
+        $this->assertSame(2, $first->fresh()->sort_order);
+        $this->assertSame(3, $second->fresh()->sort_order);
     }
 
     #[Test]
