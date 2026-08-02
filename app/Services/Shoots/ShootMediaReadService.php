@@ -359,6 +359,7 @@ class ShootMediaReadService
         $needsWatermark = $needsWatermark && $file->shouldBeWatermarked();
         $url = null;
         $thumbUrl = null;
+        $gridUrl = null;
         $mediumUrl = null;
         $largeUrl = null;
         $originalUrl = null;
@@ -373,6 +374,9 @@ class ShootMediaReadService
             );
             $webUrl = $mediumUrl;
             $largeUrl = $mediumUrl;
+            // Watermarked media has no separate grid rendition; the watermarked
+            // web image is the sharpest thing we may serve.
+            $gridUrl = $mediumUrl;
             $url = $mediumUrl ?? $thumbUrl;
             $originalUrl = $url;
             $placeholderUrl = $this->resolvePreviewPath($file->watermarked_placeholder_path);
@@ -396,6 +400,9 @@ class ShootMediaReadService
             }
             $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
             $webUrl = $this->resolvePreviewPath($file->web_path);
+            // The grid rendition (~1000px) is what desktop tiles should load;
+            // it falls back to `web` for files processed before it existed.
+            $gridUrl = $this->resolvePreviewPath($file->grid_path ?? null) ?? $webUrl;
             $mediumUrl = $webUrl;
             $largeUrl = $webUrl;
             $placeholderUrl = $this->resolvePreviewPath($file->placeholder_path);
@@ -454,6 +461,14 @@ class ShootMediaReadService
             'sequence' => $file->sequence,
             'is_hidden' => $file->is_hidden ?? false,
             'media_type' => $file->media_type,
+            // AI editing provenance so the Media tabs can tag results produced by
+            // the AI Editing workspace (fal.ai / Autoenhance) with an "AI" badge.
+            'is_ai_edited' => (bool) $file->is_ai_edited,
+            'isAiEdited' => (bool) $file->is_ai_edited,
+            'ai_editing_job_id' => $file->ai_editing_job_id,
+            'aiEditingJobId' => $file->ai_editing_job_id,
+            'ai_editing_metadata' => $file->ai_editing_metadata,
+            'aiEditingMetadata' => $file->ai_editing_metadata,
             'thumbnail_path' => $needsWatermark ? null : $file->thumbnail_path,
             'web_path' => $needsWatermark ? null : $file->web_path,
             'placeholder_path' => $needsWatermark ? null : $file->placeholder_path,
@@ -474,6 +489,7 @@ class ShootMediaReadService
             'thumbnail_url' => $thumbUrl,
             'thumb_url' => $thumbUrl,
             'thumb' => $thumbUrl,
+            'grid_url' => $gridUrl ?? null,
             'web_url' => $webUrl,
             'medium_url' => $mediumUrl,
             'medium' => $mediumUrl,

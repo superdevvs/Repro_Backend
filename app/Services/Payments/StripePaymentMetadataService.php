@@ -164,6 +164,12 @@ class StripePaymentMetadataService
             'refunded_at' => $this->normalizeIsoDateString($details['refunded_at'] ?? null),
             'refund_id' => $this->stringOrNull($details['refund_id'] ?? null),
             'refund_amount' => $this->toNullableFloat($details['refund_amount'] ?? null),
+            // Authoritative refunded total from the payment_refunds rows, so the
+            // client computes a net contribution instead of discarding a
+            // partially refunded payment entirely.
+            'refunded_amount' => $payment->refundedAmount(),
+            'net_amount' => $payment->netAmount(),
+            'refundable_remainder' => $payment->refundableRemainder(),
             'payment_method_type' => $this->stringOrNull($details['payment_method_type'] ?? null),
             'payment_method_brand' => $this->stringOrNull($details['payment_method_brand'] ?? null),
             'payment_method_last4' => $this->stringOrNull($details['payment_method_last4'] ?? null),
@@ -191,6 +197,12 @@ class StripePaymentMetadataService
             'refunded_at' => $serialized['refunded_at'],
             'refund_id' => $serialized['refund_id'],
             'refund_amount' => $serialized['refund_amount'],
+            // Carried into the activity entry because that is the only payload
+            // the activity log reads. Without the remainder the UI cannot tell a
+            // partial refund from a full one and would refuse a second refund.
+            'refunded_amount' => $serialized['refunded_amount'],
+            'net_amount' => $serialized['net_amount'],
+            'refundable_remainder' => $serialized['refundable_remainder'],
             'payment_method_brand' => $serialized['payment_method_brand'],
             'payment_method_last4' => $serialized['payment_method_last4'],
         ];

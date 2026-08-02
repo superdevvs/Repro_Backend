@@ -23,8 +23,15 @@ class ImageProcessingService
     ];
     
     // Image sizes configuration
+    //
+    // `grid` sits between thumbnail and web for desktop media-grid tiles. Tiles
+    // render well above 300px, so serving the thumbnail meant the browser
+    // upscaled it and the result looked soft (meeting 26 Jul 2026 [00:23:08]).
+    // Phones keep getting the 300px file via srcset, so this costs nothing on
+    // mobile while making the desktop grid sharp.
     protected const SIZES = [
         'thumbnail' => ['width' => 300, 'height' => 300, 'quality' => 80],
+        'grid' => ['width' => 1000, 'height' => 1000, 'quality' => 85],
         'web' => ['width' => 1500, 'height' => 1500, 'quality' => 85],
         'placeholder' => ['width' => 20, 'height' => 20, 'quality' => 30]
     ];
@@ -136,6 +143,7 @@ class ImageProcessingService
             // Update shoot file with generated paths
             $shootFile->update([
                 'thumbnail_path' => $generatedPaths['thumbnail'] ?? null,
+                'grid_path' => $generatedPaths['grid'] ?? null,
                 'web_path' => $generatedPaths['web'] ?? null,
                 'placeholder_path' => $generatedPaths['placeholder'] ?? null,
                 'processed_at' => now(),

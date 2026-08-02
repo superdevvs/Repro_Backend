@@ -35,7 +35,10 @@ return [
 
     'from' => [
         'address' => env('MAIL_FROM_ADDRESS', 'noreply@reprophotos.com'),
-        'name' => env('MAIL_FROM_NAME', 'REPro Photos'),
+        // Client-facing sender name: must match the brand as written everywhere
+        // else ("R/E Pro Photos"). Note this is only the default — production
+        // sets MAIL_FROM_NAME, so that env value needs updating too.
+        'name' => env('MAIL_FROM_NAME', 'R/E Pro Photos'),
     ],
 
     'contact_address' => env('MAIL_CONTACT_ADDRESS', 'contact@reprophotos.com'),

@@ -599,6 +599,11 @@ class Shoot extends Model
         return $this->hasMany(ShootFile::class);
     }
 
+    public function projects()
+    {
+        return $this->hasMany(Project::class);
+    }
+
     public function featuredHomepageImages()
     {
         return $this->hasMany(FeaturedShootImage::class)->orderBy('sort_order');
@@ -641,10 +646,51 @@ class Shoot extends Model
             ->values();
     }
 
+    /**
+     * The authoritative amount paid on this shoot: completed payments less refunds.
+     *
+     * Refunds are subtracted per payment rather than excluding the payment
+     * outright. Previously a refunded payment was dropped from the total (its
+     * status stopped being `completed`), so refunding $50 of a $500 payment
+     * removed the whole $500 and the shoot looked unpaid. Every surface —
+     * accounting, client billing, the shoot overview, payment status — reads this
+     * one method, so the correction propagates from here.
+     */
     public function calculateCanonicalTotalPaid(): float
     {
-        return (float) $this->getCanonicalCompletedPayments()->sum(
-            fn (Payment $payment) => (float) $payment->amount
+        $completed = $this->getCanonicalCompletedPayments();
+
+        $gross = (float) $completed->sum(fn (Payment $payment) => (float) $payment->amount);
+        $refunded = (float) $completed->sum(fn (Payment $payment) => $payment->refundedAmount());
+
+        return round(max($gross - $refunded, 0), 2);
+    }
+
+    /**
+     * Total refunded across this shoot's payments.
+     *
+     * Deliberately wider than {@see getCanonicalCompletedPayments()}: a payment
+     * flips to `refunded` once it has been returned in full, so scoping this to
+     * completed payments would report 0 refunded for exactly the case where the
+     * most money went back. Duplicate provider rows are still collapsed so a
+     * refund is never counted twice.
+     */
+    public function calculateTotalRefunded(): float
+    {
+        $payments = $this->relationLoaded('payments')
+            ? $this->payments
+            : $this->payments()->get();
+
+        return round(
+            (float) $payments
+                ->filter(fn (Payment $payment) => in_array(
+                    $payment->status,
+                    [Payment::STATUS_COMPLETED, Payment::STATUS_REFUNDED],
+                    true
+                ))
+                ->unique(fn (Payment $payment) => $this->resolvePaymentDeduplicationKey($payment))
+                ->sum(fn (Payment $payment) => $payment->refundedAmount()),
+            2
         );
     }
 

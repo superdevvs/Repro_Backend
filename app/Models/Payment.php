@@ -50,4 +50,47 @@ class Payment extends Model
     {
         return $this->hasMany(PaymentServiceAllocation::class);
     }
+
+    public function refunds()
+    {
+        return $this->hasMany(PaymentRefund::class);
+    }
+
+    /**
+     * Total refunded against this payment.
+     *
+     * Uses the loaded relation when available so callers that eager-load
+     * `payments.refunds` do not trigger a query per payment.
+     */
+    public function refundedAmount(): float
+    {
+        $refunds = $this->relationLoaded('refunds')
+            ? $this->refunds
+            : $this->refunds()->get();
+
+        return round((float) $refunds->sum(fn (PaymentRefund $refund) => (float) $refund->amount), 2);
+    }
+
+    /**
+     * What this payment still contributes to the amount paid.
+     *
+     * Floored at zero: a data error that over-refunds must not produce a
+     * negative contribution that silently reduces other payments.
+     */
+    public function netAmount(): float
+    {
+        return round(max((float) $this->amount - $this->refundedAmount(), 0), 2);
+    }
+
+    /** The most that may still be refunded against this payment. */
+    public function refundableRemainder(): float
+    {
+        return $this->netAmount();
+    }
+
+    /** True once the whole payment has been returned. */
+    public function isFullyRefunded(): bool
+    {
+        return $this->refundedAmount() + 0.01 >= (float) $this->amount;
+    }
 }

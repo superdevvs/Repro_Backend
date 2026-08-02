@@ -133,15 +133,30 @@ class ShootManagementTools
 
             $updates = [];
             if ($newDate) {
-                try {
-                    $parsedDate = Carbon::parse($newDate);
-                    $updates['scheduled_date'] = $parsedDate->toDateString();
-                } catch (\Exception $e) {
+                // Accept whatever reached the tool: the model should send ISO, but
+                // a passed-through "June 5" or "6-6" must not fail the reschedule.
+                $interpreted = \App\Services\ReproAi\DateInterpreter::interpret($newDate);
+
+                if ($interpreted->date === null) {
                     return [
                         'success' => false,
-                        'error' => 'Invalid date format. Please use YYYY-MM-DD format.',
+                        'error' => "I could not read \"{$newDate}\" as a date. Try a day and month, for example \"June 5\" or \"6/5\".",
                     ];
                 }
+
+                if ($interpreted->ambiguous) {
+                    return [
+                        'success' => false,
+                        'error' => sprintf(
+                            'That date could be read more than one way. Did you mean %s? Please confirm before I reschedule.',
+                            $interpreted->describe()
+                        ),
+                        'needs_confirmation' => true,
+                        'interpreted_date' => $interpreted->date,
+                    ];
+                }
+
+                $updates['scheduled_date'] = $interpreted->date;
             }
             if ($newTime) {
                 $updates['time'] = $newTime;

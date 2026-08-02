@@ -22,6 +22,7 @@ class ShootFile extends Model
         'watermarked_web_path',
         'watermarked_placeholder_path',
         'thumbnail_path',
+        'grid_path',
         'web_path',
         'placeholder_path',
         'file_type',
