@@ -582,6 +582,12 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::match(['put', 'patch'], 'invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
     Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
 
+    // Manual payment reminder (meeting 26 Jul 2026, [00:15:28]). Sales reps and
+    // editing managers chase payment too, so this is not admin-only; the parent
+    // group already restricts to admin/superadmin/editing_manager and the
+    // salesRep case is registered separately below.
+    Route::post('invoices/{invoice}/send-reminder', [App\Http\Controllers\Admin\InvoiceReminderController::class, 'send']);
+
     // Invoice approval endpoints
     Route::post('invoices/{invoice}/approve', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'approve']);
     Route::post('invoices/{invoice}/reject', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reject']);
@@ -944,6 +950,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/debug-files', [App\Http\Controllers\API\WatermarkSettingsController::class, 'debugFiles']);
     });
 
+    // Robbie health: is the language model actually being used, or is every reply
+    // coming from the rule-based fallback? The fallback is silent by design, so
+    // this is the only way to tell without reading logs.
+    Route::middleware(['auth:sanctum', 'role:admin,superadmin'])
+        ->get('admin/robbie-health', [App\Http\Controllers\API\RobbieHealthController::class, 'show']);
+
     // Robbie settings (superadmin only)
     Route::middleware(['auth:sanctum', 'role:superadmin'])->prefix('admin/robbie-settings')->group(function () {
         Route::get('/', [App\Http\Controllers\API\RobbieSettingsController::class, 'index']);
@@ -955,6 +967,12 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pa
     '/shoots/reschedule-requests/{rescheduleRequest}',
     [ShootRescheduleRequestController::class, 'updateStatus']
 );
+
+// Sales reps chase their own clients' payments, so they get the same manual
+// reminder action as admins and editing managers (meeting [00:15:34]).
+Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('salesrep')->group(function () {
+    Route::post('invoices/{invoice}/send-reminder', [App\Http\Controllers\Admin\InvoiceReminderController::class, 'send']);
+});
 
 Route::middleware('auth:sanctum')->prefix('reports/invoices')->group(function () {
     Route::get('summary', [InvoiceReportController::class, 'summary']);

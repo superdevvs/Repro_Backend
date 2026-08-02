@@ -211,6 +211,18 @@ class AiChatController extends Controller
                 $user
             );
 
+            // The operator may decline the message (it recognised the intent but
+            // could not resolve the record). Falling through to the orchestrators
+            // keeps the conversation alive instead of dead-ending the user.
+            if (is_array($shootOperatorResult) && ($shootOperatorResult['handoff'] ?? false)) {
+                Log::info('Shoot operator handed off to orchestrator', [
+                    'session_id' => $session->id,
+                    'reason' => $shootOperatorResult['handoff_reason'] ?? null,
+                ]);
+                $serverContext['handoff'] = $shootOperatorResult['handoff_context'] ?? [];
+                $shootOperatorResult = null;
+            }
+
             if (is_array($shootOperatorResult)) {
                 return response()->json($this->persistAssistantResult($session, $shootOperatorResult))
                     ->header('Access-Control-Allow-Origin', $origin ?? $request->headers->get('Origin', '*'))

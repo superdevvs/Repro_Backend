@@ -16,6 +16,8 @@ class ServiceSqftRange extends Model
         'duration',
         'price',
         'photographer_pay',
+        'photographer_pay_type',
+        'photographer_pay_percent',
         'photo_count',
     ];
 
@@ -26,6 +28,7 @@ class ServiceSqftRange extends Model
         'duration' => 'integer',
         'price' => 'decimal:2',
         'photographer_pay' => 'decimal:2',
+        'photographer_pay_percent' => 'decimal:2',
         'photo_count' => 'integer',
     ];
 

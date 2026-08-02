@@ -112,11 +112,16 @@ class ShootMediaInteractionService
 
     public function reorderFiles(Shoot $shoot, array $fileIds, ?User $user = null): array
     {
+        // 1-based so that "has a saved order" is distinguishable from "never
+        // ordered". With 0-based positions the first file was written as 0, which
+        // the client could not tell apart from an unset column (it reads
+        // `sort_order ?? 0`), so a manual arrangement starting at position 0 was
+        // silently treated as absent and re-derived from filename/capture time.
         DB::transaction(function () use ($shoot, $fileIds) {
             foreach ($fileIds as $index => $fileId) {
                 ShootFile::where('shoot_id', $shoot->id)
                     ->where('id', $fileId)
-                    ->update(['sort_order' => $index]);
+                    ->update(['sort_order' => $index + 1]);
             }
         });
 

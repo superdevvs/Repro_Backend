@@ -568,12 +568,30 @@ class ShootOperatorService
             ->values()
             ->all();
 
+        // When we cannot resolve the shoot but DO have near-matches, offer them:
+        // the user picks one and stays in the deterministic flow.
+        if (!empty($suggestions)) {
+            return [
+                'assistant_messages' => [[
+                    'content' => "I could not confidently match that to a shoot. Did you mean one of these?",
+                    'metadata' => ['type' => 'shoot_operator', 'error' => 'shoot_not_found'],
+                ]],
+                'suggestions' => $suggestions,
+            ];
+        }
+
+        // No candidates at all: hand the message to the assistant rather than
+        // ending the exchange here. This service runs BEFORE either orchestrator
+        // and short-circuits the request, so returning a dead end meant the user
+        // got "send a shoot number" and the assistant was never consulted
+        // (A1.docx, Robbie screenshot).
         return [
-            'assistant_messages' => [[
-                'content' => 'I could not confidently match that to a shoot. Send a shoot number or a more specific address.',
-                'metadata' => ['type' => 'shoot_operator', 'error' => 'shoot_not_found'],
-            ]],
-            'suggestions' => $suggestions ?: ['Show recent shoots', 'Use shoot number', 'Use property address'],
+            'handoff' => true,
+            'handoff_reason' => 'shoot_operator_unresolved',
+            'handoff_context' => [
+                'attempted' => 'shoot_operator',
+                'message' => $message,
+            ],
         ];
     }
 
@@ -601,8 +619,60 @@ class ShootOperatorService
         }
 
         $lower = strtolower($message);
+
+        // A request to create a shoot is not an operation on an existing one.
+        // The keyword list below matches the bare word "shoot", so "I want to
+        // book a shoot" used to be captured here and could only ever answer with
+        // existing shoots — the booking flow never ran and Robbie looked broken
+        // (A1.docx Robbie screenshot). Creation intent falls through instead.
+        if ($this->looksLikeNewBookingRequest($lower)) {
+            return false;
+        }
+
         foreach (['shoot', 'raw', 'floorplan', 'floor plan', 'iguide', 'cubicasa', 'overview', 'sync', 'issue', 'schedule', 'reschedule'] as $needle) {
             if (str_contains($lower, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the message asks to create a booking rather than act on one.
+     *
+     * An explicit shoot reference wins: "reschedule shoot #12" names a record to
+     * operate on, so it stays with the operator even though it reads like
+     * scheduling. Likewise "reschedule" alone is an operation, not a booking.
+     */
+    protected function looksLikeNewBookingRequest(string $lower): bool
+    {
+        if (preg_match('/#\s*\d+/', $lower)) {
+            return false;
+        }
+
+        // "reschedule" contains "schedule"; strip it so the scheduling verbs
+        // below cannot fire on an existing-shoot reschedule request.
+        $withoutReschedule = str_replace(['reschedule', 're-schedule'], '', $lower);
+
+        $bookingVerbs = [
+            'book a shoot',
+            'book shoot',
+            'book another',
+            'new shoot',
+            'new booking',
+            'create a shoot',
+            'create shoot',
+            'schedule a shoot',
+            'schedule a new',
+            'set up a shoot',
+            'want to book',
+            'like to book',
+            'need to book',
+        ];
+
+        foreach ($bookingVerbs as $verb) {
+            if (str_contains($withoutReschedule, $verb)) {
                 return true;
             }
         }

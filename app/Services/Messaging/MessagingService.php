@@ -32,7 +32,39 @@ class MessagingService
         private readonly Providers\TelnyxSmsProvider $telnyxProvider,
         private readonly Providers\CakemailProvider $cakemailProvider,
         private readonly Providers\LocalSmtpProvider $localSmtpProvider,
+        private readonly OutboundDeliveryGuard $deliveryGuard,
     ) {
+    }
+
+    /**
+     * Record a message that was withheld instead of sent.
+     *
+     * Blocking is not a failure: the caller asked for something reasonable and
+     * the environment declined to deliver it. The row is kept with a distinct
+     * BLOCKED status so local work is auditable, and no exception is raised so
+     * automation flows continue exactly as they would after a real send.
+     */
+    private function markMessageBlocked(Message $message, string $channel): Message
+    {
+        $verdict = $this->deliveryGuard->decide($channel, $message->to_address);
+
+        $this->deliveryGuard->logBlocked($channel, $message->to_address, [
+            'message_id' => $message->id,
+            'send_source' => $message->send_source ?? null,
+        ]);
+
+        $message->update([
+            'status' => 'BLOCKED',
+            'error_message' => 'Outbound delivery blocked: ' . $verdict['reason'],
+            'metadata' => $this->mergeDeliveryMetadata($message->metadata, [
+                'status' => 'BLOCKED',
+                'blocked_reason' => $verdict['reason'],
+                'blocked_environment' => $verdict['environment'],
+                'blocked_at' => now()->toIso8601String(),
+            ]),
+        ]);
+
+        return $message->fresh();
     }
 
     /**
@@ -47,6 +79,11 @@ class MessagingService
         $payload['bcc'] = $bcc;
 
         $message = $this->storeMessageRecord($payload, $channel, 'EMAIL');
+
+        // Environment gate, checked before the provider is even resolved.
+        if (! $this->deliveryGuard->allows('EMAIL', (string) ($payload['to'] ?? $message->to_address))) {
+            return $this->markMessageBlocked($message, 'EMAIL');
+        }
 
         try {
             $provider = $this->getEmailProvider($channel);
@@ -147,6 +184,12 @@ class MessagingService
             status: 'QUEUED',
             providerOverride: 'TELNYX'
         );
+
+        // Environment gate. A fixture number or a non-opted-in local run stops
+        // here, before any Telnyx call is constructed.
+        if (! $this->deliveryGuard->allows('SMS', (string) ($payload['to'] ?? $message->to_address))) {
+            return $this->markMessageBlocked($message, 'SMS');
+        }
 
         try {
             $providerMessageId = $this->telnyxProvider->send($number, [

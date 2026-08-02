@@ -847,7 +847,22 @@ class BookShootFlow implements FlowHandlerInterface
         return implode(', ', $parts) ?: 'Property';
     }
 
+    /**
+     * Read a date out of the user's message.
+     *
+     * Delegates to the shared {@see \App\Services\ReproAi\DateInterpreter} so
+     * "June 5", "6-6", "5/6/27" and relative phrases all work, and so the three
+     * flows that used to carry a copy of this logic agree with each other.
+     */
     protected function parseDateFromMessage(string $message): ?string
+    {
+        return \App\Services\ReproAi\DateInterpreter::interpret($message)
+            ->futureOnly()
+            ->date;
+    }
+
+    /** Retained for reference; superseded by the shared interpreter above. */
+    protected function legacyParseDateFromMessage(string $message): ?string
     {
         $messageLower = strtolower(trim($message));
         

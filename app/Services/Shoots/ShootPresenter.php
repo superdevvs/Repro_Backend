@@ -273,7 +273,11 @@ class ShootPresenter
             }]);
         }
         if (!$shoot->relationLoaded('payments')) {
-            $shoot->load('payments');
+            // Refunds are eager-loaded with payments: the paid total subtracts them,
+            // and without this each payment would issue its own query for them.
+            $shoot->load('payments.refunds');
+        } elseif (!$shoot->payments->every(fn ($payment) => $payment->relationLoaded('refunds'))) {
+            $shoot->load('payments.refunds');
         }
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
 

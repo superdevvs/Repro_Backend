@@ -133,14 +133,68 @@ class ShootMediaMutationSupportService
 
     public function deleteFile(Shoot $shoot, ShootFile $file): Shoot
     {
+        $wasCover = (bool) ($file->is_cover ?? false);
+
         $this->deleteStoredAssets($file);
 
         $file->delete();
+
+        // Reassign the cover when the deleted file held it, so a shoot cannot keep
+        // advertising a thumbnail whose image no longer exists (meeting 26 Jul 2026
+        // [00:25:18], and the delivered-shoot-with-no-media case in A1.docx).
+        if ($wasCover) {
+            $this->reassignCoverImage($shoot);
+        }
 
         $shoot = $this->refreshMediaCounters($shoot->fresh());
         $this->clearShootFilesCache($shoot);
 
         return $shoot;
+    }
+
+    /**
+     * Promote the next deliverable image to cover, or leave the shoot with none.
+     *
+     * Preferring a delivered/verified image keeps the cover consistent with what a
+     * client is allowed to see; falling back to any image is better than none.
+     *
+     * `shoots.hero_image` is cleared as well. It caches the resolved URL of the
+     * cover file, and {@see ShootPresenter} only recomputes it when empty — so
+     * leaving the old value behind kept the shoot advertising the URL of a file
+     * that had just been deleted, which is the broken-thumbnail symptom this is
+     * meant to fix.
+     */
+    protected function reassignCoverImage(Shoot $shoot): void
+    {
+        if (! Schema::hasColumn('shoot_files', 'is_cover')) {
+            return;
+        }
+
+        $replacement = $shoot->files()
+            ->where('is_cover', false)
+            ->where(function ($query) {
+                $query->whereNull('media_type')
+                    ->orWhereIn('media_type', ['image', 'raw']);
+            })
+            ->orderByRaw(
+                "CASE WHEN workflow_stage IN (?, ?) THEN 0 ELSE 1 END",
+                [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]
+            )
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->first();
+
+        if ($replacement) {
+            $replacement->update(['is_cover' => true]);
+        }
+
+        // Null it either way: with a replacement the presenter resolves the new
+        // cover's URL, and with none it correctly reports no hero image rather
+        // than a dead link.
+        if (Schema::hasColumn('shoots', 'hero_image') && $shoot->hero_image !== null) {
+            $shoot->hero_image = null;
+            $shoot->save();
+        }
     }
 
     public function transformFile(ShootFile $file): array
