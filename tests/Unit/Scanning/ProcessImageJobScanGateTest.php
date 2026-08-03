@@ -6,6 +6,7 @@ use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
 use App\Services\DropboxWorkflowService;
 use App\Services\ImageProcessingService;
+use App\Services\Media\MediaStorage;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
@@ -54,7 +55,7 @@ class ProcessImageJobScanGateTest extends TestCase
             $imageService->expects($this->never())->method('needsPreviewRegeneration');
             $imageService->expects($this->never())->method('processImage');
 
-            (new ProcessImageJob($this->file($status)))->handle($imageService, $dropbox);
+            (new ProcessImageJob($this->file($status)))->handle($imageService, $dropbox, $this->createMock(MediaStorage::class));
         }
     }
 
@@ -63,6 +64,7 @@ class ProcessImageJobScanGateTest extends TestCase
     {
         $imageService = $this->createMock(ImageProcessingService::class);
         $dropbox = $this->createMock(DropboxWorkflowService::class);
+        $media = $this->createMock(MediaStorage::class);
 
         // Passing the gate means the job consults the image service; returning
         // false here keeps the "already processed" short-circuit cheap.
@@ -70,7 +72,7 @@ class ProcessImageJobScanGateTest extends TestCase
             ->method('needsPreviewRegeneration')
             ->willReturn(false);
 
-        (new ProcessImageJob($this->file(ShootFile::SCAN_STATUS_CLEAN)))->handle($imageService, $dropbox);
+        (new ProcessImageJob($this->file(ShootFile::SCAN_STATUS_CLEAN)))->handle($imageService, $dropbox, $media);
     }
 
     #[Test]
@@ -78,11 +80,12 @@ class ProcessImageJobScanGateTest extends TestCase
     {
         $imageService = $this->createMock(ImageProcessingService::class);
         $dropbox = $this->createMock(DropboxWorkflowService::class);
+        $media = $this->createMock(MediaStorage::class);
 
         $imageService->expects($this->once())
             ->method('needsPreviewRegeneration')
             ->willReturn(false);
 
-        (new ProcessImageJob($this->file(null)))->handle($imageService, $dropbox);
+        (new ProcessImageJob($this->file(null)))->handle($imageService, $dropbox, $media);
     }
 }

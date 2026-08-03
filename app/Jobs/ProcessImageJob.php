@@ -61,6 +61,7 @@ class ProcessImageJob implements ShouldQueue
                 $this->shootFile->processed_at
                 && $this->shootFile->thumbnail_path
                 && $this->shootFile->web_path
+                && $this->shootFile->grid_path
                 && !$needsPreviewRegeneration
             ) {
                 Log::info("Image already processed, skipping", [
