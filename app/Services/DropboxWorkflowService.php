@@ -112,9 +112,10 @@ class DropboxWorkflowService
         }
 
         $cmd = sprintf(
-            'exiftool -j -DateTimeOriginal -CreateDate -ModifyDate -ImageWidth -ImageHeight -Make -Model %s',
+            'exiftool -j -DateTimeOriginal -CreateDate -ModifyDate -ImageWidth -ImageHeight -Make -Model %s 2>&1',
             escapeshellarg($path)
         );
+        $output = [];
         exec($cmd, $output, $code);
 
         if ($code !== 0 || empty($output)) {

@@ -65,12 +65,12 @@ class ShootPaymentsController extends Controller
             ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
             ->get();
         $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
-        // Explicit "fast-forward" delivery: an authorized admin (gated above) may
-        // finalize a whole shoot with no raw/edited media. Real, billable shoots
-        // still require media via the normal path because the flag is only sent
-        // by the deliberate fast-forward action, never by the standard finalize.
+        // Explicit fast-forward delivery is valid only for an eligible whole
+        // shoot. Never trust the request flag by itself: a forged flag on a
+        // standard/billable shoot must still fail closed.
         $allowNoMediaDelivery = $request->boolean('allow_no_media_delivery')
-            && !$shootServiceId;
+            && !$shootServiceId
+            && $shoot->allowsNoMediaDelivery();
         $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
 
         if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {

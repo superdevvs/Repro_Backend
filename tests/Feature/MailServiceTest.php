@@ -19,7 +19,7 @@ class MailServiceTest extends TestCase
     use MockeryPHPUnitIntegration;
     use RefreshDatabase;
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduled_email_continues_to_assigned_photographers_when_client_delivery_fails(): void
     {
         $client = User::factory()->create([
@@ -98,7 +98,7 @@ class MailServiceTest extends TestCase
         ], array_column($deliveries, 'to'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduled_email_skips_blank_client_address_and_still_notifies_assigned_photographers(): void
     {
         $client = User::factory()->create([
@@ -155,7 +155,7 @@ class MailServiceTest extends TestCase
         $this->assertSame([$photographer->email], array_column($deliveries, 'to'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function updated_email_skips_blank_client_address_and_still_notifies_assigned_photographers(): void
     {
         $client = User::factory()->create([
@@ -213,7 +213,7 @@ class MailServiceTest extends TestCase
         $this->assertSame([$photographer->email], array_column($deliveries, 'to'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function shoot_requested_email_is_delivered_to_unverified_clients_as_a_transactional_message(): void
     {
         $this->createDefaultEmailChannel();
@@ -267,7 +267,7 @@ class MailServiceTest extends TestCase
         $this->assertSame($client->id, $clientPayload['related_account_id'] ?? null);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function shoot_requested_email_is_blocked_for_bounced_clients(): void
     {
         $this->createDefaultEmailChannel();
@@ -319,7 +319,7 @@ class MailServiceTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function terms_accepted_email_persists_client_account_context_without_blocking_unverified_clients(): void
     {
         $client = User::factory()->create([
@@ -348,7 +348,7 @@ class MailServiceTest extends TestCase
         $this->assertSame('TERMS_ACCEPTED', $payloads[0]['send_source'] ?? null);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function password_reset_email_persists_client_account_context_without_blocking_unverified_clients(): void
     {
         $client = User::factory()->create([

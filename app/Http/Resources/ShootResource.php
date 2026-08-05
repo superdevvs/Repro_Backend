@@ -186,6 +186,10 @@ class ShootResource extends JsonResource
                 'name' => $this->client?->name ?? 'Unknown',
                 'email' => $this->client?->email ?? '',
                 'email_verified' => $this->client ? $this->client->email_verified_at !== null : false,
+                // Gated: photographers only receive the number inside the
+                // shoot-time window (see ShootClientContactVisibility).
+                'phone' => app(\App\Services\Shoots\ShootClientContactVisibility::class)
+                    ->phoneFor($this->resource, $requestingUser),
             ],
             'rep' => $this->when($this->rep_id, function () {
                 return [

@@ -33,6 +33,11 @@ class ShootActivityLogger
         'hold_rejected',
         'shoot_editing_started',
         'shoot_submitted_for_review',
+        // Editor "Submit Edits" that moves the shoot to REVIEW. Broadcasting it
+        // pushes a live in-app notification to editing managers and admins
+        // (who see all shoot activity), matching the editor-submit intent
+        // (task 14.1/14.2, Req 6.1/6.2).
+        'shoot_submitted_for_editing_review',
         'shoot_submitted_edited',
         'shoot_submitted_raw',
         'photographer_assigned',
@@ -188,6 +193,11 @@ class ShootActivityLogger
             'shoot_started' => 'Shoot started' . $by,
             'shoot_editing_started' => 'Editing started' . $by,
             'shoot_submitted_for_review' => 'Submitted for review' . $by,
+            'shoot_submitted_for_editing_review' => 'Edited files submitted to the editing manager for review'
+                . $by
+                . (isset($metadata['edited_photo_count']) && $metadata['edited_photo_count']
+                    ? " ({$metadata['edited_photo_count']} files)"
+                    : ''),
             'shoot_submitted_edited' => 'Edited files submitted to editing manager'
                 . $by
                 . (isset($metadata['edited_photo_count']) && $metadata['edited_photo_count']

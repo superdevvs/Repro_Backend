@@ -28,8 +28,8 @@ use Tests\TestCase;
  * all-success, all-failure, mixed, cancelled-only, empty, boundary, out-of-window,
  * out-of-scope, and non-terminal datasets rather than leaving them to chance.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioSuccessRatePropertyTest extends TestCase
 {
     use RefreshDatabase;

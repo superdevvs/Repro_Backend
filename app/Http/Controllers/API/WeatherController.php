@@ -59,8 +59,9 @@ class WeatherController extends Controller
             ]));
 
             $weather = $this->safeCacheGet($cacheKey);
+            $cacheMiss = !$weather;
 
-            if (!$weather) {
+            if ($cacheMiss) {
                 $weather = $this->weatherLookupService->lookup([
                     'location' => $request->input('location'),
                     'latitude' => $request->input('latitude'),
@@ -80,7 +81,11 @@ class WeatherController extends Controller
                 ], 404);
             }
 
-            $this->safeCachePut($cacheKey, $weather);
+            // Do not rewrite a hit: doing so creates a sliding expiration and a
+            // frequently requested location may never refresh from upstream.
+            if ($cacheMiss) {
+                $this->safeCachePut($cacheKey, $weather);
+            }
 
             return response()->json([
                 'success' => true,

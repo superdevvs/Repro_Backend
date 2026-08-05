@@ -40,7 +40,7 @@ class ShootMediaArchiveService
         string $statusUrl,
         ?int $shootServiceId = null
     ): array {
-        $type = $this->normalizeType($type);
+        $type = $this->canonicalizeType($type);
         $size = $this->normalizeSize($size);
 
         if (!$this->hasDownloadableFiles($shoot, $type, $size, $shootServiceId)) {
@@ -72,7 +72,7 @@ class ShootMediaArchiveService
 
     public function queueArchiveGeneration(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
-        $type = $this->normalizeType($type);
+        $type = $this->canonicalizeType($type);
         $size = $this->normalizeSize($size);
 
         if (!$this->hasDownloadableFiles($shoot, $type, $size, $shootServiceId)) {
@@ -99,7 +99,7 @@ class ShootMediaArchiveService
         bool $lockAlreadyHeld = false,
         ?int $shootServiceId = null
     ): array {
-        $type = $this->normalizeType($type);
+        $type = $this->canonicalizeType($type);
         $size = $this->normalizeSize($size);
 
         $lockAcquiredHere = false;
@@ -223,7 +223,7 @@ class ShootMediaArchiveService
 
     public function hasFreshArchive(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
-        $type = $this->normalizeType($type);
+        $type = $this->canonicalizeType($type);
         $size = $this->normalizeSize($size);
 
         if (!$this->archiveExists($shoot, $type, $size, $shootServiceId)) {
@@ -248,22 +248,22 @@ class ShootMediaArchiveService
 
     public function getArchivePath(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
-        $type = $this->normalizeType($type);
+        $typeToken = $this->typeToken($type);
         $size = $this->normalizeSize($size);
         $scope = $shootServiceId ? "service-{$shootServiceId}/" : '';
         $slug = $this->buildArchiveFilenameSlug($shoot);
 
-        return "shoots/{$shoot->id}/archives/{$scope}{$slug}-{$type}-{$size}.zip";
+        return "shoots/{$shoot->id}/archives/{$scope}{$slug}-{$typeToken}-{$size}.zip";
     }
 
     public function getManifestPath(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
-        $type = $this->normalizeType($type);
+        $typeToken = $this->typeToken($type);
         $size = $this->normalizeSize($size);
         $scope = $shootServiceId ? "service-{$shootServiceId}/" : '';
         $slug = $this->buildArchiveFilenameSlug($shoot);
 
-        return "shoots/{$shoot->id}/archives/{$scope}{$slug}-{$type}-{$size}.json";
+        return "shoots/{$shoot->id}/archives/{$scope}{$slug}-{$typeToken}-{$size}.json";
     }
 
     /**
@@ -374,6 +374,25 @@ class ShootMediaArchiveService
         if ($this->normalizeType($type) === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->shootAuthorizationSupport->isRawCameraFile($file))
+                ->values();
+        }
+
+        // Public archive filters: exclude un-ordered extras unless explicitly
+        // requested, and optionally restrict to specific media types so a
+        // per-tab "Download all" never packages media nobody ordered. Extras
+        // flagged required_for_editing are still packaged (Req 4.8) — this
+        // mirrors isRequiredForEditing() so the raw hand-off keeps the extras
+        // an editor genuinely needs while dropping the optional ones.
+        $filters = $this->parseTypeFilters($type);
+        if (! $filters['include_extras']) {
+            $files = $files
+                ->reject(fn (ShootFile $file) => ! $file->isRequiredForEditing())
+                ->values();
+        }
+        if (! empty($filters['media_types'])) {
+            $allowed = $filters['media_types'];
+            $files = $files
+                ->filter(fn (ShootFile $file) => in_array((string) $file->media_type, $allowed, true))
                 ->values();
         }
 
@@ -533,12 +552,110 @@ class ShootMediaArchiveService
     {
         $scope = $shootServiceId ? ':service:' . $shootServiceId : '';
 
-        return 'shoot-media-archive:' . $shoot->id . $scope . ':' . $this->normalizeType($type) . ':' . $this->normalizeSize($size);
+        return 'shoot-media-archive:' . $shoot->id . $scope . ':' . $this->typeToken($type) . ':' . $this->normalizeSize($size);
     }
 
     protected function normalizeType(?string $type): string
     {
-        return strtolower((string) $type) === 'edited' ? 'edited' : 'raw';
+        $base = explode('|', strtolower((string) $type), 2)[0];
+
+        return $base === 'edited' ? 'edited' : 'raw';
+    }
+
+    /**
+     * Public archive selectors (raw/edited) may carry a filter segment after a
+     * pipe, e.g. "edited|we" (include extras) or "edited|we;mt=photos,video".
+     * The plain token is the default delivery scope: extras are excluded unless
+     * the caller explicitly opts in (Requirement 4.8 / task 9.1). canonicalizeType
+     * sanitises the base while preserving the filter so it flows through the
+     * async generation pipeline and cache keys unchanged.
+     */
+    public function canonicalizeType(?string $type): string
+    {
+        $filters = $this->parseTypeFilters($type);
+
+        return $this->buildArchiveTypeToken(
+            $this->normalizeType($type),
+            $filters['include_extras'],
+            $filters['media_types']
+        );
+    }
+
+    /**
+     * Build the canonical archive selector token from explicit filters. The
+     * default scope excludes extras, so the plain token (e.g. "edited") is the
+     * no-extras delivery archive that observers pre-warm and the endpoint uses
+     * by default; extras are added only when explicitly requested via the "we"
+     * (with-extras) segment. Media types are lower-cased and sorted so the same
+     * selection always yields the same token (and the same cache key).
+     */
+    public function buildArchiveTypeToken(string $base, bool $includeExtras = false, array $mediaTypes = []): string
+    {
+        $token = $this->normalizeType($base);
+        $segments = [];
+
+        if ($includeExtras) {
+            $segments[] = 'we';
+        }
+
+        $mediaTypes = array_values(array_unique(array_filter(
+            array_map(fn ($value) => strtolower(trim((string) $value)), $mediaTypes),
+            fn ($value) => $value !== ''
+        )));
+        if (! empty($mediaTypes)) {
+            sort($mediaTypes);
+            $segments[] = 'mt=' . implode(',', $mediaTypes);
+        }
+
+        return empty($segments) ? $token : $token . '|' . implode(';', $segments);
+    }
+
+    protected function parseTypeFilters(?string $type): array
+    {
+        $includeExtras = false;
+        $mediaTypes = [];
+
+        $parts = explode('|', (string) $type, 2);
+        if (isset($parts[1]) && $parts[1] !== '') {
+            foreach (explode(';', $parts[1]) as $segment) {
+                $segment = trim($segment);
+                if ($segment === 'we') {
+                    $includeExtras = true;
+                } elseif (str_starts_with($segment, 'mt=')) {
+                    $mediaTypes = array_values(array_filter(
+                        array_map('trim', explode(',', substr($segment, 3))),
+                        fn ($value) => $value !== ''
+                    ));
+                }
+            }
+        }
+
+        return ['include_extras' => $includeExtras, 'media_types' => $mediaTypes];
+    }
+
+    /**
+     * Filesystem/cache-safe fragment identifying the archive variant, so a
+     * filtered archive never collides with the unfiltered one.
+     */
+    protected function typeToken(?string $type): string
+    {
+        $base = $this->normalizeType($type);
+        $filters = $this->parseTypeFilters($type);
+
+        $suffix = '';
+        if ($filters['include_extras']) {
+            $suffix .= '-withextras';
+        }
+        if (! empty($filters['media_types'])) {
+            $types = $filters['media_types'];
+            sort($types);
+            $suffix .= '-mt-' . implode('_', array_map(
+                fn ($value) => preg_replace('/[^a-z0-9]+/', '', strtolower($value)),
+                $types
+            ));
+        }
+
+        return $base . $suffix;
     }
 
     protected function resolveFrontendUrl(): string

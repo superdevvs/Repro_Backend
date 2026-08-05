@@ -20,7 +20,7 @@ use Tests\TestCase;
  */
 class EmailTemplateRenderingTest extends TestCase
 {
-    private const SUPPORT_LINE = 'If you need help, call 202-868-1113 or email us at';
+    private const SUPPORT_LINE = 'If you need help, call 202-868-1663 or email us at';
 
     private function renderer(): TemplateRenderer
     {
@@ -37,7 +37,7 @@ class EmailTemplateRenderingTest extends TestCase
             ' . $bodyHtml . '
 
             <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
-                <p style="margin: 0 0 8px 0;">If you need help, call 202-868-1113 or email us at [company_email].</p>
+                <p style="margin: 0 0 8px 0;">If you need help, call 202-868-1663 or email us at [company_email].</p>
                 <p style="margin: 0;">Thanks,<br><strong>R/E Pro Photos</strong></p>
             </div>
         ';
@@ -83,7 +83,7 @@ class EmailTemplateRenderingTest extends TestCase
         // instead of appending a loose address below the email.
         $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
         // Obsolete phone never appears.
-        $this->assertStringNotContainsString('202-868-1663', $html);
+        $this->assertStringNotContainsString('202-868-1113', $html);
     }
 
     public function test_payment_reminder_does_not_duplicate_invoice_label_when_number_already_includes_it(): void
@@ -269,9 +269,9 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringNotContainsString('font-size:32px', $html);
         $this->assertStringNotContainsString('font-size:48px', $html);
         // Support contact.
-        $this->assertStringContainsString('202-868-1113', $html);
+        $this->assertStringContainsString('202-868-1663', $html);
         $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
-        $this->assertStringNotContainsString('202-868-1663', $html);
+        $this->assertStringNotContainsString('202-868-1113', $html);
     }
 
     public function test_no_blade_email_reintroduces_oversized_hero(): void

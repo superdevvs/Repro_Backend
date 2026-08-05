@@ -30,9 +30,7 @@ class ShootOperatorRoutingTest extends TestCase
         return $method->invoke($service, $message, $context);
     }
 
-    /**
-     * @dataProvider bookingRequests
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('bookingRequests')]
     public function test_it_releases_new_booking_requests_to_the_booking_flow(string $message): void
     {
         $this->assertFalse(
@@ -55,9 +53,7 @@ class ShootOperatorRoutingTest extends TestCase
         ];
     }
 
-    /**
-     * @dataProvider operatorRequests
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('operatorRequests')]
     public function test_it_still_claims_operations_on_an_existing_shoot(string $message): void
     {
         $this->assertTrue(

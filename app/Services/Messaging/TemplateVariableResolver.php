@@ -18,8 +18,12 @@ class TemplateVariableResolver
         $recipientType = strtolower((string) ($context['recipient_type'] ?? 'client'));
         $derived = [
             'company_name' => $this->configValue('mail.from.name', $this->configValue('app.name', '')),
-            'company_email' => $this->configValue('mail.from.address', ''),
-            'company_phone' => $this->configValue('app.company_phone', ''),
+            // Templates use these tokens in "call us / email us at" support lines, so
+            // they must resolve to the public contact details rather than the unmonitored
+            // no-reply sender. `app.company_phone` never existed, which rendered
+            // [company_phone] as an empty string.
+            'company_email' => $this->configValue('mail.contact_address', $this->configValue('mail.from.address', '')),
+            'company_phone' => $this->configValue('mail.contact_phone', ''),
             'company_address' => $this->configValue('app.company_address', ''),
             'portal_url' => $portalUrl,
             'current_date' => now()->format('M j, Y'),

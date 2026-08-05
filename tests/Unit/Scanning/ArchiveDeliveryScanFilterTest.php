@@ -14,9 +14,8 @@ use Tests\TestCase;
  *
  * The ZIP/archive delivery path funnels every file selection through
  * {@see ShootMediaArchiveService::getFilesForType()}. This test pins the
- * invariant that an infected file is never packaged for delivery while
- * clean, quarantined-but-not-infected, and legacy (null scan_status) files
- * remain servable so existing media keeps flowing.
+ * invariant that only clean or legacy (null scan_status) files can be
+ * packaged for delivery. Pending, failed, and infected scans fail closed.
  */
 class ArchiveDeliveryScanFilterTest extends TestCase
 {
@@ -49,26 +48,21 @@ class ArchiveDeliveryScanFilterTest extends TestCase
     }
 
     #[Test]
-    public function infected_files_are_excluded_from_archive_delivery_while_others_remain(): void
+    public function only_clean_files_are_included_in_archive_delivery(): void
     {
         $shoot = Shoot::factory()->create();
 
         $clean = $this->rawFile($shoot, ShootFile::SCAN_STATUS_CLEAN, 'clean.jpg');
         $infected = $this->rawFile($shoot, ShootFile::SCAN_STATUS_INFECTED, 'infected.jpg');
         $quarantined = $this->rawFile($shoot, ShootFile::SCAN_STATUS_QUARANTINED, 'quarantined.jpg');
+        $failed = $this->rawFile($shoot, ShootFile::SCAN_STATUS_FAILED, 'failed.jpg');
 
         $service = app(ShootMediaArchiveService::class);
         $ids = $service->getFilesForType($shoot, 'raw')->pluck('id')->all();
 
-        // Req 15.7: the infected file must never appear in the delivery set.
         $this->assertNotContains($infected->id, $ids, 'Infected files must be withheld from archive delivery.');
-
-        // Clean and quarantined (non-infected) files are not hard-blocked from
-        // this archive selection seam — only a positive infected verdict blocks.
-        // (Legacy null-status inclusion is covered at the model layer in
-        // ShootFileScanGatingTest; the DB column is NOT NULL so it cannot hold
-        // null here.)
         $this->assertContains($clean->id, $ids);
-        $this->assertContains($quarantined->id, $ids);
+        $this->assertNotContains($quarantined->id, $ids, 'Pending scans must be withheld from archive delivery.');
+        $this->assertNotContains($failed->id, $ids, 'Failed scans must be withheld from archive delivery.');
     }
 }

@@ -226,11 +226,11 @@ class FinalizeShootJob implements ShouldQueue
                 ->when($this->shootServiceId, fn ($q) => $q->where('shoot_service_id', $this->shootServiceId))
                 ->count();
             $hasEditedWithoutRaw = !empty($completedIds) && $rawCount === 0;
-            // Mirror the controller: an explicit fast-forward request may deliver
-            // a whole shoot with no media. Authorization was enforced when the
-            // job was queued.
+            // Revalidate eligibility inside the job so a forged/stale queued
+            // payload cannot bypass the controller's no-media restrictions.
             $allowNoMediaDelivery = $this->allowNoMediaDelivery
-                && !$this->shootServiceId;
+                && !$this->shootServiceId
+                && $shoot->allowsNoMediaDelivery();
 
             $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
             if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {

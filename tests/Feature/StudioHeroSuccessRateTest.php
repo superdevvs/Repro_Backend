@@ -29,8 +29,8 @@ use Tests\TestCase;
  * over randomized combinations of job statuses across both job tables. The fixed
  * seed makes any counterexample reproducible.
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class StudioHeroSuccessRateTest extends TestCase
 {
     use RefreshDatabase;

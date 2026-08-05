@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\ShootEmailDelivery;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\CubiCasaService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -75,7 +76,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_request_creation_keeps_requested_flow_and_broadcasts_activity(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -110,7 +111,7 @@ class ShootMutationActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_booking_is_rejected_when_selected_client_has_no_primary_email(): void
     {
         Sanctum::actingAs($this->admin);
@@ -143,7 +144,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertDatabaseCount('shoots', 0);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_self_booking_is_rejected_when_primary_email_is_missing(): void
     {
         $clientWithoutEmail = User::factory()->create([
@@ -174,7 +175,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertDatabaseCount('shoots', 0);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_schedule_a_hold_shoot_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -217,7 +218,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduling_falls_back_when_scheduled_automation_did_not_send_client_email(): void
     {
         Sanctum::actingAs($this->admin);
@@ -298,7 +299,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduling_records_automation_client_confirmation_delivery_when_automation_sent_the_client_email(): void
     {
         Sanctum::actingAs($this->admin);
@@ -367,7 +368,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduling_records_skipped_client_confirmation_delivery_when_client_email_is_missing(): void
     {
         Sanctum::actingAs($this->admin);
@@ -430,7 +431,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_approve_a_requested_shoot_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -477,7 +478,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame($this->admin->name, $metadata['by'] ?? null);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_approve_a_requested_shoot_with_inline_edits_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -565,7 +566,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame(2450, $propertyDetails['sqft'] ?? null);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_approving_a_requested_shoot_with_client_facing_edits_uses_the_modified_request_trigger(): void
     {
         Sanctum::actingAs($this->admin);
@@ -621,7 +622,7 @@ class ShootMutationActionsTest extends TestCase
         $response->assertOk();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function requested_shoot_approval_email_counts_as_client_confirmation_without_sending_scheduled_duplicate(): void
     {
         Sanctum::actingAs($this->admin);
@@ -692,7 +693,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_approve_a_requested_shoot_without_notifications_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -724,7 +725,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame($this->photographer->id, $shoot->photographer_id);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_approve_a_requested_shoot_with_notifications_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -764,7 +765,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame($this->photographer->id, $shoot->photographer_id);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function approval_falls_back_when_scheduled_automation_is_handled_but_client_email_was_not_sent(): void
     {
         Sanctum::actingAs($this->admin);
@@ -848,7 +849,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function approval_records_failed_client_confirmation_delivery_when_fallback_send_fails(): void
     {
         Sanctum::actingAs($this->admin);
@@ -921,7 +922,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_created_scheduled_shoot_uses_booked_fallback_to_notify_client_and_photographer(): void
     {
         Sanctum::actingAs($this->admin);
@@ -1000,7 +1001,7 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_reassigning_a_photographer_uses_the_dedicated_photographer_change_email(): void
     {
         Sanctum::actingAs($this->admin);
@@ -1067,7 +1068,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame($replacementPhotographer->id, $shoot->photographer_id);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function shoot_update_falls_back_when_update_automation_did_not_send_client_email(): void
     {
         Sanctum::actingAs($this->admin);
@@ -1141,7 +1142,7 @@ class ShootMutationActionsTest extends TestCase
             ->assertJsonPath('message', 'Shoot updated');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_update_a_shoot_and_emit_the_dynamic_refresh_signal(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -1210,7 +1211,7 @@ class ShootMutationActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function shoots_table_supports_the_featured_flag_with_a_false_default(): void
     {
         $this->assertTrue(Schema::hasColumn('shoots', 'is_featured'));
@@ -1220,7 +1221,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertFalse((bool) $shoot->fresh()->is_featured);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_toggle_featured_on_a_shoot_and_receive_both_payload_keys(): void
     {
         Sanctum::actingAs($this->admin);
@@ -1252,8 +1253,8 @@ class ShootMutationActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
-    public function assigned_sales_rep_can_toggle_featured_on_a_shoot(): void
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function assigned_sales_rep_can_request_featured_approval_on_a_shoot(): void
     {
         Sanctum::actingAs($this->salesRep);
 
@@ -1273,14 +1274,19 @@ class ShootMutationActionsTest extends TestCase
         ]);
 
         $response->assertOk()
-            ->assertJsonPath('data.is_featured', true)
-            ->assertJsonPath('data.isFeatured', true);
+            ->assertJsonPath('data.is_featured', false)
+            ->assertJsonPath('data.isFeatured', false)
+            ->assertJsonPath('data.featured_pending', true)
+            ->assertJsonPath('data.featured_status', 'pending');
 
-        $this->assertTrue((bool) $shoot->fresh()->is_featured);
+        $shoot->refresh();
+        $this->assertFalse((bool) $shoot->is_featured);
+        $this->assertNotNull($shoot->featured_requested_at);
+        $this->assertSame($this->salesRep->id, $shoot->featured_requested_by);
     }
 
-    /** @test */
-    public function assigned_photographer_can_toggle_featured_on_a_shoot(): void
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function assigned_photographer_can_request_featured_approval_on_a_shoot(): void
     {
         Sanctum::actingAs($this->photographer);
 
@@ -1300,13 +1306,18 @@ class ShootMutationActionsTest extends TestCase
         ]);
 
         $response->assertOk()
-            ->assertJsonPath('data.is_featured', true)
-            ->assertJsonPath('data.isFeatured', true);
+            ->assertJsonPath('data.is_featured', false)
+            ->assertJsonPath('data.isFeatured', false)
+            ->assertJsonPath('data.featured_pending', true)
+            ->assertJsonPath('data.featured_status', 'pending');
 
-        $this->assertTrue((bool) $shoot->fresh()->is_featured);
+        $shoot->refresh();
+        $this->assertFalse((bool) $shoot->is_featured);
+        $this->assertNotNull($shoot->featured_requested_at);
+        $this->assertSame($this->photographer->id, $shoot->featured_requested_by);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_cannot_toggle_featured_on_a_shoot(): void
     {
         Sanctum::actingAs($this->client);
@@ -1518,7 +1529,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertTrue(collect($adminIncludeHiddenResponse->json('data') ?? [])->contains('id', $shoot->id));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_photographer_cannot_toggle_featured_on_a_shoot(): void
     {
         $otherPhotographer = User::factory()->create([
@@ -1548,7 +1559,7 @@ class ShootMutationActionsTest extends TestCase
         $this->assertFalse((bool) $shoot->fresh()->is_featured);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_sales_rep_cannot_toggle_featured_on_a_shoot(): void
     {
         $otherSalesRep = User::factory()->create([
@@ -1578,7 +1589,86 @@ class ShootMutationActionsTest extends TestCase
         $this->assertFalse((bool) $shoot->fresh()->is_featured);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function admin_cannot_remove_every_product_even_for_an_internal_shoot_type(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ])->assertUnprocessable()
+            ->assertJsonPath('message', 'At least one service must be selected.');
+
+        $this->assertTrue($shoot->fresh()->services()->whereKey($this->service->id)->exists());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function superadmin_can_remove_products_from_an_internal_no_charge_shoot(): void
+    {
+        $superadmin = User::factory()->create([
+            'role' => 'superadmin',
+            'email' => 'internal-shoot-superadmin@test.com',
+        ]);
+        Sanctum::actingAs($superadmin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::SHOOT_TYPE_SAMPLE_UPLOAD, $shoot->shoot_type);
+        $this->assertSame(Shoot::PRODUCT_STATUS_NO_PRODUCT, $shoot->product_status);
+        $this->assertCount(0, $shoot->services()->get());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function cubicasa_provider_failure_does_not_fail_shoot_approval(): void
+    {
+        $cubicasa = Mockery::mock(CubiCasaService::class);
+        $cubicasa->shouldReceive('hasCredentials')->once()->andReturnTrue();
+        $cubicasa->shouldReceive('createOrder')->once()->andThrow(new \RuntimeException('temporary provider outage'));
+        $this->app->instance(CubiCasaService::class, $cubicasa);
+
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->secondService->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+        $shoot->services()->attach($this->secondService->id, [
+            'price' => 90,
+            'quantity' => 1,
+        ]);
+
+        $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'scheduled_at' => now()->addWeek()->setTime(10, 0)->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->status);
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->workflow_status);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_delete_a_shoot_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);

@@ -56,7 +56,7 @@ class FileUploadController extends Controller
             $filesForValidation = [$filesForValidation];
         }
         if (is_array($filesForValidation)) {
-            $this->uploadValidation->validateMany($filesForValidation, 'files');
+            $this->uploadValidation->validateMany($filesForValidation, 'files', auth()->user()?->role);
         }
 
         // Route model binding provides $shoot

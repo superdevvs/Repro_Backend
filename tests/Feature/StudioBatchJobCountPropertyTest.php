@@ -31,8 +31,8 @@ use Tests\TestCase;
  * remaining counts are generated from the seeded distribution. Both source types
  * (shoot selection and uploaded media) are exercised.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioBatchJobCountPropertyTest extends TestCase
 {
     use RefreshDatabase;

@@ -31,8 +31,8 @@ use Tests\TestCase;
  * leaving those dimensions to chance. Identities are compared structurally
  * (ids as integers/uuids), never by substring matching.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioCompletedAndMediaOutputsPropertyTest extends TestCase
 {
     use RefreshDatabase;

@@ -975,45 +975,92 @@ class DashboardController extends Controller
             return collect([]);
         }
 
-        // Admins see all inbound emails (messages sent TO the system)
-        if (in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep'], true)) {
-            $emails = Message::where('channel', 'EMAIL')
+        $baseQuery = Message::query()
+            ->where('channel', 'EMAIL')
+            ->whereIn('status', ['SENT', 'DELIVERED']);
+
+        // Admins continue to see all inbound messages. Sales reps only receive
+        // dashboard-message notifications for clients in their assigned scope.
+        if (in_array($role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            $emails = (clone $baseQuery)
                 ->where('direction', 'INBOUND')
-                ->whereIn('status', ['SENT', 'DELIVERED'])
+                ->latest()
+                ->limit(20)
+                ->get();
+        } elseif ($role === 'salesrep') {
+            $emails = (clone $baseQuery)
+                ->where('direction', 'INBOUND')
+                ->where('provider', 'INTERNAL')
+                ->whereNotNull('related_shoot_id')
+                ->whereHas('shoot', function ($shootQuery) use ($userId) {
+                    $shootQuery->where('rep_id', $userId)
+                        ->orWhere(function ($fallback) use ($userId) {
+                            $fallback->whereNull('rep_id')
+                                ->whereHas('client', function ($clientQuery) use ($userId) {
+                                    $clientQuery->where('created_by_id', $userId)
+                                        ->orWhere('metadata->accountRepId', (string) $userId)
+                                        ->orWhere('metadata->account_rep_id', (string) $userId)
+                                        ->orWhere('metadata->repId', (string) $userId)
+                                        ->orWhere('metadata->rep_id', (string) $userId);
+                                });
+                        });
+                })
+                ->latest()
+                ->limit(20)
+                ->get();
+        } elseif ($role === 'client') {
+            $emails = (clone $baseQuery)
+                ->where('direction', 'OUTBOUND')
+                ->where('provider', 'INTERNAL')
+                ->where(function ($query) use ($userId) {
+                    $query->where('related_account_id', $userId)
+                        ->orWhereHas('shoot', fn ($shootQuery) => $shootQuery->where('client_id', $userId));
+                })
                 ->latest()
                 ->limit(20)
                 ->get();
         } elseif (in_array($role, ['photographer', 'editor'])) {
             // Photographers/editors only see inbound emails addressed to them
-            $emails = Message::where('channel', 'EMAIL')
+            $emails = (clone $baseQuery)
                 ->where('direction', 'INBOUND')
                 ->where('to_address', $user->email)
-                ->whereIn('status', ['SENT', 'DELIVERED'])
                 ->latest()
                 ->limit(10)
                 ->get();
         } else {
-            // Clients don't need email notifications — they already receive the actual emails
             $emails = collect([]);
         }
 
         return $emails->map(function (Message $email) {
             $isInbound = $email->direction === 'INBOUND';
-            
+            $isInternal = $email->provider === 'INTERNAL' && !empty($email->related_shoot_id);
+            $bodyPreview = trim(preg_replace('/\s+/u', ' ', strip_tags((string) ($email->body_text ?: $email->body_html))) ?? '');
+            $preview = Str::limit($bodyPreview !== '' ? $bodyPreview : ($email->subject ?? '(No Subject)'), 70);
+
             return [
                 'id' => 'email-' . $email->id,
-                'message' => $isInbound 
-                    ? "New message from {$email->sender_display_name}: " . \Illuminate\Support\Str::limit($email->subject ?? '(No Subject)', 50)
-                    : "Email sent to {$email->to_address}: " . \Illuminate\Support\Str::limit($email->subject ?? '(No Subject)', 50),
-                'action' => $isInbound ? 'email_received' : 'email_sent',
+                'message' => $isInternal
+                    ? "New message from {$email->sender_display_name}: {$preview}"
+                    : ($isInbound
+                        ? "New message from {$email->sender_display_name}: {$preview}"
+                        : "Email sent to {$email->to_address}: {$preview}"),
+                'action' => $isInternal ? 'internal_message_received' : ($isInbound ? 'email_received' : 'email_sent'),
                 'type' => 'message',
                 'timestamp' => optional($email->created_at)->toDateTimeString(),
-                'shootId' => $email->related_shoot_id,
+                // Internal message clicks must open the conversation, not the
+                // generic shoot modal.
+                'shootId' => $isInternal ? null : $email->related_shoot_id,
+                'actionUrl' => $isInternal ? '/messaging/email/inbox?message=' . $email->id : null,
+                'actionLabel' => $isInternal ? 'View message' : null,
                 'emailId' => $email->id,
                 'from' => $email->from_address,
                 'to' => $email->to_address,
                 'subject' => $email->subject,
                 'direction' => $email->direction,
+                'metadata' => $isInternal ? [
+                    'related_shoot_id' => $email->related_shoot_id,
+                    'thread_id' => $email->thread_id,
+                ] : null,
             ];
         });
     }

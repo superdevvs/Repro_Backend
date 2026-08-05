@@ -19,7 +19,8 @@ class ShootPresenter
         protected ShootFileAccessService $fileAccessService,
         protected ShootEditingAssignmentService $editingAssignmentService,
         protected DropboxWorkflowService $dropboxService,
-        protected \App\Services\Media\MediaStorage $mediaStorage
+        protected \App\Services\Media\MediaStorage $mediaStorage,
+        protected ShootClientContactVisibility $clientContactVisibility
     )
     {
     }
@@ -343,9 +344,9 @@ class ShootPresenter
 
         if ($shoot->client && !$isEditorRole) {
             if ($isPhotographerRole) {
-                $clientPhone = $this->isShootLocalDateToday($shoot)
-                    ? ($shoot->client->phonenumber ?? $shoot->client->phone ?? null)
-                    : null;
+                // Reachable only around the appointment: two hours before the
+                // start, through the on-site buffer, plus two hours after it.
+                $clientPhone = $this->clientContactVisibility->phoneFor($shoot, $requestingUser);
                 $clientData = [
                     'id' => $shoot->client->id,
                     'name' => $shoot->client->name,
@@ -869,37 +870,18 @@ class ShootPresenter
         ];
     }
 
-    protected function isShootLocalDateToday(Shoot $shoot): bool
-    {
-        $scheduledDate = $shoot->scheduled_date;
-        if (!$scheduledDate) {
-            return false;
-        }
-
-        $timezone = trim((string) ($shoot->timezone ?: config('app.timezone', 'UTC'))) ?: 'UTC';
-        try {
-            return $scheduledDate->toDateString() === now($timezone)->toDateString();
-        } catch (\Throwable) {
-            return $scheduledDate->toDateString() === now()->toDateString();
-        }
-    }
-
     protected function resolveHeroImage(Shoot $shoot, bool $allowDropboxCalls = true): ?string
     {
         $isExcluded = function ($file) {
             if ($file->is_hidden) {
                 return true;
             }
+            // Floor plans are classified at ingest (media_type = 'floorplan');
+            // every other surface keys off that flag, so the hero image does too
+            // instead of re-guessing from the filename at read time.
             $mediaType = strtolower($file->media_type ?? '');
             if ($mediaType === 'floorplan') {
                 return true;
-            }
-            $filename = strtolower($file->filename ?? $file->stored_filename ?? $file->path ?? '');
-            $floorplanPatterns = ['floorplan', 'floor-plan', 'floor_plan', 'fp_', 'fp-', 'layout', 'blueprint'];
-            foreach ($floorplanPatterns as $pattern) {
-                if (str_contains($filename, $pattern)) {
-                    return true;
-                }
             }
 
             return false;

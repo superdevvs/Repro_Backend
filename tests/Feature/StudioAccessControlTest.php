@@ -31,8 +31,8 @@ use Tests\TestCase;
  * over the cross product of the gated endpoints and a variety of rejected
  * actors (unauthenticated, plus several unauthorized roles).
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class StudioAccessControlTest extends TestCase
 {
     use RefreshDatabase;

@@ -111,7 +111,19 @@ class ApproveShootAction
         $alreadyLinked = !empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id);
 
         if ($wasRequested && $shoot->hasCubiCasaEligibleService() && !$alreadyLinked) {
-            CreateCubiCasaOrderJob::dispatch($shoot->id, 'approval')->afterCommit();
+            // CubiCasa is a post-approval side effect. With the sync test queue,
+            // PendingDispatch runs on destruction, so resolve it inside the try
+            // and contain provider failures without rolling back approval. Real
+            // queue workers retain the job's retry/backoff behavior.
+            try {
+                $pending = CreateCubiCasaOrderJob::dispatch($shoot->id, 'approval')->afterCommit();
+                unset($pending);
+            } catch (\Throwable $e) {
+                Log::warning('CubiCasa auto-create failed during approval; approval completed regardless.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
         }
 
         $context = $this->automationService->buildShootContext($shoot);

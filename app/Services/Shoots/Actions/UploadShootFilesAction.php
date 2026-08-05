@@ -123,7 +123,7 @@ class UploadShootFilesAction
         // response shapes for those specific cases are preserved; this catches
         // anything still left (e.g. > configured per-file limit but <= 2GB,
         // or a disallowed extension).
-        $this->uploadValidation->validateMany($files, 'files');
+        $this->uploadValidation->validateMany($files, 'files', $user?->role);
 
         $request->files->set('files', $files);
         $uploadType = $request->input('upload_type', 'raw');

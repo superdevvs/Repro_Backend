@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\ShootNote;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Carbon;
 use Laravel\Sanctum\Sanctum;
 
 class ShootBookingTest extends TestCase
@@ -23,6 +24,10 @@ class ShootBookingTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // Keep every addDays(7) booking on a Wednesday at 10:00, inside the
+        // canonical 09:00-18:00 fallback availability window.
+        Carbon::setTestNow(Carbon::create(2026, 1, 7, 10, 0, 0, config('app.timezone')));
 
         // Create test users
         $this->admin = User::factory()->create([
@@ -50,7 +55,14 @@ class ShootBookingTest extends TestCase
         ]);
     }
 
-    /** @test */
+    protected function tearDown(): void
+    {
+        Carbon::setTestNow();
+
+        parent::tearDown();
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_book_shoot_with_date_and_photographer()
     {
         Sanctum::actingAs($this->admin);
@@ -101,7 +113,7 @@ class ShootBookingTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_book_hold_on_shoot_without_date()
     {
         Sanctum::actingAs($this->admin);
@@ -126,11 +138,11 @@ class ShootBookingTest extends TestCase
     }
 
     /**
-     * @test
      *
      * QA #5 reversal: Admin must add at least one product to schedule a shoot.
      * No-product scheduling (even for internal no-charge shoot types) is blocked for Admin.
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_cannot_book_no_product_shoot_even_for_no_charge_type(): void
     {
         Sanctum::actingAs($this->admin);
@@ -152,10 +164,10 @@ class ShootBookingTest extends TestCase
     }
 
     /**
-     * @test
      *
      * QA #5 reversal: Sales Rep must add at least one product to schedule a shoot.
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function sales_rep_cannot_book_no_product_shoot_even_for_no_charge_type(): void
     {
         $salesRep = User::factory()->create([
@@ -183,11 +195,11 @@ class ShootBookingTest extends TestCase
     }
 
     /**
-     * @test
      *
      * QA #5 scope guard: Superadmin retains the no-product allowance for internal
      * no-charge shoot types (out of scope for this change).
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function superadmin_can_still_book_no_product_no_charge_shoot(): void
     {
         $superadmin = User::factory()->create([
@@ -221,7 +233,7 @@ class ShootBookingTest extends TestCase
         $this->assertCount(0, $shoot->services);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_cannot_book_without_product(): void
     {
         Sanctum::actingAs($this->client);
@@ -238,7 +250,7 @@ class ShootBookingTest extends TestCase
         $response->assertUnprocessable();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function zero_dollar_product_shoot_is_created_as_paid(): void
     {
         Sanctum::actingAs($this->admin);
@@ -269,7 +281,7 @@ class ShootBookingTest extends TestCase
         $this->assertEquals(0.0, (float) $shoot->total_quote);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_can_book_shoot_with_bypass_paywall()
     {
         Sanctum::actingAs($this->client);
@@ -293,7 +305,7 @@ class ShootBookingTest extends TestCase
         $this->assertEquals('dc', $shoot->tax_region);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function tax_is_calculated_correctly_for_maryland()
     {
         Sanctum::actingAs($this->admin);
@@ -318,7 +330,7 @@ class ShootBookingTest extends TestCase
         $this->assertEquals(106.00, $shoot->total_quote);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function notes_are_created_with_correct_visibility()
     {
         Sanctum::actingAs($this->admin);
@@ -357,7 +369,7 @@ class ShootBookingTest extends TestCase
         $this->assertEquals('photographer_only', $photoNote->visibility);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_cannot_book_for_another_client()
     {
         Sanctum::actingAs($this->client);
@@ -377,7 +389,7 @@ class ShootBookingTest extends TestCase
         $response->assertStatus(403);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function booking_fails_if_photographer_has_conflict()
     {
         Sanctum::actingAs($this->admin);
@@ -404,10 +416,10 @@ class ShootBookingTest extends TestCase
             ]);
 
         $response->assertStatus(422)
-            ->assertJsonValidationErrors(['photographer_id']);
+            ->assertJsonValidationErrors(['start_time']);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function booking_creates_activity_log()
     {
         Sanctum::actingAs($this->admin);

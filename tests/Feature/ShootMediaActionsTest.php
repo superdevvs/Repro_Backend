@@ -96,7 +96,7 @@ class ShootMediaActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_finalize_raw_upload_after_queue_completes(): void
     {
         Storage::fake('public');
@@ -167,7 +167,7 @@ class ShootMediaActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_upload_edited_files_while_a_shoot_is_still_scheduled(): void
     {
         Storage::fake('public');
@@ -216,7 +216,7 @@ class ShootMediaActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function superadmin_can_upload_edited_files_after_delivery(): void
     {
         Storage::fake('public');
@@ -259,7 +259,7 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('error_count', 0);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function upload_without_files_keeps_the_legacy_invalid_file_payload(): void
     {
         Sanctum::actingAs($this->admin);
@@ -279,7 +279,7 @@ class ShootMediaActionsTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function upload_rejects_oversized_files_with_the_existing_payload_shape(): void
     {
         Sanctum::actingAs($this->admin);
@@ -299,7 +299,7 @@ class ShootMediaActionsTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function verify_shoot_file_action_moves_the_last_completed_file_to_ready(): void
     {
         Queue::fake();
@@ -347,7 +347,7 @@ class ShootMediaActionsTest extends TestCase
         Queue::assertPushed(GenerateWatermarkedImageJob::class);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_can_generate_share_link_with_local_zip_fallback_and_broadcast_activity(): void
     {
         Storage::fake('public');
@@ -428,7 +428,7 @@ class ShootMediaActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_set_cover_media_and_clear_cached_file_lists(): void
     {
         Storage::fake('public');
@@ -479,7 +479,7 @@ class ShootMediaActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_reorder_media_after_the_controller_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -513,7 +513,7 @@ class ShootMediaActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function media_zip_download_returns_a_cached_archive_redirect_when_small_zip_is_ready(): void
     {
         Storage::fake('public');
@@ -554,7 +554,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function media_zip_download_can_target_a_single_service_item_archive(): void
     {
         Storage::fake('public');
@@ -624,7 +624,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function media_zip_download_rejects_a_service_item_from_another_shoot(): void
     {
         Sanctum::actingAs($this->admin);
@@ -646,7 +646,27 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('message', 'Selected service item does not belong to this shoot');
     }
 
-    /** @test */
+    /**
+     * The archive endpoint only produces two renditions: full-size originals
+     * ('original') and the web/MLS derivative ('small'). It previously advertised
+     * 'medium' and 'large' in validation but silently downgraded both to
+     * 'original', so the contract now rejects the sizes it cannot deliver.
+     *
+     */
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function media_zip_download_rejects_unsupported_sizes(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $shoot = $this->createShoot();
+
+        foreach (['medium', 'large'] as $unsupportedSize) {
+            $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=' . $unsupportedSize)
+                ->assertStatus(422)
+                ->assertJsonValidationErrors('size');
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_can_download_a_paid_delivered_service_archive_on_a_partial_order(): void
     {
         Storage::fake('public');
@@ -713,7 +733,7 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_cannot_download_whole_shoot_archive_until_the_partial_order_is_paid(): void
     {
         Storage::fake('public');
@@ -759,7 +779,7 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('code', 'payment_required');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_download_raw_files_from_an_in_progress_shoot(): void
     {
         Storage::fake('public');
@@ -796,7 +816,7 @@ class ShootMediaActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_download_raw_files_from_an_in_progress_shoot(): void
     {
         Storage::fake('public');
@@ -833,7 +853,7 @@ class ShootMediaActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_download_selected_files_zip(): void
     {
         Storage::fake('public');
@@ -870,7 +890,7 @@ class ShootMediaActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_get_a_single_file_download_url(): void
     {
         Storage::fake('public');
@@ -897,7 +917,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertNotEmpty($response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function assigned_editor_can_download_raw_files_via_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');
@@ -935,7 +955,7 @@ class ShootMediaActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_mark_extra_file_as_required_for_editing(): void
     {
         Sanctum::actingAs($this->admin);
@@ -966,7 +986,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertSame('extra', $file->media_type);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_raw_file_list_excludes_optional_extras_but_keeps_required_extras(): void
     {
         Queue::fake([GenerateShootMediaArchiveJob::class]);
@@ -1018,7 +1038,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertNotContains($optionalExtra->id, $ids);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function raw_archive_source_list_excludes_optional_extras_but_keeps_required_extras(): void
     {
         Queue::fake([GenerateShootMediaArchiveJob::class]);
@@ -1070,7 +1090,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertNotContains($optionalExtra->id, $ids);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_editor_cannot_download_raw_files_via_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');
@@ -1103,7 +1123,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_cannot_download_archive_zip_files(): void
     {
         Storage::fake('public');
@@ -1131,7 +1151,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_cannot_download_selected_files_zip(): void
     {
         Storage::fake('public');
@@ -1160,7 +1180,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function assigned_editor_can_get_a_single_raw_file_download_url(): void
     {
         Storage::fake('public');
@@ -1189,7 +1209,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertNotEmpty($response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_cannot_download_an_edited_single_file(): void
     {
         Storage::fake('public');
@@ -1215,7 +1235,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function assigned_sales_rep_can_download_a_delivered_archive(): void
     {
         Storage::fake('public');
@@ -1259,7 +1279,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_sales_rep_cannot_download_a_delivered_archive(): void
     {
         Storage::fake('public');
@@ -1290,7 +1310,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function assigned_sales_rep_can_download_selected_edited_files(): void
     {
         Storage::fake('public');
@@ -1331,7 +1351,7 @@ class ShootMediaActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_sales_rep_cannot_download_selected_edited_files(): void
     {
         Storage::fake('public');
@@ -1362,7 +1382,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function assigned_sales_rep_can_download_a_single_media_file(): void
     {
         Storage::fake('public');
@@ -1393,7 +1413,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertNotEmpty($response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_sales_rep_cannot_download_a_single_media_file(): void
     {
         Storage::fake('public');
@@ -1421,7 +1441,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function sales_rep_cannot_download_raw_files_from_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');
@@ -1449,7 +1469,7 @@ class ShootMediaActionsTest extends TestCase
         $response->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function original_media_zip_download_returns_preparing_and_queues_generation(): void
     {
         Storage::fake('public');
@@ -1492,7 +1512,7 @@ class ShootMediaActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_signed_media_archive_route_redirects_when_cached_archive_is_ready(): void
     {
         Storage::fake('public');
@@ -1541,7 +1561,7 @@ class ShootMediaActionsTest extends TestCase
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function moving_a_shoot_to_editing_queues_the_raw_small_archive(): void
     {
         Queue::fake([GenerateShootMediaArchiveJob::class]);
@@ -1549,6 +1569,7 @@ class ShootMediaActionsTest extends TestCase
         $shoot = $this->createShoot([
             'status' => Shoot::STATUS_UPLOADED,
             'workflow_status' => Shoot::STATUS_UPLOADED,
+            'raw_photo_count' => 1,
         ]);
 
         $shoot->updateWorkflowStatus(Shoot::STATUS_EDITING, $this->admin->id);
@@ -1560,7 +1581,7 @@ class ShootMediaActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function moving_a_shoot_to_ready_or_delivered_queues_the_edited_small_archive(): void
     {
         Queue::fake([GenerateShootMediaArchiveJob::class]);
@@ -1568,12 +1589,14 @@ class ShootMediaActionsTest extends TestCase
         $readyShoot = $this->createShoot([
             'status' => Shoot::STATUS_EDITING,
             'workflow_status' => Shoot::STATUS_EDITING,
+            'edited_photo_count' => 1,
         ]);
         $readyShoot->updateWorkflowStatus(Shoot::STATUS_READY, $this->admin->id);
 
         $deliveredShoot = $this->createShoot([
             'status' => Shoot::STATUS_READY,
             'workflow_status' => Shoot::STATUS_READY,
+            'edited_photo_count' => 1,
         ]);
         $deliveredShoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->admin->id);
 
@@ -1625,6 +1648,7 @@ class ShootMediaActionsTest extends TestCase
             'media_type' => 'edited',
             'uploaded_by' => $this->admin->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'sort_order' => 0,
         ], $overrides));
     }

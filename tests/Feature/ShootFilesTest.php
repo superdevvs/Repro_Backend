@@ -6,6 +6,7 @@ use App\Jobs\ProcessImageJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Jobs\GenerateShootMediaArchiveJob;
+use App\Jobs\ScanShootFileJob;
 use App\Services\ImageProcessingService;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -33,10 +34,10 @@ class ShootFilesTest extends TestCase
         // ShootFile/Shoot observers dispatch on save/status change. In production
         // GenerateShootMediaArchiveJob runs on the queue (failures are logged via the
         // job's failed() handler); under the sync test queue it would otherwise execute
-        // inline and surface unrelated archive errors. Faking only this job keeps every
-        // other job behaving exactly as before. Tests that fake the queue themselves
-        // include this job in their own fake list to preserve the isolation.
-        Queue::fake([GenerateShootMediaArchiveJob::class]);
+        // inline and surface unrelated archive errors. The malware scan is also a
+        // separately covered integration boundary and must not require local clamd in
+        // this controller suite. Tests that replace the queue fake include both jobs.
+        Queue::fake([GenerateShootMediaArchiveJob::class, ScanShootFileJob::class]);
     }
 
     protected function insertUser(array $attributes = []): User
@@ -121,6 +122,7 @@ class ShootFilesTest extends TestCase
             'media_type' => 'edited',
             'uploaded_by' => $uploadedBy,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'sort_order' => 0,
             'created_at' => now(),
             'updated_at' => now(),
@@ -216,9 +218,19 @@ class ShootFilesTest extends TestCase
             ProcessImageJob::class,
             SyncShootFileToDropboxJob::class,
             GenerateShootMediaArchiveJob::class,
+            ScanShootFileJob::class,
         ]);
         Config::set('services.dropbox.enabled', false);
         Config::set('services.dropbox.access_token', null);
+        // Filename replacement is the behavior under test; external metadata
+        // extraction is covered separately and can emit process-level diagnostics
+        // for PHPUnit-managed temporary files on Windows.
+        $service = new class extends DropboxWorkflowService {
+            protected function extractMetadataWithExifTool(?string $path): array
+            {
+                return [];
+            }
+        };
         app()->instance(ImageProcessingService::class, new class extends ImageProcessingService {
             public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
             {
@@ -239,7 +251,6 @@ class ShootFilesTest extends TestCase
 
         $admin = $this->insertUser(['role' => 'admin']);
         $shoot = $this->createShoot();
-        $service = app(DropboxWorkflowService::class);
 
         $firstUpload = UploadedFile::fake()->image('edited-shot.jpg', 2000, 1200);
         $firstFile = $service->uploadToCompleted($shoot, $firstUpload, $admin->id);
@@ -337,13 +348,17 @@ class ShootFilesTest extends TestCase
         Storage::fake('public');
 
         $photographer = $this->insertUser(['role' => 'photographer']);
+        $salesRep = $this->insertUser(['role' => 'salesRep']);
         $shoot = $this->createShoot([
             'photographer_id' => $photographer->id,
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
 
-        Sanctum::actingAs($photographer);
+        // Assigned photographers deliberately bypass the stage gate for raw
+        // revision uploads. Use a non-bypass staff actor to exercise the
+        // structured invalid-stage response itself.
+        Sanctum::actingAs($salesRep);
 
         $response = $this->postJson('/api/shoots/' . $shoot->id . '/upload', [
             'upload_type' => 'raw',

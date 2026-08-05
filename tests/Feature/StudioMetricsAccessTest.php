@@ -34,8 +34,8 @@ use Tests\TestCase;
  *
  * Validates: Requirements 9.5, 12.3
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class StudioMetricsAccessTest extends TestCase
 {
     use RefreshDatabase;
@@ -83,8 +83,8 @@ class StudioMetricsAccessTest extends TestCase
     /**
      * Unauthenticated requests are rejected with 401 on every endpoint.
      *
-     * @dataProvider endpointProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('endpointProvider')]
     public function test_unauthenticated_request_is_rejected_with_401(string $url): void
     {
         $this->getJson($url)->assertStatus(401);
@@ -94,8 +94,8 @@ class StudioMetricsAccessTest extends TestCase
      * An authenticated user whose role is not in the allowed set is rejected
      * with 403 on every endpoint.
      *
-     * @dataProvider endpointProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('endpointProvider')]
     public function test_unauthorized_client_role_is_rejected_with_403(string $url): void
     {
         $client = User::factory()->create(['role' => 'client']);
@@ -107,8 +107,8 @@ class StudioMetricsAccessTest extends TestCase
     /**
      * Several non-allowed roles are rejected with 403 across all endpoints.
      *
-     * @dataProvider unauthorizedRoleProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('unauthorizedRoleProvider')]
     public function test_each_unauthorized_role_is_rejected_with_403(string $role): void
     {
         $user = User::factory()->create(['role' => $role]);
@@ -122,8 +122,8 @@ class StudioMetricsAccessTest extends TestCase
     /**
      * Each authorized role gets 200 with the expected hero JSON shape.
      *
-     * @dataProvider authorizedRoleProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('authorizedRoleProvider')]
     public function test_authorized_role_hero_returns_expected_shape(string $role): void
     {
         $user = User::factory()->create(['role' => $role]);
@@ -145,8 +145,8 @@ class StudioMetricsAccessTest extends TestCase
     /**
      * Each authorized role gets 200 with the expected recent-projects shape.
      *
-     * @dataProvider authorizedRoleProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('authorizedRoleProvider')]
     public function test_authorized_role_recent_projects_returns_expected_shape(string $role): void
     {
         $user = User::factory()->create(['role' => $role]);
@@ -174,8 +174,8 @@ class StudioMetricsAccessTest extends TestCase
     /**
      * Each authorized role gets 200 with the expected active-queue shape.
      *
-     * @dataProvider authorizedRoleProvider
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('authorizedRoleProvider')]
     public function test_authorized_role_active_queue_returns_expected_shape(string $role): void
     {
         $user = User::factory()->create(['role' => $role]);

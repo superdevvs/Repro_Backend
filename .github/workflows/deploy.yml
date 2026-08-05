@@ -9,6 +9,12 @@ jobs:
   quality:
     runs-on: ubuntu-latest
 
+    services:
+      clamav:
+        image: clamav/clamav:1.4.5-debian13-slim
+        ports:
+          - 3310:3310
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,16 +23,30 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: 8.3
-          extensions: mbstring, pdo_sqlite, sqlite3
+          extensions: mbstring, pdo_sqlite, sqlite3, sodium
+          tools: composer:2.10.2
           coverage: none
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+      - name: Validate Composer configuration
+        run: composer validate --strict
 
       - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Audit locked dependencies
+        run: composer audit --locked
+
+      - name: Wait for ClamAV
+        shell: bash
+        run: |
+          for attempt in {1..90}; do
+            if printf 'PING\n' | nc -w 2 127.0.0.1 3310 | grep -q PONG; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'ClamAV did not become ready in time.' >&2
+          exit 1
 
       - name: Prepare SQLite database
         run: |
@@ -42,7 +62,10 @@ jobs:
           QUEUE_CONNECTION: sync
           SESSION_DRIVER: array
           MAIL_MAILER: array
-        run: composer test
+          CLAMAV_SOCKET: ''
+          CLAMAV_HOST: 127.0.0.1
+          CLAMAV_PORT: 3310
+        run: composer quality
 
   deploy:
     needs: quality
@@ -78,6 +101,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           script: |
             cd /var/www/backend
+            php -r '$data = json_decode(shell_exec("composer --version --format=json"), true); $version = $data["version"] ?? "0"; if (version_compare($version, "2.10.2", "<")) { fwrite(STDERR, "Composer 2.10.2 or newer is required; found {$version}.\n"); exit(1); }'
             composer install --no-dev --optimize-autoloader
             php artisan migrate --force
             php artisan config:cache

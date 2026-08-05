@@ -29,8 +29,8 @@ use Tests\TestCase;
  * are derived independently from `config/studio_uploads.php`, and files are matched
  * by unique filename rather than by substring or position.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioUploadValidationPartitionPropertyTest extends TestCase
 {
     use RefreshDatabase;

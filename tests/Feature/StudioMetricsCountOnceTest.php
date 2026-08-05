@@ -29,8 +29,8 @@ use Tests\TestCase;
  * shoot contributing once to projects_count) is exercised. The fixed seed makes
  * any counterexample reproducible.
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class StudioMetricsCountOnceTest extends TestCase
 {
     use RefreshDatabase;

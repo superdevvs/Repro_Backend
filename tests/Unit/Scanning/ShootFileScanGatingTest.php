@@ -34,15 +34,13 @@ class ShootFileScanGatingTest extends TestCase
     }
 
     #[Test]
-    public function only_infected_files_are_blocked_from_delivery(): void
+    public function every_non_clean_scanned_file_is_blocked_from_delivery(): void
     {
         $this->assertTrue($this->file(ShootFile::SCAN_STATUS_INFECTED)->isBlockedFromDelivery());
 
-        // Clean, quarantined, failed, and legacy(null) files are not hard-blocked
-        // from serving — only a positive infected verdict blocks preview/download.
         $this->assertFalse($this->file(ShootFile::SCAN_STATUS_CLEAN)->isBlockedFromDelivery());
-        $this->assertFalse($this->file(ShootFile::SCAN_STATUS_QUARANTINED)->isBlockedFromDelivery());
-        $this->assertFalse($this->file(ShootFile::SCAN_STATUS_FAILED)->isBlockedFromDelivery());
+        $this->assertTrue($this->file(ShootFile::SCAN_STATUS_QUARANTINED)->isBlockedFromDelivery());
+        $this->assertTrue($this->file(ShootFile::SCAN_STATUS_FAILED)->isBlockedFromDelivery());
         $this->assertFalse($this->file(null)->isBlockedFromDelivery());
     }
 }

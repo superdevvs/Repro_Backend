@@ -70,7 +70,7 @@ class ShootUpdateOutOfHoursRejectionTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function update_outside_effective_hours_is_rejected_with_structured_422(): void
     {
         Sanctum::actingAs($this->admin);
@@ -105,7 +105,7 @@ class ShootUpdateOutOfHoursRejectionTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function update_within_effective_hours_succeeds(): void
     {
         Sanctum::actingAs($this->admin);

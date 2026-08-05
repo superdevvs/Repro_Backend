@@ -377,7 +377,7 @@ class DeliveryEmailPreservationTest extends TestCase
             $this->assertStringContainsString('>Website</a>', $html, "{$source} must keep the footer Website tile.");
             $this->assertStringContainsString('Leave a Review', $html, "{$source} must keep the \"Leave a Review\" tile.");
             // The corrected canonical support phone is rendered everywhere.
-            $this->assertStringContainsString('202-868-1113', $html, "{$source} must render the support phone.");
+            $this->assertStringContainsString('202-868-1663', $html, "{$source} must render the support phone.");
         }
     }
 

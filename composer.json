@@ -9,13 +9,14 @@
     ],
     "license": "MIT",
     "require": {
+        "ext-sodium": "*",
         "php": "^8.2",
-        "guzzlehttp/guzzle": "^7.9",
+        "guzzlehttp/guzzle": "^7.15.2",
         "intervention/image": "^3.11",
-        "laravel/framework": "^12.0",
+        "laravel/framework": "^12.64.0",
         "laravel/sanctum": "^4.1",
         "laravel/tinker": "^2.10.1",
-        "league/flysystem-aws-s3-v3": "3.0",
+        "league/flysystem-aws-s3-v3": "^3.35.2",
         "pel/pel": "^1.0",
         "stripe/stripe-php": "^19.4"
     },
@@ -26,7 +27,7 @@
         "laravel/sail": "^1.41",
         "mockery/mockery": "^1.6",
         "nunomaduro/collision": "^8.6",
-        "phpunit/phpunit": "^11.5.3"
+        "phpunit/phpunit": "^11.5.56"
     },
     "autoload": {
         "psr-4": {
@@ -67,7 +68,12 @@
         ],
         "test": [
             "@php artisan config:clear --ansi",
-            "@php artisan test"
+            "@php -d memory_limit=2G artisan test --fail-on-warning --fail-on-risky --fail-on-skipped --fail-on-phpunit-deprecation"
+        ],
+        "quality": [
+            "@composer validate --strict",
+            "@composer audit --locked",
+            "@test"
         ]
     },
     "extra": {

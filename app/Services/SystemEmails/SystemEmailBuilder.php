@@ -78,6 +78,7 @@ class SystemEmailBuilder
             'CANCELLATION_FEE_INVOICE' => 'Cancellation Fee Invoice - ' . ($meta['address'] ?? 'Property'),
             'OFFLINE_PAYMENT_INTENT_SUBMITTED' => 'Offline Payment Submitted - ' . (($meta['payment_method_label'] ?? 'Cash') . ' $' . number_format((float) ($meta['amount'] ?? 0), 2)),
             'OFFLINE_PAYMENT_INTENT_DECLINED' => 'Offline Payment Was Not Accepted',
+            'INTERNAL_MESSAGE_NOTIFICATION' => 'New Dashboard Message from ' . ($meta['sender_name'] ?? 'R/E Pro Photos'),
             default => $definition->alias,
         };
     }

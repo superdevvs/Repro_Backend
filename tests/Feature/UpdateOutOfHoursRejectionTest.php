@@ -90,8 +90,8 @@ class UpdateOutOfHoursRejectionTest extends TestCase
      * with HTTP 422, a structured `start_time` validation error carrying the bound
      * message, and the original time is left unchanged.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function out_of_hours_update_is_rejected_with_structured_422(): void
     {
         Sanctum::actingAs($this->admin);
@@ -138,8 +138,8 @@ class UpdateOutOfHoursRejectionTest extends TestCase
      * An in-bounds reschedule (11:00, inside the 09:00–18:00 fallback window)
      * succeeds with HTTP 200 and persists the new time.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function in_hours_update_succeeds_and_persists(): void
     {
         Sanctum::actingAs($this->admin);

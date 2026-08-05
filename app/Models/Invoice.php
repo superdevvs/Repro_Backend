@@ -96,6 +96,15 @@ class Invoice extends Model
         'status' => 'draft',
     ];
 
+    /**
+     * Server-computed payee edit contract, surfaced on every invoice payload so
+     * the client never has to re-derive editability from status strings.
+     */
+    protected $appends = [
+        'can_edit',
+        'edit_locked_reason',
+    ];
+
     public function photographer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'photographer_id');
@@ -278,6 +287,45 @@ class Invoice extends Model
             && $this->status !== self::STATUS_PAID
             && ! $isPaidFlag
             && empty($paidAt);
+    }
+
+    /**
+     * Human-readable reason the payee can no longer edit this invoice, or null
+     * when editing is still allowed. Used to surface a specific message instead
+     * of a generic "cannot be modified" string (name the failing condition).
+     */
+    public function editLockedReason(): ?string
+    {
+        if ($this->canBeModifiedByPayee()) {
+            return null;
+        }
+
+        $isPaidFlag = filter_var($this->attributes['is_paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $paidAt = $this->attributes['paid_at'] ?? null;
+
+        if ($this->status === self::STATUS_PAID || $isPaidFlag || ! empty($paidAt)) {
+            return 'This invoice has already been paid and can no longer be edited.';
+        }
+
+        if ($this->isAccountsApproved()) {
+            return 'This invoice has been approved by accounts and can no longer be edited.';
+        }
+
+        if ($this->requiresApproval()) {
+            return 'This invoice is awaiting accounts approval. Ask accounts to return it for changes before editing.';
+        }
+
+        return 'This invoice can no longer be edited in its current state.';
+    }
+
+    public function getCanEditAttribute(): bool
+    {
+        return $this->canBeModifiedByPayee();
+    }
+
+    public function getEditLockedReasonAttribute(): ?string
+    {
+        return $this->editLockedReason();
     }
 
     /**

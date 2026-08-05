@@ -26,8 +26,8 @@ use Tests\TestCase;
  * deterministic, seeded loop-based generator running a minimum of 100 iterations
  * over randomized batch sizes within and beyond the bound.
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class BatchSizeBoundTest extends TestCase
 {
     use RefreshDatabase;

@@ -10,7 +10,7 @@
 
     $productName = data_get($brand, 'product_name', 'R/E Pro Photos');
     $supportEmail = data_get($brand, 'support_email', 'contact@reprophotos.com');
-    $supportPhone = data_get($brand, 'support_phone', '202-868-1113');
+    $supportPhone = data_get($brand, 'support_phone', '202-868-1663');
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $reviewUrl = data_get($brand, 'review_url', 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews');
     // Footer tile toggles. Default ON so every template renders unchanged; the

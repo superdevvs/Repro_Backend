@@ -66,7 +66,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be modified in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
             ], 422);
         }
 
@@ -145,7 +145,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be modified in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
             ], 422);
         }
 
@@ -201,7 +201,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be rejected in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be rejected in its current state.'
             ], 422);
         }
 
@@ -255,7 +255,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be modified in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
             ], 422);
         }
 
@@ -341,7 +341,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be modified in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
             ], 422);
         }
 
@@ -423,7 +423,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be modified in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be modified in its current state.'
             ], 422);
         }
 
@@ -481,7 +481,7 @@ class PhotographerInvoiceController extends Controller
 
         if (!$invoice->canBeModifiedByPhotographer()) {
             return response()->json([
-                'message' => 'Invoice cannot be submitted for approval in its current state'
+                'message' => $invoice->editLockedReason() ?? 'Invoice cannot be submitted for approval in its current state.'
             ], 422);
         }
 

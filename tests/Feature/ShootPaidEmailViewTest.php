@@ -26,7 +26,7 @@ class ShootPaidEmailViewTest extends TestCase
             'website_url' => 'https://reprophotos.com',
             'review_url' => 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews',
             'support_email' => 'contact@reprophotos.com',
-            'support_phone' => '202-868-1113',
+            'support_phone' => '202-868-1663',
             'property_highlights' => [
                 ['label' => 'Bedrooms', 'value' => '3'],
                 ['label' => 'Bathrooms', 'value' => '1.0'],
@@ -57,8 +57,8 @@ class ShootPaidEmailViewTest extends TestCase
         $this->assertStringContainsString('9412 Gwynndale Dr, Clinton, MD 20735', $html);
         $this->assertStringContainsString('contact@reprophotos.com', $html);
         // QA #10: support phone must be the canonical number, never the obsolete one.
-        $this->assertStringContainsString('202-868-1113', $html);
-        $this->assertStringNotContainsString('202-868-1663', $html);
+        $this->assertStringContainsString('202-868-1663', $html);
+        $this->assertStringNotContainsString('202-868-1113', $html);
 
         $this->assertStringContainsString('width="120"', $html);
         $this->assertStringContainsString('max-width:720px', $html);

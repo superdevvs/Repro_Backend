@@ -60,4 +60,31 @@ class IntentScorerTest extends TestCase
         $this->assertSame('availability', $result['name']);
         $this->assertGreaterThanOrEqual(1.0, $result['confidence']);
     }
+
+    public function test_scores_support_faq_for_human_handoff(): void
+    {
+        $scorer = new IntentScorer(new IntentRegistry());
+        $result = $scorer->score('I want to speak to a human');
+
+        $this->assertSame('support_faq', $result['name']);
+        $this->assertGreaterThanOrEqual(1.0, $result['confidence']);
+    }
+
+    public function test_scores_support_faq_for_copyright_question(): void
+    {
+        $scorer = new IntentScorer(new IntentRegistry());
+        $result = $scorer->score('Who owns the copyright to my images?');
+
+        $this->assertSame('support_faq', $result['name']);
+        $this->assertGreaterThanOrEqual(1.0, $result['confidence']);
+    }
+
+    public function test_support_faq_does_not_hijack_transactional_intents(): void
+    {
+        $scorer = new IntentScorer(new IntentRegistry());
+
+        $this->assertSame('book_shoot', $scorer->score('Book a new shoot next week')['name']);
+        $this->assertSame('manage_booking', $scorer->score('Please reschedule my booking')['name']);
+        $this->assertSame('availability', $scorer->score('Check availability for next Thursday')['name']);
+    }
 }

@@ -28,8 +28,8 @@ use Tests\TestCase;
  * deterministic, seeded loop-based generator running a minimum of 100 iterations
  * over a variety of invalid request shapes.
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class ReelValidationCreatesNoJobsTest extends TestCase
 {
     use RefreshDatabase;

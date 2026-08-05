@@ -69,8 +69,8 @@ class SixShootsSixServicesPreservationTest extends TestCase
      *    counts (6 shoots / 6 services / 9 assignments) agree with the data, and
      *    the canonical anchor values are present and exactly as captured.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function baseline_fixture_is_intact_and_well_formed(): void
     {
         $meta = $this->baseline['_meta'];
@@ -114,8 +114,8 @@ class SixShootsSixServicesPreservationTest extends TestCase
      *    are stored unformatted (HH:mm or HH:mm:ss), scheduled_at is canonical
      *    'Y-m-d H:i:s', and the stored timezone is null on every shoot.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function baseline_times_use_canonical_unformatted_storage(): void
     {
         foreach ($this->baseline['shoots'] as $shoot) {
@@ -151,8 +151,8 @@ class SixShootsSixServicesPreservationTest extends TestCase
      *    performs no silent modification — and the counts are unchanged (no
      *    reseed/delete).
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function reconstructed_baseline_round_trips_without_modification(): void
     {
         [$serviceMap, $photographerId] = $this->seedBaselineIntoDatabase();
@@ -233,8 +233,8 @@ class SixShootsSixServicesPreservationTest extends TestCase
      *    columns still exist, and no migration drops or truncates those tables in
      *    its up() path.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function no_destructive_migration_touches_the_scheduling_tables(): void
     {
         // Canonical schema survived every migration (RefreshDatabase ran them all).

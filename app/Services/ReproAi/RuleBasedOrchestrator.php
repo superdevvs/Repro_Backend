@@ -8,6 +8,7 @@ use App\Services\ReproAi\Flows\BookShootFlow;
 use App\Services\ReproAi\Flows\ManageBookingFlow;
 use App\Services\ReproAi\Flows\AvailabilityFlow;
 use App\Services\ReproAi\Flows\EditPhotosFlow;
+use App\Services\ReproAi\Flows\SupportFaqFlow;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -18,6 +19,7 @@ class RuleBasedOrchestrator
         protected ManageBookingFlow $manageBookingFlow,
         protected AvailabilityFlow $availabilityFlow,
         protected EditPhotosFlow $editPhotosFlow,
+        protected SupportFaqFlow $supportFaqFlow,
     ) {}
 
     /**
@@ -147,6 +149,9 @@ class RuleBasedOrchestrator
                     case 'edit_photos':
                         $result = $this->editPhotosFlow->handle($session, $message, $context);
                         break;
+                    case 'support_faq':
+                        $result = $this->supportFaqFlow->handle($session, $message, $context);
+                        break;
                     default:
                         $fallbackUsed = true;
                         $handoffReason = 'intent_not_allowed';
@@ -254,6 +259,7 @@ class RuleBasedOrchestrator
             'manage_booking',
             'availability',
             'edit_photos',
+            'support_faq',
         ];
     }
 
@@ -373,6 +379,11 @@ class RuleBasedOrchestrator
             // Availability
             'check photographer availability' => 'availability',
             'check availability' => 'availability',
+            // Support / FAQ / human handoff
+            'speak to a human' => 'support_faq',
+            'talk to a human' => 'support_faq',
+            'view faq topics' => 'support_faq',
+            'create a support ticket' => 'support_faq',
         ];
         
         if (isset($exactMatches[$m])) {
@@ -403,6 +414,12 @@ class RuleBasedOrchestrator
             str_contains($m, 'enhance') && (str_contains($m, 'photo') || str_contains($m, 'shoot') || str_contains($m, 'image')) => 'edit_photos',
             str_contains($m, 'autoenhance') => 'edit_photos',
             str_contains($m, 'retouch') => 'edit_photos',
+
+            // Support / FAQ / human handoff
+            str_contains($m, 'human') || str_contains($m, 'representative') || str_contains($m, 'speak to') || str_contains($m, 'talk to') => 'support_faq',
+            str_contains($m, 'ticket') => 'support_faq',
+            str_contains($m, 'turnaround') || str_contains($m, 'copyright') || str_contains($m, 'who owns') => 'support_faq',
+            str_contains($m, 'faq') || str_contains($m, 'help') => 'support_faq',
 
             default => 'general',
         };

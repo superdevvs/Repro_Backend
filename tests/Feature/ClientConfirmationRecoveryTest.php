@@ -28,7 +28,7 @@ class ClientConfirmationRecoveryTest extends TestCase
         \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_list_client_confirmation_recovery_candidates(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);
@@ -58,7 +58,7 @@ class ClientConfirmationRecoveryTest extends TestCase
             ->assertJsonPath('data.0.status', ShootEmailDelivery::STATUS_FAILED);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function non_admin_users_cannot_list_or_replay_client_confirmation_recovery_candidates(): void
     {
         $clientUser = User::factory()->create(['role' => 'client', 'email' => 'client@test.com']);
@@ -84,7 +84,7 @@ class ClientConfirmationRecoveryTest extends TestCase
         ])->assertForbidden();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function replay_rejects_deliveries_with_invalid_email_or_ineligible_status(): void
     {
         $admin = User::factory()->create(['role' => 'admin']);
@@ -138,7 +138,7 @@ class ClientConfirmationRecoveryTest extends TestCase
         $this->assertDatabaseCount('messages', 0);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function replay_sends_client_confirmation_for_eligible_delivery_and_marks_it_recovered(): void
     {
         Mail::fake();
@@ -191,7 +191,7 @@ class ClientConfirmationRecoveryTest extends TestCase
         $this->assertSame(strtolower($client->email), strtolower((string) $message->to_address));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function audit_command_lists_failed_and_skipped_deliveries_only(): void
     {
         $client = User::factory()->create(['role' => 'client', 'email' => 'audit-client@test.com']);

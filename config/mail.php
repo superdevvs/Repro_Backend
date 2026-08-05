@@ -43,7 +43,9 @@ return [
 
     'contact_address' => env('MAIL_CONTACT_ADDRESS', 'contact@reprophotos.com'),
 
-    'contact_phone' => env('MAIL_CONTACT_PHONE', '202-868-1113'),
+    // Canonical client-facing support number, matching reprophotos.com. Every
+    // email/SMS footer resolves back to this value, so change it here only.
+    'contact_phone' => env('MAIL_CONTACT_PHONE', '202-868-1663'),
 
     'accounting_address' => env('MAIL_ACCOUNTING_ADDRESS', 'accounting@reprophotos.com'),
 

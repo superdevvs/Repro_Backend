@@ -25,8 +25,8 @@ use Tests\TestCase;
  * datasets. Forced cases ensure duplicate cross-table jobs, both boundaries,
  * other teams, and editor ownership are covered rather than left to chance.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioProjectsProcessedPropertyTest extends TestCase
 {
     use RefreshDatabase;

@@ -24,16 +24,48 @@ use Illuminate\Validation\ValidationException;
 class UploadValidationService
 {
     /**
+     * Archive container extensions. ClamAV scans an archive as a single opaque
+     * object and never inspects the individual files inside it, so archive
+     * CONTENTS are effectively unscanned (Req 5.9). Uploads of these types are
+     * therefore restricted to authenticated staff accounts (see isStaffRole).
+     *
+     * @var list<string>
+     */
+    public const ARCHIVE_EXTENSIONS = ['zip'];
+
+    /**
+     * Authenticated internal (staff) roles permitted to upload archives. Any
+     * role not in this list — notably clients and unauthenticated callers — is
+     * refused archive uploads.
+     *
+     * @var list<string>
+     */
+    public const STAFF_ROLES = [
+        'admin',
+        'superadmin',
+        'editing_manager',
+        'editor',
+        'photographer',
+        'salesRep',
+        'sales_rep',
+        'finance',
+        'accounting',
+    ];
+
+    /**
      * Validate a single uploaded file against the configured maximum size and
      * allowed file-type list.
      *
      * @param  UploadedFile  $upload  the file to validate
      * @param  string  $field  the field name used in the thrown validation error
+     * @param  string|null  $userRole  the authenticated uploader's role, used to
+     *                                 gate archive uploads to staff (Req 5.9)
      *
      * @throws ValidationException  (rendered as HTTP 422) when the file is
-     *                              oversize or of a disallowed type
+     *                              oversize, of a disallowed type, or an archive
+     *                              uploaded by a non-staff account
      */
-    public function validate(UploadedFile $upload, string $field = 'file'): void
+    public function validate(UploadedFile $upload, string $field = 'file', ?string $userRole = null): void
     {
         $maxBytes = $this->maxBytes();
         $size = $upload->getSize();
@@ -49,6 +81,15 @@ class UploadValidationService
         if (! $this->isAllowedType($upload)) {
             throw ValidationException::withMessages([
                 $field => 'File type not allowed',
+            ]);
+        }
+
+        // Archive uploads carry files ClamAV cannot see (it scans the container,
+        // not its contents), so they are restricted to authenticated staff
+        // accounts (Req 5.9). A client or unauthenticated caller is refused.
+        if ($this->isArchiveUpload($upload) && ! $this->isStaffRole($userRole)) {
+            throw ValidationException::withMessages([
+                $field => 'Archive (.zip) uploads are restricted to staff accounts',
             ]);
         }
 
@@ -112,13 +153,41 @@ class UploadValidationService
      *
      * @throws ValidationException
      */
-    public function validateMany(iterable $uploads, string $field = 'file'): void
+    public function validateMany(iterable $uploads, string $field = 'file', ?string $userRole = null): void
     {
         foreach ($uploads as $upload) {
             if ($upload instanceof UploadedFile) {
-                $this->validate($upload, $field);
+                $this->validate($upload, $field, $userRole);
             }
         }
+    }
+
+    /**
+     * Whether the upload is an archive container whose contents ClamAV cannot
+     * individually scan (Req 5.9).
+     */
+    public function isArchiveUpload(UploadedFile $upload): bool
+    {
+        $extension = strtolower($upload->getClientOriginalExtension());
+
+        return in_array($extension, self::ARCHIVE_EXTENSIONS, true);
+    }
+
+    /**
+     * Whether the given role is an authenticated staff role permitted to upload
+     * archives. A null/empty role (unauthenticated) is never staff.
+     */
+    public function isStaffRole(?string $role): bool
+    {
+        if ($role === null || trim($role) === '') {
+            return false;
+        }
+
+        return in_array(
+            strtolower(trim($role)),
+            array_map('strtolower', self::STAFF_ROLES),
+            true
+        );
     }
 
     /**

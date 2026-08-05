@@ -24,51 +24,6 @@ class RawThumbnailServiceAutoenhanceTest extends TestCase
         $this->service = new RawThumbnailService();
     }
 
-    private function exiftoolAvailable(): bool
-    {
-        $check = PHP_OS_FAMILY === 'Windows' ? 'where' : 'which';
-        exec("$check exiftool 2>&1", $out, $code);
-        return $code === 0;
-    }
-
-    /**
-     * Locate a real Nikon High Efficiency NEF in the workspace storage, if any
-     * exists, so the test can exercise the true detection + extraction path.
-     */
-    private function findHighEfficiencyNef(): ?string
-    {
-        if (!$this->exiftoolAvailable()) {
-            return null;
-        }
-
-        $base = storage_path('app/public/shoots');
-        if (!is_dir($base)) {
-            return null;
-        }
-
-        $rii = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)
-        );
-        $count = 0;
-        foreach ($rii as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-            if (strtolower($file->getExtension()) !== 'nef') {
-                continue;
-            }
-            // Cap the scan so the test stays fast.
-            if (++$count > 200) {
-                break;
-            }
-            if ($this->service->autoenhanceNeedsJpegSubstitution($file->getPathname())) {
-                return $file->getPathname();
-            }
-        }
-
-        return null;
-    }
-
     #[Test]
     public function it_recognises_nikon_nef_as_a_raw_file(): void
     {
@@ -107,37 +62,69 @@ class RawThumbnailServiceAutoenhanceTest extends TestCase
     #[Test]
     public function it_detects_unsupported_high_efficiency_nef_and_extracts_a_valid_jpeg(): void
     {
-        $heNef = $this->findHighEfficiencyNef();
-
-        if ($heNef === null) {
-            $this->markTestSkipped(
-                'No Nikon High Efficiency NEF available (or exiftool not installed) to exercise the real path.'
-            );
+        $image = imagecreatetruecolor(1200, 800);
+        $background = imagecolorallocate($image, 30, 90, 150);
+        imagefill($image, 0, 0, $background);
+        for ($x = 0; $x < 1200; $x += 20) {
+            $color = imagecolorallocate($image, $x % 255, ($x * 2) % 255, ($x * 3) % 255);
+            imageline($image, $x, 0, 1199 - $x, 799, $color);
         }
+        ob_start();
+        imagejpeg($image, null, 92);
+        $jpegBytes = (string) ob_get_clean();
+        imagedestroy($image);
 
-        // Detection: this variant MUST be flagged for JPEG substitution.
-        $this->assertTrue(
-            $this->service->autoenhanceNeedsJpegSubstitution($heNef),
-            'Expected the HE-compressed NEF to require JPEG substitution.'
-        );
+        $service = new class($jpegBytes) extends RawThumbnailService {
+            public function __construct(private readonly string $jpegBytes) {}
 
-        // Extraction: we must get a real, decodable JPEG of sensible size.
-        $jpeg = $this->service->extractFullSizeJpeg($heNef);
-        $this->assertNotNull($jpeg, 'Expected a JPEG to be extracted from the HE NEF.');
+            protected function commandExists(string $command): bool
+            {
+                return $command === 'exiftool';
+            }
+
+            protected function runCommand(string $command, array &$output): int
+            {
+                $output = ['High Efficiency*', 'NEF'];
+
+                return 0;
+            }
+
+            protected function extractEmbeddedJpegData(string $sourcePath, string $tag): ?string
+            {
+                return $tag === 'JpgFromRaw' ? $this->jpegBytes : null;
+            }
+        };
+
+        $heNef = tempnam(sys_get_temp_dir(), 'he_nef_') . '.nef';
+        file_put_contents($heNef, 'deterministic-test-raw');
 
         try {
-            $this->assertFileExists($jpeg);
+            // Detection: this variant MUST be flagged for JPEG substitution.
+            $this->assertTrue(
+                $service->autoenhanceNeedsJpegSubstitution($heNef),
+                'Expected the HE-compressed NEF to require JPEG substitution.'
+            );
 
-            $finfo = finfo_open(FILEINFO_MIME_TYPE);
-            $mime = finfo_file($finfo, $jpeg);
-            finfo_close($finfo);
-            $this->assertSame('image/jpeg', $mime, 'Extracted file must be a JPEG.');
+            // Extraction: we must get a real, decodable JPEG of sensible size.
+            $jpeg = $service->extractFullSizeJpeg($heNef);
+            $this->assertNotNull($jpeg, 'Expected a JPEG to be extracted from the HE NEF.');
 
-            $info = getimagesize($jpeg);
-            $this->assertNotFalse($info, 'Extracted JPEG must be decodable.');
-            $this->assertGreaterThanOrEqual(800, $info[0], 'Extracted JPEG should be full-size, not a tiny thumbnail.');
+            try {
+                $this->assertFileExists($jpeg);
+
+                $finfo = finfo_open(FILEINFO_MIME_TYPE);
+                $mime = finfo_file($finfo, $jpeg);
+                finfo_close($finfo);
+                $this->assertSame('image/jpeg', $mime, 'Extracted file must be a JPEG.');
+
+                $info = getimagesize($jpeg);
+                $this->assertNotFalse($info, 'Extracted JPEG must be decodable.');
+                $this->assertGreaterThanOrEqual(800, $info[0], 'Extracted JPEG should be full-size, not a tiny thumbnail.');
+            } finally {
+                @unlink($jpeg);
+            }
         } finally {
-            @unlink($jpeg);
+            @unlink($heNef);
         }
     }
 }

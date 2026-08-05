@@ -1698,7 +1698,7 @@ class MailService
             // Source support contact from the canonical config (single source of truth)
             // so no shoot email can render a stale support phone/email. See QA #10.
             'support_email' => config('mail.contact_address', 'contact@reprophotos.com'),
-            'support_phone' => config('mail.contact_phone', '202-868-1113'),
+            'support_phone' => config('mail.contact_phone', '202-868-1663'),
             'bypass_paywall' => (bool) ($shoot->bypass_paywall ?? false),
             'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
         ];
@@ -3350,7 +3350,15 @@ HTML;
             return null;
         }
 
-        return app(TemplateRenderer::class)->render($template, [
+        // Resolve the shared system tokens (company_email, company_phone, portal_url,
+        // ...) first; rendering with only the invoice-specific values blanked out the
+        // support contact line in this email.
+        $variables = app(\App\Services\Messaging\TemplateVariableResolver::class)->resolve([
+            'invoice' => $invoice,
+            'recipient' => $recipient,
+        ]);
+
+        return app(TemplateRenderer::class)->render($template, array_merge($variables, [
             'recipient_name' => $recipient->name ?? 'there',
             'recipient_role' => $recipientRole,
             'billing_period' => $period,
@@ -3362,7 +3370,7 @@ HTML;
             'dashboard_url' => 'https://reprodashboard.com',
             'invoice_next_step' => 'Open the dashboard to review the invoice, confirm line items, and add any missing expenses before approval moves forward.',
             'approval_note' => 'Changes made after generation may trigger a fresh approval review before payout is finalized.',
-        ]);
+        ]));
     }
 
     private function buildInvoiceItemsHtml(\App\Models\Invoice $invoice): string

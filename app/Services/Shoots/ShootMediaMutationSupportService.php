@@ -12,6 +12,11 @@ use Illuminate\Support\Facades\Storage;
 
 class ShootMediaMutationSupportService
 {
+    public function __construct(
+        protected ShootAuthorizationSupport $shootAuthorizationSupport
+    ) {
+    }
+
     public function clearShootFilesCache(Shoot $shoot, ?User $user = null): void
     {
         $user = $user ?? auth()->user();
@@ -32,12 +37,20 @@ class ShootMediaMutationSupportService
     public function refreshMediaCounters(Shoot $shoot): Shoot
     {
         $rawCount = $this->requiredRawFilesQuery($shoot)->count();
+        // The edited photo count must equal what the edited photo tab shows
+        // (Req 3.8 / Property 7): floor plans, extras and raw camera files are
+        // not edited photos. Raw camera detection is filename/mime based, so we
+        // reuse ShootAuthorizationSupport::isRawCameraFile() in PHP to keep the
+        // definition identical to the archive service rather than approximating
+        // it in SQL.
         $editedCount = $shoot->files()
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
             ->where(function ($query) {
                 $query->whereNull('flag_reason')
                     ->orWhere('flag_reason', '');
             })
+            ->get()
+            ->reject(fn (ShootFile $file) => $this->isExcludedFromEditedPhotoCount($file))
             ->count();
         $extraCount = $this->extraFilesQuery($shoot)->count();
 
@@ -55,6 +68,26 @@ class ShootMediaMutationSupportService
         $shoot->save();
 
         return $shoot->fresh(['files']);
+    }
+
+    /**
+     * A completed/verified file that is not an edited photo: floor plans and
+     * extras (by media_type or the is_extra flag) and raw camera files. Mirrors
+     * the archive service's edited-scope exclusions so counts and downloads
+     * agree (Req 3.8).
+     */
+    protected function isExcludedFromEditedPhotoCount(ShootFile $file): bool
+    {
+        $mediaType = strtolower((string) ($file->media_type ?? ''));
+        if (in_array($mediaType, ['extra', 'floorplan'], true)) {
+            return true;
+        }
+
+        if ((bool) $file->is_extra) {
+            return true;
+        }
+
+        return $this->shootAuthorizationSupport->isRawCameraFile($file);
     }
 
     protected function requiredRawFilesQuery(Shoot $shoot)

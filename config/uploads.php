@@ -35,9 +35,16 @@ return [
         'nef',
         'arw',
         'tiff',
+        'tif',
         'bmp',
         'heic',
         'heif',
+        // Layered/archived editor deliverables (Req 5.8).
+        'psd',
+        // ZIP is accepted only from authenticated staff accounts. ClamAV scans
+        // a ZIP as a single opaque object and never inspects the files inside
+        // it, so archive CONTENTS are effectively unscanned (Req 5.9). The
+        // staff-role gate lives in App\Services\UploadValidationService.
         'zip',
     ],
 

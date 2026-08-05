@@ -435,6 +435,21 @@ class UserController extends Controller
             'send_equipment_email' => true,
         ]);
 
+        if ($notificationDelivery['email']['verification']['sent'] ?? false) {
+            $this->logUserActivity(
+                $user,
+                'email_verification_requested',
+                'Email verification sent',
+                'A verification email was sent when the account was created.',
+                $admin,
+                [
+                    'email' => $user->email,
+                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                    'issued_context' => 'admin_account_created',
+                ]
+            );
+        }
+
         if ($pendingEquipmentCount > 0 && (
             ($notificationDelivery['email']['equipment']['sent'] ?? false)
             || (($notificationDelivery['links']['equipment'] ?? null) && ($notificationDelivery['email']['account_created']['sent'] ?? false))
@@ -878,6 +893,7 @@ class UserController extends Controller
         }
 
         if ($emailHealthMutation['email_changed'] && $this->shouldRequireEmailVerificationForRole($user->role)) {
+            $verificationSent = false;
             try {
                 $mailService = app(MailService::class);
                 if ($mailService->sendClientEmailVerificationEmail($user, [
@@ -885,6 +901,7 @@ class UserController extends Controller
                     'issued_by' => $admin->id,
                 ])) {
                     $this->emailHealthService->markVerificationSent($user);
+                    $verificationSent = true;
                 }
             } catch (\Throwable $exception) {
                 \Log::warning('Failed to send account email verification email after update', [
@@ -894,17 +911,19 @@ class UserController extends Controller
                 ]);
             }
 
-            $this->logUserActivity(
-                $user,
-                'email_verification_requested',
-                'Email verification sent',
-                'A new verification email was sent after the account email changed.',
-                $admin,
-                [
-                    'email' => $user->email,
-                    'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
-                ]
-            );
+            if ($verificationSent) {
+                $this->logUserActivity(
+                    $user,
+                    'email_verification_requested',
+                    'Email verification sent',
+                    'A new verification email was sent after the account email changed.',
+                    $admin,
+                    [
+                        'email' => $user->email,
+                        'sales_rep_id' => $this->emailHealthService->extractSalesRepId($user),
+                    ]
+                );
+            }
 
             if ($previousEmailStatus === EmailHealthService::STATUS_BOUNCED && $previousEmail !== strtolower((string) $user->email)) {
                 $this->logUserActivity(

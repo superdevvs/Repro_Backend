@@ -71,6 +71,72 @@ class InvoiceFeatureTest extends TestCase
         $this->assertEquals(345.0, (float) $invoice->amount_paid);
     }
 
+    /**
+     * Task 23.3: a shoot whose service items are assigned to different
+     * photographers must produce one weekly invoice per photographer, each
+     * carrying ONLY that photographer's resolved service pay on the invoice
+     * record (never the whole-shoot total). This pins the server-computed total
+     * (23.1/23.2) for the per-service-assignment case.
+     */
+    public function test_weekly_invoice_total_is_per_service_assigned_photographer(): void
+    {
+        $photographerA = User::factory()->photographer()->create();
+        $photographerB = User::factory()->photographer()->create();
+        $client = User::factory()->create();
+        $servicePhotos = Service::factory()->create(['name' => 'Photos']);
+        $serviceVideo = Service::factory()->create(['name' => 'Video']);
+
+        $start = Carbon::now()->subWeek()->startOfWeek();
+        $end = $start->copy()->endOfWeek();
+
+        // One shoot, two service items assigned to two different photographers.
+        $shoot = Shoot::factory()->create([
+            'photographer_id' => $photographerA->id,
+            'client_id' => $client->id,
+            'service_id' => $servicePhotos->id,
+            'scheduled_date' => $start->copy()->addDays(2),
+            'completed_at' => $start->copy()->addDays(2)->setTime(14, 0),
+            'workflow_status' => Shoot::WORKFLOW_COMPLETED,
+            'base_quote' => 500,
+            'tax_amount' => 0,
+            'total_quote' => 500,
+        ]);
+        $shoot->services()->attach($servicePhotos->id, [
+            'price' => 300,
+            'quantity' => 1,
+            'photographer_pay' => 120,
+            'photographer_id' => $photographerA->id,
+        ]);
+        $shoot->services()->attach($serviceVideo->id, [
+            'price' => 200,
+            'quantity' => 1,
+            'photographer_pay' => 80,
+            'photographer_id' => $photographerB->id,
+        ]);
+
+        $invoices = app(InvoiceService::class)->generateForPeriod($start, $end);
+
+        // One invoice per resolved photographer.
+        $this->assertCount(2, $invoices);
+
+        $invoiceA = Invoice::where('photographer_id', $photographerA->id)
+            ->where('role', Invoice::ROLE_PHOTOGRAPHER)->first();
+        $invoiceB = Invoice::where('photographer_id', $photographerB->id)
+            ->where('role', Invoice::ROLE_PHOTOGRAPHER)->first();
+
+        $this->assertNotNull($invoiceA);
+        $this->assertNotNull($invoiceB);
+
+        // Each total comes from the invoice record and reflects ONLY that
+        // photographer's assigned service pay — not the whole-shoot total (500).
+        $this->assertEquals(120.0, (float) $invoiceA->total_amount);
+        $this->assertEquals(80.0, (float) $invoiceB->total_amount);
+
+        // Each invoice has exactly its one assigned service line.
+        $this->assertSame(1, $invoiceA->items()->where('type', InvoiceItem::TYPE_CHARGE)->count());
+        $this->assertSame(1, $invoiceB->items()->where('type', InvoiceItem::TYPE_CHARGE)->count());
+    }
+
     public function test_regenerating_weekly_invoices_is_idempotent_and_creates_no_duplicates(): void
     {
         // Reproduces the weekly-invoice duplicate bug: billing_period_* is stored as a
@@ -316,5 +382,66 @@ class InvoiceFeatureTest extends TestCase
         $this->assertEquals(1000.0, (float) $sundayItem->meta['commissionable_gross']);
         $this->assertEquals(100.0, (float) $sundayItem->meta['excluded_fees_total']);
         $this->assertEquals(15.0, (float) $sundayItem->meta['commission_rate']);
+    }
+
+    public function test_photographer_can_edit_pending_invoice_and_payload_exposes_can_edit(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $invoice = Invoice::create([
+            'user_id' => $photographer->id,
+            'role' => Invoice::ROLE_PHOTOGRAPHER,
+            'photographer_id' => $photographer->id,
+            'period_start' => Carbon::now()->startOfWeek(),
+            'period_end' => Carbon::now()->endOfWeek(),
+            'billing_period_start' => Carbon::now()->startOfWeek(),
+            'billing_period_end' => Carbon::now()->endOfWeek(),
+            'total_amount' => 0,
+            'amount_paid' => 0,
+            'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
+            'status' => Invoice::STATUS_SENT,
+        ]);
+
+        Sanctum::actingAs($photographer);
+
+        $this->getJson("/api/photographer/invoices/{$invoice->id}")
+            ->assertOk()
+            ->assertJson(['can_edit' => true, 'edit_locked_reason' => null]);
+
+        $this->postJson("/api/photographer/invoices/{$invoice->id}/expenses", [
+            'description' => 'Parking',
+            'amount' => 12.5,
+        ])->assertCreated();
+    }
+
+    public function test_photographer_edit_is_blocked_with_named_reason_once_accounts_approved(): void
+    {
+        $photographer = User::factory()->photographer()->create();
+        $invoice = Invoice::create([
+            'user_id' => $photographer->id,
+            'role' => Invoice::ROLE_PHOTOGRAPHER,
+            'photographer_id' => $photographer->id,
+            'period_start' => Carbon::now()->startOfWeek(),
+            'period_end' => Carbon::now()->endOfWeek(),
+            'billing_period_start' => Carbon::now()->startOfWeek(),
+            'billing_period_end' => Carbon::now()->endOfWeek(),
+            'total_amount' => 0,
+            'amount_paid' => 0,
+            'approval_status' => Invoice::APPROVAL_STATUS_APPROVED,
+            'status' => Invoice::STATUS_SENT,
+        ]);
+
+        Sanctum::actingAs($photographer);
+
+        $this->getJson("/api/photographer/invoices/{$invoice->id}")
+            ->assertOk()
+            ->assertJson(['can_edit' => false])
+            ->assertJsonPath('edit_locked_reason', fn ($reason) => is_string($reason) && str_contains($reason, 'approved by accounts'));
+
+        $this->postJson("/api/photographer/invoices/{$invoice->id}/expenses", [
+            'description' => 'Parking',
+            'amount' => 12.5,
+        ])
+            ->assertStatus(422)
+            ->assertJsonPath('message', fn ($message) => is_string($message) && str_contains($message, 'approved by accounts'));
     }
 }

@@ -115,9 +115,7 @@ class OutboundDeliveryGuardTest extends TestCase
         $this->assertTrue($guard->allows('SMS', '4155239999'));
     }
 
-    /**
-     * @dataProvider fixtureRecipients
-     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('fixtureRecipients')]
     public function test_fixture_recipients_are_never_delivered_to_outside_production(string $channel, string $recipient): void
     {
         // Opt-in enabled AND the fixture explicitly allowlisted — still blocked.

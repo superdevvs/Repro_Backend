@@ -34,8 +34,8 @@ use Tests\TestCase;
  * violates, and the "no records" invariant is re-checked after every single case so
  * the first offending submission is reported as the counterexample.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioInvalidSubmissionNoJobsPropertyTest extends TestCase
 {
     use RefreshDatabase;

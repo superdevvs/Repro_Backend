@@ -30,8 +30,8 @@ use Tests\TestCase;
  * jobs are never dispatched, a pool of valid existing ShootFile rows so the
  * only outcome under test is the per-file job creation, and a reproducible seed.
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class BatchSubmissionCreatesOneJobPerFileTest extends TestCase
 {
     use RefreshDatabase;

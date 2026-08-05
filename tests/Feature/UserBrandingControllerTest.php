@@ -12,7 +12,7 @@ class UserBrandingControllerTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function visible_role_can_update_their_own_branding(): void
     {
         $user = User::factory()->create([
@@ -41,7 +41,7 @@ class UserBrandingControllerTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function hidden_role_cannot_update_their_own_branding(): void
     {
         $user = User::factory()->create([
@@ -62,7 +62,7 @@ class UserBrandingControllerTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function privileged_editor_can_update_someone_elses_branding_without_wiping_unsent_fields(): void
     {
         $editor = User::factory()->create([
@@ -108,7 +108,7 @@ class UserBrandingControllerTest extends TestCase
             ->assertJsonPath('data.branding.show_map', true);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_profile_route_is_public_and_uses_branding_backed_fields(): void
     {
         $owner = User::factory()->create([
@@ -167,7 +167,7 @@ class UserBrandingControllerTest extends TestCase
             ->assertJsonPath('shoots.0.id', $shoot->id);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_contact_route_accepts_client_ids(): void
     {
         $client = User::factory()->create([

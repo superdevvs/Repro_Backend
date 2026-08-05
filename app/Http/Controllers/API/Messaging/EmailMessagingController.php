@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Models\Contact;
 use App\Models\Invoice;
 use App\Models\Message;
+use App\Models\MessageThread;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Messaging\InternalMessageNotificationService;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
@@ -23,8 +25,10 @@ use Illuminate\Validation\ValidationException;
 
 class EmailMessagingController extends Controller
 {
-    public function __construct(private readonly MessagingService $messaging)
-    {
+    public function __construct(
+        private readonly MessagingService $messaging,
+        private readonly InternalMessageNotificationService $internalNotifications,
+    ) {
     }
 
     public function messages(Request $request): JsonResponse
@@ -77,6 +81,25 @@ class EmailMessagingController extends Controller
         $threads = $threadsQuery->paginate(25);
 
         return response()->json($threads);
+    }
+
+    public function markThreadRead(MessageThread $thread, Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $canAccess = $thread->messages()
+            ->get()
+            ->contains(fn (Message $message) => $this->canAccessMessage($user, $message));
+
+        if (!$canAccess) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $thread->markReadForUser((int) $user->id);
+
+        return response()->json([
+            'message' => 'Conversation marked as read.',
+            'data' => $thread->fresh(),
+        ]);
     }
 
     public function recipients(Request $request): JsonResponse
@@ -232,9 +255,10 @@ class EmailMessagingController extends Controller
     {
         $user = $request->user();
         $canSendOutbound = $this->canSendOutbound($user->role);
+        $isInternalReply = $request->filled('in_reply_to_message_id');
 
         $rules = [
-            'to' => [$canSendOutbound ? 'required' : 'nullable', 'email'],
+            'to' => [$canSendOutbound && !$isInternalReply ? 'required' : 'nullable', 'email'],
             'cc' => ['nullable', 'array'],
             'cc.*' => ['email'],
             'bcc' => ['nullable', 'array'],
@@ -249,12 +273,28 @@ class EmailMessagingController extends Controller
             'related_shoot_context_type' => ['nullable', 'in:new_shoot,previous_shoot'],
             'related_account_id' => ['nullable', 'integer', 'exists:users,id'],
             'related_invoice_id' => ['nullable', 'integer', 'exists:invoices,id'],
+            'in_reply_to_message_id' => ['nullable', 'integer', 'exists:messages,id'],
             'variables' => ['nullable', 'array'],
             'attachments' => ['nullable', 'array'],
             'attachments.*' => ['file', 'max:10240'],
         ];
 
         $data = $request->validate($rules);
+
+        if ($isInternalReply) {
+            $data = array_merge($data, $this->extractUploadedAttachments($request));
+
+            if (empty($data['body_html']) && empty($data['body_text']) && empty($data['template_id'])) {
+                throw ValidationException::withMessages([
+                    'body_text' => 'A reply message is required.',
+                ]);
+            }
+
+            $data = $this->applyTemplateIfNeeded($data);
+
+            return $this->storeInternalReply($user, $data);
+        }
+
         $relatedShoot = null;
 
         if (!$canSendOutbound) {
@@ -305,6 +345,7 @@ class EmailMessagingController extends Controller
             $payload['related_account_id'] = (int) ($relatedShoot?->client_id ?? $data['related_account_id']);
 
             $message = $this->messaging->storeInternalEmail($payload, 'INBOUND');
+            $this->internalNotifications->queueFor($message);
         }
 
         return response()->json($message);
@@ -417,6 +458,94 @@ class EmailMessagingController extends Controller
         $message->update(['status' => 'CANCELLED']);
 
         return response()->json($message->fresh());
+    }
+
+    /**
+     * Store a reply inside an existing dashboard conversation. The separate
+     * queued notification email contains only a short preview and link.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function storeInternalReply(User $user, array $data): JsonResponse
+    {
+        $original = Message::query()
+            ->with(['shoot.client', 'thread.contact.user'])
+            ->findOrFail((int) $data['in_reply_to_message_id']);
+
+        if (!$this->isLinkedInternalContactMessage($original) || !$this->canAccessMessage($user, $original)) {
+            return response()->json(['message' => 'This dashboard conversation is not available to you.'], 403);
+        }
+
+        $client = $original->shoot?->client;
+        if (!$client && $original->related_account_id) {
+            $candidate = User::query()->find((int) $original->related_account_id);
+            if ($candidate && $this->normalizedRole($candidate->role) === 'client') {
+                $client = $candidate;
+            }
+        }
+
+        if (!$client instanceof User) {
+            throw ValidationException::withMessages([
+                'in_reply_to_message_id' => 'This conversation no longer has an associated client account.',
+            ]);
+        }
+
+        $isClient = $this->normalizedRole($user->role) === 'client';
+        if ($isClient && (int) $user->id !== (int) $client->id) {
+            return response()->json(['message' => 'This dashboard conversation is not available to you.'], 403);
+        }
+
+        if (!$isClient && !$this->userHasAnyNormalizedRole($user, ['admin', 'superadmin', 'salesrep', 'editingmanager'])) {
+            return response()->json(['message' => 'Only conversation staff or the client can reply here.'], 403);
+        }
+
+        $senderDisplayName = trim((string) ($user->name ?: $user->email));
+        $subject = trim((string) ($data['subject'] ?? ''));
+        if ($subject === '') {
+            $originalSubject = trim((string) ($original->subject ?? ''));
+            $subject = $originalSubject !== '' ? 'Re: ' . preg_replace('/^Re:\s*/i', '', $originalSubject) : 'Dashboard message reply';
+        }
+
+        $payload = array_merge($data, [
+            'from' => $user->email,
+            'to' => $isClient
+                ? config('mail.contact_address', 'contact@reprophotos.com')
+                : $client->email,
+            'reply_to' => $user->email,
+            'subject' => $subject,
+            'user_id' => $user->id,
+            'send_source' => 'MANUAL',
+            'sender_user_id' => $user->id,
+            'sender_account_id' => $isClient ? $client->id : null,
+            'sender_role' => $user->role,
+            'sender_display_name' => $senderDisplayName,
+            'contact_email' => $client->email,
+            'contact_phone' => $original->thread?->contact?->phone
+                ?: config('mail.contact_address', 'contact@reprophotos.com'),
+            'contact_name' => $client->name ?: $client->email,
+            'contact_type' => 'client',
+            'contact_user_id' => $client->id,
+            'contact_account_id' => $client->id,
+            'related_shoot_id' => $original->related_shoot_id,
+            'related_shoot_context_type' => $original->related_shoot_context_type,
+            'related_account_id' => $client->id,
+            'related_invoice_id' => $original->related_invoice_id,
+            'metadata' => array_merge(is_array($original->metadata) ? $original->metadata : [], [
+                'internal_reply_to_message_id' => (int) $original->id,
+                'internal_conversation' => true,
+            ]),
+        ]);
+
+        unset($payload['in_reply_to_message_id'], $payload['cc'], $payload['bcc'], $payload['channel_id']);
+
+        $message = $this->messaging->storeInternalEmail(
+            $payload,
+            $isClient ? 'INBOUND' : 'OUTBOUND',
+        );
+
+        $this->internalNotifications->queueFor($message);
+
+        return response()->json($message);
     }
 
     /**
@@ -733,6 +862,18 @@ class EmailMessagingController extends Controller
             return true;
         }
 
+        if ($this->normalizedRole($user->role) === 'client'
+            && $this->isLinkedInternalContactMessage($message)
+            && $message->direction === 'OUTBOUND') {
+            if ((int) ($message->related_account_id ?? 0) === (int) $user->id) {
+                return true;
+            }
+
+            $message->loadMissing('shoot');
+
+            return (int) ($message->shoot?->client_id ?? 0) === (int) $user->id;
+        }
+
         return $this->canAccessLinkedInternalContactMessage($user, $message);
     }
 
@@ -774,6 +915,19 @@ class EmailMessagingController extends Controller
         $query->where(function (Builder $inner) use ($user) {
             $inner->where('sender_user_id', $user->id)
                 ->orWhere('created_by', $user->id);
+
+            if ($this->normalizedRole($user->role) === 'client') {
+                $inner->orWhere(function (Builder $linked) use ($user) {
+                    $this->applyLinkedInternalContactScope($linked);
+                    $linked->where('direction', 'OUTBOUND')
+                        ->where(function (Builder $clientScope) use ($user) {
+                            $clientScope->where('related_account_id', $user->id)
+                                ->orWhereHas('shoot', fn (Builder $shootQuery) => $shootQuery->where('client_id', $user->id));
+                        });
+                });
+
+                return;
+            }
 
             if ($this->isEditingManagerUser($user)) {
                 $inner->orWhere(function (Builder $linked) {

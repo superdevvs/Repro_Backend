@@ -15,8 +15,10 @@ use App\Services\BrightMlsService;
 use App\Services\DropboxWorkflowService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Events\ShootActivityBroadcast;
 use App\Services\ShootActivityLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
@@ -293,6 +295,36 @@ class ShootActivityLogDetailsTest extends TestCase
         $this->assertSame('Tour links have been generated', $log->description);
         $this->assertSame(2, $log->metadata['tour_link_count']);
         $this->assertSame(['branded', 'mls'], $log->metadata['changed_keys']);
+    }
+
+    public function test_editor_submit_for_review_activity_is_broadcast_to_managers(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot = $this->createShoot([
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+            'editor_id' => $editor->id,
+        ]);
+
+        $log = app(ShootActivityLogger::class)->log(
+            $shoot,
+            'shoot_submitted_for_editing_review',
+            ['edited_photo_count' => 3, 'role' => 'editor'],
+            $editor
+        );
+
+        // 14.2: the editor-submit action is persisted with a readable description.
+        $this->assertSame('shoot_submitted_for_editing_review', $log->action);
+        $this->assertStringContainsString('editing manager for review', $log->description);
+
+        // 14.1: it is on the broadcast allow-list, so a live in-app notification
+        // reaches editing managers and admins (who see all shoot activity).
+        Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
+            return $event->shoot->id === $shoot->id
+                && $event->activityType === 'shoot_submitted_for_editing_review';
+        });
     }
 
     private function createShoot(array $overrides = []): Shoot

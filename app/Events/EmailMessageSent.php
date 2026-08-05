@@ -21,9 +21,8 @@ class EmailMessageSent implements ShouldBroadcast
 
     public function broadcastOn(): array
     {
-        $channels = [
-            new PrivateChannel('email.inbox'),
-        ];
+        $isInternal = $this->message->provider === 'INTERNAL' && !empty($this->message->related_shoot_id);
+        $channels = $isInternal ? [] : [new PrivateChannel('email.inbox')];
 
         // Also broadcast to the recipient if they have an account
         if ($this->message->to_address) {
@@ -49,8 +48,14 @@ class EmailMessageSent implements ShouldBroadcast
             'from_address' => $this->message->from_address,
             'to_address' => $this->message->to_address,
             'sender_display_name' => $this->message->sender_display_name,
+            'sender_user_id' => $this->message->sender_user_id,
             'direction' => $this->message->direction,
+            'provider' => $this->message->provider,
+            'send_source' => $this->message->send_source,
             'status' => $this->message->status,
+            'related_shoot_id' => $this->message->related_shoot_id,
+            'related_account_id' => $this->message->related_account_id,
+            'thread_id' => $this->message->thread_id,
             'created_at' => $this->message->created_at->toISOString(),
             'body_text' => substr($this->message->body_text ?? '', 0, 200),
         ];

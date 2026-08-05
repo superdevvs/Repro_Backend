@@ -28,7 +28,8 @@ class UpdateEmailTemplateContent extends Command
      * @var array<int, array{0: string, 1: string}>
      */
     private array $globalReplacements = [
-        ['202-868-1663', '202-868-1113'],
+        ['202-868-1113', '202-868-1663'],
+        ['(202) 868-1113', '(202) 868-1663'],
         ['or email {{company_email}}.', 'or email us at {{company_email}}.'],
         ['or email [company_email].', 'or email us at [company_email].'],
     ];

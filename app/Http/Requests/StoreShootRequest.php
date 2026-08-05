@@ -45,8 +45,11 @@ class StoreShootRequest extends FormRequest
         $userRole = strtolower((string) ($user->role ?? ''));
         $isInternalScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
         $shootType = (string) $this->input('shoot_type', 'standard');
-        $canOmitServicesRole = in_array($userRole, ['superadmin', 'editing_manager', 'admin', 'salesrep', 'sales_rep'], true);
-        $canOmitServices = $canOmitServicesRole && in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
+        // Only a superadmin may intentionally create an internal/no-charge shoot
+        // without a selected service. A zero-dollar selected service is still a
+        // product and continues through the normal booking path.
+        $canOmitServices = $userRole === 'superadmin'
+            && in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
 
         return [
             // Client ID: required for admin, optional for client (defaults to auth user)
@@ -172,6 +175,7 @@ class StoreShootRequest extends FormRequest
             'client_id.required' => 'Client is required for admin bookings.',
             'client_id.exists' => 'Selected client does not exist.',
             'services.required' => 'At least one service must be selected.',
+            'services.min' => 'At least one service must be selected.',
             'services.*.id.exists' => 'One or more selected services do not exist.',
             'address.required' => 'Address is required.',
             'city.required' => 'City is required.',

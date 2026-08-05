@@ -100,4 +100,48 @@ class UploadValidationServiceTest extends TestCase
 
         $this->service->validateMany([$valid, $invalid]);
     }
+
+    #[Test]
+    public function it_rejects_an_archive_upload_from_a_client_role(): void
+    {
+        $file = $this->upload('deliverables.zip', 2 * 1024 * 1024);
+
+        $this->expectException(ValidationException::class);
+
+        // The extension is in the allow-list, so this is specifically the
+        // staff-role gate (Req 5.9) rejecting a client-uploaded archive.
+        $this->service->validate($file, 'file', 'client');
+    }
+
+    #[Test]
+    public function it_rejects_an_archive_upload_from_an_unauthenticated_caller(): void
+    {
+        $file = $this->upload('deliverables.zip', 2 * 1024 * 1024);
+
+        $this->expectException(ValidationException::class);
+
+        $this->service->validate($file, 'file', null);
+    }
+
+    #[Test]
+    public function it_accepts_an_archive_upload_from_a_staff_role(): void
+    {
+        $file = $this->upload('deliverables.zip', 2 * 1024 * 1024);
+
+        $this->service->validate($file, 'file', 'editor');
+
+        // No exception => accepted for staff.
+        $this->assertTrue($this->service->isArchiveUpload($file));
+    }
+
+    #[Test]
+    public function it_identifies_staff_roles(): void
+    {
+        $this->assertTrue($this->service->isStaffRole('admin'));
+        $this->assertTrue($this->service->isStaffRole('editing_manager'));
+        $this->assertTrue($this->service->isStaffRole('photographer'));
+        $this->assertFalse($this->service->isStaffRole('client'));
+        $this->assertFalse($this->service->isStaffRole(''));
+        $this->assertFalse($this->service->isStaffRole(null));
+    }
 }

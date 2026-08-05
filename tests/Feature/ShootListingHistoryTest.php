@@ -47,7 +47,7 @@ class ShootListingHistoryTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_load_the_operational_listing_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);
@@ -83,7 +83,7 @@ class ShootListingHistoryTest extends TestCase
             ->assertJsonPath('data.0.created_by', 'Admin User');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function photographer_listing_includes_service_level_assignments(): void
     {
         Sanctum::actingAs($this->photographer);
@@ -118,7 +118,7 @@ class ShootListingHistoryTest extends TestCase
             ->assertJsonPath('data.0.services.0.photographer.name', 'Photo User');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_load_history_and_export_csv_after_refactor(): void
     {
         Sanctum::actingAs($this->admin);

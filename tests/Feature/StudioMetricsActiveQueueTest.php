@@ -32,8 +32,8 @@ use Tests\TestCase;
  * terminal job present, no active job missing, and no duplicates. The fixed seed
  * makes any counterexample reproducible.
  *
- * @group ai-editing-default-page
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-default-page')]
 class StudioMetricsActiveQueueTest extends TestCase
 {
     use RefreshDatabase;

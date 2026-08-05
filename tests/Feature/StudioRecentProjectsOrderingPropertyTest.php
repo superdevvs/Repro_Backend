@@ -30,8 +30,8 @@ use Tests\TestCase;
  * activity timestamps, projects without jobs, job activity older than project activity,
  * out-of-team projects, and editor ownership scoping.
  *
- * @group ai-editing-studio-revamp
  */
+#[\PHPUnit\Framework\Attributes\Group('ai-editing-studio-revamp')]
 class StudioRecentProjectsOrderingPropertyTest extends TestCase
 {
     use RefreshDatabase;

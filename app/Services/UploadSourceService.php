@@ -16,11 +16,34 @@ class UploadSourceService
 {
     public const PROVIDERS = ['dropbox', 'google_drive', 'google_photos', 'onedrive'];
 
-    private const ALLOWED_EXTENSIONS = [
-        'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic', 'heif',
-        'pdf', 'mp4', 'mov', 'avi', 'mkv', 'wmv', 'webm', 'mpg', 'mpeg',
-        'raw', 'cr2', 'cr3', 'nef', 'nrw', 'arw', 'srf', 'sr2', 'dng', 'raf',
-        'orf', 'pef', 'rw2', 'srw', '3fr', 'fff', 'iiq', 'rwl', 'x3f',
+    /**
+     * Extensions accepted from cloud imports IN ADDITION to the direct-upload
+     * allow-list in config/uploads.php. Cloud sources routinely hold extended
+     * RAW formats, extra video containers and PDFs we still ingest, so the
+     * import allow-list is an explicit, documented superset of the shared
+     * config list rather than a silently divergent copy (task 13.3). The
+     * effective list is assembled in allowedExtensions().
+     *
+     * @var list<string>
+     */
+    private const IMPORT_ONLY_EXTENSIONS = [
+        'webp', 'pdf', 'mkv', 'wmv', 'webm', 'mpg', 'mpeg',
+        'nrw', 'srf', 'sr2', 'dng', 'raf', 'orf', 'pef', 'rw2', 'srw',
+        '3fr', 'fff', 'iiq', 'rwl', 'x3f',
+    ];
+
+    /**
+     * Narrow, explicit content types accepted for a remote file that arrives
+     * without a usable extension. Replaces the previous "any image/* or video/*"
+     * prefix match, which a spoofed Content-Type header could abuse (task 13.3).
+     *
+     * @var list<string>
+     */
+    private const SAFE_IMPORT_MIME_TYPES = [
+        'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/tiff',
+        'image/bmp', 'image/heic', 'image/heif',
+        'video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm',
+        'application/pdf',
     ];
 
     private const MAX_REMOTE_BYTES = 2000 * 1024 * 1024;
@@ -604,16 +627,45 @@ class UploadSourceService
         return 'remote-upload-' . now()->format('YmdHis') . ".{$extension}";
     }
 
+    /**
+     * The effective cloud-import allow-list: the shared direct-upload extensions
+     * from config/uploads.php (minus archives, which are only accepted via the
+     * staff-gated direct upload path since this service performs no role check)
+     * plus the import-only superset above.
+     *
+     * @return list<string>
+     */
+    private function allowedExtensions(): array
+    {
+        $configured = array_map('strtolower', (array) config('uploads.allowed_types', []));
+        // Archives (e.g. .zip) are never accepted via cloud import: their
+        // contents are unscanned and the staff-role gate lives only on the
+        // direct upload path (Req 5.9).
+        $configured = array_diff($configured, ['zip']);
+
+        return array_values(array_unique(array_merge($configured, self::IMPORT_ONLY_EXTENSIONS)));
+    }
+
     private function assertSupportedFilename(string $name, ?string $contentType): void
     {
         $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-        $mime = strtolower((string) $contentType);
-        if (
-            !in_array($extension, self::ALLOWED_EXTENSIONS, true)
-            && !str_starts_with($mime, 'image/')
-            && !str_starts_with($mime, 'video/')
-            && !str_contains($mime, 'pdf')
-        ) {
+
+        // Primary check: the file's extension must be in the allow-list. Unlike
+        // the previous logic, a non-allow-listed extension is NOT rescued by an
+        // image/* or video/* Content-Type, so a renamed binary served with a
+        // spoofed media type is rejected (task 13.3).
+        if ($extension !== '') {
+            if (!in_array($extension, $this->allowedExtensions(), true)) {
+                throw new RuntimeException('This source file type is not supported for upload.');
+            }
+
+            return;
+        }
+
+        // Extension-less remote files fall back to a narrow, explicit safe-MIME
+        // allow-list rather than a broad prefix match.
+        $mime = strtolower(strtok((string) $contentType, ';') ?: '');
+        if (!in_array($mime, self::SAFE_IMPORT_MIME_TYPES, true)) {
             throw new RuntimeException('This source file type is not supported for upload.');
         }
     }

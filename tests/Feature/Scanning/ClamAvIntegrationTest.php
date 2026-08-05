@@ -9,6 +9,7 @@ use App\Services\Scanning\ClamAvClient;
 use App\Services\Scanning\ClamAvScanResult;
 use App\Services\Scanning\FileScanService;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
@@ -33,6 +34,7 @@ use Tests\TestCase;
  * The EICAR test string is assembled from fragments at runtime so that this
  * source file is never itself quarantined by an on-access scanner.
  */
+#[Group('clamav-integration')]
 class ClamAvIntegrationTest extends TestCase
 {
     /** @var array<int, string> Temp fixture paths to clean up after each test. */

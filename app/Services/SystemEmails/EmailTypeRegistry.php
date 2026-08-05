@@ -81,6 +81,16 @@ class EmailTypeRegistry
             'CANCELLATION_FEE_INVOICE' => new EmailTypeDefinition('CANCELLATION_FEE_INVOICE', 1, 'invoice', 'emails.cancellation_fee_invoice', 'v1', ['recipient', 'invoice', 'shoot', 'branding', 'meta'], ['client']),
             'OFFLINE_PAYMENT_INTENT_SUBMITTED' => new EmailTypeDefinition('OFFLINE_PAYMENT_INTENT_SUBMITTED', 1, 'payment', 'emails.offline_payment_intent_submitted', 'v1', ['recipient', 'shoot', 'payment', 'branding', 'meta'], ['admin', 'rep']),
             'OFFLINE_PAYMENT_INTENT_DECLINED' => new EmailTypeDefinition('OFFLINE_PAYMENT_INTENT_DECLINED', 1, 'payment', 'emails.offline_payment_intent_declined', 'v1', ['recipient', 'shoot', 'payment', 'branding', 'meta'], ['client']),
+            'INTERNAL_MESSAGE_NOTIFICATION' => new EmailTypeDefinition(
+                'INTERNAL_MESSAGE_NOTIFICATION',
+                1,
+                'message',
+                'emails.internal_message_notification',
+                'v1',
+                ['recipient', 'account', 'shoot', 'links', 'branding', 'meta'],
+                ['client', 'rep', 'admin'],
+                'queued',
+            ),
         ];
     }
 }

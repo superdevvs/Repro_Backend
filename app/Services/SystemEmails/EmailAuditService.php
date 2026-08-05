@@ -24,6 +24,20 @@ class EmailAuditService
             $existing = SystemEmailDispatch::query()->where('idempotency_key', $idempotencyKey)->first();
 
             if ($existing) {
+                if (($options['retry_failed'] ?? false) === true && strtolower((string) $existing->status) === 'failed') {
+                    $existing->update([
+                        'status' => 'pending',
+                        'attempt_count' => max(1, (int) $existing->attempt_count + 1),
+                        'payload_snapshot' => $payload,
+                        'transport_snapshot' => $transport,
+                        'error_code' => null,
+                        'error_message' => null,
+                        'failed_at' => null,
+                    ]);
+
+                    return ['dispatch' => $existing->fresh(), 'duplicate' => false];
+                }
+
                 return ['dispatch' => $existing, 'duplicate' => true];
             }
         }

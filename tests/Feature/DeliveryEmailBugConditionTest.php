@@ -29,7 +29,7 @@ use Tests\TestCase;
  *   - Case A: the email-health gate silently suppresses the delivery email.
  *   - Case B: the media-presence gate skips the delivery email on no-media deliveries.
  *   - Case C: rendered email exposes client financials (Subtotal/Tax/Total).
- *   - Case D: rendered email shows the wrong support phone (202-868-1663).
+ *   - Case D: rendered email shows the wrong support phone (202-868-1113).
  *   - Case E: rendered email contains "Leave a Review" filler + a duplicate Website URL tile.
  *   - Case F: rendered hero/eyebrow label does not match the subject.
  *
@@ -223,8 +223,8 @@ class DeliveryEmailBugConditionTest extends TestCase
     {
         $html = $this->renderDeliveredEmailHtml();
 
-        $this->assertStringContainsString('202-868-1113', $html, 'The delivered email must show the correct support phone.');
-        $this->assertStringNotContainsString('202-868-1663', $html, 'The delivered email must not show the wrong support phone.');
+        $this->assertStringContainsString('202-868-1663', $html, 'The delivered email must show the correct support phone.');
+        $this->assertStringNotContainsString('202-868-1113', $html, 'The delivered email must not show the wrong support phone.');
     }
 
     // ---------------------------------------------------------------------

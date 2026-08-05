@@ -58,10 +58,11 @@ class RawThumbnailService
         }
 
         $cmd = sprintf(
-            'exiftool -s3 -NEFCompression -Compression -CompressorVersion -FileType %s',
+            'exiftool -s3 -NEFCompression -Compression -CompressorVersion -FileType %s 2>&1',
             escapeshellarg($sourcePath)
         );
-        exec($cmd, $output, $code);
+        $output = [];
+        $code = $this->runCommand($cmd, $output);
         if ($code !== 0) {
             return false;
         }
@@ -109,30 +110,17 @@ class RawThumbnailService
         // 1. ExifTool embedded JPEG (full-size first, then medium preview).
         if ($this->commandExists('exiftool')) {
             foreach (['JpgFromRaw', 'PreviewImage'] as $tag) {
-                $cmd = sprintf('exiftool -b -%s %s', $tag, escapeshellarg($sourcePath));
-                $descriptorspec = [
-                    0 => ['pipe', 'r'],
-                    1 => ['pipe', 'w'],
-                    2 => ['pipe', 'w'],
-                ];
-                $process = proc_open($cmd, $descriptorspec, $pipes);
-                if (is_resource($process)) {
-                    $jpegData = stream_get_contents($pipes[1]);
-                    fclose($pipes[0]);
-                    fclose($pipes[1]);
-                    fclose($pipes[2]);
-                    proc_close($process);
+                $jpegData = $this->extractEmbeddedJpegData($sourcePath, $tag);
 
-                    if ($jpegData && strlen($jpegData) >= self::MIN_THUMBNAIL_SIZE) {
-                        file_put_contents($output, $jpegData);
-                        if ($this->isValidThumbnail($output)) {
-                            Log::info('RawThumbnailService: Extracted full-size JPEG via exiftool', [
-                                'source' => basename($sourcePath),
-                                'tag' => $tag,
-                                'bytes' => strlen($jpegData),
-                            ]);
-                            return $output;
-                        }
+                if ($jpegData && strlen($jpegData) >= self::MIN_THUMBNAIL_SIZE) {
+                    file_put_contents($output, $jpegData);
+                    if ($this->isValidThumbnail($output)) {
+                        Log::info('RawThumbnailService: Extracted full-size JPEG via exiftool', [
+                            'source' => basename($sourcePath),
+                            'tag' => $tag,
+                            'bytes' => strlen($jpegData),
+                        ]);
+                        return $output;
                     }
                 }
             }
@@ -482,6 +470,48 @@ class RawThumbnailService
     }
 
     /**
+     * Execute a metadata command. Kept behind a seam so unit tests never need
+     * to inspect arbitrary files from a developer's storage directory.
+     *
+     * @param array<int, string> $output
+     */
+    protected function runCommand(string $command, array &$output): int
+    {
+        exec($command, $output, $code);
+
+        return $code;
+    }
+
+    /**
+     * Read an embedded JPEG from a RAW file without exposing process resources
+     * to the higher-level selection and validation logic.
+     */
+    protected function extractEmbeddedJpegData(string $sourcePath, string $tag): ?string
+    {
+        $command = sprintf('exiftool -b -%s %s', $tag, escapeshellarg($sourcePath));
+        $descriptors = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($command, $descriptors, $pipes);
+        if (! is_resource($process)) {
+            return null;
+        }
+
+        fclose($pipes[0]);
+        $jpegData = stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        return $exitCode === 0 && is_string($jpegData) && $jpegData !== ''
+            ? $jpegData
+            : null;
+    }
+
+    /**
      * Determine whether `convert` resolves to ImageMagick rather than a
      * different tool of the same name.
      *
@@ -522,9 +552,10 @@ class RawThumbnailService
         }
 
         $cmd = sprintf(
-            'exiftool -a -G1 -s %s',
+            'exiftool -a -G1 -s %s 2>&1',
             escapeshellarg($sourcePath)
         );
+        $output = [];
         exec($cmd, $output, $code);
 
         $previews = [];

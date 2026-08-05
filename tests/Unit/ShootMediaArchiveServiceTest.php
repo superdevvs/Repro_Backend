@@ -39,7 +39,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->service = Service::factory()->create(['name' => 'Media Service']);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function it_generates_small_archives_from_optimized_media_when_available(): void
     {
         Storage::fake('public');
@@ -72,7 +72,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $zip->close();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function it_generates_full_archives_from_original_media_sources(): void
     {
         Storage::fake('public');
@@ -105,7 +105,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $zip->close();
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function it_marks_cached_archives_as_stale_when_the_selected_source_changes(): void
     {
         Storage::fake('public');
@@ -141,7 +141,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $this->assertFalse($archiveService->hasFreshArchive($shoot->fresh(), 'edited', 'small'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function it_generates_service_scoped_archives_for_only_the_selected_service_item(): void
     {
         Storage::fake('public');
@@ -200,6 +200,95 @@ class ShootMediaArchiveServiceTest extends TestCase
         $zip->close();
     }
 
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function it_excludes_extras_from_downloads_by_default_but_includes_them_on_request(): void
+    {
+        $shoot = $this->createShoot();
+        $this->createShootFile($shoot, [
+            'filename' => 'ordered.jpg',
+            'stored_filename' => 'ordered.jpg',
+            'media_type' => 'photos',
+            'is_extra' => false,
+        ]);
+        $this->createShootFile($shoot, [
+            'filename' => 'bonus.jpg',
+            'stored_filename' => 'bonus.jpg',
+            'media_type' => 'photos',
+            'is_extra' => true,
+        ]);
+
+        $service = app(ShootMediaArchiveService::class);
+
+        $withExtras = $service->getFilesForType($shoot, $service->buildArchiveTypeToken('edited', true));
+        $this->assertEqualsCanonicalizing(
+            ['ordered.jpg', 'bonus.jpg'],
+            $withExtras->pluck('filename')->all()
+        );
+
+        $withoutExtras = $service->getFilesForType($shoot, $service->buildArchiveTypeToken('edited', false));
+        $this->assertSame(['ordered.jpg'], $withoutExtras->pluck('filename')->all());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function it_restricts_downloads_to_requested_media_types(): void
+    {
+        $shoot = $this->createShoot();
+        $this->createShootFile($shoot, [
+            'filename' => 'photo.jpg',
+            'stored_filename' => 'photo.jpg',
+            'media_type' => 'photos',
+        ]);
+        $this->createShootFile($shoot, [
+            'filename' => 'clip.mp4',
+            'stored_filename' => 'clip.mp4',
+            'file_type' => 'video/mp4',
+            'media_type' => 'video',
+        ]);
+
+        $service = app(ShootMediaArchiveService::class);
+        $files = $service->getFilesForType($shoot, $service->buildArchiveTypeToken('edited', true, ['photos']));
+
+        $this->assertSame(['photo.jpg'], $files->pluck('filename')->all());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function filtered_and_unfiltered_archives_use_distinct_cache_paths(): void
+    {
+        $shoot = $this->createShoot();
+        $service = app(ShootMediaArchiveService::class);
+
+        // The plain token is the default no-extras delivery archive; opting in
+        // to extras and restricting to media types must each yield a distinct
+        // cache path so a filtered archive never collides with the default.
+        $plain = $service->getArchivePath($shoot, 'edited', 'original');
+        $withExtras = $service->getArchivePath($shoot, $service->buildArchiveTypeToken('edited', true), 'original');
+        $photosOnly = $service->getArchivePath($shoot, $service->buildArchiveTypeToken('edited', false, ['photos']), 'original');
+
+        $this->assertNotSame($plain, $withExtras);
+        $this->assertNotSame($plain, $photosOnly);
+        $this->assertNotSame($withExtras, $photosOnly);
+        $this->assertStringContainsString('-edited-original.zip', $plain);
+        $this->assertStringContainsString('-edited-withextras-original.zip', $withExtras);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function archive_type_tokens_are_deterministic(): void
+    {
+        $service = app(ShootMediaArchiveService::class);
+
+        $this->assertSame('edited', $service->buildArchiveTypeToken('edited'));
+        $this->assertSame('edited', $service->buildArchiveTypeToken('edited', false));
+        $this->assertSame('edited|we', $service->buildArchiveTypeToken('edited', true));
+        $this->assertSame(
+            'edited|we;mt=photos,video',
+            $service->buildArchiveTypeToken('edited', true, ['video', 'photos', 'video'])
+        );
+        $this->assertSame(
+            'edited|we;mt=photos,video',
+            $service->canonicalizeType('edited|we;mt=video,photos')
+        );
+    }
+
     protected function createShoot(array $overrides = []): Shoot
     {
         return Shoot::factory()->create(array_merge([
@@ -235,6 +324,7 @@ class ShootMediaArchiveServiceTest extends TestCase
             'media_type' => 'edited',
             'uploaded_by' => $this->admin->id,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
             'sort_order' => 0,
         ], $overrides));
     }

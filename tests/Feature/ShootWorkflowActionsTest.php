@@ -84,7 +84,7 @@ class ShootWorkflowActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_put_a_scheduled_shoot_on_hold_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -118,7 +118,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_can_request_cancellation_for_scheduled_shoot(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -148,7 +148,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_must_acknowledge_fee_notice_for_scheduled_cancellation_within_four_hours(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -175,7 +175,7 @@ class ShootWorkflowActionsTest extends TestCase
         Event::assertNotDispatched(ShootActivityBroadcast::class);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_withdrawing_requested_shoot_sends_cancellation_confirmation_email(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -212,7 +212,7 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->workflow_status);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_approve_cancellation_request_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -253,7 +253,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function approved_scheduled_cancellation_applies_fee_only_invoice(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -294,7 +294,7 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertSame(60.0, (float) $invoice->total_amount);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function approved_scheduled_cancellation_splits_photographer_payout_equally(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -352,7 +352,7 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertSame(2, Invoice::query()->where('role', Invoice::ROLE_PHOTOGRAPHER)->count());
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function approved_scheduled_cancellation_with_waived_fee_does_not_create_fee_or_payout(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -387,7 +387,7 @@ class ShootWorkflowActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_cancel_shoot_without_notifications(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -444,7 +444,7 @@ class ShootWorkflowActionsTest extends TestCase
         ));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function cancellation_request_side_effects_notify_client_and_photographer(): void
     {
         $requestedRecipientIds = [];
@@ -476,7 +476,7 @@ class ShootWorkflowActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function cancellation_completion_side_effects_notify_client_and_photographer(): void
     {
         $cancelledRecipientIds = [];
@@ -508,7 +508,7 @@ class ShootWorkflowActionsTest extends TestCase
         );
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_reject_cancellation_request_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -551,7 +551,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_can_request_hold_and_admin_can_approve_it_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -593,7 +593,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function client_can_request_hold_for_requested_shoot(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -622,7 +622,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_reject_hold_request_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -660,7 +660,7 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertSame('Shooter already dispatched', $metadata['rejection_reason'] ?? null);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_start_editing_and_submit_for_review_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -700,7 +700,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function start_editing_auto_assigns_lane_specific_editor_without_sqlite_json_length(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -740,7 +740,7 @@ class ShootWorkflowActionsTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_complete_a_ready_shoot_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -775,7 +775,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_decline_requested_shoot_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);
@@ -805,7 +805,7 @@ class ShootWorkflowActionsTest extends TestCase
         });
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editing_manager_can_assign_editor_after_refactor(): void
     {
         Event::fake([ShootActivityBroadcast::class]);

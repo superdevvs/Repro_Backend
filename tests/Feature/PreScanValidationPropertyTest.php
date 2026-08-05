@@ -198,8 +198,10 @@ class PreScanValidationPropertyTest extends TestCase
         $upload = $this->fakeUpload($extension, $sizeBytes);
 
         if ($shouldAccept) {
-            // No exception => accepted.
-            $service->validate($upload);
+            // No exception => accepted. A staff role is supplied so the
+            // orthogonal archive staff-gate (Req 5.9) never fires here; this
+            // property isolates the size/type decision (Req 14.5, 14.6).
+            $service->validate($upload, 'file', 'admin');
             $this->assertTrue(
                 true,
                 "[{$label}] expected an allowed within-size upload to validate"
@@ -209,7 +211,7 @@ class PreScanValidationPropertyTest extends TestCase
         }
 
         try {
-            $service->validate($upload);
+            $service->validate($upload, 'file', 'admin');
             $this->fail("[{$label}] expected a ValidationException for a rejected upload");
         } catch (ValidationException $e) {
             $this->assertSame(

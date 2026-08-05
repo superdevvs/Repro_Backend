@@ -531,10 +531,26 @@ class MessagingService
         $current = collect($currentUnread)->map(fn ($id) => (int) $id);
 
         if ($message->direction === 'OUTBOUND') {
-            return $current
-                ->reject(fn ($id) => (int) $id === (int) ($message->created_by ?? 0))
-                ->values()
-                ->all();
+            $current = $current
+                ->reject(fn ($id) => (int) $id === (int) ($message->created_by ?? 0));
+
+            // An internal staff reply remains in the dashboard conversation;
+            // mark the client unread instead of treating the reply as an
+            // external email. Preserve unread staff who have not yet opened the
+            // client's preceding message.
+            if ($this->isLinkedInternalContactMessage($message)) {
+                $clientId = $message->related_account_id;
+
+                if (!$clientId && $message->related_shoot_id) {
+                    $clientId = Shoot::query()->whereKey($message->related_shoot_id)->value('client_id');
+                }
+
+                if ($clientId && (int) $clientId !== (int) ($message->created_by ?? 0)) {
+                    $current->push((int) $clientId);
+                }
+            }
+
+            return $current->unique()->values()->all();
         }
 
         if ($this->isLinkedInternalContactMessage($message)) {

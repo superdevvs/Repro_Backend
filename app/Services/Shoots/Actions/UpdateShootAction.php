@@ -111,7 +111,6 @@ class UpdateShootAction
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
             $assignedPhotographer = $isPhotographer
                 && $this->authorizationSupport->isPhotographerAssignedToShoot($shoot, $user);
-            $salesRepFeaturedRequest = $isRep && $onlyFeaturedFlag;
             $clientCanTogglePrivateListing = $isClient
                 && $onlyPrivateListing
                 && $this->authorizationSupport->canClientAccessShoot($shoot, $user);
@@ -184,7 +183,7 @@ class UpdateShootAction
                 }
             }
 
-            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer && !$clientCanTogglePrivateListing && !$salesRepFeaturedRequest) {
+            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer && !$clientCanTogglePrivateListing) {
                 $this->abortJson('Forbidden', 403);
             }
         }
@@ -214,8 +213,10 @@ class UpdateShootAction
 
         if (array_key_exists('services', $validated)) {
             $targetShootType = (string) ($validated['shoot_type'] ?? $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
-            if (empty($validated['services']) && !in_array($targetShootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true)) {
-                $this->abortJson('A shoot without products must be marked complimentary, sample upload, internal test, or pricing pending.', 422);
+            $canRemoveAllServices = $normalizedRole === 'superadmin'
+                && in_array($targetShootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
+            if (empty($validated['services']) && !$canRemoveAllServices) {
+                $this->abortJson('At least one service must be selected.', 422);
             }
         }
         $availabilityPayload = $validated;

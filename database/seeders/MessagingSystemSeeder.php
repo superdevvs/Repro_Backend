@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Schema;
 class MessagingSystemSeeder extends Seeder
 {
     private const BRAND_NAME = 'R/E Pro Photos';
-    private const BRAND_PHONE = '202-868-1113';
+    private const BRAND_PHONE = '202-868-1663';
     private const BRAND_EMAIL = 'contact@reprophotos.com';
     private const BRAND_SITE = 'https://reprophotos.com';
     private const BRAND_PORTAL = 'https://reprodashboard.com';
@@ -1781,7 +1781,7 @@ Thank you for the opportunity.
 
 Customer Service Team
 R/E Pro Photos
-202-868-1113
+202-868-1663
 contact@reprophotos.com
 https://reprophotos.com';
     }

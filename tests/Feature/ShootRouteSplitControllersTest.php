@@ -49,7 +49,7 @@ class ShootRouteSplitControllersTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_branded_route_still_returns_the_public_asset_contract(): void
     {
         $shoot = Shoot::factory()->create([
@@ -95,7 +95,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('property_details.sqft', 1694);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_video_links_are_hidden_until_the_shoot_is_delivered(): void
     {
         $shoot = Shoot::factory()->create([
@@ -125,7 +125,7 @@ class ShootRouteSplitControllersTest extends TestCase
         $this->assertArrayNotHasKey('video_link', $response->json('tour_links'));
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function privileged_users_can_view_video_links_before_delivery(): void
     {
         $editingManager = User::factory()->create([
@@ -152,7 +152,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('tour_links.video_branded', 'https://youtu.be/dQw4w9WgXcQ');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function delivered_video_links_are_public(): void
     {
         $shoot = Shoot::factory()->create([
@@ -173,7 +173,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('tour_links.video_mls', 'https://vimeo.com/1186135733');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function notes_route_still_returns_note_payloads_after_the_route_split(): void
     {
         Sanctum::actingAs($this->admin);
@@ -198,7 +198,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('data.0.author.id', $this->admin->id);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_payment_token_route_returns_the_sanitized_payment_payload(): void
     {
         $shoot = Shoot::factory()->create([
@@ -236,7 +236,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('data.payments.0.status', Payment::STATUS_COMPLETED);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_client_requests_route_still_parses_legacy_issue_notes(): void
     {
         Sanctum::actingAs($this->admin);
@@ -257,7 +257,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('data.0.note', 'Please replace the front exterior');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_client_requests_route_only_returns_requests_for_assigned_shoots(): void
     {
         $editor = User::factory()->create([
@@ -306,7 +306,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('data.0.note', 'Please brighten the kitchen');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function legacy_single_service_photographer_assignment_route_is_compatible(): void
     {
         Sanctum::actingAs($this->admin);
@@ -344,7 +344,7 @@ class ShootRouteSplitControllersTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function legacy_bulk_service_photographer_assignment_route_is_compatible(): void
     {
         Sanctum::actingAs($this->admin);
@@ -387,7 +387,7 @@ class ShootRouteSplitControllersTest extends TestCase
         ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_download_raw_route_uses_local_zip_fallback_when_realtime_storage_is_unavailable(): void
     {
         Storage::disk('public')->put('shoots/123/todo/raw-test.jpg', 'raw-image');
@@ -416,6 +416,7 @@ class ShootRouteSplitControllersTest extends TestCase
             'file_size' => 9,
             'uploaded_by' => $editor->id,
             'workflow_stage' => ShootFile::STAGE_TODO,
+            'scan_status' => ShootFile::SCAN_STATUS_CLEAN,
         ]);
 
         $response = $this
@@ -427,7 +428,7 @@ class ShootRouteSplitControllersTest extends TestCase
         $response->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function editor_generate_share_link_route_returns_cors_headers_when_no_raw_files_exist(): void
     {
         config()->set('services.dropbox.enabled', false);
@@ -455,7 +456,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function shoot_media_preflight_routes_return_cors_headers(): void
     {
         $shoot = Shoot::factory()->create([
@@ -480,7 +481,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function public_client_profile_route_still_returns_the_profile_contract(): void
     {
         Sanctum::actingAs($this->admin);
@@ -520,7 +521,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->assertJsonPath('shoots.0.sqft', 2450);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function album_routes_still_return_the_expected_payload_shapes(): void
     {
         Sanctum::actingAs($this->admin);
@@ -557,7 +558,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ]);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function share_link_listing_route_still_returns_the_formatted_contract(): void
     {
         Sanctum::actingAs($this->admin);

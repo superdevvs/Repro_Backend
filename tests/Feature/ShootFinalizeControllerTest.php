@@ -7,6 +7,7 @@ use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\ShootActivityLogger;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
@@ -127,5 +128,38 @@ class ShootFinalizeControllerTest extends TestCase
             ->assertJsonPath('message', 'No edited files to finalize');
 
         Queue::assertNotPushed(FinalizeShootJob::class);
+    }
+
+    public function test_finalize_job_revalidates_no_media_eligibility_before_committing(): void
+    {
+        Queue::fake();
+
+        $admin = User::factory()->create(['role' => 'admin']);
+        $shoot = Shoot::factory()->create([
+            'service_id' => null,
+            'status' => Shoot::STATUS_READY,
+            'workflow_status' => Shoot::STATUS_READY,
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'product_status' => Shoot::PRODUCT_STATUS_NO_PRODUCT,
+            'total_quote' => 0,
+        ]);
+
+        $job = new FinalizeShootJob($shoot->id, $admin->id, 'completed', null, true);
+
+        // Simulate the shoot becoming ineligible after the request was queued.
+        $shoot->update([
+            'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+            'product_status' => Shoot::PRODUCT_STATUS_HAS_PRODUCT,
+            'total_quote' => 100,
+        ]);
+
+        $job->handle(app(ShootActivityLogger::class));
+
+        $this->assertSame(Shoot::STATUS_READY, $shoot->fresh()->workflow_status);
+        $this->assertDatabaseHas('workflow_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'finalize_failed',
+            'details' => 'Finalize aborted: no edited files found',
+        ]);
     }
 }

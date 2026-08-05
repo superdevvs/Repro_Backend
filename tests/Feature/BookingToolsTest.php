@@ -19,7 +19,7 @@ class BookingToolsTest extends TestCase
     use MockeryPHPUnitIntegration;
     use RefreshDatabase;
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function ai_booking_uses_booked_fallback_to_notify_client_and_photographer(): void
     {
         $client = User::factory()->create([
@@ -111,7 +111,7 @@ class BookingToolsTest extends TestCase
         $this->assertSame('scheduled', $result['status']);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function ai_booking_still_uses_booked_fallback_when_automation_is_handled_without_sending_client_email(): void
     {
         $client = User::factory()->create([
@@ -204,7 +204,7 @@ class BookingToolsTest extends TestCase
         $this->assertSame('scheduled', $result['status']);
     }
 
-    /** @test */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function ai_booking_returns_a_validation_style_error_when_client_has_no_primary_email(): void
     {
         $client = User::factory()->create([

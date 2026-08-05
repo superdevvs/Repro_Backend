@@ -107,8 +107,8 @@ class CreateUpdateAvailabilityParityTest extends TestCase
      * update-path acceptance decisions are identical and match the backend-computed
      * effective window. Out-of-window => rejected; in-window => accepted.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function create_and_update_reach_identical_decisions_for_each_time(): void
     {
         foreach ($this->candidateTimes() as $index => [$time, $expectedAccept]) {
@@ -142,8 +142,8 @@ class CreateUpdateAvailabilityParityTest extends TestCase
      * An out-of-window time is rejected by BOTH paths with a structured 422 keyed
      * on `start_time` (not a bare boolean / generic error).
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function out_of_window_time_is_rejected_by_both_paths_with_structured_422(): void
     {
         Sanctum::actingAs($this->admin);
@@ -173,8 +173,8 @@ class CreateUpdateAvailabilityParityTest extends TestCase
     /**
      * An in-window time is accepted by BOTH paths and persisted on the update path.
      *
-     * @test
      */
+    #[\PHPUnit\Framework\Attributes\Test]
     public function in_window_time_is_accepted_by_both_paths(): void
     {
         Sanctum::actingAs($this->admin);
