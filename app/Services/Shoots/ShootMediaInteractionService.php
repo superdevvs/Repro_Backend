@@ -12,7 +12,8 @@ class ShootMediaInteractionService
 {
     public function __construct(
         protected DeleteShootMediaAction $deleteShootMediaAction,
-        protected ShootMediaMutationSupportService $shootMediaMutationSupportService
+        protected ShootMediaMutationSupportService $shootMediaMutationSupportService,
+        protected DeliveryMediaOrderService $deliveryMediaOrderService
     ) {
     }
 
@@ -117,12 +118,26 @@ class ShootMediaInteractionService
         // the client could not tell apart from an unset column (it reads
         // `sort_order ?? 0`), so a manual arrangement starting at position 0 was
         // silently treated as absent and re-derived from filename/capture time.
-        DB::transaction(function () use ($shoot, $fileIds) {
+        // scopeInDeliveryOrder() relies on the same invariant on the server.
+        $version = DB::transaction(function () use ($shoot, $fileIds) {
             foreach ($fileIds as $index => $fileId) {
                 ShootFile::where('shoot_id', $shoot->id)
                     ->where('id', $fileId)
                     ->update(['sort_order' => $index + 1]);
             }
+
+            // Bumping inside the transaction keeps the version and the positions
+            // it describes atomic, so a cached archive can never be validated
+            // against a version that does not match the rows on disk.
+            $version = $this->deliveryMediaOrderService->bumpVersion($shoot);
+
+            // A shoot that already snapshotted its delivery order (i.e. has been
+            // finalized) must fold this reorder into that snapshot, otherwise
+            // every delivery consumer keeps replaying the pre-reorder sequence
+            // and the admin's change never reaches the client.
+            $this->deliveryMediaOrderService->refreshSnapshotIfPresent($shoot);
+
+            return $version;
         });
 
         $this->shootMediaMutationSupportService->clearShootFilesCache($shoot, $user);
@@ -130,6 +145,7 @@ class ShootMediaInteractionService
         return [
             'message' => 'File order saved',
             'count' => count($fileIds),
+            'media_order_version' => $version,
         ];
     }
 

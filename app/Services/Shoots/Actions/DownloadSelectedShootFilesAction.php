@@ -6,6 +6,8 @@ use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\DeliveryFilenameFormatter;
+use App\Services\Shoots\DeliveryMediaOrderService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
@@ -17,7 +19,9 @@ class DownloadSelectedShootFilesAction
         protected DropboxWorkflowService $dropboxService,
         protected ShootFileAccessService $fileAccess,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
-        protected ShootAuthorizationSupport $shootAuthorizationSupport
+        protected ShootAuthorizationSupport $shootAuthorizationSupport,
+        protected DeliveryMediaOrderService $deliveryMediaOrderService,
+        protected DeliveryFilenameFormatter $deliveryFilenameFormatter
     ) {
     }
 
@@ -46,7 +50,10 @@ class DownloadSelectedShootFilesAction
             return response()->json(['error' => 'No file IDs provided'], 422);
         }
 
-        $files = $shoot->files()->whereIn('id', $fileIds)->get();
+        // Delivery order, so a partial selection keeps the same relative sequence
+        // the client sees in the gallery instead of arriving in primary-key order.
+        $files = $shoot->files()->whereIn('id', $fileIds)->inDeliveryOrder()->get();
+        $files = $this->deliveryMediaOrderService->applyTo($shoot, $files);
         if ($files->isEmpty()) {
             return response()->json(['error' => 'No files found for selected IDs'], 404);
         }
@@ -86,6 +93,12 @@ class DownloadSelectedShootFilesAction
         $addedFiles = 0;
         $tempFiles = [];
         $pendingWatermarks = [];
+        // Positions are 1..n across the selection, so a partial download reads
+        // 001, 002, 003 in the selection's delivery order rather than exposing
+        // gaps from the files the client did not pick.
+        $total = $files->count();
+        $position = 1;
+        $usedNames = [];
 
         foreach ($files as $file) {
             $downloadPath = $this->resolveDownloadPath($file, $size, $needsWatermark, $pendingWatermarks);
@@ -103,8 +116,12 @@ class DownloadSelectedShootFilesAction
             }
 
             if ($localPath && file_exists($localPath)) {
-                $zip->addFile($localPath, $file->original_name ?? $file->filename ?? basename($localPath));
+                $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
+                    $this->deliveryFilenameFormatter->formatForFile($file, $position, $total, basename($localPath)),
+                    $usedNames
+                ));
                 $addedFiles++;
+                $position++;
             }
         }
 

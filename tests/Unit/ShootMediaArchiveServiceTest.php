@@ -68,7 +68,9 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archivePath = Storage::disk('public')->path($archiveService->getArchivePath($shoot, 'edited', 'small'));
 
         $this->assertTrue($zip->open($archivePath) === true);
-        $this->assertSame('small-preview-bytes', $zip->getFromName('front.jpg'));
+        // Entry names carry their delivery position (min width 3) so the curated
+        // order survives extraction; the stored master filename is unchanged.
+        $this->assertSame('small-preview-bytes', $zip->getFromName('001_front.jpg'));
         $zip->close();
     }
 
@@ -101,7 +103,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archivePath = Storage::disk('public')->path($archiveService->getArchivePath($shoot, 'edited', 'original'));
 
         $this->assertTrue($zip->open($archivePath) === true);
-        $this->assertSame('original-photo-bytes', $zip->getFromName('front.jpg'));
+        $this->assertSame('original-photo-bytes', $zip->getFromName('001_front.jpg'));
         $zip->close();
     }
 
@@ -195,7 +197,10 @@ class ShootMediaArchiveServiceTest extends TestCase
         );
 
         $this->assertTrue($zip->open($archivePath) === true);
-        $this->assertSame('service-one-bytes', $zip->getFromName('service-one.jpg'));
+        // Numbering restarts per service-scoped archive, so the selected item's
+        // own set reads 001_… rather than inheriting shoot-wide positions.
+        $this->assertSame('service-one-bytes', $zip->getFromName('001_service-one.jpg'));
+        $this->assertFalse($zip->locateName('001_service-two.jpg'));
         $this->assertFalse($zip->locateName('service-two.jpg'));
         $zip->close();
     }

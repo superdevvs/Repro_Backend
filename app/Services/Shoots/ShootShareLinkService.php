@@ -22,7 +22,8 @@ class ShootShareLinkService
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootActivityLogger $activityLogger,
-        protected ShootFileAccessService $fileAccessService
+        protected ShootFileAccessService $fileAccessService,
+        protected DeliveryFilenameFormatter $deliveryFilenameFormatter
     ) {
     }
 
@@ -42,6 +43,10 @@ class ShootShareLinkService
         }
 
         $addedFiles = 0;
+        $total = is_countable($files) ? count($files) : collect($files)->count();
+        $position = 1;
+        $usedNames = [];
+
         foreach ($files as $file) {
             $localPath = $this->fileAccessService->findLocalFilePath($file);
             if ($dropboxEnabled && !$localPath && !empty($file->dropbox_path)) {
@@ -52,9 +57,15 @@ class ShootShareLinkService
             }
 
             if ($localPath && file_exists($localPath)) {
-                $filename = $file->original_name ?? $file->filename ?? basename($localPath);
-                $zip->addFile($localPath, $filename);
+                // Position-prefixed so the shared set keeps its order once the
+                // recipient extracts it. Only the ZIP entry is renamed — the
+                // stored master filename is untouched.
+                $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
+                    $this->deliveryFilenameFormatter->formatForFile($file, $position, $total, basename($localPath)),
+                    $usedNames
+                ));
                 $addedFiles++;
+                $position++;
             }
         }
 
@@ -103,7 +114,7 @@ class ShootShareLinkService
             $filesQuery->whereIn('id', $fileIds);
         }
 
-        return $filesQuery->get()
+        return $filesQuery->inDeliveryOrder()->get()
             ->filter(fn (ShootFile $file) => $file->isRequiredForEditing())
             ->values();
     }

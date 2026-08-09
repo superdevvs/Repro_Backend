@@ -231,7 +231,9 @@ class ShootMediaReadService
 
     public function resolveBulkDownloadUrls(Shoot $shoot, array $fileIds): array
     {
-        $files = $shoot->files()->whereIn('id', $fileIds)->get();
+        // The client downloads these URLs in the order we return them, so they
+        // must follow the delivery order rather than primary-key order.
+        $files = $shoot->files()->whereIn('id', $fileIds)->inDeliveryOrder()->get();
 
         return $files->map(fn (ShootFile $file) => $this->shootFileAccessService->resolveFileUrl($file))
             ->filter()

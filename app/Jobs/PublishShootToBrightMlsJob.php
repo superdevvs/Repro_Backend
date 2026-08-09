@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\BrightMlsService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -32,21 +33,39 @@ class PublishShootToBrightMlsJob implements ShouldQueue
         $this->onQueue('integrations');
     }
 
-    public function handle(BrightMlsService $brightMls, ShootActivityLogger $activityLogger): void
-    {
+    public function handle(
+        BrightMlsService $brightMls,
+        ShootActivityLogger $activityLogger,
+        ?FinalizeProgressTracker $progress = null
+    ): void {
+        $progress ??= app(FinalizeProgressTracker::class);
+
         /** @var Shoot|null $shoot */
         $shoot = Shoot::query()->find($this->shootId);
         if (!$shoot) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_MLS_PUBLISH, 'Shoot not found');
             return;
         }
 
         if (!$brightMls->isAutoPublishAvailable()) {
+            $progress->stageSkipped(
+                $this->shootId,
+                FinalizeProgressTracker::STAGE_MLS_PUBLISH,
+                'Bright MLS auto publish is not configured'
+            );
             return;
         }
+
+        $progress->stageRunning($this->shootId, FinalizeProgressTracker::STAGE_MLS_PUBLISH);
 
         try {
             $result = $brightMls->autoPublishForShoot($shoot);
             if (!$result) {
+                $progress->stageSkipped(
+                    $this->shootId,
+                    FinalizeProgressTracker::STAGE_MLS_PUBLISH,
+                    'Nothing to publish for this shoot'
+                );
                 return;
             }
 
@@ -78,6 +97,12 @@ class PublishShootToBrightMlsJob implements ShouldQueue
                     'manifest_id' => $result['manifest_id'] ?? null,
                 ]);
             }
+
+            $progress->stageCompleted(
+                $this->shootId,
+                FinalizeProgressTracker::STAGE_MLS_PUBLISH,
+                empty($result['success']) ? 'Bright MLS publish did not complete' : 'Published to Bright MLS'
+            );
         } catch (\Throwable $e) {
             Log::warning('Bright MLS auto-publish failed (async, non-blocking)', [
                 'shoot_id' => $shoot->id,
@@ -94,5 +119,13 @@ class PublishShootToBrightMlsJob implements ShouldQueue
             'shoot_id' => $this->shootId,
             'error' => $exception->getMessage(),
         ]);
+
+        // Non-blocking for delivery, but the finalize toast should still say
+        // the MLS step needs attention instead of spinning forever.
+        app(FinalizeProgressTracker::class)->stageFailed(
+            $this->shootId,
+            FinalizeProgressTracker::STAGE_MLS_PUBLISH,
+            $exception->getMessage()
+        );
     }
 }

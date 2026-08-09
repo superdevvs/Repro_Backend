@@ -13,6 +13,7 @@ use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\FinalizeProgressTracker;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootPaymentStatusSupport;
 use App\Services\Shoots\ShootServiceItemSupport;
@@ -26,6 +27,8 @@ class ShootPaymentsController extends Controller
 {
     private const INTENT_METHODS = ['cash', 'check'];
 
+    private const FINALIZE_ROLES = ['admin', 'superadmin', 'editing_manager'];
+
     public function __construct(
         protected InvoiceService $invoiceService,
         protected MailService $mailService,
@@ -33,14 +36,15 @@ class ShootPaymentsController extends Controller
         protected ShootPaymentStatusSupport $shootPaymentStatusSupport,
         protected StripePaymentMetadataService $stripePaymentMetadataService,
         protected ShootServiceItemSupport $serviceItemSupport,
-        protected ShootAuthorizationSupport $authorizationSupport
+        protected ShootAuthorizationSupport $authorizationSupport,
+        protected FinalizeProgressTracker $finalizeProgress
     ) {
     }
 
     public function finalize(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        if (!$user || !in_array($user->role, self::FINALIZE_ROLES, true)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -104,6 +108,16 @@ class ShootPaymentsController extends Controller
                 ],
             ]);
 
+            // Seed the progress document before dispatching so the client can
+            // start polling immediately, even while the job is still waiting
+            // for a worker.
+            $this->finalizeProgress->start((int) $shoot->id, [
+                'queued_by' => $user->id,
+                'completed_file_count' => $completedFiles->count(),
+                'shoot_service_id' => $shootServiceId,
+                'allow_no_media_delivery' => $allowNoMediaDelivery,
+            ]);
+
             FinalizeShootJob::dispatch((int) $shoot->id, (int) $user->id, $request->input('final_status'), $shootServiceId, $allowNoMediaDelivery);
 
             return response()->json([
@@ -113,13 +127,34 @@ class ShootPaymentsController extends Controller
                     'workflow_status' => $shoot->workflow_status,
                     'queued' => true,
                 ],
+                'progress' => $this->finalizeProgress->get((int) $shoot->id),
             ], 202);
         } catch (\Exception $e) {
+            $this->finalizeProgress->fail((int) $shoot->id, 'Failed to queue finalize job: ' . $e->getMessage());
+
             return response()->json([
                 'message' => 'Failed to queue finalize job',
                 'error' => $e->getMessage(),
             ], 500);
         }
+    }
+
+    /**
+     * Live progress for the finalize pipeline (the queued delivery commit plus
+     * its fan-out of local caching / MLS publish / client notification jobs).
+     * Returns `data: null` when nothing is tracked for the shoot so the client
+     * can fall back to plain status polling.
+     */
+    public function finalizeProgress(Shoot $shoot)
+    {
+        $user = auth()->user();
+        if (!$user || !in_array($user->role, self::FINALIZE_ROLES, true)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        return response()->json([
+            'data' => $this->finalizeProgress->get((int) $shoot->id),
+        ]);
     }
 
     public function getOrCreateInvoice(Shoot $shoot)

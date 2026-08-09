@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Models\ShootFile;
 use App\Services\DropboxWorkflowService;
+use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -31,16 +32,23 @@ class CacheShootFinalToLocalJob implements ShouldQueue
     public array $backoff = [10, 30, 60, 120, 300];
     public int $timeout = 600;
 
-    public function __construct(public int $shootFileId)
+    /**
+     * `$shootId` is only carried so this file's outcome can be counted against
+     * the shoot's finalize progress document; it is not used for any lookup.
+     */
+    public function __construct(public int $shootFileId, public ?int $shootId = null)
     {
         $this->onQueue('media');
     }
 
-    public function handle(DropboxWorkflowService $dropbox): void
+    public function handle(DropboxWorkflowService $dropbox, ?FinalizeProgressTracker $progress = null): void
     {
+        $progress ??= app(FinalizeProgressTracker::class);
+
         /** @var ShootFile|null $file */
         $file = ShootFile::query()->find($this->shootFileId);
         if (!$file) {
+            $this->countTowardsFinalizeProgress($progress, null);
             return;
         }
 
@@ -49,6 +57,7 @@ class CacheShootFinalToLocalJob implements ShouldQueue
 
         // Already cached locally and present on disk — nothing to do.
         if ($currentPath !== '' && $disk->exists($currentPath)) {
+            $this->countTowardsFinalizeProgress($progress, $file);
             return;
         }
 
@@ -59,12 +68,14 @@ class CacheShootFinalToLocalJob implements ShouldQueue
             Log::info('CacheShootFinalToLocalJob: no dropbox_path, skipping', [
                 'shoot_file_id' => $file->id,
             ]);
+            $this->countTowardsFinalizeProgress($progress, $file);
             return;
         }
 
         try {
             // moveToFinal handles streaming download + STAGE_VERIFIED bookkeeping.
             $dropbox->moveToFinal($file, 0);
+            $this->countTowardsFinalizeProgress($progress, $file);
         } catch (\Throwable $e) {
             Log::warning('CacheShootFinalToLocalJob attempt failed', [
                 'shoot_file_id' => $file->id,
@@ -81,5 +92,19 @@ class CacheShootFinalToLocalJob implements ShouldQueue
             'shoot_file_id' => $this->shootFileId,
             'error' => $exception->getMessage(),
         ]);
+
+        // Retries are exhausted, so this file will never report in: count it
+        // anyway, otherwise the finalize progress bar hangs on this stage.
+        $this->countTowardsFinalizeProgress(app(FinalizeProgressTracker::class), null);
+    }
+
+    private function countTowardsFinalizeProgress(FinalizeProgressTracker $progress, ?ShootFile $file): void
+    {
+        $shootId = $this->shootId ?? ($file ? (int) $file->shoot_id : null);
+        if (!$shootId) {
+            return;
+        }
+
+        $progress->stageAdvanced($shootId, FinalizeProgressTracker::STAGE_LOCAL_CACHE);
     }
 }

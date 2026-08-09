@@ -168,6 +168,11 @@ class Shoot extends Model
         'external_booking_payload',
         'external_booking_warnings',
         'external_booking_mapping_status',
+        // Delivery media order (see DeliveryMediaOrderService)
+        'media_order_version',
+        'delivery_media_order',
+        'delivery_media_order_version',
+        'delivery_media_order_at',
     ];
 
     protected $casts = [
@@ -203,6 +208,10 @@ class Shoot extends Model
         'package_services_included' => 'array',
         'property_details' => 'array',
         'integration_flags' => 'array',
+        'media_order_version' => 'integer',
+        'delivery_media_order' => 'array',
+        'delivery_media_order_version' => 'integer',
+        'delivery_media_order_at' => 'datetime',
         'mls_image_width' => 'integer',
         'iguide_floorplans' => 'array',
         'iguide_data' => 'array',

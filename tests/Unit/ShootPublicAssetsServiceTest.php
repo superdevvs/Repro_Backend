@@ -87,7 +87,11 @@ class ShootPublicAssetsServiceTest extends TestCase
             $dropboxService,
             $paymentStatusSupport,
             $clientReleaseAccessService,
-            new \App\Services\Media\MediaStorage()
+            new \App\Services\Media\MediaStorage(),
+            // Real instance: the delivery ordering is pure sorting over the files
+            // already loaded, so there is nothing to stub and a mock would only
+            // hide a genuine ordering regression in the public gallery.
+            new \App\Services\Shoots\DeliveryMediaOrderService()
         );
     }
 }

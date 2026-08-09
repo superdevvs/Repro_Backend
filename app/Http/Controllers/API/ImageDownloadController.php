@@ -220,7 +220,9 @@ class ImageDownloadController extends Controller
         try {
             $user = Auth::user();
             $fileIds = $request->input('file_ids');
-            $files = ShootFile::whereIn('id', $fileIds)->get();
+            // Delivery order so the numbered ZIP entries below come out in the
+            // curated sequence rather than primary-key order.
+            $files = ShootFile::whereIn('id', $fileIds)->inDeliveryOrder()->get();
             $downloadableFiles = [];
             $media = app(\App\Services\Media\MediaStorage::class);
             $r2Reads = $media->readFromR2Enabled() || $media->r2Only();
@@ -259,10 +261,23 @@ class ImageDownloadController extends Controller
             // Add files to ZIP, sourcing from local when present and otherwise
             // pulling from R2 into a temp file (cleaned up after the archive is built).
             $tempSources = [];
+            // Entry names carry their position because no unzip tool preserves
+            // ZIP ordering on extraction. Stored filenames are not modified.
+            $formatter = app(\App\Services\Shoots\DeliveryFilenameFormatter::class);
+            $total = count($downloadableFiles);
+            $position = 1;
+            $usedNames = [];
+
             foreach ($downloadableFiles as $file) {
+                $entryName = $formatter->deduplicate(
+                    $formatter->formatForFile($file, $position, $total, basename((string) $file->path)),
+                    $usedNames
+                );
+
                 $filePath = Storage::disk('local')->path($file->path);
                 if (file_exists($filePath)) {
-                    $zip->addFile($filePath, $file->filename);
+                    $zip->addFile($filePath, $entryName);
+                    $position++;
                     continue;
                 }
 
@@ -273,7 +288,8 @@ class ImageDownloadController extends Controller
                         $tmp = tempnam(sys_get_temp_dir(), 'r2zip_');
                         file_put_contents($tmp, $contents);
                         $tempSources[] = $tmp;
-                        $zip->addFile($tmp, $file->filename);
+                        $zip->addFile($tmp, $entryName);
+                        $position++;
                     }
                 }
             }

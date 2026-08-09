@@ -21,7 +21,8 @@ class ShootPublicAssetsService
         protected DropboxWorkflowService $dropboxService,
         protected ShootPaymentStatusSupport $paymentStatusSupport,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
-        protected MediaStorage $mediaStorage
+        protected MediaStorage $mediaStorage,
+        protected DeliveryMediaOrderService $deliveryMediaOrderService
     ) {
     }
 
@@ -379,8 +380,7 @@ class ShootPublicAssetsService
                         ->orWhere('stored_filename', 'like', '%.png');
                 });
             })
-            ->orderBy('sort_order')
-            ->orderBy('id')
+            ->inDeliveryOrder()
             ->get();
 
         if ($editedFiles->isEmpty()) {
@@ -462,13 +462,13 @@ class ShootPublicAssetsService
             $chosen = $files->where('workflow_stage', ShootFile::STAGE_TODO);
         }
 
-        // Sort to match the Shoot Details media grid (sort_order asc, then id asc).
-        $chosen = $chosen
-            ->sortBy([
-                ['sort_order', 'asc'],
-                ['id', 'asc'],
-            ])
-            ->values();
+        // The gallery a client browses and the ZIP they download must agree, so
+        // this replays the same delivery order (and the same finalize snapshot)
+        // the archive builder uses. The previous hand-rolled
+        // `sort_order asc, id asc` disagreed on unplaced files: a sort_order of 0
+        // sorted ahead of curated position 1, pushing never-arranged media to the
+        // top of the gallery while the archive kept it at the end.
+        $chosen = $this->deliveryMediaOrderService->applyTo($shoot, $chosen);
 
         $photos = [];
         $heroPhotos = [];

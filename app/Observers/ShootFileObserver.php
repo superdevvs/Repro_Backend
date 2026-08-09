@@ -8,6 +8,36 @@ use App\Models\ShootFile;
 
 class ShootFileObserver
 {
+    /**
+     * Append newly created files to the end of the shoot's delivery order.
+     *
+     * Without this a new upload lands on the column default of 0, which
+     * scopeInDeliveryOrder() treats as "never placed" — so it would arrive at
+     * the very end of an already-curated shoot only by accident, and any code
+     * comparing raw sort_order values would see it tie with every other 0.
+     * Taking max(sort_order) + 1 makes the append explicit and keeps positions
+     * unique, so a later reorder starts from a well-defined sequence.
+     *
+     * A caller that sets sort_order itself is respected verbatim — including an
+     * explicit 0, which is the documented way to say "unplaced". Only an
+     * omitted attribute is auto-assigned, so seeders/tests/imports that pin
+     * positions keep working.
+     */
+    public function creating(ShootFile $shootFile): void
+    {
+        if (array_key_exists('sort_order', $shootFile->getAttributes())) {
+            return;
+        }
+
+        if (!$shootFile->shoot_id) {
+            return;
+        }
+
+        $shootFile->sort_order = ((int) ShootFile::query()
+            ->where('shoot_id', $shootFile->shoot_id)
+            ->max('sort_order')) + 1;
+    }
+
     public function saved(ShootFile $shootFile): void
     {
         if (

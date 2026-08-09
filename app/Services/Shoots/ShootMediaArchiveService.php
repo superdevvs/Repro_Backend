@@ -24,7 +24,9 @@ class ShootMediaArchiveService
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootFileAccessService $shootFileAccessService,
-        protected ShootAuthorizationSupport $shootAuthorizationSupport
+        protected ShootAuthorizationSupport $shootAuthorizationSupport,
+        protected DeliveryMediaOrderService $deliveryMediaOrderService,
+        protected DeliveryFilenameFormatter $deliveryFilenameFormatter
     ) {
     }
 
@@ -146,6 +148,19 @@ class ShootMediaArchiveService
             Storage::disk(self::ARCHIVE_DISK)->makeDirectory(dirname($archivePath));
 
             $zipAbsolutePath = Storage::disk(self::ARCHIVE_DISK)->path($archivePath);
+
+            // ZipArchive writes through the native filesystem, not the Storage
+            // abstraction, and fails outright if the parent directory is missing.
+            // The makeDirectory() above covers the disk's own view, but that is
+            // not always the same thing (custom roots, a disk that reports an
+            // ancestor as present, or a directory removed between the two calls).
+            // mkdir(recursive) is idempotent, so asserting the real path here is
+            // free insurance against an archive build failing on a missing folder.
+            $zipDirectory = dirname($zipAbsolutePath);
+            if (!is_dir($zipDirectory)) {
+                @mkdir($zipDirectory, 0775, true);
+            }
+
             $zip = new \ZipArchive();
             if ($zip->open($zipAbsolutePath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
                 throw new \RuntimeException('Failed to create ZIP file');
@@ -188,6 +203,10 @@ class ShootMediaArchiveService
                 'source_signature' => $plan['source_signature'],
                 'generated_at' => now()->toIso8601String(),
                 'file_count' => $addedFiles,
+                // Recorded so a support question about "why is the client's ZIP
+                // in this order" can be answered without rebuilding the archive.
+                'media_order_version' => $this->deliveryMediaOrderService->currentVersion($shoot),
+                'entry_names' => array_column($plan['entries'], 'archive_name'),
                 'last_error' => null,
             ];
 
@@ -338,7 +357,11 @@ class ShootMediaArchiveService
 
     public function getFilesForType(Shoot $shoot, string $type, ?int $shootServiceId = null): Collection
     {
-        $query = $shoot->files()->orderBy('sort_order', 'asc')->orderBy('created_at', 'desc');
+        // Delivery order, not upload order. Previously this read
+        // `sort_order asc, created_at desc`, which meant a shoot nobody had
+        // manually arranged (every sort_order still 0) was packaged newest-first
+        // — the reverse of what the admin sees in the media grid.
+        $query = $shoot->files()->inDeliveryOrder();
 
         if ($shootServiceId !== null) {
             $query->where('shoot_service_id', $shootServiceId);
@@ -396,32 +419,72 @@ class ShootMediaArchiveService
                 ->values();
         }
 
-        return $files;
+        // Replay the frozen delivery order last, after every access/scan/extras
+        // filter above has run. Applying it here (rather than in the query) keeps
+        // the snapshot from ever re-introducing a file those filters removed,
+        // while still guaranteeing the ZIP, the Bright MLS manifest and the
+        // Dropbox hand-off all sequence the same delivered set identically.
+        return $this->deliveryMediaOrderService->applyTo($shoot, $files);
     }
 
     protected function buildArchivePlan(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): array
     {
-        $entries = [];
+        // Resolve every source path first so the numbering runs over the files
+        // that will actually make it into the archive. Numbering before this
+        // filter would leave gaps (001, 003, 004) whenever a file has no
+        // resolvable source.
+        $deliverable = [];
         foreach ($this->getFilesForType($shoot, $type, $shootServiceId) as $file) {
             $sourcePath = $this->resolveDownloadPath($file, $size);
             if (!$sourcePath) {
                 continue;
             }
 
+            $deliverable[] = ['file' => $file, 'source_path' => $sourcePath];
+        }
+
+        $total = count($deliverable);
+        $entries = [];
+        $usedNames = [];
+        $position = 1;
+
+        foreach ($deliverable as $item) {
+            /** @var ShootFile $file */
+            $file = $item['file'];
+
+            // The entry name carries the position because nothing downstream
+            // honors ZIP entry order — see DeliveryFilenameFormatter. The stored
+            // master filename is untouched; only this delivered copy is renamed.
+            $archiveName = $this->deliveryFilenameFormatter->deduplicate(
+                $this->deliveryFilenameFormatter->formatForFile(
+                    $file,
+                    $position,
+                    $total,
+                    basename($item['source_path'])
+                ),
+                $usedNames
+            );
+
             $entries[] = [
                 'file_id' => $file->id,
                 'shoot_service_id' => $file->shoot_service_id,
-                'archive_name' => $file->original_name ?? $file->filename ?? basename($sourcePath),
-                'source_path' => $sourcePath,
+                'position' => $position,
+                'archive_name' => $archiveName,
+                'source_name' => $this->deliveryFilenameFormatter->baseNameFor($file, basename($item['source_path'])),
+                'source_path' => $item['source_path'],
                 'updated_at' => optional($file->updated_at)->toIso8601String(),
                 'file_size' => $file->file_size,
                 'temp_path' => null,
             ];
+
+            $position++;
         }
 
         return [
             'entries' => $entries,
-            'source_signature' => $entries === [] ? null : $this->buildSourceSignature($entries),
+            'source_signature' => $entries === []
+                ? null
+                : $this->buildSourceSignature($entries, $this->deliveryMediaOrderService->orderFingerprint($shoot)),
         ];
     }
 
@@ -475,7 +538,10 @@ class ShootMediaArchiveService
             return $localPath;
         }
 
-        $filename = basename($entry['archive_name'] ?? 'file');
+        // Stage the Dropbox download under the master filename, not the
+        // position-prefixed archive name — the prefix belongs to the delivered
+        // ZIP entry only, and the temp file is keyed off the source.
+        $filename = basename($entry['source_name'] ?? $entry['archive_name'] ?? 'file');
         $downloaded = $this->shootFileAccessService->downloadDropboxPathToTemp($sourcePath, $filename);
         if ($downloaded) {
             $entry['temp_path'] = $downloaded;
@@ -520,18 +586,37 @@ class ShootMediaArchiveService
             : 'Preparing your full-size files.';
     }
 
-    protected function buildSourceSignature(array $entries): string
+    /**
+     * Fingerprint of everything that can change the bytes of the archive.
+     *
+     * Idempotency: two builds of the same delivered set at the same order produce
+     * the same signature, so hasFreshArchive() short-circuits and the cached ZIP
+     * is reused.
+     *
+     * Invalidation: `position` and the order fingerprint are both included, so a
+     * reorder changes the signature and the cached ZIP is genuinely rebuilt.
+     * Before positions existed the signature covered only file identity and
+     * mtimes, which meant a pure reorder hashed identically — the observer
+     * dispatched a regeneration, generateArchive() saw a matching signature and
+     * returned the stale archive, so a re-sorted shoot kept serving the old
+     * sequence.
+     */
+    protected function buildSourceSignature(array $entries, string $orderFingerprint = ''): string
     {
-        return hash('sha256', json_encode(array_map(function (array $entry) {
-            return [
-                'file_id' => $entry['file_id'],
-                'shoot_service_id' => $entry['shoot_service_id'] ?? null,
-                'archive_name' => $entry['archive_name'],
-                'source_path' => $entry['source_path'],
-                'updated_at' => $entry['updated_at'],
-                'file_size' => $entry['file_size'],
-            ];
-        }, $entries), JSON_UNESCAPED_SLASHES));
+        return hash('sha256', json_encode([
+            'order' => $orderFingerprint,
+            'entries' => array_map(function (array $entry) {
+                return [
+                    'file_id' => $entry['file_id'],
+                    'shoot_service_id' => $entry['shoot_service_id'] ?? null,
+                    'position' => $entry['position'] ?? null,
+                    'archive_name' => $entry['archive_name'],
+                    'source_path' => $entry['source_path'],
+                    'updated_at' => $entry['updated_at'],
+                    'file_size' => $entry['file_size'],
+                ];
+            }, $entries),
+        ], JSON_UNESCAPED_SLASHES));
     }
 
     protected function acquireGenerationLock(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool

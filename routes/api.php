@@ -740,6 +740,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Finalize a shoot (admin toggle triggers this)
     Route::post('/shoots/{shoot}/finalize', [ShootPaymentsController::class, 'finalize']);
+    // Live progress of the queued finalize pipeline (polled by the finalize toast)
+    Route::get('/shoots/{shoot}/finalize-progress', [ShootPaymentsController::class, 'finalizeProgress']);
     
     // Shoot approval workflow endpoints
     Route::post('/shoots/{shoot}/mark-issues-resolved', [ShootIssuesController::class, 'markIssuesResolved']);

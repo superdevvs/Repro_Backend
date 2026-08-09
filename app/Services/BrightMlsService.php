@@ -539,7 +539,16 @@ class BrightMlsService
 
         $itemId = 1;
 
-        // Add photos
+        // Photos are emitted first and numbered from 1, so listItems[0] / id 1 is
+        // the first eligible photo of the delivery order. Bright's manifest schema
+        // has no explicit "primary"/"cover" flag — sequence position is the
+        // primary, and the photo block must precede the tour/document items for
+        // that to hold. Ordering is therefore the only lever, and it is fixed
+        // upstream in autoPublishForShoot(); do not sort here.
+        //
+        // A photo without a URL is skipped without consuming an id, so the
+        // primary slot always goes to a genuinely publishable image rather than
+        // silently landing on a broken entry.
         if (!empty($options['photos']) && is_array($options['photos'])) {
             foreach ($options['photos'] as $photo) {
                 if (!empty($photo['url']) && ($photo['selected'] ?? true)) {
@@ -876,16 +885,22 @@ class BrightMlsService
                 return null;
             }
 
-            // Load files if not already loaded
-            if (!$shoot->relationLoaded('files')) {
-                $shoot->load('files');
-            }
-
-            // Get completed/verified photos
-            $photos = $shoot->files
-                ->whereIn('workflow_stage', ['completed', 'verified'])
-                ->whereIn('media_type', ['image', 'edited', 'photo'])
-                ->values();
+            // Read the delivered photos through an explicit ordered query rather
+            // than the `files` relation. The relation is an unordered hasMany, so
+            // an already-eager-loaded collection arrives in primary-key order —
+            // which meant this auto-publish path shipped a different sequence
+            // than the manual "Push to MLS" dialog (which honors the curated
+            // order). Bright renders listItems in the order we send them, so this
+            // was directly visible to agents.
+            $deliveryOrder = app(\App\Services\Shoots\DeliveryMediaOrderService::class);
+            $photos = $deliveryOrder->applyTo(
+                $shoot,
+                $shoot->files()
+                    ->whereIn('workflow_stage', ['completed', 'verified'])
+                    ->whereIn('media_type', ['image', 'edited', 'photo'])
+                    ->inDeliveryOrder()
+                    ->get()
+            );
 
             if ($photos->isEmpty()) {
                 Log::info('Bright MLS auto-publish skipped: no completed photos', ['shoot_id' => $shoot->id]);
@@ -990,6 +1005,11 @@ class BrightMlsService
                 'mls_id' => $shoot->mls_id,
                 'manifest_id' => $result['manifest_id'] ?? null,
                 'success' => $result['success'],
+                'photo_count' => count($photoOptions),
+                // The lead image agents see. Logged so an ordering complaint can
+                // be traced without re-deriving the manifest.
+                'primary_photo' => $photoOptions[0]['filename'] ?? null,
+                'media_order_version' => $deliveryOrder->currentVersion($shoot),
             ]);
 
             return $result;

@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -40,17 +41,26 @@ class SendShootReadyEmailJob implements ShouldQueue
         $this->onQueue('default');
     }
 
-    public function handle(MailService $mail, AutomationService $automation): void
-    {
+    public function handle(
+        MailService $mail,
+        AutomationService $automation,
+        ?FinalizeProgressTracker $progress = null
+    ): void {
+        $progress ??= app(FinalizeProgressTracker::class);
+
         /** @var Shoot|null $shoot */
         $shoot = Shoot::query()->find($this->shootId);
         if (!$shoot) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Shoot not found');
             return;
         }
+
+        $progress->stageRunning($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL);
 
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);
         $client = $shoot->client ?: User::find($shoot->client_id);
 
+        $emailError = null;
         $systemEmailAlreadySent = false;
         if ($client) {
             try {
@@ -62,6 +72,7 @@ class SendShootReadyEmailJob implements ShouldQueue
                     $systemEmailAlreadySent = true;
                 }
             } catch (\Throwable $e) {
+                $emailError = $e->getMessage();
                 Log::warning('SendShootReadyEmailJob: ready email failed', [
                     'shoot_id' => $shoot->id,
                     'shoot_service_id' => $this->shootServiceId,
@@ -110,6 +121,17 @@ class SendShootReadyEmailJob implements ShouldQueue
                 ]);
             }
         }
+
+        if ($emailError !== null) {
+            $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, $emailError);
+            return;
+        }
+
+        $progress->stageCompleted(
+            $this->shootId,
+            FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
+            $client ? 'Client notified' : 'No client contact on this shoot'
+        );
     }
 
     public function failed(\Throwable $exception): void
@@ -118,5 +140,11 @@ class SendShootReadyEmailJob implements ShouldQueue
             'shoot_id' => $this->shootId,
             'error' => $exception->getMessage(),
         ]);
+
+        app(FinalizeProgressTracker::class)->stageFailed(
+            $this->shootId,
+            FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
+            $exception->getMessage()
+        );
     }
 }

@@ -7,6 +7,7 @@ use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -53,8 +54,10 @@ class FinalizeShootJob implements ShouldQueue
         $this->onQueue('default');
     }
 
-    public function handle(ShootActivityLogger $activityLogger): void
+    public function handle(ShootActivityLogger $activityLogger, ?FinalizeProgressTracker $progress = null): void
     {
+        $progress ??= app(FinalizeProgressTracker::class);
+
         $lock = Cache::lock("shoot:finalize:{$this->shootId}", 120);
         if (!$lock->get()) {
             Log::info('Finalize skipped: another finalize is already running', [
@@ -64,15 +67,25 @@ class FinalizeShootJob implements ShouldQueue
         }
 
         try {
-            $result = $this->commit();
+            $progress->stageRunning($this->shootId, FinalizeProgressTracker::STAGE_COMMIT);
+
+            $result = $this->commit($progress);
             if (!$result) {
-                return; // commit() already wrote a failure log.
+                return; // commit() already wrote a failure log + progress.
             }
 
             $shoot = $result['shoot'];
             $isFullOrderDelivery = $result['is_full_order_delivery'];
             $processedFileIds = $result['processed_file_ids'];
             $previousStatus = $result['previous_status'];
+
+            $progress->stageCompleted(
+                $this->shootId,
+                FinalizeProgressTracker::STAGE_COMMIT,
+                $isFullOrderDelivery
+                    ? sprintf('%d file(s) verified, shoot marked delivered', count($processedFileIds))
+                    : sprintf('%d file(s) verified, order partially delivered', count($processedFileIds))
+            );
 
             // ------ Side effects (async, non-blocking) ------
             // Media-dependent side effects (Bright MLS publish + the
@@ -81,9 +94,15 @@ class FinalizeShootJob implements ShouldQueue
             // client delivery email, however, is a mandatory transactional
             // notification and must fire on every full-order delivered
             // transition (see below).
-            $this->dispatchLocalCacheJobs($processedFileIds);
+            $this->dispatchLocalCacheJobs($processedFileIds, $progress);
             if (!empty($processedFileIds)) {
-                $this->dispatchMlsPublish($isFullOrderDelivery);
+                $this->dispatchMlsPublish($isFullOrderDelivery, $progress);
+            } else {
+                $progress->stageSkipped(
+                    $this->shootId,
+                    FinalizeProgressTracker::STAGE_MLS_PUBLISH,
+                    'No delivered media to publish'
+                );
             }
 
             // The client delivery email is the canonical, mandatory
@@ -92,7 +111,13 @@ class FinalizeShootJob implements ShouldQueue
             // (fast-forward) deliveries that have no processed files — so it
             // is intentionally NOT gated on $processedFileIds.
             if ($isFullOrderDelivery) {
-                $this->dispatchReadyEmail($isFullOrderDelivery);
+                $this->dispatchReadyEmail($isFullOrderDelivery, $progress);
+            } else {
+                $progress->stageSkipped(
+                    $this->shootId,
+                    FinalizeProgressTracker::STAGE_DELIVERY_EMAIL,
+                    'Client notification sends on full delivery only'
+                );
             }
 
             // Activity log parity with the previous implementation.
@@ -145,6 +170,8 @@ class FinalizeShootJob implements ShouldQueue
                 'error' => $e->getMessage(),
             ]);
 
+            $progress->fail($this->shootId, $e->getMessage(), FinalizeProgressTracker::STAGE_COMMIT);
+
             try {
                 $shoot = Shoot::query()->find($this->shootId);
                 $shoot?->workflowLogs()->create([
@@ -179,15 +206,16 @@ class FinalizeShootJob implements ShouldQueue
      *
      * @return array{shoot: Shoot, is_full_order_delivery: bool, processed_file_ids: array<int,int>, previous_status: ?string}|null
      */
-    protected function commit(): ?array
+    protected function commit(FinalizeProgressTracker $progress): ?array
     {
-        return DB::transaction(function () {
+        return DB::transaction(function () use ($progress) {
             /** @var Shoot|null $shoot */
             $shoot = Shoot::query()->whereKey($this->shootId)->lockForUpdate()->first();
             if (!$shoot) {
                 Log::warning('Finalize aborted: shoot not found', [
                     'shoot_id' => $this->shootId,
                 ]);
+                $progress->fail($this->shootId, 'Finalize aborted: shoot not found', FinalizeProgressTracker::STAGE_COMMIT);
                 return null;
             }
 
@@ -206,6 +234,11 @@ class FinalizeShootJob implements ShouldQueue
                             'failed_at' => now()->toISOString(),
                         ],
                     ]);
+                    $progress->fail(
+                        $this->shootId,
+                        'Selected service item does not belong to this shoot',
+                        FinalizeProgressTracker::STAGE_COMMIT
+                    );
                     return null;
                 }
             }
@@ -244,6 +277,11 @@ class FinalizeShootJob implements ShouldQueue
                         'failed_at' => now()->toISOString(),
                     ],
                 ]);
+                $progress->fail(
+                    $this->shootId,
+                    'Invalid shoot status for finalization: ' . $shoot->workflow_status,
+                    FinalizeProgressTracker::STAGE_COMMIT
+                );
                 return null;
             }
 
@@ -258,6 +296,11 @@ class FinalizeShootJob implements ShouldQueue
                         'failed_at' => now()->toISOString(),
                     ],
                 ]);
+                $progress->fail(
+                    $this->shootId,
+                    'No edited files to finalize',
+                    FinalizeProgressTracker::STAGE_COMMIT
+                );
                 return null;
             }
 
@@ -329,6 +372,27 @@ class FinalizeShootJob implements ShouldQueue
                 $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
             }
 
+            // Freeze the delivery order while we still hold the shoot row lock.
+            // Everything downstream of this transaction — the ZIP archive, the
+            // Dropbox local-cache hand-off, the Bright MLS manifest and the
+            // client email's download link — runs asynchronously on separate
+            // workers, so each would otherwise re-derive the order at its own
+            // pick-up time. A reorder landing between two of those jobs would
+            // then ship a ZIP in one sequence and an MLS manifest in another.
+            // Taking the snapshot here means a concurrent reorder either commits
+            // before us and is captured, or blocks on the lock and afterwards
+            // refreshes the snapshot itself (see reorderFiles).
+            try {
+                app(\App\Services\Shoots\DeliveryMediaOrderService::class)->snapshot($shoot);
+            } catch (\Throwable $e) {
+                // Delivery must never fail over ordering bookkeeping; without a
+                // snapshot the consumers fall back to live sort_order ordering.
+                Log::warning('Failed to snapshot delivery media order', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
             return [
                 'shoot' => $shoot,
                 'is_full_order_delivery' => $isFullOrderDelivery,
@@ -343,34 +407,103 @@ class FinalizeShootJob implements ShouldQueue
      * work for files that have a dropbox_path and no local copy; the job
      * itself is idempotent.
      */
-    protected function dispatchLocalCacheJobs(array $fileIds): void
+    protected function dispatchLocalCacheJobs(array $fileIds, FinalizeProgressTracker $progress): void
     {
-        if (empty($fileIds)) {
+        // Ordered by the same snapshot the ZIP and MLS manifest use, so the
+        // Dropbox cache warms front-to-back in delivery order. A client who
+        // starts downloading before every file is cached then gets the early
+        // photos first instead of an arbitrary subset.
+        $cacheableIds = empty($fileIds)
+            ? []
+            : $this->orderByDeliverySnapshot(
+                ShootFile::query()
+                    ->whereIn('id', $fileIds)
+                    ->whereNotNull('dropbox_path')
+                    ->where('dropbox_path', '!=', '')
+                    ->inDeliveryOrder()
+                    ->pluck('id')
+                    ->map(fn ($id) => (int) $id)
+                    ->all()
+            );
+
+        if (empty($cacheableIds)) {
+            $progress->stageSkipped(
+                $this->shootId,
+                FinalizeProgressTracker::STAGE_LOCAL_CACHE,
+                'No remote files needed caching'
+            );
             return;
         }
 
-        $cacheableIds = ShootFile::query()
-            ->whereIn('id', $fileIds)
-            ->whereNotNull('dropbox_path')
-            ->where('dropbox_path', '!=', '')
-            ->pluck('id')
-            ->all();
+        // The per-file jobs report their own completion, so the stage knows
+        // its unit count up front and can show a real fraction.
+        $progress->stageRunning(
+            $this->shootId,
+            FinalizeProgressTracker::STAGE_LOCAL_CACHE,
+            sprintf('Caching %d delivered file(s)', count($cacheableIds)),
+            count($cacheableIds)
+        );
 
         foreach ($cacheableIds as $id) {
             try {
-                CacheShootFinalToLocalJob::dispatch((int) $id);
+                CacheShootFinalToLocalJob::dispatch((int) $id, $this->shootId);
             } catch (\Throwable $e) {
                 Log::warning('Failed to dispatch CacheShootFinalToLocalJob', [
                     'shoot_file_id' => $id,
                     'error' => $e->getMessage(),
                 ]);
+                // Never leave the stage waiting on a job that was never queued.
+                $progress->stageAdvanced($this->shootId, FinalizeProgressTracker::STAGE_LOCAL_CACHE);
             }
         }
     }
 
-    protected function dispatchMlsPublish(bool $isFullOrderDelivery): void
+    /**
+     * Re-sequence ids to match the shoot's frozen delivery snapshot.
+     *
+     * Ids missing from the snapshot keep their incoming (live delivery order)
+     * position at the end, so a file uploaded after finalize is still cached.
+     *
+     * @param  array<int, int>  $ids
+     * @return array<int, int>
+     */
+    protected function orderByDeliverySnapshot(array $ids): array
+    {
+        $shoot = Shoot::query()->find($this->shootId);
+        if (!$shoot) {
+            return $ids;
+        }
+
+        $snapshot = app(\App\Services\Shoots\DeliveryMediaOrderService::class)->snapshotIds($shoot);
+        if (empty($snapshot)) {
+            return $ids;
+        }
+
+        $positions = array_flip($snapshot);
+        $known = [];
+        $unknown = [];
+        foreach ($ids as $id) {
+            if (array_key_exists($id, $positions)) {
+                $known[$id] = $positions[$id];
+                continue;
+            }
+
+            $unknown[] = $id;
+        }
+
+        asort($known);
+
+        return array_merge(array_keys($known), $unknown);
+    }
+
+    protected function dispatchMlsPublish(bool $isFullOrderDelivery, FinalizeProgressTracker $progress): void
     {
         if (!$isFullOrderDelivery) {
+            $progress->stageSkipped(
+                $this->shootId,
+                FinalizeProgressTracker::STAGE_MLS_PUBLISH,
+                'MLS publish runs on full delivery only'
+            );
             return;
         }
 
@@ -381,10 +514,11 @@ class FinalizeShootJob implements ShouldQueue
                 'shoot_id' => $this->shootId,
                 'error' => $e->getMessage(),
             ]);
+            $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_MLS_PUBLISH, $e->getMessage());
         }
     }
 
-    protected function dispatchReadyEmail(bool $isFullOrderDelivery): void
+    protected function dispatchReadyEmail(bool $isFullOrderDelivery, FinalizeProgressTracker $progress): void
     {
         try {
             SendShootReadyEmailJob::dispatch(
@@ -398,6 +532,7 @@ class FinalizeShootJob implements ShouldQueue
                 'shoot_id' => $this->shootId,
                 'error' => $e->getMessage(),
             ]);
+            $progress->stageFailed($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, $e->getMessage());
         }
     }
 }

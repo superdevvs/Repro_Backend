@@ -277,4 +277,54 @@ class ShootFile extends Model
 
         return !$shoot->bypass_paywall && $shoot->payment_status !== 'paid';
     }
+
+    /**
+     * Order files the way they must be delivered.
+     *
+     * `sort_order` is written 1-based by a saved manual reorder, so a positive
+     * value means "an admin deliberately put this file at this position". Zero /
+     * NULL means the file has never been placed (legacy rows, or a create that
+     * opted out of positioning), and those must trail the curated block rather
+     * than jumping to the front — a 0 would otherwise sort ahead of position 1
+     * and silently push an unplaced file to the top of the client's download.
+     *
+     * The `id` tie-break makes the tail (and any duplicate positions left by a
+     * partial reorder) deterministic, so two runs of the same archive build
+     * always produce the same sequence.
+     *
+     * Applied explicitly at every call site rather than on the `files()`
+     * relation, so ordering is a visible, intentional decision on the delivery
+     * paths and unrelated reads keep their existing behavior.
+     */
+    public function scopeInDeliveryOrder(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        return $query
+            ->orderByRaw('CASE WHEN sort_order IS NULL OR sort_order <= 0 THEN 1 ELSE 0 END asc')
+            ->orderBy('sort_order', 'asc')
+            ->orderBy('id', 'asc');
+    }
+
+    /**
+     * The same ordering as scopeInDeliveryOrder(), for already-hydrated
+     * collections that cannot be re-queried (e.g. an eager-loaded relation).
+     *
+     * @return array{0:int,1:int,2:int}
+     */
+    public function deliveryOrderKey(): array
+    {
+        $sortOrder = (int) ($this->sort_order ?? 0);
+
+        return [$sortOrder > 0 ? 0 : 1, $sortOrder, (int) $this->id];
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, ShootFile>  $files
+     * @return \Illuminate\Support\Collection<int, ShootFile>
+     */
+    public static function sortCollectionInDeliveryOrder(\Illuminate\Support\Collection $files): \Illuminate\Support\Collection
+    {
+        return $files
+            ->sortBy(fn (ShootFile $file) => $file->deliveryOrderKey(), SORT_REGULAR)
+            ->values();
+    }
 }
