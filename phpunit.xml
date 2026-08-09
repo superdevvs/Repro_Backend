@@ -24,8 +24,12 @@
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!-- force: without it these are ignored whenever the surrounding
+             environment already defines DB_*, which let CI run the suite against
+             a persistent sqlite file. Tables then leaked between tests and
+             AiJobStudioColumnsMigrationTest failed on 'projects already exists'. -->
+        <env name="DB_CONNECTION" value="sqlite" force="true"/>
+        <env name="DB_DATABASE" value=":memory:" force="true"/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="PHOTOGRAPHER_RADIUS_ENFORCEMENT" value="false" force="true"/>

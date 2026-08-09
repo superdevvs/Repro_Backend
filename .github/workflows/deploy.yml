@@ -48,10 +48,13 @@ jobs:
           echo 'ClamAV did not become ready in time.' >&2
           exit 1
 
-      - name: Prepare SQLite database
+      - name: Prepare test environment file
         run: |
-          mkdir -p database
-          touch database/database.sqlite
+          # phpdotenv reads .env on every boot and PHPUnit turns the resulting
+          # "failed to open stream" warning into a test warning. composer quality
+          # runs artisan test with --fail-on-warning, so a missing .env fails the
+          # job on its own. .env.example is gitignored and so is absent here.
+          printf 'APP_ENV=testing\n' > .env
 
       - name: Run test suite
         env:
@@ -62,8 +65,9 @@ jobs:
           # committed, so CI had none. This is a throwaway key used only by this
           # test step and is unrelated to any deployed environment's key.
           APP_KEY: base64:6lMq/5Rp/MERfmkNOn2kZk0OhSjmKDNTazouBbBC/Xc=
-          DB_CONNECTION: sqlite
-          DB_DATABASE: database/database.sqlite
+          # DB_CONNECTION / DB_DATABASE are deliberately not set here. Defining
+          # them suppressed phpunit.xml's :memory: database, so the suite ran
+          # against a persistent sqlite file and tables leaked between tests.
           CACHE_STORE: array
           QUEUE_CONNECTION: sync
           SESSION_DRIVER: array
