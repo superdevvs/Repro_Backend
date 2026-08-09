@@ -56,6 +56,12 @@ jobs:
       - name: Run test suite
         env:
           APP_ENV: testing
+          # Laravel refuses to boot without an encryption key, so every test that
+          # touches encryption, cookies or sessions fails with
+          # MissingAppKeyException. Locally the key comes from .env, which is not
+          # committed, so CI had none. This is a throwaway key used only by this
+          # test step and is unrelated to any deployed environment's key.
+          APP_KEY: base64:6lMq/5Rp/MERfmkNOn2kZk0OhSjmKDNTazouBbBC/Xc=
           DB_CONNECTION: sqlite
           DB_DATABASE: database/database.sqlite
           CACHE_STORE: array
