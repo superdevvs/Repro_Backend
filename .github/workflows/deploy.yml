@@ -53,7 +53,9 @@ jobs:
           # phpdotenv reads .env on every boot and PHPUnit turns the resulting
           # "failed to open stream" warning into a test warning. composer quality
           # runs artisan test with --fail-on-warning, so a missing .env fails the
-          # job on its own. .env.example is gitignored and so is absent here.
+          # job on its own. This stays minimal rather than copying .env.example:
+          # what the suite needs is declared in phpunit.xml, and inheriting the
+          # example's integration defaults would let them drift into test runs.
           printf 'APP_ENV=testing\n' > .env
 
       - name: Run test suite
@@ -84,6 +86,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # rsync lands new code before migrate runs below, so without this the app
+      # briefly serves requests that reference columns the database does not have
+      # yet. Maintenance mode has to start before the copy, not just before the
+      # migration. The flag lives under storage/, which rsync excludes, so the
+      # copy cannot clear it.
+      - name: Enter maintenance mode
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            cd /var/www/backend
+            php artisan down --retry=15 || true
 
       - name: Deploy to server (rsync)
         uses: burnett01/rsync-deployments@5.2
@@ -118,3 +136,16 @@ jobs:
             php artisan route:cache
             php artisan view:cache
             php artisan queue:restart
+
+      # always(): a failure above must not strand the site in maintenance mode.
+      - name: Leave maintenance mode
+        if: always()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            cd /var/www/backend
+            php artisan up
