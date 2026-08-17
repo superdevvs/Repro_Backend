@@ -180,6 +180,38 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
             ->assertStatus(403);
     }
 
+    public function test_editing_manager_cannot_see_or_overwrite_photographer_street(): void
+    {
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        $photographer = User::factory()->photographer()->create([
+            'address' => '6424 Vale Street',
+            'city' => 'Alexandria',
+            'state' => 'VA',
+            'zip' => '22312',
+        ]);
+
+        Sanctum::actingAs($manager);
+
+        $row = collect($this->getJson('/api/admin/photographers')->assertOk()->json('data'))
+            ->firstWhere('id', $photographer->id);
+        $this->assertNotNull($row);
+        $this->assertSame('Alexandria', $row['city'] ?? null);
+        $this->assertSame('VA', $row['state'] ?? null);
+        $this->assertSame('22312', $row['zip'] ?? null);
+        $this->assertNull($row['address'] ?? null);
+
+        $this->putJson("/api/admin/users/{$photographer->id}", [
+            'address' => '1 Secret Lane',
+            'city' => 'Reston',
+            'state' => 'VA',
+            'zip' => '20190',
+        ])->assertOk();
+
+        $photographer->refresh();
+        $this->assertSame('6424 Vale Street', $photographer->address);
+        $this->assertSame('Alexandria', $photographer->city);
+    }
+
     protected function createDefaultEmailChannel(): MessageChannel
     {
         return MessageChannel::create([

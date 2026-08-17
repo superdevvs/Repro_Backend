@@ -663,6 +663,11 @@ class UserController extends Controller
 
         $validated = $request->validate($rules);
 
+        $addressPolicy = app(PhotographerAddressPolicy::class);
+        if ($addressPolicy->isPhotographer($user) && !$addressPolicy->canApproveAddressChanges($admin)) {
+            unset($validated['address'], $validated['city'], $validated['state'], $validated['zip']);
+        }
+
         if ($this->isSalesRepUser($admin)) {
             if (!in_array($user->role, $this->salesRepCreatableRoles(), true)) {
                 return response()->json(['message' => 'Unauthorized'], 403);
