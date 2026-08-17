@@ -1176,10 +1176,19 @@ class UserController extends Controller
         }
 
         $mailService = app(MailService::class);
-        $sent = $mailService->sendClientEmailVerificationEmail($user, [
-            'issued_context' => 'admin_profile_resend',
-            'issued_by' => $admin->id,
-        ]);
+
+        try {
+            $sent = $mailService->sendClientEmailVerificationEmail($user, [
+                'issued_context' => 'admin_profile_resend',
+                'issued_by' => $admin->id,
+                'throw_on_failure' => true,
+            ]);
+        } catch (\Throwable $sendException) {
+            return response()->json([
+                'sent' => false,
+                'message' => 'Failed to send verification email: ' . $sendException->getMessage(),
+            ], 422);
+        }
 
         if (!$sent) {
             return response()->json([

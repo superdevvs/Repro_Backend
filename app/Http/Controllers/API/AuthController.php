@@ -517,10 +517,20 @@ class AuthController extends Controller
             ], 422);
         }
 
-        if (!$this->mailService->sendClientEmailVerificationEmail($user, [
-            'issued_context' => 'dashboard_resend',
-            'issued_by' => $user->id,
-        ])) {
+        try {
+            $sent = $this->mailService->sendClientEmailVerificationEmail($user, [
+                'issued_context' => 'dashboard_resend',
+                'issued_by' => $user->id,
+                'throw_on_failure' => true,
+            ]);
+        } catch (\Throwable $sendException) {
+            return response()->json([
+                'sent' => false,
+                'message' => 'Unable to send a verification email: ' . $sendException->getMessage(),
+            ], 422);
+        }
+
+        if (!$sent) {
             return response()->json([
                 'sent' => false,
                 'message' => 'Unable to send a verification email right now. Please try again.',

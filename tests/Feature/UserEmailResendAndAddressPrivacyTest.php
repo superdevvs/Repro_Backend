@@ -129,6 +129,7 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         $this->assertSame('VA', $row['state'] ?? null);
         $this->assertSame('22312', $row['zip'] ?? null);
         $this->assertNull($row['address'] ?? null);
+        $this->assertSame('region', $row['address_visibility'] ?? null);
     }
 
     public function test_admin_can_see_and_approve_photographer_address_change(): void
@@ -199,6 +200,7 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         $this->assertSame('VA', $row['state'] ?? null);
         $this->assertSame('22312', $row['zip'] ?? null);
         $this->assertNull($row['address'] ?? null);
+        $this->assertSame('region', $row['address_visibility'] ?? null);
 
         $this->putJson("/api/admin/users/{$photographer->id}", [
             'address' => '1 Secret Lane',
@@ -210,6 +212,24 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         $photographer->refresh();
         $this->assertSame('6424 Vale Street', $photographer->address);
         $this->assertSame('Alexandria', $photographer->city);
+    }
+
+    public function test_admin_payload_includes_full_photographer_address_visibility(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->photographer()->create([
+            'address' => '100 Old Street',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+        ]);
+
+        Sanctum::actingAs($admin);
+        $row = collect($this->getJson('/api/admin/photographers')->assertOk()->json('data'))
+            ->firstWhere('id', $photographer->id);
+
+        $this->assertSame('full', $row['address_visibility'] ?? null);
+        $this->assertSame('100 Old Street', $row['address'] ?? null);
     }
 
     protected function createDefaultEmailChannel(): MessageChannel

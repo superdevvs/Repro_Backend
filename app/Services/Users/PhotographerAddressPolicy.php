@@ -7,6 +7,10 @@ use App\Models\User;
 
 class PhotographerAddressPolicy
 {
+    public const VISIBILITY_FULL = 'full';
+    public const VISIBILITY_REGION = 'region';
+    public const VISIBILITY_HIDDEN = 'hidden';
+
     public function isPhotographer(?User $user): bool
     {
         if (!$user) {
@@ -46,15 +50,35 @@ class PhotographerAddressPolicy
         return in_array($this->normalizeRole($viewer->role), ['admin', 'superadmin'], true);
     }
 
+    public function visibilityFor(?User $viewer, User $subject): string
+    {
+        if (!$this->isPhotographer($subject)) {
+            return self::VISIBILITY_FULL;
+        }
+
+        if ($this->canViewFullAddress($viewer, $subject)) {
+            return self::VISIBILITY_FULL;
+        }
+
+        $role = $this->normalizeRole($viewer?->role);
+        if (in_array($role, ['salesrep', 'editingmanager'], true)) {
+            return self::VISIBILITY_REGION;
+        }
+
+        return self::VISIBILITY_HIDDEN;
+    }
+
     /**
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
     public function presentSubjectForViewer(array $payload, ?User $viewer, User $subject): array
     {
+        $visibility = $this->visibilityFor($viewer, $subject);
+        $payload['address_visibility'] = $visibility;
         $pending = $this->pendingChangeFor($subject);
 
-        if ($this->canViewFullAddress($viewer, $subject)) {
+        if ($visibility === self::VISIBILITY_FULL) {
             if ($pending) {
                 $payload['pending_address_change'] = $pending->toPresentation();
             }
@@ -62,11 +86,22 @@ class PhotographerAddressPolicy
             return $payload;
         }
 
-        unset($payload['address']);
         $payload['address'] = null;
-
         if (isset($payload['metadata']) && is_array($payload['metadata'])) {
             unset($payload['metadata']['address'], $payload['metadata']['homeAddress']);
+        }
+
+        if ($visibility === self::VISIBILITY_HIDDEN) {
+            $payload['city'] = null;
+            $payload['state'] = null;
+            $payload['zip'] = null;
+            $payload['zipcode'] = null;
+            $payload['pending_address_change'] = $pending ? [
+                'id' => $pending->id,
+                'status' => $pending->status,
+            ] : null;
+
+            return $payload;
         }
 
         if ($pending && $this->canApproveAddressChanges($viewer)) {
@@ -80,9 +115,6 @@ class PhotographerAddressPolicy
                 'zip' => $pending->zip,
                 'submitted_at' => $pending->submitted_at?->toIso8601String(),
             ] : null;
-            if (isset($payload['pending_address_change']['street_address'])) {
-                unset($payload['pending_address_change']['street_address']);
-            }
         }
 
         return $payload;

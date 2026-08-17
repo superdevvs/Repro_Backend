@@ -342,6 +342,10 @@ class MailService
                 'error' => $exception->getMessage(),
             ]);
 
+            if (!empty($context['throw_on_failure'])) {
+                throw $exception;
+            }
+
             return false;
         }
     }
