@@ -217,7 +217,8 @@ class User extends Authenticatable
     public function getEmailHealthAttribute(): array
     {
         $status = $this->attributes['email_status'] ?? null;
-        if (($status === null || $status === '') && !empty($this->attributes['email'])) {
+        $role = $this->attributes['role'] ?? null;
+        if (($status === null || $status === '') && !empty($this->attributes['email']) && !in_array($role, ['admin', 'superadmin'], true)) {
             $status = \App\Services\Users\EmailHealthService::STATUS_UNVERIFIED;
         }
 
