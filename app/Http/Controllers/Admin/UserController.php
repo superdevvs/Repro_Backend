@@ -1836,6 +1836,9 @@ class UserController extends Controller
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
         $payload['email_health'] = $user->email_health;
         $payload = app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $viewer, $user);
+        if (array_key_exists('zip', $payload)) {
+            $payload['zipcode'] = $payload['zip'];
+        }
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
         $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
             ? (float) $payload['client_discount_value']

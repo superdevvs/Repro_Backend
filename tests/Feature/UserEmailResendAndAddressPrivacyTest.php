@@ -130,6 +130,16 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         $this->assertSame('22312', $row['zip'] ?? null);
         $this->assertNull($row['address'] ?? null);
         $this->assertSame('region', $row['address_visibility'] ?? null);
+
+        $listed = collect($this->getJson('/api/admin/users?light=1')->assertOk()->json('users'))
+            ->firstWhere('id', $photographer->id);
+        $this->assertNotNull($listed);
+        $this->assertSame('Alexandria', $listed['city'] ?? null);
+        $this->assertSame('VA', $listed['state'] ?? null);
+        $this->assertSame('22312', $listed['zip'] ?? null);
+        $this->assertSame('22312', $listed['zipcode'] ?? null);
+        $this->assertNull($listed['address'] ?? null);
+        $this->assertSame('region', $listed['address_visibility'] ?? null);
     }
 
     public function test_admin_can_see_and_approve_photographer_address_change(): void
