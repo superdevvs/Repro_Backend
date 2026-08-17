@@ -215,9 +215,15 @@ class EmailHealthService
 
     public function markVerificationSent(User $user): void
     {
-        $user->forceFill([
+        $status = strtolower((string) ($user->email_status ?? ''));
+        $attributes = [
             'verification_sent_at' => now(),
-        ])->save();
+        ];
+        if ($status === '' || $status === self::STATUS_UNVERIFIED) {
+            $attributes['email_status'] = self::STATUS_UNVERIFIED;
+        }
+
+        $user->forceFill($attributes)->save();
     }
 
     public function markVerified(User $user): void

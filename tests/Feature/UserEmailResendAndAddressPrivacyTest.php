@@ -22,6 +22,31 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
     }
 
+    public function test_null_email_status_user_can_resend_verification_email(): void
+    {
+        $this->createDefaultEmailChannel();
+
+        $user = User::factory()->create([
+            'role' => 'client',
+            'email' => 'legacy-null-status@example.com',
+            'email_status' => null,
+            'email_verified_at' => null,
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/profile/email-verification/resend')
+            ->assertOk()
+            ->assertJsonPath('message', 'Verification email sent. Check your inbox to verify your address.')
+            ->assertJsonPath('user.email_health.status', 'unverified');
+
+        $this->assertDatabaseHas('client_email_verification_tokens', [
+            'user_id' => $user->id,
+            'issued_context' => 'dashboard_resend',
+        ]);
+        $this->assertSame('unverified', $user->fresh()->email_status);
+    }
+
     public function test_unverified_user_can_resend_verification_email(): void
     {
         $this->createDefaultEmailChannel();

@@ -216,8 +216,13 @@ class User extends Authenticatable
 
     public function getEmailHealthAttribute(): array
     {
+        $status = $this->attributes['email_status'] ?? null;
+        if (($status === null || $status === '') && !empty($this->attributes['email'])) {
+            $status = \App\Services\Users\EmailHealthService::STATUS_UNVERIFIED;
+        }
+
         return [
-            'status' => $this->attributes['email_status'] ?? null,
+            'status' => $status,
             'verification_sent_at' => optional($this->verification_sent_at)?->toIso8601String(),
             'email_verified_at' => optional($this->email_verified_at)?->toIso8601String(),
             'last_delivery_attempt_at' => optional($this->email_last_delivery_attempt_at)?->toIso8601String(),

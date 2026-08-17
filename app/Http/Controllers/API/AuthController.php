@@ -508,11 +508,11 @@ class AuthController extends Controller
             ], 422);
         }
 
-        if ($user->email_status === EmailHealthService::STATUS_VERIFIED) {
+        if (strtolower((string) ($user->email_status ?? '')) === EmailHealthService::STATUS_VERIFIED) {
             return response()->json([
                 'message' => 'This email address is already verified.',
-                'user' => $user->fresh(),
-            ]);
+                'user' => $this->presentAuthenticatedUser($user->fresh()),
+            ], 422);
         }
 
         if (!$this->mailService->sendClientEmailVerificationEmail($user, [
