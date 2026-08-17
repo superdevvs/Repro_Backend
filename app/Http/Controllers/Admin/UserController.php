@@ -17,6 +17,7 @@ use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\Users\PhoneNumberChangedNotificationService;
+use App\Services\Users\PhotographerAddressPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
@@ -576,9 +577,14 @@ class UserController extends Controller
             $photographers = $photographersQuery->get();
         }
 
+        $policy = app(PhotographerAddressPolicy::class);
+        $presented = $photographers->map(function (User $photographer) use ($viewer, $policy) {
+            return $policy->presentSubjectForViewer($photographer->toArray(), $viewer, $photographer);
+        })->values();
+
         return response()->json([
             'status' => 'success',
-            'data' => $photographers
+            'data' => $presented,
         ]);
     }
 
@@ -1195,6 +1201,59 @@ class UserController extends Controller
         ]);
     }
 
+    public function approvePhotographerAddressChange(Request $request, $id)
+    {
+        return $this->reviewPhotographerAddressChange($request, $id, 'approve');
+    }
+
+    public function rejectPhotographerAddressChange(Request $request, $id)
+    {
+        $request->validate([
+            'review_note' => 'nullable|string|max:1000',
+        ]);
+
+        return $this->reviewPhotographerAddressChange($request, $id, 'reject', $request->input('review_note'));
+    }
+
+    protected function reviewPhotographerAddressChange(Request $request, $id, string $decision, ?string $note = null)
+    {
+        $admin = $request->user();
+        $policy = app(PhotographerAddressPolicy::class);
+        if (!$policy->canApproveAddressChanges($admin)) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $user = User::findOrFail($id);
+        $pending = $policy->pendingChangeFor($user);
+        if (!$pending) {
+            return response()->json([
+                'message' => 'This photographer does not have a pending address change.',
+            ], 422);
+        }
+
+        $updated = $decision === 'approve'
+            ? $policy->approve($pending, $admin)
+            : $policy->reject($pending, $admin, $note);
+
+        $this->logUserActivity(
+            $user,
+            $decision === 'approve' ? 'photographer_address_approved' : 'photographer_address_rejected',
+            $decision === 'approve' ? 'Photographer address approved' : 'Photographer address rejected',
+            $decision === 'approve'
+                ? sprintf('Address change approved by %s.', $admin->name)
+                : sprintf('Address change rejected by %s.', $admin->name),
+            $admin,
+            ['request_id' => $updated->id]
+        );
+
+        return response()->json([
+            'message' => $decision === 'approve'
+                ? 'Photographer address change approved.'
+                : 'Photographer address change rejected.',
+            'user' => $this->presentUserForViewer($user->fresh(), $admin),
+        ]);
+    }
+
     protected function salesRepCreatableRoles(): array
     {
         return ['client'];
@@ -1465,6 +1524,7 @@ class UserController extends Controller
         $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
         $payload['email_health'] = $user->email_health;
+        $payload = app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $viewer, $user);
         $payload['editingCapabilities'] = $user->getEditingCapabilities();
         $payload['editing_capabilities'] = $payload['editingCapabilities'];
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
@@ -1755,6 +1815,7 @@ class UserController extends Controller
         $payload['shoot_cc_emails'] = $this->sanitizeShootCcEmails($payload['shoot_cc_emails'] ?? []);
         $payload['shootCcEmails'] = $payload['shoot_cc_emails'];
         $payload['email_health'] = $user->email_health;
+        $payload = app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $viewer, $user);
         $payload['client_discount_type'] = $payload['client_discount_type'] ?? null;
         $payload['client_discount_value'] = isset($payload['client_discount_value']) && $payload['client_discount_value'] !== null
             ? (float) $payload['client_discount_value']

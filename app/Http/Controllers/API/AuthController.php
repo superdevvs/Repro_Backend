@@ -18,6 +18,7 @@ use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 use App\Services\Users\AccountCreatedNotificationService;
+use App\Services\Users\PhotographerAddressPolicy;
 
 class AuthController extends Controller
 {
@@ -221,7 +222,7 @@ class AuthController extends Controller
             }
         }
 
-        return $user;
+        return response()->json($this->presentAuthenticatedUser($user));
     }
 
     /**
@@ -378,6 +379,14 @@ class AuthController extends Controller
         unset($validated['current_password'], $validated['new_password'], $validated['new_password_confirmation']);
         unset($validated['email_warning_override']);
 
+        $addressChangeQueued = false;
+        $addressPolicy = app(PhotographerAddressPolicy::class);
+        if ($addressPolicy->isPhotographer($user) && $this->profileContainsAddressFields($validated)) {
+            $queued = $addressPolicy->queueSelfServiceChange($user, $validated);
+            $addressChangeQueued = $queued['changed'];
+            unset($validated['address'], $validated['city'], $validated['state'], $validated['zip']);
+        }
+
         $user->fill($validated);
         $user->metadata = $metadata;
         $user->save();
@@ -469,12 +478,18 @@ class AuthController extends Controller
 
         Log::info('[Auth] Profile updated', ['user_id' => $user->id, 'fields' => array_keys($validated)]);
 
+        $message = $reauthRequired
+            ? 'Profile updated successfully. Please sign in again to continue.'
+            : 'Profile updated successfully';
+        if ($addressChangeQueued && !$reauthRequired) {
+            $message = 'Profile updated. Your address change was submitted for admin approval and will replace the approved address after review.';
+        }
+
         return response()->json([
-            'message' => $reauthRequired
-                ? 'Profile updated successfully. Please sign in again to continue.'
-                : 'Profile updated successfully',
+            'message' => $message,
             'reauth_required' => $reauthRequired,
-            'user' => $user->fresh(),
+            'address_change_pending' => $addressChangeQueued,
+            'user' => $this->presentAuthenticatedUser($user->fresh()),
         ]);
     }
 
@@ -523,8 +538,35 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Verification email sent. Check your inbox to verify your address.',
-            'user' => $user->fresh(),
+            'user' => $this->presentAuthenticatedUser($user->fresh()),
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    protected function profileContainsAddressFields(array $validated): bool
+    {
+        foreach (['address', 'city', 'state', 'zip'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function presentAuthenticatedUser(User $user): array
+    {
+        $payload = $user->toArray();
+        $payload['zipcode'] = $payload['zip'] ?? $user->zip;
+        $payload['phone'] = $payload['phonenumber'] ?? $user->phonenumber;
+        $payload['email_health'] = $user->email_health;
+
+        return app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $user, $user);
     }
 
     /**

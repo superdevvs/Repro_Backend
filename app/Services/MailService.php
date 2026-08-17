@@ -303,10 +303,16 @@ class MailService
                 ],
             ]);
 
+            $issuedContext = (string) ($verificationToken->issued_context ?? '');
+            $isExplicitResend = in_array($issuedContext, ['dashboard_resend', 'admin_profile_resend', 'email_change'], true);
+
             $this->dispatchProtectedEmail('CLIENT_EMAIL_VERIFICATION', $payload, $user->email, [], [], [
                 'related_account_id' => $user->id,
+                // Verification must be deliverable even when the address is still unverified.
+                'enforce_email_health_gate' => false,
             ], [
                 'idempotency_key' => sprintf('CLIENT_EMAIL_VERIFICATION:%d:%d', $user->id, $verificationToken->id),
+                'force' => $isExplicitResend,
                 'canonical_metadata' => [
                     'verification_token_id' => $verificationToken->id,
                     'verification_issued_context' => $verificationToken->issued_context,

@@ -281,6 +281,18 @@ class User extends Authenticatable
         return $this->hasMany(UserActivityLog::class);
     }
 
+    public function photographerAddressChangeRequests()
+    {
+        return $this->hasMany(PhotographerAddressChangeRequest::class);
+    }
+
+    public function pendingPhotographerAddressChange()
+    {
+        return $this->hasOne(PhotographerAddressChangeRequest::class)
+            ->where('status', PhotographerAddressChangeRequest::STATUS_PENDING)
+            ->latestOfMany();
+    }
+
     /**
      * Service areas (region/state/area) assigned to this photographer (Req 10).
      */

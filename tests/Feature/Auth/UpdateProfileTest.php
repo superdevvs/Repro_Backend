@@ -58,10 +58,16 @@ class UpdateProfileTest extends TestCase
         $this->assertSame('Updated Photographer', $user->name);
         $this->assertSame('555-123-4567', $user->phonenumber);
         $this->assertSame('Repro Updated', $user->company_name);
-        $this->assertSame('123 Main St', $user->address);
-        $this->assertSame('Baltimore', $user->city);
-        $this->assertSame('MD', $user->state);
-        $this->assertSame('21201', $user->zip);
+        $this->assertNotSame('123 Main St', $user->address);
+        $this->assertTrue((bool) $response->json('address_change_pending'));
+        $this->assertDatabaseHas('photographer_address_change_requests', [
+            'user_id' => $user->id,
+            'street_address' => '123 Main St',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'status' => 'pending',
+        ]);
         $this->assertSame('America/New_York', $user->timezone);
         $this->assertSame('https://facebook.com/repro', $user->facebook_url);
         $this->assertSame('tax-documents/existing-w9.pdf', $user->metadata['tax_document_path']);
