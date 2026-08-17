@@ -6,6 +6,7 @@ use App\Models\Payment;
 use App\Models\PaymentServiceAllocation;
 use App\Models\Shoot;
 use App\Models\ShootService;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -23,7 +24,7 @@ class ShootServiceItemSupport
             ->get();
 
         if ($items->isEmpty()) {
-            return [];
+            return app(InvoiceAdjustmentService::class)->summaries($shoot);
         }
 
         $paidByItem = $this->paidAmountsByItem($items);
@@ -31,11 +32,11 @@ class ShootServiceItemSupport
             ->whereIn('shoot_service_id', $items->pluck('id'))
             ->exists();
 
-        return $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations) {
+        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations) {
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
-            if (!$hasAllocations && $shoot->payment_status === 'paid') {
+            if (! $hasAllocations && $shoot->payment_status === 'paid') {
                 $paidAmount = $subtotal;
             }
 
@@ -103,6 +104,11 @@ class ShootServiceItemSupport
                 'unlockState' => $unlockState,
             ];
         })->values()->all();
+
+        return array_merge(
+            $serviceSummaries,
+            app(InvoiceAdjustmentService::class)->summaries($shoot)
+        );
     }
 
     public function allocatePayment(Payment $payment, Shoot $shoot, array $options = []): void
@@ -152,7 +158,7 @@ class ShootServiceItemSupport
         $remaining = max((float) ($shoot->total_quote ?? 0) - (float) $shoot->calculateCanonicalTotalPaid(), 0);
         $isPartial = $amount > 0 && $amount + 0.01 < $remaining;
 
-        if (!$isPartial) {
+        if (! $isPartial) {
             return false;
         }
 
@@ -181,11 +187,11 @@ class ShootServiceItemSupport
 
     protected function resolveAllocationRows(Collection $items, float $amount, int $paymentId, array $options): array
     {
-        if (!empty($options['allocations']) && is_array($options['allocations'])) {
+        if (! empty($options['allocations']) && is_array($options['allocations'])) {
             $rows = collect($options['allocations'])->map(function ($allocation) use ($items) {
                 $itemId = (int) ($allocation['shoot_service_id'] ?? $allocation['service_item_id'] ?? 0);
 
-                if (!$items->contains('id', $itemId)) {
+                if (! $items->contains('id', $itemId)) {
                     throw ValidationException::withMessages([
                         'allocations' => ['One or more payment allocations do not belong to this shoot.'],
                     ]);
@@ -268,7 +274,7 @@ class ShootServiceItemSupport
 
     protected function compactUser(mixed $user): ?array
     {
-        if (!$user) {
+        if (! $user) {
             return null;
         }
 

@@ -20,7 +20,7 @@ foreach ($inSet as $slug) {
   $html = (string) $t->body_html;
   if (str_contains($html, 'href="#"')) $hrefHash++;
   if (!str_contains($html, 'R/E Pro Photos')) $missingBrand[] = $slug;
-  if (!str_contains($html, '202-868-1663')) $missingPhone[] = $slug;
+  if (!str_contains($html, '(202) 868-1663')) $missingPhone[] = $slug;
   if (str_contains($html, 'R/E Pro Dashboard')) $nonCanon[] = $slug;
 }
 echo "in-set templates checked: " . count($inSet) . "\n";

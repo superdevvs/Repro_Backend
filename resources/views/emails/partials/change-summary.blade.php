@@ -107,7 +107,7 @@
                 @foreach($comparisonChanges as $change)
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 12px;">
                         <tr>
-                            <td style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
+                            <td class="note-card-bg" style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
                                 <p class="dark-heading" style="margin:0 0 12px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
                                 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                     <tr>
@@ -128,7 +128,7 @@
                 @foreach($singleChanges as $change)
                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 12px;">
                         <tr>
-                            <td style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
+                            <td class="note-card-bg" style="border:1px solid #dbe6f3; border-radius:14px; padding:16px 18px; background-color:#f8fbff;">
                                 <p class="dark-heading" style="margin:0 0 4px; font-size:14px; line-height:1.5; color:#10233b; font-weight:800;">{{ $change['label'] }}</p>
                                 <p class="dark-body" style="margin:0; font-size:14px; line-height:1.7; color:#10233b; font-weight:700;">{{ $change['value'] !== '' ? $change['value'] : 'Not set' }}</p>
                             </td>

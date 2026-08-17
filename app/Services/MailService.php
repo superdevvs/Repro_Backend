@@ -22,6 +22,7 @@ use App\Services\SystemEmails\EmailContextBuilder;
 use App\Services\SystemEmails\SystemEmailOrchestrator;
 use App\Services\Users\ClientEmailVerificationLinkService;
 use App\Services\Users\EmailHealthService;
+use App\Support\SupportContact;
 
 class MailService
 {
@@ -1629,9 +1630,6 @@ class MailService
         $dateStr = 'TBD';
         if ($shoot->scheduled_date) {
             $dateStr = $shoot->scheduled_date->format('M j, Y');
-            if ($formattedTime) {
-                $dateStr .= ' at ' . $formattedTime;
-            }
         }
 
         $notesText = $this->formatNotes($shoot);
@@ -1698,7 +1696,7 @@ class MailService
             // Source support contact from the canonical config (single source of truth)
             // so no shoot email can render a stale support phone/email. See QA #10.
             'support_email' => config('mail.contact_address', 'contact@reprophotos.com'),
-            'support_phone' => config('mail.contact_phone', '202-868-1663'),
+            'support_phone' => SupportContact::PHONE_DISPLAY,
             'bypass_paywall' => (bool) ($shoot->bypass_paywall ?? false),
             'is_private_listing' => (bool) ($shoot->is_private_listing ?? false),
         ];

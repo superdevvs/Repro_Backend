@@ -175,8 +175,8 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             ],
             'payment-due-reminder' => [
                 'category' => 'INVOICE', 'channel' => 'EMAIL',
-                'variables_json' => ['greeting', 'client_first_name', 'client_name', 'company_email', 'invoice_number', 'amount_due', 'due_date', 'payment_link'],
-                'body_tokens' => ['amount_due', 'company_email', 'due_date', 'greeting', 'invoice_number', 'payment_link'],
+                'variables_json' => ['greeting', 'client_first_name', 'client_name', 'shoot_location', 'shoot_address', 'company_email', 'company_phone', 'portal_url', 'invoice_number', 'amount_due', 'due_date', 'payment_link'],
+                'body_tokens' => ['amount_due', 'company_email', 'company_phone', 'due_date', 'greeting', 'invoice_number', 'payment_link', 'portal_url', 'shoot_address'],
             ],
             'payment-thank-you' => [
                 'category' => 'PAYMENT', 'channel' => 'EMAIL',

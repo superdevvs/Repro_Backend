@@ -3,8 +3,6 @@
 namespace App\Services\Shoots;
 
 use App\Jobs\GenerateWatermarkedImageJob;
-use App\Models\Invoice;
-use App\Models\InvoiceItem;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
@@ -21,9 +19,7 @@ class ShootPresenter
         protected DropboxWorkflowService $dropboxService,
         protected \App\Services\Media\MediaStorage $mediaStorage,
         protected ShootClientContactVisibility $clientContactVisibility
-    )
-    {
-    }
+    ) {}
 
     public function transformOperationalShoot(Shoot $shoot, bool $isClientUser): array
     {
@@ -33,7 +29,7 @@ class ShootPresenter
             ?? $transformedShoot->services->pluck('name')->filter()->values()->all();
         $shootArray['services_list'] = $servicesArray;
 
-        if (!isset($shootArray['services']) || !is_array($shootArray['services'])) {
+        if (! isset($shootArray['services']) || ! is_array($shootArray['services'])) {
             $shootArray['services'] = $servicesArray;
         }
 
@@ -49,8 +45,8 @@ class ShootPresenter
         $shootArray['cancellationReason'] = $transformedShoot->cancellation_reason;
 
         $needsWatermark = $isClientUser
-            && !($shootArray['bypass_paywall'] ?? false)
-            && !in_array($shootArray['payment_status'] ?? '', ['paid', 'full'], true);
+            && ! ($shootArray['bypass_paywall'] ?? false)
+            && ! in_array($shootArray['payment_status'] ?? '', ['paid', 'full'], true);
 
         if (isset($shootArray['files']) && is_array($shootArray['files'])) {
             $serviceUnlockByItemId = collect($shootArray['serviceItems'] ?? $shootArray['service_items'] ?? [])
@@ -61,10 +57,10 @@ class ShootPresenter
                 $shootServiceId = (string) ($file['shoot_service_id'] ?? $file['shootServiceId'] ?? '');
                 $serviceItem = $shootServiceId !== '' ? $serviceUnlockByItemId->get($shootServiceId) : null;
                 $fileNeedsWatermark = $needsWatermark
-                    && ($shootServiceId === '' || !($serviceItem['is_unlocked_for_delivery'] ?? $serviceItem['isUnlockedForDelivery'] ?? false));
+                    && ($shootServiceId === '' || ! ($serviceItem['is_unlocked_for_delivery'] ?? $serviceItem['isUnlockedForDelivery'] ?? false));
 
                 if ($fileNeedsWatermark) {
-                    if (!$generatedWatermarkForShoot && !$this->hasWatermarkedPayload($file)) {
+                    if (! $generatedWatermarkForShoot && ! $this->hasWatermarkedPayload($file)) {
                         $modelFile = $transformedShoot->files->firstWhere('id', $file['id'] ?? null);
                         if ($modelFile instanceof ShootFile) {
                             $this->ensureOperationalWatermarkedPreview($modelFile);
@@ -134,7 +130,7 @@ class ShootPresenter
 
     protected function resolveMediaAssetUrl($path): ?string
     {
-        if (!$path || !is_string($path)) {
+        if (! $path || ! is_string($path)) {
             return null;
         }
 
@@ -192,15 +188,15 @@ class ShootPresenter
     {
         if (
             $this->hasWatermarkedModelPreview($file)
-            || !$file->shouldBeWatermarked()
-            || !$this->canGenerateOperationalWatermarkedPreview($file)
+            || ! $file->shouldBeWatermarked()
+            || ! $this->canGenerateOperationalWatermarkedPreview($file)
         ) {
             return;
         }
 
         try {
             $freshFile = $file->fresh();
-            if (!$freshFile) {
+            if (! $freshFile) {
                 return;
             }
 
@@ -244,7 +240,7 @@ class ShootPresenter
     public function transformShoot(Shoot $shoot): Shoot
     {
         $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers', 'featuredHomepageImages.file']);
-        if (!$shoot->relationLoaded('files')) {
+        if (! $shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select(
                     'id',
@@ -273,16 +269,16 @@ class ShootPresenter
                 );
             }]);
         }
-        if (!$shoot->relationLoaded('payments')) {
+        if (! $shoot->relationLoaded('payments')) {
             // Refunds are eager-loaded with payments: the paid total subtracts them,
             // and without this each payment would issue its own query for them.
             $shoot->load('payments.refunds');
-        } elseif (!$shoot->payments->every(fn ($payment) => $payment->relationLoaded('refunds'))) {
+        } elseif (! $shoot->payments->every(fn ($payment) => $payment->relationLoaded('refunds'))) {
             $shoot->load('payments.refunds');
         }
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
 
-        if ((float) ($shoot->total_quote ?? 0) <= 0.01 || !$shoot->payment_status || !in_array($shoot->payment_status, ['paid', 'unpaid', 'partial'], true)) {
+        if ((float) ($shoot->total_quote ?? 0) <= 0.01 || ! $shoot->payment_status || ! in_array($shoot->payment_status, ['paid', 'unpaid', 'partial'], true)) {
             $totalPaid = $shoot->total_paid ?? 0;
             $totalQuote = $shoot->total_quote ?? 0;
             $shoot->payment_status = $this->calculatePaymentStatus($totalPaid, $totalQuote);
@@ -342,7 +338,7 @@ class ShootPresenter
             $shoot->unsetRelation('photographer');
         }
 
-        if ($shoot->client && !$isEditorRole) {
+        if ($shoot->client && ! $isEditorRole) {
             if ($isPhotographerRole) {
                 // Reachable only around the appointment: two hours before the
                 // start, through the on-site buffer, plus two hours after it.
@@ -377,7 +373,7 @@ class ShootPresenter
                     $clientRep = User::find($clientRepId);
                 }
 
-                if (!$clientRep && $shoot->rep) {
+                if (! $clientRep && $shoot->rep) {
                     $clientRep = $shoot->rep;
                 }
 
@@ -429,7 +425,7 @@ class ShootPresenter
                     'company' => $ghostUser->company_name ?? $ghostUser->company ?? null,
                 ];
             })
-            ->filter(fn ($ghostUser) => !empty($ghostUser['id']))
+            ->filter(fn ($ghostUser) => ! empty($ghostUser['id']))
             ->values();
         $ghostUserIds = $ghostUsers->pluck('id')->values()->all();
         $isDeliveredForGhostAccess = in_array(strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: '')), [
@@ -462,7 +458,7 @@ class ShootPresenter
             'name' => $shoot->package_name ?? optional($shoot->service)->name,
             'expectedDeliveredCount' => $shoot->expected_final_count,
             'bracketMode' => $shoot->bracket_mode,
-            'servicesIncluded' => !empty($shoot->package_services_included)
+            'servicesIncluded' => ! empty($shoot->package_services_included)
                 ? $shoot->package_services_included
                 : $shoot->services->pluck('name')->toArray(),
         ];
@@ -480,7 +476,7 @@ class ShootPresenter
         ];
 
         $shoot->media_summary = $this->buildMediaSummary($shoot);
-        if (!$shoot->hero_image) {
+        if (! $shoot->hero_image) {
             $shoot->hero_image = $this->resolveHeroImage($shoot, false);
         }
         $shoot->primary_action = $this->getPrimaryActionForRole(
@@ -527,7 +523,7 @@ class ShootPresenter
         $shoot->is_private_listing = $shoot->is_private_listing ?? false;
         $shoot->is_featured = $shoot->is_featured ?? false;
         $shoot->isFeatured = (bool) ($shoot->is_featured ?? false);
-        $shoot->featured_pending = !($shoot->is_featured ?? false) && !empty($shoot->featured_requested_at);
+        $shoot->featured_pending = ! ($shoot->is_featured ?? false) && ! empty($shoot->featured_requested_at);
         $shoot->featuredPending = (bool) $shoot->featured_pending;
         $shoot->featured_status = $shoot->isFeatured
             ? 'featured'
@@ -571,7 +567,7 @@ class ShootPresenter
                     $isTopLevelPhotographer = (string) $shoot->photographer_id === $photographerUserId;
                     $servicesSource = collect($servicesSource)
                         ->filter(function ($service) use ($photographerUserId, $isTopLevelPhotographer) {
-                            if (!is_object($service)) {
+                            if (! is_object($service)) {
                                 return true;
                             }
 
@@ -594,7 +590,7 @@ class ShootPresenter
                 $shootPhotographer = $shoot->relationLoaded('photographer')
                     ? $shoot->getRelation('photographer')
                     : null;
-                if (!$shootPhotographer instanceof User) {
+                if (! $shootPhotographer instanceof User) {
                     $shootPhotographer = null;
                 }
 
@@ -633,7 +629,7 @@ class ShootPresenter
                     $resolvedPhotographerId = $pivotPhotographerId ?? $shootPhotographerId;
 
                     $resolvedPhotographer = null;
-                    if (!$isEditorRole && $resolvedPhotographerId) {
+                    if (! $isEditorRole && $resolvedPhotographerId) {
                         $photographer = $pivotPhotographerId
                             ? $servicePhotographers->get($pivotPhotographerId)
                             : $shootPhotographer;
@@ -735,7 +731,16 @@ class ShootPresenter
                 $shoot->setAttribute('services', $transformedServices);
             }
         } catch (\Throwable $e) {
-            \Log::warning('transformShoot services error for shoot ' . $shoot->id . ': ' . $e->getMessage());
+            \Log::warning('transformShoot services error for shoot '.$shoot->id.': '.$e->getMessage());
+        }
+
+        // Invoice adjustments are client/admin billing rows, not operational
+        // assignments for editors or photographers.
+        if ($isEditorRole || $isPhotographerRole) {
+            $serviceItemSummaries = collect($serviceItemSummaries)
+                ->reject(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+                ->values()
+                ->all();
         }
 
         // Editors must never receive client pricing — strip it from the
@@ -749,7 +754,7 @@ class ShootPresenter
             ];
             $serviceItemSummaries = collect($serviceItemSummaries)
                 ->map(function ($item) use ($pricingKeysToHide) {
-                    if (!is_array($item)) {
+                    if (! is_array($item)) {
                         return $item;
                     }
                     foreach ($pricingKeysToHide as $key) {
@@ -757,6 +762,7 @@ class ShootPresenter
                             $item[$key] = null;
                         }
                     }
+
                     return $item;
                 })
                 ->values()
@@ -765,10 +771,26 @@ class ShootPresenter
 
         $shoot->setAttribute('serviceItems', $serviceItemSummaries);
         $shoot->setAttribute('service_items', $serviceItemSummaries);
+        $shoot->setAttribute('orderItems', $serviceItemSummaries);
+        $shoot->setAttribute('order_items', $serviceItemSummaries);
+        $invoiceAdjustmentTotal = collect($serviceItemSummaries)
+            ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+            ->sum(fn ($item) => (float) ($item['total_amount'] ?? $item['subtotal'] ?? 0));
+        $shoot->setAttribute('invoice_adjustments_total', round($invoiceAdjustmentTotal, 2));
+        $shoot->setAttribute('invoiceAdjustmentsTotal', round($invoiceAdjustmentTotal, 2));
+        $shoot->setAttribute('order_total', (float) ($shoot->total_quote ?? 0));
+        $shoot->setAttribute('orderTotal', (float) ($shoot->total_quote ?? 0));
 
         $servicesArray = collect($shoot->getAttribute('services') ?? $shoot->services)->pluck('name')->filter()->values()->all();
-        $miscItems = $isEditorRole ? [] : $this->getInvoiceMiscItemNames($shoot);
-        if (!empty($miscItems)) {
+        $miscItems = ($isEditorRole || $isPhotographerRole)
+            ? []
+            : collect($serviceItemSummaries)
+                ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+                ->pluck('name')
+                ->filter()
+                ->values()
+                ->all();
+        if (! empty($miscItems)) {
             $servicesArray = array_merge($servicesArray, $miscItems);
         }
 
@@ -785,7 +807,7 @@ class ShootPresenter
         $shoot->setAttribute('missing_raw', (bool) $shoot->missing_raw);
         $shoot->setAttribute('missing_final', (bool) $shoot->missing_final);
 
-        if (!empty($editorAssignments)) {
+        if (! empty($editorAssignments)) {
             if ($isEditorRole) {
                 $currentEditorAssignment = collect($editorAssignments)->first();
                 $shoot->editor_id = $currentEditorAssignment['editor_id'] ?? $requestingUserId;
@@ -815,30 +837,10 @@ class ShootPresenter
         ), ', ');
     }
 
-    public function getInvoiceMiscItemNames(Shoot $shoot): array
-    {
-        $invoice = Invoice::where('shoot_id', $shoot->id)->first();
-        if (!$invoice) {
-            return [];
-        }
-
-        return $invoice->items()
-            ->where('type', InvoiceItem::TYPE_EXPENSE)
-            ->get()
-            ->filter(function ($item) {
-                $meta = is_array($item->meta) ? $item->meta : [];
-                return ($meta['source'] ?? null) === 'admin_misc';
-            })
-            ->pluck('description')
-            ->filter()
-            ->values()
-            ->all();
-    }
-
     protected function resolveRealtorClient(array $tourLinks): ?array
     {
         $realtorClientId = $tourLinks['realtor_client_id'] ?? $tourLinks['realtorClientId'] ?? null;
-        if (!$realtorClientId) {
+        if (! $realtorClientId) {
             return null;
         }
 
@@ -846,7 +848,7 @@ class ShootPresenter
             ->where('role', 'client')
             ->find($realtorClientId);
 
-        if (!$client) {
+        if (! $client) {
             return null;
         }
 
@@ -888,12 +890,12 @@ class ShootPresenter
         };
 
         $cover = $shoot->files->firstWhere('is_cover', true);
-        if ($cover && !$isExcluded($cover)) {
+        if ($cover && ! $isExcluded($cover)) {
             return $this->resolveOptimizedFileUrl($cover);
         }
 
         $withOptimized = $shoot->files->first(function ($file) use ($isExcluded) {
-            return !$isExcluded($file) && (!empty($file->web_path) || !empty($file->thumbnail_path));
+            return ! $isExcluded($file) && (! empty($file->web_path) || ! empty($file->thumbnail_path));
         });
         if ($withOptimized) {
             return $this->resolveOptimizedFileUrl($withOptimized);
@@ -914,7 +916,7 @@ class ShootPresenter
         }
 
         $first = $shoot->files->first(function ($file) use ($isExcluded) {
-            return !$isExcluded($file);
+            return ! $isExcluded($file);
         });
 
         return $first ? $this->resolveFileUrl($first, $allowDropboxCalls) : null;

@@ -8,10 +8,11 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootFile;
-use App\Services\Payments\StripePaymentMetadataService;
-use App\Services\Payments\PublicPaymentAccessTokenService;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
+use App\Services\Payments\PublicPaymentAccessTokenService;
+use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\FinalizeProgressTracker;
 use App\Services\Shoots\ShootAuthorizationSupport;
@@ -36,15 +37,15 @@ class ShootPaymentsController extends Controller
         protected ShootPaymentStatusSupport $shootPaymentStatusSupport,
         protected StripePaymentMetadataService $stripePaymentMetadataService,
         protected ShootServiceItemSupport $serviceItemSupport,
+        protected InvoiceAdjustmentService $invoiceAdjustments,
         protected ShootAuthorizationSupport $authorizationSupport,
         protected FinalizeProgressTracker $finalizeProgress
-    ) {
-    }
+    ) {}
 
     public function finalize(Request $request, $shootId)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, self::FINALIZE_ROLES, true)) {
+        if (! $user || ! in_array($user->role, self::FINALIZE_ROLES, true)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -56,7 +57,7 @@ class ShootPaymentsController extends Controller
 
         $shoot = Shoot::with(['files'])->findOrFail($shootId);
         $shootServiceId = $request->integer('shoot_service_id') ?: null;
-        if ($shootServiceId && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
+        if ($shootServiceId && ! $shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
             return response()->json(['message' => 'Selected service item does not belong to this shoot'], 422);
         }
 
@@ -73,18 +74,18 @@ class ShootPaymentsController extends Controller
         // shoot. Never trust the request flag by itself: a forged flag on a
         // standard/billable shoot must still fail closed.
         $allowNoMediaDelivery = $request->boolean('allow_no_media_delivery')
-            && !$shootServiceId
+            && ! $shootServiceId
             && $shoot->allowsNoMediaDelivery();
         $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
 
-        if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {
+        if (! in_array($shoot->workflow_status, $allowedStatuses, true) && ! $hasEditedWithoutRaw && ! $allowNoMediaDelivery) {
             return response()->json([
                 'message' => 'Shoot can only be finalized from editing/ready/uploaded status, when edited files exist without raw files, or with explicit no-media (fast-forward) delivery',
                 'current_status' => $shoot->workflow_status,
             ], 400);
         }
 
-        if ($completedFiles->isEmpty() && !$allowNoMediaDelivery) {
+        if ($completedFiles->isEmpty() && ! $allowNoMediaDelivery) {
             return response()->json([
                 'message' => 'No edited files to finalize',
                 'data' => $shoot->only(['id', 'workflow_status']),
@@ -130,7 +131,7 @@ class ShootPaymentsController extends Controller
                 'progress' => $this->finalizeProgress->get((int) $shoot->id),
             ], 202);
         } catch (\Exception $e) {
-            $this->finalizeProgress->fail((int) $shoot->id, 'Failed to queue finalize job: ' . $e->getMessage());
+            $this->finalizeProgress->fail((int) $shoot->id, 'Failed to queue finalize job: '.$e->getMessage());
 
             return response()->json([
                 'message' => 'Failed to queue finalize job',
@@ -148,7 +149,7 @@ class ShootPaymentsController extends Controller
     public function finalizeProgress(Shoot $shoot)
     {
         $user = auth()->user();
-        if (!$user || !in_array($user->role, self::FINALIZE_ROLES, true)) {
+        if (! $user || ! in_array($user->role, self::FINALIZE_ROLES, true)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -160,13 +161,18 @@ class ShootPaymentsController extends Controller
     public function getOrCreateInvoice(Shoot $shoot)
     {
         $user = auth()->user();
-        if (!$user || $user->role === 'editor') {
+        if (
+            ! $user
+            || $user->role === 'editor'
+            || ! $this->authorizationSupport->canAccessShootMedia($shoot, $user)
+        ) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
         try {
-            $invoice = Invoice::where('shoot_id', $shoot->id)
-                ->with([
+            $invoice = $this->invoiceAdjustments->preferredClientInvoiceForShoot($shoot);
+            if ($invoice) {
+                $invoice->load([
                     'payments',
                     'shoot.client',
                     'shoot.photographer',
@@ -175,14 +181,14 @@ class ShootPaymentsController extends Controller
                     'items',
                     'client',
                     'photographer',
-                ])
-                ->first();
+                ]);
+            }
 
-            if (!$invoice) {
+            if (! $invoice) {
                 $invoice = $this->invoiceService->generateForShoot($shoot);
             }
 
-            if (!$invoice) {
+            if (! $invoice) {
                 return response()->json(['message' => 'Failed to generate invoice'], 500);
             }
 
@@ -227,7 +233,7 @@ class ShootPaymentsController extends Controller
 
         try {
             $invoice = $this->findClientInvoiceForShoot($shoot);
-            if (!$invoice) {
+            if (! $invoice) {
                 $invoice = $this->invoiceService->generateForShoot($shoot);
             }
 
@@ -247,7 +253,7 @@ class ShootPaymentsController extends Controller
 
             if ($paymentMethod === 'other') {
                 $notes = is_array($paymentDetails) ? ($paymentDetails['notes'] ?? null) : null;
-                if (!$notes) {
+                if (! $notes) {
                     if ($paymentType === 'manual') {
                         $paymentDetails = ['notes' => 'Legacy manual payment'];
                     } else {
@@ -256,11 +262,11 @@ class ShootPaymentsController extends Controller
                 }
             }
 
-            if ($paymentMethod === 'check' && !(is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null)) {
+            if ($paymentMethod === 'check' && ! (is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null)) {
                 return response()->json(['message' => 'Check number is required for check payments'], 422);
             }
 
-            if (in_array($paymentMethod, ['check', 'ach'], true) && !$paymentDate) {
+            if (in_array($paymentMethod, ['check', 'ach'], true) && ! $paymentDate) {
                 return response()->json(['message' => 'Payment date is required for check and ACH payments'], 422);
             }
 
@@ -442,15 +448,15 @@ class ShootPaymentsController extends Controller
     public function createIntent(Request $request, Shoot $shoot)
     {
         $user = auth()->user();
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthenticated'], 401);
         }
 
         if ($this->authorizationSupport->isClientUser($user)) {
-            if (!$this->authorizationSupport->canClientAccessShoot($shoot, $user)) {
+            if (! $this->authorizationSupport->canClientAccessShoot($shoot, $user)) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
-        } elseif (!$this->authorizationSupport->hasRole($user, [
+        } elseif (! $this->authorizationSupport->hasRole($user, [
             'admin', 'superadmin', 'salesRep', 'rep', 'representative', 'editing_manager',
         ])) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -476,7 +482,7 @@ class ShootPaymentsController extends Controller
         }
 
         $paymentDate = $validated['payment_date'] ?? null;
-        if ($paymentMethod === 'check' && !$paymentDate) {
+        if ($paymentMethod === 'check' && ! $paymentDate) {
             return response()->json(['message' => 'Cheque date is required for cheque payments.'], 422);
         }
 
@@ -518,7 +524,7 @@ class ShootPaymentsController extends Controller
         $detailsToStore['submitted_at'] = now()->toIso8601String();
 
         $invoice = $this->findClientInvoiceForShoot($shoot);
-        if (!$invoice) {
+        if (! $invoice) {
             try {
                 $invoice = $this->invoiceService->generateForShoot($shoot);
             } catch (\Throwable $e) {
@@ -584,7 +590,7 @@ class ShootPaymentsController extends Controller
     public function confirmIntent(Request $request, Shoot $shoot, Payment $payment)
     {
         $user = auth()->user();
-        if (!$this->authorizationSupport->hasRole($user, [
+        if (! $this->authorizationSupport->hasRole($user, [
             'admin', 'superadmin', 'salesRep', 'rep', 'representative',
         ])) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -601,7 +607,7 @@ class ShootPaymentsController extends Controller
         try {
             return DB::transaction(function () use ($shoot, $payment, $validated) {
                 $locked = Payment::whereKey($payment->id)->lockForUpdate()->first();
-                if (!$locked) {
+                if (! $locked) {
                     return response()->json(['message' => 'Payment not found.'], 404);
                 }
 
@@ -612,7 +618,7 @@ class ShootPaymentsController extends Controller
                     ], 409);
                 }
 
-                if (!in_array((string) $locked->payment_method, self::INTENT_METHODS, true)) {
+                if (! in_array((string) $locked->payment_method, self::INTENT_METHODS, true)) {
                     return response()->json(['message' => 'Unsupported intent payment method.'], 422);
                 }
 
@@ -634,7 +640,7 @@ class ShootPaymentsController extends Controller
                 $details['confirmed_by_name'] = (string) (auth()->user()?->name ?? '');
                 $details['confirmed_at'] = now()->toIso8601String();
 
-                $processedAt = !empty($validated['payment_date'])
+                $processedAt = ! empty($validated['payment_date'])
                     ? Carbon::parse($validated['payment_date'])
                     : (isset($details['payment_date']) ? Carbon::parse($details['payment_date']) : now());
 
@@ -644,7 +650,7 @@ class ShootPaymentsController extends Controller
                 $locked->save();
 
                 $invoice = $this->findClientInvoiceForShoot($shoot);
-                if (!$invoice) {
+                if (! $invoice) {
                     $invoice = $this->invoiceService->generateForShoot($shoot);
                 }
 
@@ -690,7 +696,7 @@ class ShootPaymentsController extends Controller
     public function declineIntent(Request $request, Shoot $shoot, Payment $payment)
     {
         $user = auth()->user();
-        if (!$this->authorizationSupport->hasRole($user, [
+        if (! $this->authorizationSupport->hasRole($user, [
             'admin', 'superadmin', 'salesRep', 'rep', 'representative',
         ])) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -786,17 +792,7 @@ class ShootPaymentsController extends Controller
 
     private function findClientInvoiceForShoot(Shoot $shoot): ?Invoice
     {
-        return Invoice::query()
-            ->where('shoot_id', $shoot->id)
-            ->where(function ($query) use ($shoot) {
-                $query->where('role', Invoice::ROLE_CLIENT);
-
-                if ($shoot->client_id) {
-                    $query->orWhere('client_id', $shoot->client_id);
-                }
-            })
-            ->orderByDesc('id')
-            ->first();
+        return $this->invoiceAdjustments->preferredClientInvoiceForShoot($shoot);
     }
 
     private function syncClientInvoiceFromShootPayment(
@@ -808,40 +804,26 @@ class ShootPaymentsController extends Controller
         mixed $paymentDetails,
         Carbon $processedAt
     ): void {
-        if (!$invoice) {
+        $invoice ??= $this->findClientInvoiceForShoot($shoot);
+        if (! $invoice) {
             return;
         }
 
-        $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? $shoot->total_quote ?? 0);
-        $amountPaid = round(min($shootTotalPaid, $invoiceTotal > 0 ? $invoiceTotal : $shootTotalPaid), 2);
-        $isPaid = $invoiceTotal > 0
-            ? $amountPaid >= ($invoiceTotal - 0.01)
-            : $amountPaid > 0;
-
-        $invoice->amount_paid = $amountPaid;
-        $invoice->is_paid = $isPaid;
-        $invoice->status = $isPaid
-            ? Invoice::STATUS_PAID
-            : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
-                ? Invoice::STATUS_SENT
-                : ($invoice->status ?? Invoice::STATUS_SENT));
-        $invoice->paid_at = $isPaid ? $processedAt : null;
-
-        if ($paymentMethod !== null && $paymentMethod !== '') {
-            $invoice->payment_method = $paymentMethod;
-            $invoice->payment_details = is_array($paymentDetails) ? $paymentDetails : null;
-        }
-
-        $invoice->save();
-
-        if ($payment && (int) $payment->invoice_id !== (int) $invoice->id) {
-            $payment->invoice_id = $invoice->id;
-            $payment->save();
-        }
+        $this->invoiceAdjustments->reconcileClientInvoicesForShoot(
+            $shoot,
+            $payment,
+            $paymentMethod,
+            $paymentDetails
+        );
     }
 
     public function getPaymentDetails(Shoot $shoot)
     {
+        $user = auth()->user();
+        if (! $user || ! $this->authorizationSupport->canAccessShootMedia($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
         $shoot->load(['client', 'services', 'payments']);
         $shoot = $this->shootPaymentStatusSupport->reconcileStripePaymentState($shoot, ['client', 'services', 'payments']);
 
@@ -853,7 +835,7 @@ class ShootPaymentsController extends Controller
     public function getPublicPaymentDetails(string $token)
     {
         $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);
-        if (!$accessToken) {
+        if (! $accessToken) {
             return response()->json([
                 'message' => 'This payment link is unavailable.',
             ], 410);
@@ -878,13 +860,38 @@ class ShootPaymentsController extends Controller
     protected function buildPaymentDetailsPayload(Shoot $shoot, bool $includeClient): array
     {
         $payments = ($shoot->payments ?? collect())->map(function ($payment) {
-            if (!$payment instanceof Payment) {
+            if (! $payment instanceof Payment) {
                 return $payment;
             }
 
             return $this->stripePaymentMetadataService->hydratePaymentRecordIfNeeded($payment);
         });
         $latestReceiptPayment = $this->stripePaymentMetadataService->resolveLatestReceiptPayment($payments);
+        $orderItems = $this->serviceItemSupport->summaries($shoot);
+        $invoiceAdjustmentTotal = collect($orderItems)
+            ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+            ->sum(fn ($item) => (float) ($item['total_amount'] ?? $item['subtotal'] ?? 0));
+        $services = $shoot->services->map(fn ($service) => [
+            'name' => $service->name,
+            'shoot_service_id' => $service->pivot->id ?? null,
+            'pivot' => [
+                'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
+                'quantity' => (int) ($service->pivot->quantity ?? 1),
+            ],
+        ])->values();
+        $adjustmentServices = collect($orderItems)
+            ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+            ->map(fn ($item) => [
+                'name' => $item['name'],
+                'shoot_service_id' => null,
+                'invoice_item_id' => $item['invoice_item_id'],
+                'is_invoice_adjustment' => true,
+                'charge_type' => $item['charge_type'],
+                'pivot' => [
+                    'price' => (float) $item['unit_amount'],
+                    'quantity' => (int) $item['quantity'],
+                ],
+            ]);
 
         return [
             'id' => $shoot->id,
@@ -901,17 +908,14 @@ class ShootPaymentsController extends Controller
             'discount_value' => $shoot->discount_value !== null ? (float) $shoot->discount_value : null,
             'discount_amount' => (float) ($shoot->discount_amount ?? 0),
             'discounted_subtotal' => (float) ($shoot->base_quote ?? 0),
+            'invoice_adjustments_total' => round($invoiceAdjustmentTotal, 2),
+            'order_total' => (float) ($shoot->total_quote ?? 0),
             'tax_amount' => (float) ($shoot->tax_amount ?? 0),
-            'services' => $shoot->services->map(fn ($service) => [
-                'name' => $service->name,
-                'shoot_service_id' => $service->pivot->id ?? null,
-                'pivot' => [
-                    'price' => (float) ($service->pivot->price ?? $service->price ?? 0),
-                    'quantity' => (int) ($service->pivot->quantity ?? 1),
-                ],
-            ]),
-            'service_items' => $this->serviceItemSupport->summaries($shoot),
-            'serviceItems' => $this->serviceItemSupport->summaries($shoot),
+            'services' => $services->merge($adjustmentServices)->values()->all(),
+            'service_items' => $orderItems,
+            'serviceItems' => $orderItems,
+            'order_items' => $orderItems,
+            'orderItems' => $orderItems,
             'payments' => $payments
                 ->filter(fn ($payment) => $payment instanceof Payment)
                 ->map(fn (Payment $payment) => $this->stripePaymentMetadataService->serializePayment($payment))

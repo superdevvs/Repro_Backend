@@ -15,9 +15,11 @@ SMS path degrades gracefully (clean 4xx, never a 500) while a Telnyx number is u
 
 ## 1. Deploy & cache-refresh procedure (restores the voice routes)
 
-Run the deploy from the backend application root (`backend/deploy.sh` performs these
-steps). The order matters: migrations first, then config/route/view caches, then worker
-restart and the OPcache reset, and finally the post-deploy voice-route verification.
+Use the **Backend desktop shortcut** for production releases. The tracked
+`backend/deploy.sh` legacy entry point is intentionally disabled so it cannot bypass the
+validated deployment workflow. The shortcut runs local and hosted quality gates, creates
+verified rollback backups, applies migrations, rebuilds config/route/view caches, restarts
+the queue worker, and verifies application health.
 
 | Step | Command | Purpose |
 |------|---------|---------|
@@ -26,7 +28,7 @@ restart and the OPcache reset, and finally the post-deploy voice-route verificat
 | 3 | `php artisan route:cache` | Rebuilds the route cache so the voice routes register and stop returning 404. |
 | 4 | `php artisan view:cache` | Rebuilds compiled Blade views. |
 | 5 | `php artisan queue:restart` | Restarts queue workers so they run against the new code. |
-| 6 | OPcache reset | Clears the PHP OPcache (the deploy script writes a temporary `opcache_reset_temp.php`, curls it, then removes it) so cached bytecode does not serve stale routes/config. |
+| 6 | Health and worker verification | Confirms the queue worker actually restarted, no migrations remain pending, the schedule loads, and the TLS-verified `/up` endpoint returns HTTP 200. |
 
 ### Post-deploy voice-route verification (assert HTTP 200)
 
@@ -50,7 +52,7 @@ re-verify.
    Example (substitute a valid bearer token for a `voice-calls`-permissioned user):
 
    ```bash
-   curl -sk -o /dev/null -w '%{http_code}\n' \
+   curl -s -o /dev/null -w '%{http_code}\n' \
      -H "Authorization: Bearer <token>" \
      https://api.reprodashboard.com/api/voice/schedule/state
    ```

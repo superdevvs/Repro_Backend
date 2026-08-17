@@ -32,7 +32,7 @@ class ShootEmailCompletenessBugConditionTest extends TestCase
 
     /** Canonical brand constants (mirror MessagingSystemSeeder::BRAND_*). */
     private const BRAND_NAME = 'R/E Pro Photos';
-    private const BRAND_PHONE = '202-868-1663';
+    private const BRAND_PHONE = '(202) 868-1663';
     private const BRAND_SITE = 'https://reprophotos.com';
     private const NON_CANONICAL_BRAND = 'R/E Pro Dashboard';
 

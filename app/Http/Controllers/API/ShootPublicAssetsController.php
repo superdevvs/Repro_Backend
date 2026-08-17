@@ -5,20 +5,22 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Shoots\PropertyDescriptionPolicy;
 use App\Services\Shoots\ShootPublicAssetsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class ShootPublicAssetsController extends Controller
 {
-    public function __construct(protected ShootPublicAssetsService $shootPublicAssetsService)
-    {
-    }
+    public function __construct(
+        protected ShootPublicAssetsService $shootPublicAssetsService,
+        protected PropertyDescriptionPolicy $propertyDescriptionPolicy
+    ) {}
 
     public function publicBranded(Request $request, $shootId = null)
     {
         $shoot = $this->shootPublicAssetsService->resolvePublicShoot($request, $shootId);
-        if (!$shoot) {
+        if (! $shoot) {
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
@@ -28,7 +30,7 @@ class ShootPublicAssetsController extends Controller
     public function publicMls(Request $request, $shootId = null)
     {
         $shoot = $this->shootPublicAssetsService->resolvePublicShoot($request, $shootId);
-        if (!$shoot) {
+        if (! $shoot) {
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
@@ -38,7 +40,7 @@ class ShootPublicAssetsController extends Controller
     public function publicGenericMls(Request $request, $shootId = null)
     {
         $shoot = $this->shootPublicAssetsService->resolvePublicShoot($request, $shootId);
-        if (!$shoot) {
+        if (! $shoot) {
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
@@ -71,7 +73,7 @@ class ShootPublicAssetsController extends Controller
         }
 
         $user = $request->user() ?? auth('sanctum')->user();
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -81,7 +83,7 @@ class ShootPublicAssetsController extends Controller
             ->values()
             ->all();
 
-        return !empty(array_intersect($roles, [
+        return ! empty(array_intersect($roles, [
             'admin',
             'superadmin',
             'editingmanager',
@@ -122,7 +124,7 @@ class ShootPublicAssetsController extends Controller
     public function publicClientProfile(Request $request, $clientId)
     {
         $client = User::find($clientId);
-        if (!$client) {
+        if (! $client) {
             return response()->json(['message' => 'Client not found'], 404);
         }
 
@@ -138,7 +140,7 @@ class ShootPublicAssetsController extends Controller
             in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)
             || ($user->role === 'client' && (string) $shoot->client_id === (string) $user->id)
         );
-        if (!$canGenerateDescription) {
+        if (! $canGenerateDescription) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -151,7 +153,8 @@ class ShootPublicAssetsController extends Controller
         $tourLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
         $propertyDetails = $this->shootPublicAssetsService->buildPublicTourPropertyDetails($shoot, $tourLinks);
         $imageUrls = $this->shootPublicAssetsService->resolvePropertyDescriptionImageUrls($shoot);
-        $address = trim(($shoot->address ?? '') . ', ' . ($shoot->city ?? '') . ', ' . ($shoot->state ?? '') . ' ' . ($shoot->zip ?? ''));
+        $descriptionTier = $this->propertyDescriptionPolicy->tierFor($shoot);
+        $characterLimit = $this->propertyDescriptionPolicy->maxCharactersFor($shoot);
         $listingType = ($propertyDetails['listing_type'] ?? $shoot->listing_type) === 'for_rent' ? 'rent' : 'sale';
         $bedrooms = $propertyDetails['bedrooms'] ?? $propertyDetails['beds'] ?? null;
         $bathrooms = $propertyDetails['bathrooms'] ?? $propertyDetails['baths'] ?? null;
@@ -160,20 +163,20 @@ class ShootPublicAssetsController extends Controller
         $lotSize = $propertyDetails['lot_size'] ?? $propertyDetails['lotSize'] ?? null;
         $detailParts = [];
         foreach ([
-            $bedrooms ? $bedrooms . ' bedrooms' : null,
-            $bathrooms ? $bathrooms . ' bathrooms' : null,
-            $sqft ? $sqft . ' sqft' : null,
-            $price ? 'list price ' . $price : null,
-            $lotSize ? 'lot size ' . $lotSize : null,
+            $bedrooms ? $bedrooms.' bedrooms' : null,
+            $bathrooms ? $bathrooms.' bathrooms' : null,
+            $sqft ? $sqft.' sqft' : null,
+            $price ? 'list price '.$price : null,
+            $lotSize ? 'lot size '.$lotSize : null,
         ] as $detailPart) {
             if ($detailPart) {
                 $detailParts[] = $detailPart;
             }
         }
 
-        $detailStr = !empty($detailParts) ? ' Property has ' . implode(', ', $detailParts) . '.' : '';
-        $visualContext = empty($imageUrls) ? 'No images are available, so use the address and property details only.' : 'Attached are images for the property.';
-        $textPrompt = "\"{$address}\" is being placed for \"{$listingType}\". {$visualContext}{$detailStr} Write a compelling description for the property based on where it's located, the property details, and any visible image context. In max 50-100 words.";
+        $detailStr = ! empty($detailParts) ? ' Property has '.implode(', ', $detailParts).'.' : '';
+        $visualContext = empty($imageUrls) ? 'No images are available, so use the property details only.' : 'Attached are images for the property.';
+        $textPrompt = "The property is being listed for {$listingType}. {$visualContext}{$detailStr} Write a compelling description based only on the provided property details and visible image context. Do not include or infer the property address or any location details. Write 50 to 100 words and no more than {$characterLimit} characters including spaces. Finish with a complete sentence.";
 
         $contentParts = [['type' => 'text', 'text' => $textPrompt]];
         foreach ($imageUrls as $url) {
@@ -187,7 +190,7 @@ class ShootPublicAssetsController extends Controller
             $response = $llmClient->chatCompletion([
                 [
                     'role' => 'system',
-                    'content' => 'You are a real estate copywriter. Write concise, professional property descriptions. Output ONLY the description text with no quotes, labels, or extra formatting.',
+                    'content' => "You are a real estate copywriter. Write concise, professional property descriptions. Never include or infer a property address, street name, house number, city, state, ZIP code, neighborhood, or other location details. Keep the description at or below {$characterLimit} characters including spaces. Output ONLY the description text with no quotes, labels, or extra formatting.",
                 ],
                 [
                     'role' => 'user',
@@ -203,10 +206,14 @@ class ShootPublicAssetsController extends Controller
             if ($description === '') {
                 return response()->json(['message' => 'AI returned an empty description'], 500);
             }
+            $description = $this->propertyDescriptionPolicy->enforceCharacterLimit($description, $characterLimit);
 
             return response()->json([
                 'description' => $description,
                 'images_used' => count($imageUrls),
+                'description_tier' => $descriptionTier,
+                'character_limit' => $characterLimit,
+                'characters_used' => mb_strlen($description),
             ]);
         } catch (\Exception $e) {
             Log::error('AI property description generation failed', [
@@ -215,7 +222,7 @@ class ShootPublicAssetsController extends Controller
             ]);
 
             return response()->json([
-                'message' => 'Failed to generate description: ' . $e->getMessage(),
+                'message' => 'Failed to generate description: '.$e->getMessage(),
             ], 500);
         }
     }

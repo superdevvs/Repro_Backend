@@ -11,9 +11,9 @@ use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\BrightMlsService;
+use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
-use App\Services\InvoiceService;
 use App\Services\Shoots\Actions\ApproveCancellationAction;
 use App\Services\Shoots\Actions\CancelShootAction;
 use App\Services\Shoots\Actions\RequestCancellationAction;
@@ -34,10 +34,15 @@ class ShootWorkflowActionsTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+
     protected User $client;
+
     protected User $photographer;
+
     protected User $editor;
+
     protected User $editingManager;
+
     protected Service $service;
 
     protected function setUp(): void
@@ -292,6 +297,112 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertNotNull($feeItem);
         $this->assertSame(60.0, (float) $feeItem->total_amount);
         $this->assertSame(60.0, (float) $invoice->total_amount);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function approved_cancellation_preserves_billable_invoice_adjustments_outside_the_fee(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'cancellation_requested_at' => now()->subHour(),
+            'cancellation_requested_by' => $this->client->id,
+            'cancellation_reason' => 'Client request',
+        ]);
+        $invoice = $this->app->make(InvoiceService::class)
+            ->generateForShoot($shoot->fresh(['services', 'payments']));
+
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Cancellation Add-on',
+            'amount' => 20,
+            'bills_client' => true,
+        ])->assertCreated();
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve-cancellation", [
+            'decision' => 'charge_fee',
+            'cancellation_fee' => 60,
+        ]);
+
+        $response->assertOk();
+        $this->assertSame(80.0, (float) $response->json('data.orderTotal'));
+        $this->assertSame(20.0, (float) $response->json('data.payment.invoiceAdjustmentsTotal'));
+        $this->assertSame(60.0, (float) $response->json('data.payment.cancellationFee'));
+        $this->assertTrue((bool) $response->json('data.payment.isCancellationFeeOnly'));
+
+        $freshShoot = $shoot->fresh();
+        $this->assertSame(60.0, (float) $freshShoot->base_quote);
+        $this->assertSame(80.0, (float) $freshShoot->total_quote);
+
+        $freshInvoice = $invoice->fresh(['items']);
+        $feeItem = $freshInvoice->items
+            ->first(fn (InvoiceItem $item) => (bool) ($item->meta['cancellation_fee'] ?? false));
+        $adjustment = $freshInvoice->items
+            ->first(fn (InvoiceItem $item) => ($item->meta['source'] ?? null) === 'admin_misc');
+
+        $this->assertNotNull($feeItem);
+        $this->assertSame(60.0, (float) $feeItem->total_amount);
+        $this->assertNotNull($adjustment);
+        $this->assertSame(20.0, (float) $adjustment->total_amount);
+        $this->assertSame(80.0, (float) $freshInvoice->subtotal);
+        $this->assertSame(80.0, (float) $freshInvoice->total);
+        $this->assertSame(80.0, (float) $freshInvoice->total_amount);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function robbie_service_repricing_preserves_billable_invoice_adjustments(): void
+    {
+        Event::fake([ShootActivityBroadcast::class]);
+        Sanctum::actingAs($this->admin);
+
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'base_quote' => 180,
+            'tax_region' => 'none',
+            'tax_percent' => 0,
+            'tax_amount' => 0,
+            'total_quote' => 180,
+        ]);
+        $invoice = $this->app->make(InvoiceService::class)
+            ->generateForShoot($shoot->fresh(['services', 'payments']));
+
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Persistent AI Adjustment',
+            'amount' => 35,
+            'bills_client' => true,
+        ])->assertCreated();
+
+        $replacementService = Service::factory()->create([
+            'name' => 'AI Updated Service',
+            'price' => 250,
+        ]);
+
+        $updated = $this->app->make(\App\Services\ReproAi\ShootService::class)
+            ->updateFromAiConversation(
+                $shoot->fresh(),
+                ['service_ids' => [$replacementService->id]],
+                $this->admin
+            );
+
+        $this->assertSame(250.0, (float) $updated->base_quote);
+        $this->assertSame(285.0, (float) $updated->total_quote);
+        $this->assertSame([$replacementService->id], $updated->services->pluck('id')->all());
+        $this->assertDatabaseHas('invoice_items', [
+            'invoice_id' => $invoice->id,
+            'description' => 'Persistent AI Adjustment',
+            'total_amount' => 35,
+        ]);
+
+        $show = $this->getJson("/api/shoots/{$shoot->id}")->assertOk();
+        $this->assertSame(285.0, (float) $show->json('data.orderTotal'));
+        $this->assertSame(35.0, (float) $show->json('data.invoiceAdjustmentsTotal'));
+        $this->assertContains(
+            'Persistent AI Adjustment',
+            collect($show->json('data.orderItems'))->pluck('name')->all()
+        );
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

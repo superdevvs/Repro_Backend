@@ -8,9 +8,8 @@ use App\Models\InvoiceItem;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
-use Illuminate\Support\Carbon;
+use App\Support\InvoiceReference;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 
 class InvoiceBillingFlow
 {
@@ -26,7 +25,7 @@ class InvoiceBillingFlow
         $step = $session->step ?? 'ask_action';
         $data = $session->state_data ?? [];
 
-        return match($step) {
+        return match ($step) {
             'ask_action' => $this->askAction($session, $message, $data),
             'create_invoice' => $this->handleCreateInvoice($session, $message, $data),
             'send_invoice' => $this->handleSendInvoice($session, $message, $data),
@@ -39,29 +38,33 @@ class InvoiceBillingFlow
     private function askAction(AiChatSession $session, string $message, array $data): array
     {
         $messageLower = strtolower(trim($message));
-        
+
         // Detect specific action from message
         if (str_contains($messageLower, 'create') && str_contains($messageLower, 'invoice')) {
             $this->setStepAndData($session, 'create_invoice', $data);
             $session->save();
+
             return $this->handleCreateInvoice($session, $message, $data);
         }
-        
+
         if (str_contains($messageLower, 'send') && str_contains($messageLower, 'invoice')) {
             $this->setStepAndData($session, 'send_invoice', $data);
             $session->save();
+
             return $this->handleSendInvoice($session, $message, $data);
         }
-        
+
         if (str_contains($messageLower, 'outstanding') || str_contains($messageLower, 'unpaid') || str_contains($messageLower, 'overdue')) {
             $this->setStepAndData($session, 'outstanding_invoices', $data);
             $session->save();
+
             return $this->handleOutstandingInvoices($session, $message, $data);
         }
-        
+
         if (str_contains($messageLower, 'discount') || str_contains($messageLower, 'promo')) {
             $this->setStepAndData($session, 'apply_discount', $data);
             $session->save();
+
             return $this->handleApplyDiscount($session, $message, $data);
         }
 
@@ -86,7 +89,7 @@ class InvoiceBillingFlow
     private function handleCreateInvoice(AiChatSession $session, string $message, array $data): array
     {
         $messageLower = strtolower(trim($message));
-        
+
         // Step 1: Select shoot if not selected
         if (empty($data['shoot_id'])) {
             // Get shoots without invoices
@@ -95,11 +98,11 @@ class InvoiceBillingFlow
                 ->orderBy('completed_at', 'desc')
                 ->limit(10)
                 ->get();
-            
+
             // Try to match from message
             foreach ($shootsWithoutInvoice as $shoot) {
                 if (preg_match('/#?(\d+)/', $message, $matches)) {
-                    if ((int)$matches[1] === $shoot->id) {
+                    if ((int) $matches[1] === $shoot->id) {
                         $data['shoot_id'] = $shoot->id;
                         break;
                     }
@@ -109,7 +112,7 @@ class InvoiceBillingFlow
                     break;
                 }
             }
-            
+
             if (empty($data['shoot_id'])) {
                 if ($shootsWithoutInvoice->isEmpty()) {
                     // Check for any completed shoots
@@ -117,11 +120,11 @@ class InvoiceBillingFlow
                         ->orderBy('completed_at', 'desc')
                         ->limit(10)
                         ->get();
-                    
+
                     if ($completedShoots->isEmpty()) {
                         return [
                             'assistant_messages' => [[
-                                'content' => "📋 No completed shoots found to create invoices for.",
+                                'content' => '📋 No completed shoots found to create invoices for.',
                                 'metadata' => ['step' => 'create_invoice'],
                             ]],
                             'suggestions' => [
@@ -130,35 +133,35 @@ class InvoiceBillingFlow
                             ],
                         ];
                     }
-                    
+
                     $suggestions = [];
                     foreach ($completedShoots as $shoot) {
                         $dateStr = $shoot->completed_at ? $shoot->completed_at->format('M d') : 'N/A';
                         $suggestions[] = "#{$shoot->id} - {$shoot->address} ({$dateStr})";
                     }
-                    
+
                     $this->setStepAndData($session, 'create_invoice', $data);
                     $session->save();
-                    
+
                     return [
                         'assistant_messages' => [[
-                            'content' => "📋 Which shoot would you like to create an invoice for?",
+                            'content' => '📋 Which shoot would you like to create an invoice for?',
                             'metadata' => ['step' => 'create_invoice'],
                         ]],
                         'suggestions' => $suggestions,
                     ];
                 }
-                
+
                 $suggestions = [];
                 foreach ($shootsWithoutInvoice as $shoot) {
                     $dateStr = $shoot->completed_at ? $shoot->completed_at->format('M d') : 'N/A';
                     $amount = number_format($shoot->total_quote ?? 0, 2);
                     $suggestions[] = "#{$shoot->id} - {$shoot->address} (${$amount})";
                 }
-                
+
                 $this->setStepAndData($session, 'create_invoice', $data);
                 $session->save();
-                
+
                 return [
                     'assistant_messages' => [[
                         'content' => "📋 These completed shoots don't have invoices yet. Which one?",
@@ -168,23 +171,23 @@ class InvoiceBillingFlow
                 ];
             }
         }
-        
+
         // Step 2: Create the invoice
         $shoot = Shoot::with(['client', 'services'])->find($data['shoot_id']);
-        
-        if (!$shoot) {
+
+        if (! $shoot) {
             return [
                 'assistant_messages' => [[
-                    'content' => "❌ Could not find that shoot.",
+                    'content' => '❌ Could not find that shoot.',
                     'metadata' => ['step' => 'create_invoice'],
                 ]],
                 'suggestions' => ['Start over'],
             ];
         }
-        
+
         // Generate invoice number
-        $invoiceNumber = 'INV-' . now()->format('Ymd') . '-' . str_pad($shoot->id, 4, '0', STR_PAD_LEFT);
-        
+        $invoiceNumber = 'INV-'.now()->format('Ymd').'-'.str_pad($shoot->id, 4, '0', STR_PAD_LEFT);
+
         // Create the invoice
         $invoice = Invoice::create([
             'client_id' => $shoot->client_id,
@@ -197,7 +200,7 @@ class InvoiceBillingFlow
             'total' => $shoot->total_quote ?? 0,
             'status' => Invoice::STATUS_DRAFT,
         ]);
-        
+
         // Add line items from services
         foreach ($shoot->services as $service) {
             InvoiceItem::create([
@@ -209,21 +212,21 @@ class InvoiceBillingFlow
                 'type' => InvoiceItem::TYPE_CHARGE ?? 'charge',
             ]);
         }
-        
+
         $clientName = $shoot->client?->name ?? 'Client';
-        
+
         $this->setStepAndData($session, null, []);
         $session->save();
-        
+
         return [
             'assistant_messages' => [[
-                'content' => "✅ **Invoice Created!**\n\n" .
-                    "📄 **Invoice #**: {$invoiceNumber}\n" .
-                    "👤 **Client**: {$clientName}\n" .
-                    "📍 **Property**: {$shoot->address}\n" .
-                    "💰 **Amount**: $" . number_format($invoice->total, 2) . "\n" .
-                    "📅 **Due Date**: " . $invoice->due_date->format('M d, Y') . "\n\n" .
-                    "Would you like to send this invoice to the client?",
+                'content' => "✅ **Invoice Created!**\n\n".
+                    "📄 **Invoice #**: {$invoiceNumber}\n".
+                    "👤 **Client**: {$clientName}\n".
+                    "📍 **Property**: {$shoot->address}\n".
+                    '💰 **Amount**: $'.number_format($invoice->total, 2)."\n".
+                    '📅 **Due Date**: '.$invoice->due_date->format('M d, Y')."\n\n".
+                    'Would you like to send this invoice to the client?',
                 'metadata' => [
                     'step' => 'done',
                     'invoice_id' => $invoice->id,
@@ -247,20 +250,20 @@ class InvoiceBillingFlow
     private function handleSendInvoice(AiChatSession $session, string $message, array $data): array
     {
         $messageLower = strtolower(trim($message));
-        
+
         // Check if user wants to send the just-created invoice
-        if (str_contains($messageLower, 'yes') && !empty($session->messages)) {
+        if (str_contains($messageLower, 'yes') && ! empty($session->messages)) {
             // Get the last invoice from metadata
             $lastMessages = $session->messages()->orderBy('created_at', 'desc')->limit(5)->get();
             foreach ($lastMessages as $msg) {
                 $metadata = $msg->metadata ?? [];
-                if (!empty($metadata['invoice_id'])) {
+                if (! empty($metadata['invoice_id'])) {
                     $data['invoice_id'] = $metadata['invoice_id'];
                     break;
                 }
             }
         }
-        
+
         // Select invoice if not selected
         if (empty($data['invoice_id'])) {
             // Get unsent invoices
@@ -269,7 +272,7 @@ class InvoiceBillingFlow
                 ->orderBy('created_at', 'desc')
                 ->limit(10)
                 ->get();
-            
+
             // Try to match from message
             foreach ($unsentInvoices as $invoice) {
                 if (str_contains($messageLower, strtolower($invoice->invoice_number ?? ''))) {
@@ -277,18 +280,18 @@ class InvoiceBillingFlow
                     break;
                 }
                 if (preg_match('/#?(\d+)/', $message, $matches)) {
-                    if ((int)$matches[1] === $invoice->id) {
+                    if ((int) $matches[1] === $invoice->id) {
                         $data['invoice_id'] = $invoice->id;
                         break;
                     }
                 }
             }
-            
+
             if (empty($data['invoice_id'])) {
                 if ($unsentInvoices->isEmpty()) {
                     return [
                         'assistant_messages' => [[
-                            'content' => "📋 No unsent invoices found. All invoices have been sent!",
+                            'content' => '📋 No unsent invoices found. All invoices have been sent!',
                             'metadata' => ['step' => 'send_invoice'],
                         ]],
                         'suggestions' => [
@@ -297,60 +300,61 @@ class InvoiceBillingFlow
                         ],
                     ];
                 }
-                
+
                 $suggestions = [];
                 foreach ($unsentInvoices as $invoice) {
                     $clientName = $invoice->client?->name ?? 'Unknown';
                     $amount = number_format($invoice->total ?? 0, 2);
                     $suggestions[] = "{$invoice->invoice_number} - {$clientName} (${$amount})";
                 }
-                
+
                 $this->setStepAndData($session, 'send_invoice', $data);
                 $session->save();
-                
+
                 return [
                     'assistant_messages' => [[
-                        'content' => "📤 Which invoice would you like to send?",
+                        'content' => '📤 Which invoice would you like to send?',
                         'metadata' => ['step' => 'send_invoice'],
                     ]],
                     'suggestions' => $suggestions,
                 ];
             }
         }
-        
+
         // Send the invoice
         $invoice = Invoice::with(['client', 'shoot'])->find($data['invoice_id']);
-        
-        if (!$invoice) {
+
+        if (! $invoice) {
             return [
                 'assistant_messages' => [[
-                    'content' => "❌ Could not find that invoice.",
+                    'content' => '❌ Could not find that invoice.',
                     'metadata' => ['step' => 'send_invoice'],
                 ]],
                 'suggestions' => ['Start over'],
             ];
         }
-        
+
         // Mark as sent
         $invoice->markSent();
-        
+
         // Try to send email notification
         $emailSent = false;
         $clientEmail = $invoice->client?->email;
-        
+
         if ($clientEmail) {
             try {
                 $messagingService = app(MessagingService::class);
                 $paymentLink = $invoice->paymentLink();
-                
+                $invoiceLabel = InvoiceReference::label($invoice->invoice_number, $invoice->id);
+
                 $messagingService->sendEmail([
                     'to' => $clientEmail,
-                    'subject' => "Invoice {$invoice->invoice_number} from REPRO-HQ",
-                    'body_html' => "<h2>Invoice {$invoice->invoice_number}</h2>" .
-                        "<p>Amount Due: $" . number_format($invoice->total, 2) . "</p>" .
-                        "<p>Due Date: " . $invoice->due_date->format('M d, Y') . "</p>" .
+                    'subject' => "{$invoiceLabel} from REPRO-HQ",
+                    'body_html' => "<h2>{$invoiceLabel}</h2>".
+                        '<p>Amount Due: $'.number_format($invoice->total, 2).'</p>'.
+                        '<p>Due Date: '.$invoice->due_date->format('M d, Y').'</p>'.
                         "<p><a href='{$paymentLink}'>Pay Now</a></p>",
-                    'body_text' => "Invoice {$invoice->invoice_number}\nAmount: $" . number_format($invoice->total, 2),
+                    'body_text' => "{$invoiceLabel}\nAmount: $".number_format($invoice->total, 2),
                     'related_invoice_id' => $invoice->id,
                 ]);
                 $emailSent = true;
@@ -358,19 +362,19 @@ class InvoiceBillingFlow
                 \Log::warning('Failed to send invoice email', ['error' => $e->getMessage()]);
             }
         }
-        
+
         $clientName = $invoice->client?->name ?? 'Client';
-        $emailStatus = $emailSent ? "📧 Email sent to {$clientEmail}" : "⚠️ Email not sent (no email on file)";
-        
+        $emailStatus = $emailSent ? "📧 Email sent to {$clientEmail}" : '⚠️ Email not sent (no email on file)';
+
         $this->setStepAndData($session, null, []);
         $session->save();
-        
+
         return [
             'assistant_messages' => [[
-                'content' => "✅ **Invoice Sent!**\n\n" .
-                    "📄 **Invoice #**: {$invoice->invoice_number}\n" .
-                    "👤 **Client**: {$clientName}\n" .
-                    "💰 **Amount**: $" . number_format($invoice->total, 2) . "\n" .
+                'content' => "✅ **Invoice Sent!**\n\n".
+                    "📄 **Invoice #**: {$invoice->invoice_number}\n".
+                    "👤 **Client**: {$clientName}\n".
+                    '💰 **Amount**: $'.number_format($invoice->total, 2)."\n".
                     "{$emailStatus}",
                 'metadata' => [
                     'step' => 'done',
@@ -393,14 +397,14 @@ class InvoiceBillingFlow
             ->with(['client', 'shoot'])
             ->orderBy('due_date', 'asc')
             ->get();
-        
+
         if ($outstanding->isEmpty()) {
             $this->setStepAndData($session, null, []);
             $session->save();
-            
+
             return [
                 'assistant_messages' => [[
-                    'content' => "🎉 **No outstanding invoices!** All invoices have been paid.",
+                    'content' => '🎉 **No outstanding invoices!** All invoices have been paid.',
                     'metadata' => ['step' => 'outstanding_invoices'],
                 ]],
                 'suggestions' => [
@@ -409,31 +413,31 @@ class InvoiceBillingFlow
                 ],
             ];
         }
-        
+
         $totalOutstanding = $outstanding->sum('total');
-        $overdueCount = $outstanding->filter(fn($inv) => $inv->isPastDue())->count();
-        
+        $overdueCount = $outstanding->filter(fn ($inv) => $inv->isPastDue())->count();
+
         $content = "📋 **Outstanding Invoices**\n\n";
         $content .= "**Summary:**\n";
-        $content .= "• Total Outstanding: $" . number_format($totalOutstanding, 2) . "\n";
+        $content .= '• Total Outstanding: $'.number_format($totalOutstanding, 2)."\n";
         $content .= "• Invoices: {$outstanding->count()}\n";
         $content .= "• Overdue: {$overdueCount}\n\n";
-        
+
         $content .= "**Details:**\n";
         foreach ($outstanding->take(10) as $invoice) {
             $clientName = $invoice->client?->name ?? 'Unknown';
             $status = $invoice->isPastDue() ? '🔴 OVERDUE' : ($invoice->status === 'sent' ? '🟡 Sent' : '⚪ Draft');
             $dueDate = $invoice->due_date ? $invoice->due_date->format('M d') : 'N/A';
-            $content .= "• {$invoice->invoice_number} - {$clientName} - $" . number_format($invoice->total, 2) . " (Due: {$dueDate}) {$status}\n";
+            $content .= "• {$invoice->invoice_number} - {$clientName} - $".number_format($invoice->total, 2)." (Due: {$dueDate}) {$status}\n";
         }
-        
+
         if ($outstanding->count() > 10) {
-            $content .= "\n... and " . ($outstanding->count() - 10) . " more";
+            $content .= "\n... and ".($outstanding->count() - 10).' more';
         }
-        
+
         $this->setStepAndData($session, null, []);
         $session->save();
-        
+
         return [
             'assistant_messages' => [[
                 'content' => $content,
@@ -455,7 +459,7 @@ class InvoiceBillingFlow
     private function handleApplyDiscount(AiChatSession $session, string $message, array $data): array
     {
         $messageLower = strtolower(trim($message));
-        
+
         // Select shoot/invoice if not selected
         if (empty($data['shoot_id']) && empty($data['invoice_id'])) {
             // Get recent shoots
@@ -463,10 +467,10 @@ class InvoiceBillingFlow
                 ->orderBy('created_at', 'desc')
                 ->limit(10)
                 ->get();
-            
+
             foreach ($recentShoots as $shoot) {
                 if (preg_match('/#?(\d+)/', $message, $matches)) {
-                    if ((int)$matches[1] === $shoot->id) {
+                    if ((int) $matches[1] === $shoot->id) {
                         $data['shoot_id'] = $shoot->id;
                         break;
                     }
@@ -476,38 +480,38 @@ class InvoiceBillingFlow
                     break;
                 }
             }
-            
+
             if (empty($data['shoot_id'])) {
                 $suggestions = [];
                 foreach ($recentShoots as $shoot) {
                     $amount = number_format($shoot->total_quote ?? 0, 2);
                     $suggestions[] = "#{$shoot->id} - {$shoot->address} (${$amount})";
                 }
-                
+
                 $this->setStepAndData($session, 'apply_discount', $data);
                 $session->save();
-                
+
                 return [
                     'assistant_messages' => [[
-                        'content' => "🏷️ Which booking would you like to apply a discount to?",
+                        'content' => '🏷️ Which booking would you like to apply a discount to?',
                         'metadata' => ['step' => 'apply_discount'],
                     ]],
                     'suggestions' => $suggestions,
                 ];
             }
         }
-        
+
         // Get discount amount if not provided
         if (empty($data['discount_amount']) && empty($data['discount_percent'])) {
             // Try to parse from message
             if (preg_match('/(\d+)%/', $message, $matches)) {
-                $data['discount_percent'] = (int)$matches[1];
+                $data['discount_percent'] = (int) $matches[1];
             } elseif (preg_match('/\$?(\d+(?:\.\d{2})?)/', $message, $matches)) {
-                $data['discount_amount'] = (float)$matches[1];
+                $data['discount_amount'] = (float) $matches[1];
             } else {
                 $this->setStepAndData($session, 'apply_discount', $data);
                 $session->save();
-                
+
                 return [
                     'assistant_messages' => [[
                         'content' => "💰 How much discount would you like to apply?\n\nYou can enter a percentage (e.g., 10%) or a fixed amount (e.g., $50).",
@@ -523,47 +527,47 @@ class InvoiceBillingFlow
                 ];
             }
         }
-        
+
         // Apply the discount
         $shoot = Shoot::find($data['shoot_id']);
-        
-        if (!$shoot) {
+
+        if (! $shoot) {
             return [
                 'assistant_messages' => [[
-                    'content' => "❌ Could not find that booking.",
+                    'content' => '❌ Could not find that booking.',
                     'metadata' => ['step' => 'apply_discount'],
                 ]],
                 'suggestions' => ['Start over'],
             ];
         }
-        
+
         $originalTotal = $shoot->total_quote ?? 0;
         $discountAmount = 0;
-        
-        if (!empty($data['discount_percent'])) {
+
+        if (! empty($data['discount_percent'])) {
             $discountAmount = $originalTotal * ($data['discount_percent'] / 100);
             $discountLabel = "{$data['discount_percent']}%";
         } else {
             $discountAmount = $data['discount_amount'];
-            $discountLabel = "$" . number_format($discountAmount, 2);
+            $discountLabel = '$'.number_format($discountAmount, 2);
         }
-        
+
         $newTotal = max($originalTotal - $discountAmount, 0);
-        
+
         // Update shoot
         $shoot->total_quote = $newTotal;
         $shoot->save();
-        
+
         $this->setStepAndData($session, null, []);
         $session->save();
-        
+
         return [
             'assistant_messages' => [[
-                'content' => "✅ **Discount Applied!**\n\n" .
-                    "📍 **Shoot**: #{$shoot->id} - {$shoot->address}\n" .
-                    "🏷️ **Discount**: {$discountLabel} (-$" . number_format($discountAmount, 2) . ")\n" .
-                    "💰 **Original**: $" . number_format($originalTotal, 2) . "\n" .
-                    "💵 **New Total**: $" . number_format($newTotal, 2),
+                'content' => "✅ **Discount Applied!**\n\n".
+                    "📍 **Shoot**: #{$shoot->id} - {$shoot->address}\n".
+                    "🏷️ **Discount**: {$discountLabel} (-$".number_format($discountAmount, 2).")\n".
+                    '💰 **Original**: $'.number_format($originalTotal, 2)."\n".
+                    '💵 **New Total**: $'.number_format($newTotal, 2),
                 'metadata' => [
                     'step' => 'done',
                     'shoot_id' => $shoot->id,

@@ -8,6 +8,7 @@ use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -18,18 +19,19 @@ use Illuminate\Support\Facades\Schema;
 class InvoiceService
 {
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
+
     private const DEFAULT_SALES_COMMISSION_RATE = 15.0;
 
     protected $mailService;
 
-    public function __construct(MailService $mailService = null)
+    public function __construct(?MailService $mailService = null)
     {
         $this->mailService = $mailService ?? app(MailService::class);
     }
 
     /**
      * Generate invoices for the provided billing period.
-     * 
+     *
      * REFACTORED: Now uses SERVICE-LEVEL grouping for multi-photographer support
      * Fallback: shoot_service.photographer_id ?? shoot.photographer_id
      */
@@ -39,15 +41,15 @@ class InvoiceService
         $end = $end->copy()->endOfDay();
 
         $shoots = Shoot::with([
-                'payments' => function ($query) {
-                    $query->where('status', Payment::STATUS_COMPLETED);
-                },
-                'photographer',
-                'service',
-                'services' => function ($q) {
-                    $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
-                },
-            ])
+            'payments' => function ($query) {
+                $query->where('status', Payment::STATUS_COMPLETED);
+            },
+            'photographer',
+            'service',
+            'services' => function ($q) {
+                $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
+            },
+        ])
             ->where(function ($query) use ($start, $end) {
                 $query->whereBetween('completed_at', [$start, $end])
                     ->orWhere(function ($innerQuery) use ($start, $end) {
@@ -93,15 +95,16 @@ class InvoiceService
 
             foreach ($services as $service) {
                 $resolvedId = $service->pivot->photographer_id ?? $fallbackId;
-                if (!$resolvedId) {
+                if (! $resolvedId) {
                     \Log::warning('Unresolved photographer for invoice', [
                         'shoot_id' => $shoot->id,
                         'service_id' => $service->id,
                         'service_name' => $service->name,
                     ]);
+
                     continue;
                 }
-                
+
                 // Precedence: an explicit per-shoot override always wins, then the
                 // service's own configuration. Going through
                 // getPhotographerPayForSqft() (rather than reading
@@ -117,7 +120,7 @@ class InvoiceService
                     $pay = (float) ($resolvedPay ?? $service->photographer_pay ?? 0);
                 }
                 $qty = (int) ($service->pivot->quantity ?? 1);
-                
+
                 $serviceRows->push([
                     'shoot_id' => $shoot->id,
                     'shoot' => $shoot,
@@ -159,6 +162,7 @@ class InvoiceService
                             'service_count' => $photographerServices->count(),
                         ]);
                         $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
+
                         continue;
                     }
 
@@ -209,6 +213,7 @@ class InvoiceService
                         ],
                     ]);
                     $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
+
                     continue;
                 }
 
@@ -233,16 +238,17 @@ class InvoiceService
                         ->where('shoot_id', $serviceRow['shoot_id'])
                         ->whereJsonContains('meta->service_id', $serviceRow['service_id'])
                         ->first();
-                    
+
                     if ($existingItem) {
                         // Update existing item instead of creating duplicate
                         $existingItem->update([
                             'unit_amount' => $serviceRow['photographer_pay'],
                             'total_amount' => $serviceRow['photographer_pay'],
                         ]);
+
                         continue;
                     }
-                    
+
                     $invoice->items()->create([
                         'shoot_id' => $serviceRow['shoot_id'],
                         'type' => InvoiceItem::TYPE_CHARGE,
@@ -297,7 +303,7 @@ class InvoiceService
                     } catch (\Exception $e) {
                         Log::error('Failed to send invoice email', [
                             'invoice_id' => $invoice->id,
-                            'error' => $e->getMessage()
+                            'error' => $e->getMessage(),
                         ]);
                     }
                 }
@@ -317,7 +323,7 @@ class InvoiceService
             $propertyDetails = json_decode($propertyDetails, true);
         }
 
-        if (!is_array($propertyDetails)) {
+        if (! is_array($propertyDetails)) {
             return null;
         }
 
@@ -343,11 +349,11 @@ class InvoiceService
         $end = $end->copy()->endOfDay();
 
         $shoots = Shoot::with([
-                'payments' => function ($query) {
-                    $query->where('status', Payment::STATUS_COMPLETED);
-                },
-                'services',
-            ])
+            'payments' => function ($query) {
+                $query->where('status', Payment::STATUS_COMPLETED)->with('refunds');
+            },
+            'services',
+        ])
             ->where('client_id', $user->id)
             ->whereBetween('scheduled_date', [
                 $start->copy()->startOfDay()->toDateTimeString(),
@@ -356,7 +362,15 @@ class InvoiceService
             ->get();
 
         return DB::transaction(function () use ($user, $start, $end, $shoots) {
-            $invoice = Invoice::firstOrNew([
+            $invoice = Invoice::query()
+                ->where('user_id', $user->id)
+                ->where('role', Invoice::ROLE_CLIENT)
+                ->whereDate('period_start', $start->toDateString())
+                ->whereDate('period_end', $end->toDateString())
+                ->lockForUpdate()
+                ->first();
+
+            $invoice ??= new Invoice([
                 'user_id' => $user->id,
                 'role' => Invoice::ROLE_CLIENT,
                 'period_start' => $start->toDateString(),
@@ -368,6 +382,9 @@ class InvoiceService
                 'due_date' => $end->copy()->addDays(30),
                 'is_sent' => true,
                 'status' => Invoice::STATUS_SENT,
+                // Period charge rows are pre-tax. Store the period's tax once
+                // on the invoice so refreshTotals includes it exactly once.
+                'tax' => round((float) $shoots->sum(fn (Shoot $shoot) => (float) ($shoot->tax_amount ?? 0)), 2),
             ];
 
             if ($this->invoiceTableHasColumn('client_id')) {
@@ -382,31 +399,94 @@ class InvoiceService
                 $invoiceData['billing_period_end'] = $end->toDateString();
             }
 
-            if (!$invoice->exists && $this->invoiceTableHasColumn('invoice_number')) {
+            if (! $invoice->exists && $this->invoiceTableHasColumn('invoice_number')) {
                 $invoiceData['invoice_number'] = $this->generateNextInvoiceNumber();
             }
 
             $invoice->fill($invoiceData);
             $invoice->save();
 
-            $invoice->items()->delete();
+            // Rebuild every generated row. Only explicit admin_misc expenses are
+            // authored manual adjustments and survive regeneration; preserving
+            // arbitrary expense rows kept stale generated data indefinitely.
+            $itemIdsToDelete = $invoice->items()->get()
+                ->reject(function (InvoiceItem $item) {
+                    $meta = is_array($item->meta) ? $item->meta : [];
 
-            foreach ($shoots as $shoot) {
+                    return $item->type === InvoiceItem::TYPE_EXPENSE
+                        && ($meta['source'] ?? null) === 'admin_misc';
+                })
+                ->pluck('id');
+
+            if ($itemIdsToDelete->isNotEmpty()) {
+                $invoice->items()->whereKey($itemIdsToDelete->all())->delete();
+            }
+
+            // Only adjustments actually retained on this period invoice may be
+            // split out of its generated shoot charges. An adjustment living
+            // on a separate direct invoice is already reflected in the shoot's
+            // total_quote but is not a row here, so subtracting it would
+            // understate this period invoice.
+            $periodBillableAdjustments = $invoice->items()
+                ->where('type', InvoiceItem::TYPE_EXPENSE)
+                ->get()
+                ->filter(function (InvoiceItem $item) {
+                    $meta = is_array($item->meta) ? $item->meta : [];
+
+                    return ($meta['source'] ?? null) === 'admin_misc'
+                        && (bool) ($meta['bills_client'] ?? false);
+                });
+            $legacyAdjustmentTarget = app(InvoiceAdjustmentService::class)
+                ->resolveTargetShoot($invoice, null, false);
+            $unattributedAdjustmentRemaining = (float) $periodBillableAdjustments
+                ->whereNull('shoot_id')
+                ->when(
+                    $legacyAdjustmentTarget,
+                    fn (Collection $items) => $items->reject(
+                        fn (InvoiceItem $item) => $item->shoot_id === null
+                    )
+                )
+                ->sum('total_amount');
+
+            foreach ($shoots->values() as $shoot) {
                 $serviceNames = $shoot->services->pluck('name')->filter()->implode(', ');
                 $description = trim(sprintf(
                     'Shoot #%d%s%s',
                     $shoot->id,
-                    $shoot->address ? ' - ' . $shoot->address : '',
-                    $serviceNames !== '' ? ' - ' . $serviceNames : ''
+                    $shoot->address ? ' - '.$shoot->address : '',
+                    $serviceNames !== '' ? ' - '.$serviceNames : ''
                 ));
+
+                $billableAdjustments = (float) $periodBillableAdjustments
+                    ->filter(function (InvoiceItem $item) use ($shoot, $legacyAdjustmentTarget) {
+                        if ($item->shoot_id !== null) {
+                            return (int) $item->shoot_id === (int) $shoot->id;
+                        }
+
+                        return $legacyAdjustmentTarget
+                            && (int) $legacyAdjustmentTarget->id === (int) $shoot->id;
+                    })
+                    ->sum('total_amount');
+                $preTaxPayable = max(
+                    (float) ($shoot->total_quote ?? 0) - (float) ($shoot->tax_amount ?? 0),
+                    0
+                );
+                $shootBasePayable = max($preTaxPayable - $billableAdjustments, 0);
+
+                if ($unattributedAdjustmentRemaining > 0) {
+                    $unattributedApplied = min($shootBasePayable, $unattributedAdjustmentRemaining);
+                    $shootBasePayable -= $unattributedApplied;
+                    $unattributedAdjustmentRemaining -= $unattributedApplied;
+                }
+                $shootBasePayable = round($shootBasePayable, 2);
 
                 $invoice->items()->create([
                     'shoot_id' => $shoot->id,
                     'type' => InvoiceItem::TYPE_CHARGE,
                     'description' => $description,
                     'quantity' => 1,
-                    'unit_amount' => (float) ($shoot->total_quote ?? 0),
-                    'total_amount' => (float) ($shoot->total_quote ?? 0),
+                    'unit_amount' => $shootBasePayable,
+                    'total_amount' => $shootBasePayable,
                     'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
                     'meta' => [
                         'shoot_id' => $shoot->id,
@@ -414,13 +494,18 @@ class InvoiceService
                 ]);
 
                 foreach ($shoot->payments as $payment) {
+                    $netAmount = $payment->netAmount();
+                    if ($netAmount <= 0) {
+                        continue;
+                    }
+
                     $invoice->items()->create([
                         'shoot_id' => $shoot->id,
                         'type' => InvoiceItem::TYPE_PAYMENT,
                         'description' => 'Payment received',
                         'quantity' => 1,
-                        'unit_amount' => (float) $payment->amount,
-                        'total_amount' => (float) $payment->amount,
+                        'unit_amount' => $netAmount,
+                        'total_amount' => $netAmount,
                         'recorded_at' => $payment->processed_at ?? $payment->created_at,
                         'meta' => [
                             'payment_id' => $payment->id,
@@ -434,16 +519,20 @@ class InvoiceService
             $invoice->refreshTotals();
 
             $invoice->refresh();
-            $chargesTotal = (float) ($invoice->charges_total ?? $invoice->total_amount ?? 0);
+            $chargesTotal = (float) ($invoice->charges_total ?? $invoice->subtotal ?? 0);
+            $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? $chargesTotal);
             $paymentsTotal = (float) ($invoice->payments_total ?? 0);
-            $balanceDue = max($chargesTotal - $paymentsTotal, 0);
+            $balanceDue = max($invoiceTotal - $paymentsTotal, 0);
 
             $normalizedTotals = [
                 'amount_paid' => $paymentsTotal,
-                'is_paid' => $chargesTotal > 0 ? $balanceDue <= 0.01 : false,
-                'status' => $chargesTotal > 0 && $balanceDue <= 0.01
+                'is_paid' => $invoiceTotal > 0.01 && $balanceDue <= 0.01,
+                'status' => $invoiceTotal > 0.01 && $balanceDue <= 0.01
                     ? Invoice::STATUS_PAID
                     : Invoice::STATUS_SENT,
+                'paid_at' => $invoiceTotal > 0.01 && $balanceDue <= 0.01
+                    ? $invoice->latestEffectivePaymentAt()
+                    : null,
             ];
 
             if ($this->invoiceTableHasColumn('charges_total')) {
@@ -498,10 +587,10 @@ class InvoiceService
         $end = $end->copy()->endOfDay();
 
         $shoots = Shoot::with([
-                'service.sqftRanges',
-                'services' => fn ($query) => $query->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id']),
-                'rep:id,name,email,role,secondary_roles,metadata,account_status',
-            ])
+            'service.sqftRanges',
+            'services' => fn ($query) => $query->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id']),
+            'rep:id,name,email,role,secondary_roles,metadata,account_status',
+        ])
             ->whereBetween('scheduled_date', [
                 $start->copy()->startOfDay()->toDateTimeString(),
                 $end->copy()->endOfDay()->toDateTimeString(),
@@ -525,7 +614,7 @@ class InvoiceService
 
             foreach ($grouped as $repId => $repShoots) {
                 $rep = $repShoots->first()->rep ?: User::find($repId);
-                if (!$this->isActiveSalesRep($rep)) {
+                if (! $this->isActiveSalesRep($rep)) {
                     continue;
                 }
 
@@ -563,6 +652,7 @@ class InvoiceService
                             'warnings' => $warnings,
                         ]);
                         $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
+
                         continue;
                     }
 
@@ -603,6 +693,7 @@ class InvoiceService
                         ],
                     ]);
                     $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
+
                     continue;
                 }
 
@@ -663,7 +754,7 @@ class InvoiceService
                     } catch (\Exception $e) {
                         Log::error('Failed to send sales rep invoice email', [
                             'invoice_id' => $invoice->id,
-                            'error' => $e->getMessage()
+                            'error' => $e->getMessage(),
                         ]);
                     }
                 }
@@ -741,10 +832,11 @@ class InvoiceService
                     sprintf('Service "%s" has no usable price for commission calculation.', $service->name ?? 'Unknown service'),
                     ['service_id' => $service->id]
                 );
+
                 continue;
             }
 
-            if ($this->looksLikeExcludedFee($service->name ?? '') && !$line['excluded']) {
+            if ($this->looksLikeExcludedFee($service->name ?? '') && ! $line['excluded']) {
                 $warnings[] = $this->buildInvoiceWarning(
                     'ambiguous_exclusion',
                     $shoot,
@@ -854,7 +946,7 @@ class InvoiceService
 
     private function isSalesRep(?User $user): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -875,76 +967,95 @@ class InvoiceService
 
     /**
      * Generate an individual invoice for a shoot (client-facing invoice)
-     * 
-     * @param Shoot $shoot
-     * @return Invoice|null
      */
     public function generateForShoot(Shoot $shoot): ?Invoice
     {
-        // Check if invoice already exists for this shoot
-        $existingInvoice = Invoice::where('shoot_id', $shoot->id)->first();
-        if ($existingInvoice) {
-            // Always refresh items/totals to reflect current services
-            $shoot->load(['services', 'payments' => function ($query) {
-                $query->where('status', Payment::STATUS_COMPLETED);
-            }]);
+        return DB::transaction(function () use ($shoot) {
+            // Serialize invoice generation per shoot. This closes the former gap
+            // where regenerating an existing invoice happened outside a
+            // transaction and could expose a half-rebuilt set of line items.
+            $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+            $shoot->load(['client', 'photographer', 'services', 'payments.refunds']);
 
-            // Remove existing charge items for this shoot
-            $existingInvoice->items()
-                ->where('type', InvoiceItem::TYPE_CHARGE)
+            $invoiceAdjustments = app(InvoiceAdjustmentService::class);
+            $existingInvoice = Invoice::query()
+                ->where('role', Invoice::ROLE_CLIENT)
                 ->where('shoot_id', $shoot->id)
-                ->delete();
+                ->lockForUpdate()
+                ->orderByDesc('id')
+                ->first();
+
+            if (! $existingInvoice) {
+                // Period/aggregate invoices may be linked only through the pivot
+                // or an attributed item. Reuse them instead of creating a second
+                // client invoice for the same shoot. They must not be rebuilt as
+                // single-shoot invoices because that would erase other shoots.
+                $relatedInvoice = $invoiceAdjustments->preferredClientInvoiceForShoot($shoot);
+                if ($relatedInvoice) {
+                    $invoiceAdjustments->applyInvoiceTotalDelta($relatedInvoice, 0.0);
+
+                    return $relatedInvoice->fresh(['shoot', 'client', 'photographer', 'items', 'shoots']);
+                }
+            }
 
             $isCancellationFeeOnly = $this->usesCancellationFeeOnlyInvoice($shoot);
-            $this->createShootChargeItems($existingInvoice, $shoot, $isCancellationFeeOnly);
-
-            // Update invoice totals
-            $subtotal = $isCancellationFeeOnly ? (float) ($shoot->total_quote ?? 0) : (float) ($shoot->base_quote ?? 0);
+            $shootAdjustmentTotal = $invoiceAdjustments
+                ->billableItemsForShoot($shoot)
+                ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
+            $subtotal = $isCancellationFeeOnly
+                ? max((float) ($shoot->total_quote ?? 0) - $shootAdjustmentTotal, 0)
+                : (float) ($shoot->base_quote ?? 0);
             $taxAmount = $isCancellationFeeOnly ? 0.0 : (float) ($shoot->tax_amount ?? 0);
-            $total = $isCancellationFeeOnly
-                ? (float) ($shoot->total_quote ?? $subtotal)
-                : (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
-            $totalPaid = (float) $shoot->payments->where('status', Payment::STATUS_COMPLETED)->sum('amount');
+            $total = $isCancellationFeeOnly ? $subtotal : $subtotal + $taxAmount;
+            $totalPaid = $shoot->calculateCanonicalTotalPaid();
 
-            $existingInvoice->update([
-                'subtotal' => $subtotal,
-                'tax' => $taxAmount,
-                'total' => $total,
-                'total_amount' => $total,
-                'amount_paid' => $totalPaid,
-                'is_paid' => $total > 0 ? $totalPaid >= $total : false,
-                'status' => $totalPaid >= $total ? Invoice::STATUS_PAID : ($existingInvoice->status ?? Invoice::STATUS_SENT),
-            ]);
+            if ($existingInvoice) {
+                $existingInvoice->items()
+                    ->where('type', InvoiceItem::TYPE_CHARGE)
+                    ->where('shoot_id', $shoot->id)
+                    ->delete();
 
-            return $existingInvoice->fresh(['shoot', 'client', 'photographer', 'items']);
-        }
+                $this->createShootChargeItems($existingInvoice, $shoot, $isCancellationFeeOnly);
+                $existingInvoice->shoots()->syncWithoutDetaching([$shoot->id]);
 
-        return DB::transaction(function () use ($shoot) {
-            // Load shoot relationships
-            $shoot->load(['client', 'photographer', 'services', 'payments' => function ($query) {
-                $query->where('status', Payment::STATUS_COMPLETED);
-            }]);
+                $adjustmentTotal = $existingInvoice->items()
+                    ->where('type', InvoiceItem::TYPE_EXPENSE)
+                    ->get()
+                    ->filter(function (InvoiceItem $item) {
+                        $meta = is_array($item->meta) ? $item->meta : [];
+
+                        return ($meta['source'] ?? null) === 'admin_misc'
+                            && (bool) ($meta['bills_client'] ?? false);
+                    })
+                    ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
+
+                $existingInvoice->forceFill([
+                    'subtotal' => $subtotal,
+                    'tax' => $taxAmount,
+                    'total' => $total,
+                    'total_amount' => $total,
+                    'amount_paid' => $totalPaid,
+                    'is_paid' => $total > 0.01 && $totalPaid >= ($total - 0.01),
+                    'status' => $total > 0.01 && $totalPaid >= ($total - 0.01)
+                        ? Invoice::STATUS_PAID
+                        : Invoice::STATUS_SENT,
+                ])->save();
+                $invoiceAdjustments->applyInvoiceTotalDelta($existingInvoice, $adjustmentTotal);
+
+                return $existingInvoice->fresh(['shoot', 'client', 'photographer', 'items', 'shoots']);
+            }
 
             // Generate invoice number (format: Invoice 02195)
             $lastInvoice = Invoice::whereNotNull('invoice_number')
                 ->orderBy('id', 'desc')
                 ->first();
-            
-            $invoiceNumber = 'Invoice ' . str_pad(
+
+            $invoiceNumber = 'Invoice '.str_pad(
                 $lastInvoice ? ((int) preg_replace('/\D/', '', $lastInvoice->invoice_number)) + 1 : 1,
                 5,
                 '0',
                 STR_PAD_LEFT
             );
-
-            // Calculate totals from shoot data
-            $isCancellationFeeOnly = $this->usesCancellationFeeOnlyInvoice($shoot);
-            $subtotal = $isCancellationFeeOnly ? (float) ($shoot->total_quote ?? 0) : (float) ($shoot->base_quote ?? 0);
-            $taxAmount = $isCancellationFeeOnly ? 0.0 : (float) ($shoot->tax_amount ?? 0);
-            $total = $isCancellationFeeOnly
-                ? (float) ($shoot->total_quote ?? $subtotal)
-                : (float) ($shoot->total_quote ?? $subtotal + $taxAmount);
-            $totalPaid = (float) $shoot->payments->where('status', Payment::STATUS_COMPLETED)->sum('amount');
 
             // Create invoice
             // Note: user_id, role, period_start, and period_end are required by the original schema
@@ -952,7 +1063,7 @@ class InvoiceService
             $shootDate = $shoot->scheduled_at ? Carbon::parse($shoot->scheduled_at) : now();
             $periodStart = $shootDate->copy()->startOfDay()->toDateString();
             $periodEnd = $shootDate->copy()->endOfDay()->toDateString();
-            
+
             $userId = $this->determineInvoiceUserId($shoot);
 
             $invoiceData = [
@@ -968,10 +1079,12 @@ class InvoiceService
                 'total' => $total,
                 'total_amount' => $total,
                 'amount_paid' => $totalPaid,
-                'is_paid' => $total > 0 ? $totalPaid >= $total : false,
+                'is_paid' => $total > 0.01 && $totalPaid >= ($total - 0.01),
                 'is_sent' => true,
-                'status' => $totalPaid >= $total ? Invoice::STATUS_PAID : Invoice::STATUS_SENT,
-                'paid_at' => $totalPaid >= $total ? now() : null,
+                'status' => $total > 0.01 && $totalPaid >= ($total - 0.01)
+                    ? Invoice::STATUS_PAID
+                    : Invoice::STATUS_SENT,
+                'paid_at' => null,
             ];
 
             $optionalColumns = [
@@ -991,17 +1104,15 @@ class InvoiceService
             $invoice = Invoice::create($invoiceData);
 
             $this->createShootChargeItems($invoice, $shoot, $isCancellationFeeOnly);
+            $invoice->shoots()->syncWithoutDetaching([$shoot->id]);
+            $invoiceAdjustments->applyInvoiceTotalDelta($invoice, 0.0);
 
-            return $invoice->fresh(['shoot', 'client', 'photographer', 'items']);
+            return $invoice->fresh(['shoot', 'client', 'photographer', 'items', 'shoots']);
         });
     }
 
     /**
      * Generate a cancellation fee invoice for a shoot
-     * 
-     * @param Shoot $shoot
-     * @param float $cancellationFee
-     * @return Invoice|null
      */
     public function generateCancellationFeeInvoice(Shoot $shoot, float $cancellationFee = 60.00): ?Invoice
     {
@@ -1012,8 +1123,8 @@ class InvoiceService
             $lastInvoice = Invoice::whereNotNull('invoice_number')
                 ->orderBy('id', 'desc')
                 ->first();
-            
-            $invoiceNumber = 'Invoice ' . str_pad(
+
+            $invoiceNumber = 'Invoice '.str_pad(
                 $lastInvoice ? ((int) preg_replace('/\D/', '', $lastInvoice->invoice_number)) + 1 : 1,
                 5,
                 '0',
@@ -1047,7 +1158,7 @@ class InvoiceService
                 'shoot_id' => $shoot->id,
                 'client_id' => $shoot->client_id,
             ];
-            $note = 'Cancellation fee for shoot at ' . $shoot->address;
+            $note = 'Cancellation fee for shoot at '.$shoot->address;
             if ($this->invoiceTableHasColumn('notes')) {
                 $optionalColumns['notes'] = $note;
             } elseif ($this->invoiceTableHasColumn('modification_notes')) {
@@ -1066,7 +1177,7 @@ class InvoiceService
             $invoice->items()->create([
                 'shoot_id' => $shoot->id,
                 'type' => InvoiceItem::TYPE_CHARGE,
-                'description' => 'Cancellation Fee - ' . $shoot->address,
+                'description' => 'Cancellation Fee - '.$shoot->address,
                 'quantity' => 1,
                 'unit_amount' => $cancellationFee,
                 'total_amount' => $cancellationFee,
@@ -1110,6 +1221,7 @@ class InvoiceService
 
                 if ($existingItem) {
                     $created->push($existingItem->invoice()->first());
+
                     continue;
                 }
 
@@ -1136,7 +1248,7 @@ class InvoiceService
                 $invoice->items()->create([
                     'shoot_id' => $shoot->id,
                     'type' => InvoiceItem::TYPE_CHARGE,
-                    'description' => 'Cancellation Payout - ' . ($shoot->address ?: 'Shoot #' . $shoot->id),
+                    'description' => 'Cancellation Payout - '.($shoot->address ?: 'Shoot #'.$shoot->id),
                     'quantity' => 1,
                     'unit_amount' => $shares[$index],
                     'total_amount' => $shares[$index],
@@ -1175,7 +1287,7 @@ class InvoiceService
                 ? Carbon::parse($service->pivot->scheduled_at, $shoot->timezone ?: null)
                 : $shootScheduledAt;
 
-            if ($serviceScheduledAt && !$this->isWithinCancellationFeeWindow($serviceScheduledAt)) {
+            if ($serviceScheduledAt && ! $this->isWithinCancellationFeeWindow($serviceScheduledAt)) {
                 continue;
             }
 
@@ -1212,7 +1324,7 @@ class InvoiceService
             return Carbon::parse($shoot->scheduled_at, $shoot->timezone ?: null);
         }
 
-        if (!$shoot->scheduled_date || !$shoot->time) {
+        if (! $shoot->scheduled_date || ! $shoot->time) {
             return null;
         }
 
@@ -1220,7 +1332,7 @@ class InvoiceService
             ? $shoot->scheduled_date->format('Y-m-d')
             : Carbon::parse($shoot->scheduled_date)->format('Y-m-d');
 
-        return Carbon::parse($date . ' ' . $shoot->time, $shoot->timezone ?: null);
+        return Carbon::parse($date.' '.$shoot->time, $shoot->timezone ?: null);
     }
 
     protected function isWithinCancellationFeeWindow(Carbon $scheduledAt): bool
@@ -1260,11 +1372,14 @@ class InvoiceService
             ]);
         }
 
-        if (!$isCancellationFeeOnly) {
+        if (! $isCancellationFeeOnly) {
             return;
         }
 
-        $cancellationFee = (float) ($shoot->total_quote ?? 0);
+        $billableAdjustments = app(InvoiceAdjustmentService::class)
+            ->billableItemsForShoot($shoot)
+            ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
+        $cancellationFee = max((float) ($shoot->total_quote ?? 0) - $billableAdjustments, 0);
         if ($cancellationFee <= 0) {
             return;
         }
@@ -1272,7 +1387,7 @@ class InvoiceService
         $invoice->items()->create([
             'shoot_id' => $shoot->id,
             'type' => InvoiceItem::TYPE_CHARGE,
-            'description' => 'Cancellation Fee - ' . $shoot->address,
+            'description' => 'Cancellation Fee - '.$shoot->address,
             'quantity' => 1,
             'unit_amount' => $cancellationFee,
             'total_amount' => $cancellationFee,
@@ -1291,7 +1406,7 @@ class InvoiceService
         $description = $service->name ?? $service->service_name ?? 'Service';
 
         if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
-            return $description . ' (1-2999 SQFT)';
+            return $description.' (1-2999 SQFT)';
         }
 
         if (stripos($description, 'hdr') === false && stripos($description, 'photo') === false) {
@@ -1304,19 +1419,19 @@ class InvoiceService
         $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? 0;
 
         if ($sqft >= 1501 && $sqft <= 3000) {
-            return $description . ' (1501-3000 SQFT)';
+            return $description.' (1501-3000 SQFT)';
         }
         if ($sqft >= 3001 && $sqft <= 5000) {
-            return $description . ' (3001-5000 SQFT)';
+            return $description.' (3001-5000 SQFT)';
         }
         if ($sqft >= 5001 && $sqft <= 7000) {
-            return $description . ' (5001-7000 SQFT)';
+            return $description.' (5001-7000 SQFT)';
         }
         if ($sqft >= 7001 && $sqft <= 10000) {
-            return $description . ' (7001-10000 SQFT)';
+            return $description.' (7001-10000 SQFT)';
         }
 
-        return $description . ' (1-1500 SQFT)';
+        return $description.' (1-1500 SQFT)';
     }
 
     protected function usesCancellationFeeOnlyInvoice(Shoot $shoot): bool
@@ -1327,6 +1442,10 @@ class InvoiceService
         }
 
         $total = (float) ($shoot->total_quote ?? 0);
+        $billableAdjustments = app(InvoiceAdjustmentService::class)
+            ->billableItemsForShoot($shoot)
+            ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
+        $cancellationPayable = max($total - $billableAdjustments, 0);
         $originalServiceSubtotal = (float) $shoot->services->sum(function ($service) {
             $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
             $quantity = (int) ($service->pivot->quantity ?? 1);
@@ -1334,7 +1453,8 @@ class InvoiceService
             return $servicePrice * $quantity;
         });
 
-        return $total > 0 && $originalServiceSubtotal > $total + 0.01;
+        return $cancellationPayable > 0
+            && $originalServiceSubtotal > $cancellationPayable + 0.01;
     }
 
     protected function determineInvoiceUserId(Shoot $shoot): int
@@ -1366,7 +1486,7 @@ class InvoiceService
         static $columns;
 
         if ($columns === null) {
-            $columns = Schema::getColumnListing((new Invoice())->getTable());
+            $columns = Schema::getColumnListing((new Invoice)->getTable());
         }
 
         return in_array($column, $columns, true);
@@ -1382,6 +1502,6 @@ class InvoiceService
             ? (int) preg_replace('/\D/', '', (string) $lastInvoice->invoice_number)
             : 0;
 
-        return 'Invoice ' . str_pad((string) ($lastNumber + 1), 5, '0', STR_PAD_LEFT);
+        return 'Invoice '.str_pad((string) ($lastNumber + 1), 5, '0', STR_PAD_LEFT);
     }
 }

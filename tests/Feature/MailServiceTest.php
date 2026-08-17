@@ -20,6 +20,57 @@ class MailServiceTest extends TestCase
     use RefreshDatabase;
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function shoot_reminder_renders_the_date_and_call_time_without_repeating_the_time(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => 'Reminder Client',
+            'email' => 'reminder-client@test.com',
+        ]);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'address' => '123 Reminder Street',
+            'city' => 'Tampa',
+            'state' => 'FL',
+            'zip' => '33602',
+            'scheduled_date' => '2026-08-20',
+            'time' => '14:30:00',
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+
+        $deliveries = [];
+        $messagingService = Mockery::mock(MessagingService::class);
+        $messagingService->shouldReceive('sendEmail')
+            ->once()
+            ->andReturnUsing(function (array $payload) use (&$deliveries) {
+                $deliveries[] = $payload;
+
+                return new Message;
+            });
+        $this->app->instance(MessagingService::class, $messagingService);
+
+        $result = app(MailService::class)->sendShootReminderEmail(
+            $client,
+            $shoot,
+            shouldNotifyPhotographer: false
+        );
+
+        $this->assertTrue($result);
+        $this->assertCount(1, $deliveries);
+
+        $visibleHtml = trim(preg_replace(
+            '/\s+/',
+            ' ',
+            html_entity_decode(strip_tags($deliveries[0]['body_html'] ?? ''))
+        ) ?? '');
+
+        $this->assertStringContainsString('Aug 20, 2026', $visibleHtml);
+        $this->assertStringContainsString('Call time: 2:30 PM', $visibleHtml);
+        $this->assertSame(1, substr_count($visibleHtml, '2:30 PM'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function scheduled_email_continues_to_assigned_photographers_when_client_delivery_fails(): void
     {
         $client = User::factory()->create([
@@ -79,7 +130,7 @@ class MailServiceTest extends TestCase
                     throw new \RuntimeException('Client delivery failed');
                 }
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -140,7 +191,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$deliveries) {
                 $deliveries[] = $payload;
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -197,7 +248,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$deliveries) {
                 $deliveries[] = $payload;
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -253,7 +304,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -306,7 +357,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -336,7 +387,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 
@@ -365,7 +416,7 @@ class MailServiceTest extends TestCase
             ->andReturnUsing(function (array $payload) use (&$payloads) {
                 $payloads[] = $payload;
 
-                return new Message();
+                return new Message;
             });
         $this->app->instance(MessagingService::class, $messagingService);
 

@@ -5,6 +5,8 @@ namespace App\Services\Messaging;
 use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Support\InvoiceReference;
+use App\Support\SupportContact;
 
 class TemplateVariableResolver
 {
@@ -23,14 +25,14 @@ class TemplateVariableResolver
             // no-reply sender. `app.company_phone` never existed, which rendered
             // [company_phone] as an empty string.
             'company_email' => $this->configValue('mail.contact_address', $this->configValue('mail.from.address', '')),
-            'company_phone' => $this->configValue('mail.contact_phone', ''),
+            'company_phone' => SupportContact::PHONE_DISPLAY,
             'company_address' => $this->configValue('app.company_address', ''),
             'portal_url' => $portalUrl,
             'current_date' => now()->format('M j, Y'),
             'recipient_type' => $recipientType,
         ];
 
-        if (!isset($context['client'])) {
+        if (! isset($context['client'])) {
             $accountId = $context['account_id'] ?? $context['related_account_id'] ?? null;
             if ($accountId) {
                 $client = User::find($accountId);
@@ -48,10 +50,10 @@ class TemplateVariableResolver
             $derived = array_merge($derived, $this->resolveUser($context['photographer'], 'photographer'));
         }
 
-        if (!isset($context['previous_photographer']) && !empty($context['previous_photographer_id'])) {
+        if (! isset($context['previous_photographer']) && ! empty($context['previous_photographer_id'])) {
             $context['previous_photographer'] = User::find($context['previous_photographer_id']);
         }
-        if (!isset($context['new_photographer']) && !empty($context['new_photographer_id'])) {
+        if (! isset($context['new_photographer']) && ! empty($context['new_photographer_id'])) {
             $context['new_photographer'] = User::find($context['new_photographer_id']);
         }
 
@@ -74,7 +76,7 @@ class TemplateVariableResolver
                 'recipient_first_name' => $recipientUser['recipient_first_name'] ?? null,
                 'recipient_email' => $recipientUser['recipient_email'] ?? null,
             ]);
-        } elseif (!empty($context['recipient_name'])) {
+        } elseif (! empty($context['recipient_name'])) {
             [$recipientFirstName] = $this->splitName((string) $context['recipient_name']);
             $derived['recipient_name'] = (string) $context['recipient_name'];
             $derived['recipient_first_name'] = $recipientFirstName;
@@ -85,19 +87,19 @@ class TemplateVariableResolver
             $derived = array_merge($derived, $this->resolveShootVariables($shoot));
         }
 
-        if (!empty($derived['client_first_name'])) {
+        if (! empty($derived['client_first_name'])) {
             $derived['realtor_first'] = $derived['client_first_name'];
         }
-        if (!empty($derived['client_last_name'])) {
+        if (! empty($derived['client_last_name'])) {
             $derived['realtor_last'] = $derived['client_last_name'];
         }
-        if (!empty($derived['client_company'])) {
+        if (! empty($derived['client_company'])) {
             $derived['realtor_company'] = $derived['client_company'];
         }
-        if (!empty($derived['client_email'])) {
+        if (! empty($derived['client_email'])) {
             $derived['realtor_email'] = $derived['client_email'];
         }
-        if (!empty($derived['client_phone'])) {
+        if (! empty($derived['client_phone'])) {
             $derived['phone_number'] = $derived['client_phone'];
         }
 
@@ -120,7 +122,7 @@ class TemplateVariableResolver
 
         $recipientFirstName = $this->resolveRecipientFirstName($context, $derived, $recipientType);
         if ($recipientFirstName !== '') {
-            $derived['greeting'] = 'Hi ' . $recipientFirstName;
+            $derived['greeting'] = 'Hi '.$recipientFirstName;
             $derived['recipient_first_name'] = $recipientFirstName;
         }
 
@@ -131,6 +133,11 @@ class TemplateVariableResolver
         }
 
         $resolved = array_merge($derived, $context);
+
+        // Company support contact is a fixed brand value. Context remains free
+        // to carry client/photographer/access-contact phone numbers, but may not
+        // override the public support number with stale production data.
+        $resolved['company_phone'] = SupportContact::PHONE_DISPLAY;
 
         foreach ([
             'recipient_name',
@@ -147,6 +154,18 @@ class TemplateVariableResolver
             if (array_key_exists($canonicalKey, $derived)) {
                 $resolved[$canonicalKey] = $derived[$canonicalKey];
             }
+        }
+
+        if (array_key_exists('invoice_number', $resolved) || array_key_exists('invoice_id', $resolved)) {
+            $invoiceNumber = $resolved['invoice_number'] ?? null;
+            $invoiceId = $resolved['invoice_id'] ?? null;
+
+            $resolved['invoice_reference'] = InvoiceReference::number($invoiceNumber, $invoiceId);
+            $resolved['invoice_label'] = InvoiceReference::label($invoiceNumber, $invoiceId);
+            // Keep the established shortcode human-readable for templates that
+            // use it on its own. TemplateRenderer removes a redundant literal
+            // "Invoice" when a legacy template puts one immediately before it.
+            $resolved['invoice_number'] = $resolved['invoice_label'];
         }
 
         return $resolved;
@@ -179,7 +198,7 @@ class TemplateVariableResolver
     private function formatShootTime(Shoot $shoot): string
     {
         $time = $shoot->time;
-        if (!empty($time)) {
+        if (! empty($time)) {
             try {
                 return \Carbon\Carbon::parse($time)->format('g:i A');
             } catch (\Exception $e) {
@@ -204,11 +223,11 @@ class TemplateVariableResolver
     {
         $notes = [];
 
-        if (!empty($shoot->shoot_notes)) {
+        if (! empty($shoot->shoot_notes)) {
             $notes[] = $shoot->shoot_notes;
         }
 
-        if (!$shoot->relationLoaded('notes') && $this->canLoadShootRelations($shoot)) {
+        if (! $shoot->relationLoaded('notes') && $this->canLoadShootRelations($shoot)) {
             $shoot->load('notes');
         }
 
@@ -217,12 +236,12 @@ class TemplateVariableResolver
             : [];
 
         foreach ($loadedNotes as $note) {
-            if (!empty($note->content) && $note->visibility === 'client_visible') {
+            if (! empty($note->content) && $note->visibility === 'client_visible') {
                 $notes[] = $note->content;
             }
         }
 
-        $notes = array_filter($notes, fn($note) => trim((string) $note) !== '');
+        $notes = array_filter($notes, fn ($note) => trim((string) $note) !== '');
 
         return $notes ? implode("\n", $notes) : 'N/A';
     }
@@ -243,12 +262,12 @@ class TemplateVariableResolver
         [$firstName, $lastName] = $this->splitName($name);
 
         return [
-            $prefix . '_name' => $name,
-            $prefix . '_first_name' => $firstName,
-            $prefix . '_last_name' => $lastName,
-            $prefix . '_company' => $company,
-            $prefix . '_email' => $email,
-            $prefix . '_phone' => $phone,
+            $prefix.'_name' => $name,
+            $prefix.'_first_name' => $firstName,
+            $prefix.'_last_name' => $lastName,
+            $prefix.'_company' => $company,
+            $prefix.'_email' => $email,
+            $prefix.'_phone' => $phone,
         ];
     }
 
@@ -258,6 +277,7 @@ class TemplateVariableResolver
             if ($this->canLoadShootRelations($context['shoot'])) {
                 $context['shoot']->loadMissing(['client', 'photographer', 'service', 'services', 'notes']);
             }
+
             return $context['shoot'];
         }
 
@@ -306,6 +326,8 @@ class TemplateVariableResolver
         $servicesProvided = $formattedServices['text'];
         $servicesProvidedHtml = $formattedServices['html'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot);
+        $photographerName = $this->resolveLoadedPhotographerName($shoot);
+        [$photographerFirstName, $photographerLastName] = $this->splitName($photographerName);
         $smallZipLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
             ? app(\App\Services\Shoots\ShootMediaArchiveService::class)->buildPublicDownloadUrl($shoot, 'edited', 'small')
             : null;
@@ -323,10 +345,13 @@ class TemplateVariableResolver
             'services_provided' => $servicesProvided,
             'services_provided_html' => $servicesProvidedHtml,
             'assigned_photographers' => $assignedPhotographers,
+            'photographer_name' => $photographerName,
+            'photographer_first_name' => $photographerFirstName,
+            'photographer_last_name' => $photographerLastName,
             'small_zip_link' => $smallZipLink,
             'full_zip_link' => $fullZipLink,
             'shoot_total' => $total !== null ? (float) $total : null,
-            'shoot_quote' => $total !== null ? '$' . number_format((float) $total, 2) : null,
+            'shoot_quote' => $total !== null ? '$'.number_format((float) $total, 2) : null,
             'shoot_notes' => $this->formatShootNotes($shoot),
             'shoot_completed_date' => $this->getDateAttribute($shoot, 'completed_at')?->format('M j, Y')
                 ?? $this->getDateAttribute($shoot, 'editing_completed_at')?->format('M j, Y')
@@ -361,12 +386,12 @@ class TemplateVariableResolver
 
                 $quantity = (int) ($service->pivot->quantity ?? 1);
                 if ($quantity > 1) {
-                    $lineParts[] = 'x' . $quantity;
+                    $lineParts[] = 'x'.$quantity;
                 }
 
                 $price = $service->pivot->price ?? $service->price ?? null;
                 if ($price !== null && $price !== '') {
-                    $lineParts[] = '$' . number_format((float) $price, 2);
+                    $lineParts[] = '$'.number_format((float) $price, 2);
                 }
 
                 $assignedPhotographerName = '';
@@ -379,35 +404,35 @@ class TemplateVariableResolver
 
                 $line = implode(' - ', array_filter($lineParts, fn ($part) => $part !== ''));
                 if ($assignedPhotographerName !== '') {
-                    $line .= ' (Photographer: ' . $assignedPhotographerName . ')';
+                    $line .= ' (Photographer: '.$assignedPhotographerName.')';
                 }
 
-                $textLines[] = '- ' . $line;
+                $textLines[] = '- '.$line;
                 $htmlLines[] = '<li style="margin:0 0 8px 0;">'
-                    . e($service->name ?? 'Service')
-                    . ($quantity > 1 ? ' <span style="color:#64748b;">x' . e((string) $quantity) . '</span>' : '')
-                    . ($price !== null && $price !== '' ? ' <strong style="color:#0f172a;">$' . e(number_format((float) $price, 2)) . '</strong>' : '')
-                    . ($assignedPhotographerName !== '' ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Assigned photographer: ' . e($assignedPhotographerName) . '</div>' : '')
-                    . '</li>';
+                    .e($service->name ?? 'Service')
+                    .($quantity > 1 ? ' <span style="color:#64748b;">x'.e((string) $quantity).'</span>' : '')
+                    .($price !== null && $price !== '' ? ' <strong style="color:#0f172a;">$'.e(number_format((float) $price, 2)).'</strong>' : '')
+                    .($assignedPhotographerName !== '' ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Assigned photographer: '.e($assignedPhotographerName).'</div>' : '')
+                    .'</li>';
             }
 
             return [
                 'text' => implode("\n", $textLines),
-                'html' => '<ul style="margin:0;padding-left:18px;">' . implode('', $htmlLines) . '</ul>',
+                'html' => '<ul style="margin:0;padding-left:18px;">'.implode('', $htmlLines).'</ul>',
             ];
         }
 
         $fallback = $shoot->package_services_included;
         if (is_array($fallback) && count($fallback) > 0) {
-            $textLines = array_map(fn ($service) => '- ' . trim((string) $service), $fallback);
+            $textLines = array_map(fn ($service) => '- '.trim((string) $service), $fallback);
             $htmlLines = array_map(
-                fn ($service) => '<li style="margin:0 0 8px 0;">' . e(trim((string) $service)) . '</li>',
+                fn ($service) => '<li style="margin:0 0 8px 0;">'.e(trim((string) $service)).'</li>',
                 $fallback
             );
 
             return [
                 'text' => implode("\n", $textLines),
-                'html' => '<ul style="margin:0;padding-left:18px;">' . implode('', $htmlLines) . '</ul>',
+                'html' => '<ul style="margin:0;padding-left:18px;">'.implode('', $htmlLines).'</ul>',
             ];
         }
 
@@ -417,8 +442,8 @@ class TemplateVariableResolver
         $single = $shoot->package_name ?: ($singleServiceName ?? $shoot->service_category ?? 'Service details will appear in the dashboard.');
 
         return [
-            'text' => '- ' . $single,
-            'html' => '<ul style="margin:0;padding-left:18px;"><li style="margin:0 0 8px 0;">' . e($single) . '</li></ul>',
+            'text' => '- '.$single,
+            'html' => '<ul style="margin:0;padding-left:18px;"><li style="margin:0 0 8px 0;">'.e($single).'</li></ul>',
         ];
     }
 
@@ -456,7 +481,7 @@ class TemplateVariableResolver
 
     private function resolveLoadedPhotographerName(Shoot $shoot): string
     {
-        if (!$shoot->relationLoaded('photographer')) {
+        if (! $shoot->relationLoaded('photographer')) {
             return '';
         }
 
@@ -465,18 +490,18 @@ class TemplateVariableResolver
 
     private function resolveRecipientFirstName(array $context, array $derived, string $recipientType): string
     {
-        if (!empty($derived['recipient_first_name'])) {
+        if (! empty($derived['recipient_first_name'])) {
             return (string) $derived['recipient_first_name'];
         }
 
-        if (!empty($derived['recipient_name'])) {
+        if (! empty($derived['recipient_name'])) {
             [$firstName] = $this->splitName((string) $derived['recipient_name']);
             if ($firstName !== '') {
                 return $firstName;
             }
         }
 
-        if (!empty($context['recipient_name'])) {
+        if (! empty($context['recipient_name'])) {
             [$firstName] = $this->splitName((string) $context['recipient_name']);
             if ($firstName !== '') {
                 return $firstName;
@@ -504,8 +529,8 @@ class TemplateVariableResolver
             return [
                 'recipient_booking_intro' => 'A shoot has been added to your assignment queue.',
                 'recipient_update_intro' => 'One of your assigned shoots has been updated. Please review the latest details below.',
-                'recipient_manage_copy' => 'You can review this assignment in your dashboard at <a href="' . e($portalUrl) . '">' . e($portalUrl) . '</a>.',
-                'recipient_manage_copy_text' => 'You can review this assignment in your dashboard at ' . $portalUrl . '.',
+                'recipient_manage_copy' => 'You can review this assignment in your dashboard at <a href="'.e($portalUrl).'">'.e($portalUrl).'</a>.',
+                'recipient_manage_copy_text' => 'You can review this assignment in your dashboard at '.$portalUrl.'.',
                 'property_prep_html' => '',
                 'property_prep_text' => '',
                 'payment_cta_html' => '',
@@ -519,8 +544,8 @@ class TemplateVariableResolver
             return [
                 'recipient_booking_intro' => 'A new shoot has been scheduled for one of your accounts.',
                 'recipient_update_intro' => 'A scheduled shoot for one of your accounts has been updated. The latest details are below.',
-                'recipient_manage_copy' => 'You can review this shoot in the dashboard at <a href="' . e($portalUrl) . '">' . e($portalUrl) . '</a>.',
-                'recipient_manage_copy_text' => 'You can review this shoot in the dashboard at ' . $portalUrl . '.',
+                'recipient_manage_copy' => 'You can review this shoot in the dashboard at <a href="'.e($portalUrl).'">'.e($portalUrl).'</a>.',
+                'recipient_manage_copy_text' => 'You can review this shoot in the dashboard at '.$portalUrl.'.',
                 'property_prep_html' => '',
                 'property_prep_text' => '',
                 'payment_cta_html' => '',
@@ -535,12 +560,12 @@ class TemplateVariableResolver
         return [
             'recipient_booking_intro' => 'A new photo shoot has been scheduled under your account.',
             'recipient_update_intro' => 'One of your scheduled photo shoots has been updated. Please review the latest details below.',
-            'recipient_manage_copy' => 'You can find the shoot in your dashboard under <strong>Scheduled Shoots</strong> after logging into <a href="' . e($portalUrl) . '">' . e($portalUrl) . '</a>.',
-            'recipient_manage_copy_text' => 'You can find the shoot in your dashboard under Scheduled Shoots after logging into ' . $portalUrl . '.',
+            'recipient_manage_copy' => 'You can find the shoot in your dashboard under <strong>Scheduled Shoots</strong> after logging into <a href="'.e($portalUrl).'">'.e($portalUrl).'</a>.',
+            'recipient_manage_copy_text' => 'You can find the shoot in your dashboard under Scheduled Shoots after logging into '.$portalUrl.'.',
             'property_prep_html' => '<p>To keep the appointment running smoothly, please make sure the property is ready before the scheduled time.</p>',
             'property_prep_text' => 'To keep the appointment running smoothly, please make sure the property is ready before the scheduled time.',
             'payment_cta_html' => $paymentLink !== ''
-                ? '<div style="margin:24px 0;"><a href="' . e($paymentLink) . '" style="display:inline-block;background:#2563eb;color:#ffffff !important;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:600;">Pay Now</a><p style="margin:12px 0 0;color:#64748b;font-size:13px;">Payment can be completed anytime before final delivery. Final assets remain locked until the invoice is paid in full.</p></div>'
+                ? '<div style="margin:24px 0;"><a href="'.e($paymentLink).'" style="display:inline-block;background:#2563eb;color:#ffffff !important;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:600;">Pay Now</a><p style="margin:12px 0 0;color:#64748b;font-size:13px;">Payment can be completed anytime before final delivery. Final assets remain locked until the invoice is paid in full.</p></div>'
                 : '',
             'payment_cta_text' => $paymentLink !== ''
                 ? "Payment link: {$paymentLink}\nPayment can be completed anytime before final delivery. Final assets remain locked until the invoice is paid in full."
@@ -580,12 +605,12 @@ class TemplateVariableResolver
         }
 
         if (count($lines) === 1) {
-            return '<p>' . e($lines[0]) . '</p>';
+            return '<p>'.e($lines[0]).'</p>';
         }
 
-        $items = array_map(fn ($line) => '<li style="margin:0 0 8px 0;">' . e($line) . '</li>', $lines);
+        $items = array_map(fn ($line) => '<li style="margin:0 0 8px 0;">'.e($line).'</li>', $lines);
 
-        return '<ul style="margin:0;padding-left:18px;">' . implode('', $items) . '</ul>';
+        return '<ul style="margin:0;padding-left:18px;">'.implode('', $items).'</ul>';
     }
 
     private function buildStructuredChangeSummaryHtml(string $summary): string
@@ -650,7 +675,7 @@ HTML;
 HTML;
         }
 
-        return '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">' . e((string) ($change['text'] ?? $line)) . '</p>';
+        return '<p class="change-summary-block" style="margin:0 0 12px; font-size:14px; line-height:1.7; color:#2d4769;">'.e((string) ($change['text'] ?? $line)).'</p>';
     }
 
     /**
@@ -660,7 +685,7 @@ HTML;
     {
         $line = trim($line);
 
-        if (!str_contains($line, ':')) {
+        if (! str_contains($line, ':')) {
             return [
                 'type' => 'text',
                 'text' => $line,
@@ -708,7 +733,7 @@ HTML;
         }
 
         if (strcasecmp($after, 'Removed') === 0) {
-            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($before) . '</span>';
+            return '<span style="text-decoration:line-through; color:#8c5f68;">'.e($before).'</span>';
         }
 
         if (strcasecmp($label, 'Services') !== 0) {
@@ -745,7 +770,7 @@ HTML;
                 return e($item);
             }
 
-            return '<span style="text-decoration:line-through; color:#8c5f68;">' . e($item) . '</span>';
+            return '<span style="text-decoration:line-through; color:#8c5f68;">'.e($item).'</span>';
         }, $beforeItems);
 
         return implode(', ', $parts);
@@ -759,9 +784,13 @@ HTML;
         $amountPaid = (float) ($invoice->amount_paid ?? 0);
         $amountDue = max((float) $invoice->balanceDue(), 0);
 
+        $invoiceLabel = InvoiceReference::label($invoice->invoice_number, $invoice->id);
+
         $variables = [
             'invoice_id' => $invoice->id,
-            'invoice_number' => $invoice->invoice_number ?? ('Invoice #' . $invoice->id),
+            'invoice_number' => $invoiceLabel,
+            'invoice_label' => $invoiceLabel,
+            'invoice_reference' => InvoiceReference::number($invoice->invoice_number, $invoice->id),
             'amount_due' => $amountDue > 0 ? $amountDue : null,
             'payment_amount' => $amountPaid > 0 ? $amountPaid : null,
             'payment_date' => $invoice->paid_at?->format('M j, Y') ?? null,
@@ -818,7 +847,7 @@ HTML;
                 : ($value ? \Carbon\Carbon::parse($value) : null);
         }
 
-        if (!method_exists($model, 'getRawOriginal')) {
+        if (! method_exists($model, 'getRawOriginal')) {
             return null;
         }
 

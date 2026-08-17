@@ -2,50 +2,58 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use Carbon\Carbon;
 use App\Models\Invoice;
-use App\Models\Shoot;
 use App\Models\Payment;
+use App\Models\Shoot;
 use App\Models\User;
-use App\Services\Payments\StripePaymentMetadataService;
-use App\Services\Payments\PublicPaymentAccessTokenService;
-use App\Services\Shoots\ShootServiceItemSupport;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Payments\PublicPaymentAccessTokenService;
+use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootServiceItemSupport;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
-use Stripe\Stripe;
-use Stripe\Customer as StripeCustomer;
 use Stripe\Checkout\Session as StripeSession;
-use Stripe\Webhook;
-use Stripe\Refund;
+use Stripe\Customer as StripeCustomer;
 use Stripe\Exception\SignatureVerificationException;
+use Stripe\Refund;
+use Stripe\Stripe;
+use Stripe\Webhook;
 
 class StripePaymentController extends Controller
 {
     protected $mailService;
+
     protected $activityLogger;
+
     protected $automationService;
+
     protected $stripePaymentMetadataService;
+
     protected $serviceItemSupport;
+
+    protected $invoiceAdjustments;
 
     public function __construct(
         MailService $mailService,
         ShootActivityLogger $activityLogger,
         AutomationService $automationService,
         StripePaymentMetadataService $stripePaymentMetadataService,
-        ShootServiceItemSupport $serviceItemSupport
-    )
-    {
+        ShootServiceItemSupport $serviceItemSupport,
+        InvoiceAdjustmentService $invoiceAdjustments
+    ) {
         $this->mailService = $mailService;
         $this->activityLogger = $activityLogger;
         $this->automationService = $automationService;
         $this->stripePaymentMetadataService = $stripePaymentMetadataService;
         $this->serviceItemSupport = $serviceItemSupport;
+        $this->invoiceAdjustments = $invoiceAdjustments;
     }
 
     /**
@@ -113,9 +121,9 @@ class StripePaymentController extends Controller
                 ]],
                 'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot, $metadata),
                 'metadata' => $metadata,
-                'client_reference_id' => 'shoot:' . $shoot->id,
-                'success_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
-                'cancel_url'  => $paymentUrl,
+                'client_reference_id' => 'shoot:'.$shoot->id,
+                'success_url' => $paymentUrl.'?success=true&session_id={CHECKOUT_SESSION_ID}',
+                'cancel_url' => $paymentUrl,
             ];
 
             $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $client);
@@ -136,6 +144,7 @@ class StripePaymentController extends Controller
                 'shoot_id' => $shoot->id,
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json(['error' => 'Could not create payment link. Please try again later.'], 500);
         }
     }
@@ -190,7 +199,7 @@ class StripePaymentController extends Controller
                 ]],
                 'payment_intent_data' => $this->buildPaymentIntentDataForSingleShoot($shoot, $metadata),
                 'metadata' => $metadata,
-                'client_reference_id' => 'shoot:' . $shoot->id,
+                'client_reference_id' => 'shoot:'.$shoot->id,
                 'return_url' => $this->buildEmbeddedReturnUrl($shoot, $returnTo, $paymentUrl),
             ];
 
@@ -212,6 +221,7 @@ class StripePaymentController extends Controller
                 'shoot_id' => $shoot->id,
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json(['error' => 'Could not create embedded checkout. Please try again later.'], 500);
         }
     }
@@ -242,7 +252,9 @@ class StripePaymentController extends Controller
             foreach ($shoots as $shoot) {
                 $shoot->loadMissing('payments');
                 $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
-                if ($amountToPay <= 0) continue;
+                if ($amountToPay <= 0) {
+                    continue;
+                }
 
                 $totalAmount += $amountToPay;
                 $shootIds[] = (string) $shoot->id;
@@ -276,9 +288,9 @@ class StripePaymentController extends Controller
                     'shoot_ids' => implode(',', $shootIds),
                     'type' => 'multiple',
                 ],
-                'client_reference_id' => 'shoots:' . implode(',', $shootIds),
-                'success_url' => $frontendUrl . '/shoot-history?payment=success&session_id={CHECKOUT_SESSION_ID}',
-                'cancel_url'  => $frontendUrl . '/shoot-history',
+                'client_reference_id' => 'shoots:'.implode(',', $shootIds),
+                'success_url' => $frontendUrl.'/shoot-history?payment=success&session_id={CHECKOUT_SESSION_ID}',
+                'cancel_url' => $frontendUrl.'/shoot-history',
             ];
 
             $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $request->user());
@@ -298,6 +310,7 @@ class StripePaymentController extends Controller
                 'shoot_ids' => $validated['shoot_ids'],
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json(['error' => 'Could not create payment link. Please try again later.'], 500);
         }
     }
@@ -329,7 +342,9 @@ class StripePaymentController extends Controller
             foreach ($shoots as $shoot) {
                 $shoot->loadMissing('payments');
                 $amountToPay = $this->calculateCanonicalOutstandingAmountCents($shoot);
-                if ($amountToPay <= 0) continue;
+                if ($amountToPay <= 0) {
+                    continue;
+                }
 
                 $totalAmount += $amountToPay;
                 $shootIds[] = (string) $shoot->id;
@@ -364,8 +379,8 @@ class StripePaymentController extends Controller
                     'shoot_ids' => implode(',', $shootIds),
                     'type' => 'multiple',
                 ],
-                'client_reference_id' => 'shoots:' . implode(',', $shootIds),
-                'return_url' => $frontendUrl . '/shoot-history?payment=success&session_id={CHECKOUT_SESSION_ID}',
+                'client_reference_id' => 'shoots:'.implode(',', $shootIds),
+                'return_url' => $frontendUrl.'/shoot-history?payment=success&session_id={CHECKOUT_SESSION_ID}',
             ];
 
             $sessionParams = $this->applyCheckoutCustomerParams($sessionParams, $request->user());
@@ -386,6 +401,7 @@ class StripePaymentController extends Controller
                 'shoot_ids' => $validated['shoot_ids'],
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json(['error' => 'Could not create embedded checkout. Please try again later.'], 500);
         }
     }
@@ -402,6 +418,7 @@ class StripePaymentController extends Controller
 
         if (empty($webhookSecret)) {
             Log::error('Stripe webhook secret is not configured.');
+
             return response()->json(['error' => 'Webhook not configured'], 500);
         }
 
@@ -409,9 +426,11 @@ class StripePaymentController extends Controller
             $event = Webhook::constructEvent($payload, $sigHeader, $webhookSecret);
         } catch (SignatureVerificationException $e) {
             Log::warning('Stripe webhook signature verification failed', ['error' => $e->getMessage()]);
+
             return response()->json(['error' => 'Invalid signature'], 400);
         } catch (\Exception $e) {
             Log::error('Stripe webhook parse error', ['error' => $e->getMessage()]);
+
             return response()->json(['error' => 'Invalid payload'], 400);
         }
 
@@ -464,7 +483,7 @@ class StripePaymentController extends Controller
     public function createPublicEmbeddedCheckoutSession(Request $request, string $token)
     {
         $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);
-        if (!$accessToken) {
+        if (! $accessToken) {
             return response()->json(['error' => 'This payment link is unavailable.'], 410);
         }
 
@@ -476,7 +495,7 @@ class StripePaymentController extends Controller
     public function confirmPublicCheckoutSession(Request $request, string $token)
     {
         $accessToken = app(PublicPaymentAccessTokenService::class)->resolveAccessibleToken($token);
-        if (!$accessToken) {
+        if (! $accessToken) {
             return response()->json(['error' => 'This payment link is unavailable.'], 410);
         }
 
@@ -493,7 +512,7 @@ class StripePaymentController extends Controller
         $lastPaymentAmount = $this->resolveLastPaymentAmountFromSession($session);
         $summary = $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: 'stripe');
 
-        if (($summary['remaining_balance'] ?? 0) <= 0 && !$session) {
+        if (($summary['remaining_balance'] ?? 0) <= 0 && ! $session) {
             return [
                 'reconciled' => false,
                 'session_id' => null,
@@ -506,9 +525,9 @@ class StripePaymentController extends Controller
             ];
         }
 
-        $lock = Cache::lock('stripe_reconcile_shoot_' . $shoot->id, 10);
+        $lock = Cache::lock('stripe_reconcile_shoot_'.$shoot->id, 10);
 
-        if (!$lock->get()) {
+        if (! $lock->get()) {
             return [
                 'reconciled' => false,
                 'session_id' => null,
@@ -522,7 +541,7 @@ class StripePaymentController extends Controller
         try {
             $session = $session ?: $this->findRecentPaidSessionForShoot($shoot);
 
-            if (!$session) {
+            if (! $session) {
                 return [
                     'reconciled' => false,
                     'session_id' => null,
@@ -596,6 +615,7 @@ class StripePaymentController extends Controller
         // Prevent duplicate processing
         if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
             Log::info('Stripe webhook: Session already processed', ['session_id' => $sessionId]);
+
             return false;
         }
 
@@ -619,8 +639,9 @@ class StripePaymentController extends Controller
         $amountTotal = ($session->amount_total ?? 0) / 100;
         $currency = strtoupper($session->currency ?? 'usd');
 
-        if (!$shootId) {
+        if (! $shootId) {
             Log::warning('Stripe webhook: No shoot_id in session metadata', ['session_id' => $sessionId]);
+
             return false;
         }
 
@@ -628,8 +649,9 @@ class StripePaymentController extends Controller
             return DB::transaction(function () use ($shootId, $paymentIntentId, $amountTotal, $currency, $sessionId, $session) {
                 $shoot = Shoot::find($shootId);
 
-                if (!$shoot) {
+                if (! $shoot) {
                     Log::warning('Stripe webhook: Shoot not found', ['shoot_id' => $shootId]);
+
                     return false;
                 }
 
@@ -666,6 +688,7 @@ class StripePaymentController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+
             return false;
         }
     }
@@ -682,6 +705,7 @@ class StripePaymentController extends Controller
 
         if (empty($shootIdsStr)) {
             Log::warning('Stripe webhook: No shoot_ids in session metadata', ['session_id' => $sessionId]);
+
             return false;
         }
 
@@ -704,8 +728,9 @@ class StripePaymentController extends Controller
                 $lineItemsList = $lineItems->data ?? [];
                 foreach ($shootIds as $index => $shootId) {
                     $shoot = $shoots->get($shootId);
-                    if (!$shoot) {
+                    if (! $shoot) {
                         Log::warning('Stripe webhook: Shoot not found in multi-pay', ['shoot_id' => $shootId]);
+
                         continue;
                     }
 
@@ -719,7 +744,7 @@ class StripePaymentController extends Controller
                         'currency' => $currency,
                         'payment_method' => 'stripe',
                         'stripe_payment_id' => $paymentIntentId,
-                        'stripe_session_id' => $sessionId . '_shoot_' . $shoot->id,
+                        'stripe_session_id' => $sessionId.'_shoot_'.$shoot->id,
                         'status' => Payment::STATUS_COMPLETED,
                         'processed_at' => now(),
                     ]);
@@ -738,6 +763,7 @@ class StripePaymentController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+
             return false;
         }
     }
@@ -775,11 +801,11 @@ class StripePaymentController extends Controller
     {
         $metadata = [];
 
-        if (!empty($payload['shoot_service_ids'])) {
+        if (! empty($payload['shoot_service_ids'])) {
             $metadata['shoot_service_ids'] = implode(',', $payload['shoot_service_ids']);
         }
 
-        if (!empty($payload['allocation_strategy'])) {
+        if (! empty($payload['allocation_strategy'])) {
             $metadata['allocation_strategy'] = (string) $payload['allocation_strategy'];
         }
 
@@ -791,7 +817,7 @@ class StripePaymentController extends Controller
         $outstandingCents = $this->calculateCanonicalOutstandingAmountCents($shoot);
         $amountToPay = $outstandingCents;
 
-        if (!empty($allocationPayload['shoot_service_ids'])) {
+        if (! empty($allocationPayload['shoot_service_ids'])) {
             $serviceItems = collect($this->serviceItemSupport->summaries($shoot));
             $matchedCount = $serviceItems
                 ->whereIn('shoot_service_id', $allocationPayload['shoot_service_ids'])
@@ -831,7 +857,7 @@ class StripePaymentController extends Controller
 
     protected function applyCheckoutCustomerParams(array $sessionParams, ?User $client): array
     {
-        if (!$client || !$client->email) {
+        if (! $client || ! $client->email) {
             return $sessionParams;
         }
 
@@ -839,6 +865,7 @@ class StripePaymentController extends Controller
 
         if ($stripeCustomerId) {
             $sessionParams['customer'] = $stripeCustomerId;
+
             return $sessionParams;
         }
 
@@ -876,19 +903,19 @@ class StripePaymentController extends Controller
     protected function buildStripePaymentDescriptionForSingleShoot(Shoot $shoot): string
     {
         return $this->formatShootAddress($shoot)
-            ?: ('Shoot #' . $shoot->id);
+            ?: ('Shoot #'.$shoot->id);
     }
 
     protected function buildCheckoutLineItemNameForShoot(Shoot $shoot): string
     {
         return $this->formatShootAddress($shoot)
-            ?: ('Shoot #' . $shoot->id);
+            ?: ('Shoot #'.$shoot->id);
     }
 
     protected function buildReceiptPayloadForShoot(Shoot $shoot): ?array
     {
         $payments = ($shoot->payments ?? collect())->map(function ($payment) {
-            if (!$payment instanceof Payment) {
+            if (! $payment instanceof Payment) {
                 return $payment;
             }
 
@@ -923,7 +950,7 @@ class StripePaymentController extends Controller
 
     protected function formatShootAddress(?Shoot $shoot): ?string
     {
-        if (!$shoot) {
+        if (! $shoot) {
             return null;
         }
 
@@ -955,8 +982,9 @@ class StripePaymentController extends Controller
             ]);
 
             $existingCustomer = $customers->data[0] ?? null;
-            if ($existingCustomer && !empty($existingCustomer->id)) {
+            if ($existingCustomer && ! empty($existingCustomer->id)) {
                 $this->storeStripeCustomerId($client, $existingCustomer->id);
+
                 return $existingCustomer->id;
             }
 
@@ -970,8 +998,9 @@ class StripePaymentController extends Controller
                 ],
             ]);
 
-            if (!empty($createdCustomer->id)) {
+            if (! empty($createdCustomer->id)) {
                 $this->storeStripeCustomerId($client, $createdCustomer->id);
+
                 return $createdCustomer->id;
             }
         } catch (\Exception $e) {
@@ -1004,9 +1033,9 @@ class StripePaymentController extends Controller
         return Payment::query()
             ->where(function ($query) use ($sessionId, $paymentIntentId) {
                 $query->where('stripe_session_id', $sessionId)
-                    ->orWhere('stripe_session_id', 'like', $sessionId . '_shoot_%');
+                    ->orWhere('stripe_session_id', 'like', $sessionId.'_shoot_%');
 
-                if (!empty($paymentIntentId)) {
+                if (! empty($paymentIntentId)) {
                     $query->orWhere('stripe_payment_id', $paymentIntentId);
                 }
             })
@@ -1162,7 +1191,7 @@ class StripePaymentController extends Controller
 
     protected function sanitizeReturnTo(mixed $returnTo): ?string
     {
-        if (!is_string($returnTo)) {
+        if (! is_string($returnTo)) {
             return null;
         }
 
@@ -1177,14 +1206,14 @@ class StripePaymentController extends Controller
             return $trimmed;
         }
 
-        if (!preg_match('/^[a-z][a-z0-9+\-.]*:/i', $trimmed)) {
+        if (! preg_match('/^[a-z][a-z0-9+\-.]*:/i', $trimmed)) {
             return null;
         }
 
         $frontendParts = parse_url($frontendUrl);
         $returnParts = parse_url($trimmed);
 
-        if (!$frontendParts || !$returnParts) {
+        if (! $frontendParts || ! $returnParts) {
             return null;
         }
 
@@ -1193,40 +1222,41 @@ class StripePaymentController extends Controller
             && (($frontendParts['host'] ?? null) === ($returnParts['host'] ?? null))
             && (($frontendParts['port'] ?? null) === ($returnParts['port'] ?? null));
 
-        if (!$sameOrigin) {
+        if (! $sameOrigin) {
             return null;
         }
 
         $path = $returnParts['path'] ?? '/';
-        $query = isset($returnParts['query']) ? '?' . $returnParts['query'] : '';
-        $fragment = isset($returnParts['fragment']) ? '#' . $returnParts['fragment'] : '';
+        $query = isset($returnParts['query']) ? '?'.$returnParts['query'] : '';
+        $fragment = isset($returnParts['fragment']) ? '#'.$returnParts['fragment'] : '';
 
-        return $path . $query . $fragment;
+        return $path.$query.$fragment;
     }
 
     protected function buildEmbeddedReturnUrl(Shoot $shoot, ?string $returnTo, string $paymentUrl): string
     {
-        if (!$returnTo) {
-            return $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}';
+        if (! $returnTo) {
+            return $paymentUrl.'?success=true&session_id={CHECKOUT_SESSION_ID}';
         }
 
         $frontendUrl = rtrim((string) config('app.frontend_url', 'http://localhost:5173'), '/');
 
         return $frontendUrl
-            . '/payment-return/shoot/' . $shoot->id
-            . '?session_id={CHECKOUT_SESSION_ID}&return_to=' . rawurlencode($returnTo);
+            .'/payment-return/shoot/'.$shoot->id
+            .'?session_id={CHECKOUT_SESSION_ID}&return_to='.rawurlencode($returnTo);
     }
 
     protected function resolveReturnToFromSession($session): ?string
     {
         $metadataReturnTo = $session?->metadata?->return_to ?? null;
+
         return $this->sanitizeReturnTo($metadataReturnTo);
     }
 
     protected function resolveLastPaymentAmountFromSession($session): ?float
     {
         $amountTotal = $session?->amount_total ?? null;
-        if (!is_numeric($amountTotal)) {
+        if (! is_numeric($amountTotal)) {
             return null;
         }
 
@@ -1235,17 +1265,7 @@ class StripePaymentController extends Controller
 
     protected function findClientInvoiceForShoot(Shoot $shoot): ?Invoice
     {
-        return Invoice::query()
-            ->where('shoot_id', $shoot->id)
-            ->where(function ($query) use ($shoot) {
-                $query->where('role', Invoice::ROLE_CLIENT);
-
-                if ($shoot->client_id) {
-                    $query->orWhere('client_id', $shoot->client_id);
-                }
-            })
-            ->orderByDesc('id')
-            ->first();
+        return $this->invoiceAdjustments->preferredClientInvoiceForShoot($shoot);
     }
 
     protected function syncClientInvoiceFromShootPayment(
@@ -1257,36 +1277,12 @@ class StripePaymentController extends Controller
         mixed $paymentDetails,
         Carbon $processedAt
     ): void {
-        if (!$invoice) {
-            return;
-        }
-
-        $invoiceTotal = (float) ($invoice->total ?? $invoice->total_amount ?? $shoot->total_quote ?? 0);
-        $amountPaid = round(min($shootTotalPaid, $invoiceTotal > 0 ? $invoiceTotal : $shootTotalPaid), 2);
-        $isPaid = $invoiceTotal > 0
-            ? $amountPaid >= ($invoiceTotal - 0.01)
-            : $amountPaid > 0;
-
-        $invoice->amount_paid = $amountPaid;
-        $invoice->is_paid = $isPaid;
-        $invoice->status = $isPaid
-            ? Invoice::STATUS_PAID
-            : (($invoice->status ?? Invoice::STATUS_SENT) === Invoice::STATUS_DRAFT
-                ? Invoice::STATUS_SENT
-                : ($invoice->status ?? Invoice::STATUS_SENT));
-        $invoice->paid_at = $isPaid ? $processedAt : null;
-
-        if ($paymentMethod !== null && $paymentMethod !== '') {
-            $invoice->payment_method = $paymentMethod;
-            $invoice->payment_details = is_array($paymentDetails) ? $paymentDetails : null;
-        }
-
-        $invoice->save();
-
-        if ($payment && (int) $payment->invoice_id !== (int) $invoice->id) {
-            $payment->invoice_id = $invoice->id;
-            $payment->save();
-        }
+        $this->invoiceAdjustments->reconcileClientInvoicesForShoot(
+            $shoot,
+            $payment,
+            $paymentMethod,
+            $paymentDetails
+        );
     }
 
     /**
@@ -1296,13 +1292,13 @@ class StripePaymentController extends Controller
     {
         if ($shoot->client_id) {
             foreach (['', 'raw', 'edited', 'all'] as $type) {
-                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $shoot->client_id . '_client');
+                Cache::forget('shoot_files_'.$shoot->id.'_'.$type.'_'.$shoot->client_id.'_client');
             }
         }
         $user = auth()->user();
         if ($user) {
             foreach (['', 'raw', 'edited', 'all'] as $type) {
-                Cache::forget('shoot_files_' . $shoot->id . '_' . $type . '_' . $user->id . '_' . $user->role);
+                Cache::forget('shoot_files_'.$shoot->id.'_'.$type.'_'.$user->id.'_'.$user->role);
             }
         }
     }
@@ -1472,6 +1468,7 @@ class StripePaymentController extends Controller
                 'payment_id' => $request->input('payment_id'),
                 'error' => $e->getMessage(),
             ]);
+
             return response()->json(['error' => 'Failed to process refund.'], 500);
         }
     }

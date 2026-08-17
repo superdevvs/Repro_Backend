@@ -6,12 +6,18 @@ use App\Http\Controllers\Controller;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
 use App\Services\Messaging\ManualNotificationService;
+use App\Services\SystemEmails\EmailTypeRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class MessageTemplateController extends Controller
 {
+    public function __construct(
+        private readonly EmailTypeRegistry $emailTypeRegistry,
+    ) {}
+
     public function index(Request $request): JsonResponse
     {
         $channel = $request->query('channel', 'EMAIL');
@@ -40,10 +46,16 @@ class MessageTemplateController extends Controller
     {
         $data = $this->validatePayload($request);
 
-        $template = MessageTemplate::create(array_merge($data, [
-            'created_by' => $request->user()->id,
-            'updated_by' => $request->user()->id,
-        ]));
+        $template = DB::transaction(function () use ($data, $request): MessageTemplate {
+            $template = MessageTemplate::create(array_merge($data, [
+                'created_by' => $request->user()->id,
+                'updated_by' => $request->user()->id,
+            ]));
+
+            $this->disableCompetingOverride($template);
+
+            return $template;
+        }, 3);
 
         return response()->json($template, 201);
     }
@@ -51,9 +63,14 @@ class MessageTemplateController extends Controller
     public function update(Request $request, MessageTemplate $template): JsonResponse
     {
         $data = $this->validatePayload($request);
-        $template->update(array_merge($data, [
-            'updated_by' => $request->user()->id,
-        ]));
+
+        DB::transaction(function () use ($data, $request, $template): void {
+            $template->update(array_merge($data, [
+                'updated_by' => $request->user()->id,
+            ]));
+
+            $this->disableCompetingOverride($template);
+        }, 3);
 
         return response()->json($template->fresh());
     }
@@ -81,7 +98,7 @@ class MessageTemplateController extends Controller
     public function duplicate(MessageTemplate $template): JsonResponse
     {
         $newTemplate = $template->replicate();
-        $newTemplate->name = $template->name . ' (Copy)';
+        $newTemplate->name = $template->name.' (Copy)';
         $newTemplate->slug = null;
         $newTemplate->is_system = false;
         $newTemplate->scope = 'USER';
@@ -186,9 +203,9 @@ class MessageTemplateController extends Controller
         );
 
         return response()->json([
-            'status'     => 'sent',
+            'status' => 'sent',
             'message_id' => $message->id ?? null,
-            'channel'    => $data['channel'],
+            'channel' => $data['channel'],
             'recipient_type' => $data['recipient_type'],
         ]);
     }
@@ -219,10 +236,10 @@ class MessageTemplateController extends Controller
     protected function validateManualPayload(Request $request, bool $requireChannel = true): array
     {
         $rules = [
-            'shoot_id'       => ['required', 'integer', 'exists:shoots,id'],
-            'type'           => ['required', 'string', Rule::in(array_keys(ManualNotificationService::TYPES))],
+            'shoot_id' => ['required', 'integer', 'exists:shoots,id'],
+            'type' => ['required', 'string', Rule::in(array_keys(ManualNotificationService::TYPES))],
             'recipient_type' => ['required', Rule::in(['client', 'photographer'])],
-            'channel'        => [$requireChannel ? 'required' : 'nullable', Rule::in(['email', 'sms'])],
+            'channel' => [$requireChannel ? 'required' : 'nullable', Rule::in(['email', 'sms'])],
         ];
 
         return $request->validate($rules);
@@ -231,9 +248,10 @@ class MessageTemplateController extends Controller
     protected function validatePayload(Request $request): array
     {
         $categories = ['BOOKING', 'REMINDER', 'PAYMENT', 'INVOICE', 'ACCOUNT', 'GENERAL'];
+        $channels = $request->boolean('override_enabled') ? ['EMAIL'] : ['EMAIL', 'SMS'];
 
         return $request->validate([
-            'channel' => ['required', Rule::in(['EMAIL', 'SMS'])],
+            'channel' => ['required', Rule::in($channels)],
             'name' => ['required', 'string', 'max:255'],
             'slug' => ['nullable', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
@@ -246,9 +264,27 @@ class MessageTemplateController extends Controller
             'variables_json' => ['nullable', 'array'],
             'is_system' => ['boolean'],
             'is_active' => ['boolean'],
-            'email_type' => ['nullable', 'string', 'max:255'],
+            'email_type' => [
+                Rule::requiredIf($request->boolean('override_enabled')),
+                'nullable',
+                'string',
+                Rule::in($this->emailTypeRegistry->protectedAliases()),
+            ],
             'override_enabled' => ['boolean'],
         ]);
     }
-}
 
+    private function disableCompetingOverride(MessageTemplate $template): void
+    {
+        if (! $template->override_enabled || blank($template->email_type)) {
+            return;
+        }
+
+        MessageTemplate::query()
+            ->where('channel', 'EMAIL')
+            ->where('email_type', $template->email_type)
+            ->where('override_enabled', true)
+            ->where($template->getKeyName(), '!=', $template->getKey())
+            ->update(['override_enabled' => false]);
+    }
+}

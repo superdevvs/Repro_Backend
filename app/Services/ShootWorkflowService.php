@@ -4,35 +4,52 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Invoices\InvoiceAdjustmentService;
+use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootListingService;
 use App\Services\Shoots\ShootShareLinkService;
-use App\Services\Schedule\ScheduleDateScopeService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Services\BrightMlsService;
 
 class ShootWorkflowService
 {
     // Unified status constants (aligned with Shoot model)
     const STATUS_REQUESTED = Shoot::STATUS_REQUESTED;   // client-submitted, awaiting approval
+
     const STATUS_SCHEDULED = Shoot::STATUS_SCHEDULED;
+
     const STATUS_IN_PROGRESS = Shoot::STATUS_SCHEDULED;
+
     const STATUS_COMPLETED = Shoot::STATUS_COMPLETED;
+
     const STATUS_UPLOADED = Shoot::STATUS_UPLOADED;     // photos uploaded by photographer/admin
+
     const STATUS_EDITING = Shoot::STATUS_EDITING;       // sent to editor, in progress
+
     const STATUS_REVIEW = Shoot::STATUS_REVIEW;         // editor submitted, awaiting editing-manager review
+
     const STATUS_DELIVERED = Shoot::STATUS_DELIVERED;   // finalized and delivered to client
+
     const STATUS_READY = Shoot::STATUS_READY;            // edited files uploaded, awaiting finalize
+
     const STATUS_BOOKED = Shoot::STATUS_SCHEDULED;
+
     const STATUS_RAW_UPLOAD_PENDING = Shoot::STATUS_SCHEDULED;
+
     const STATUS_RAW_UPLOADED = Shoot::STATUS_UPLOADED;
+
     const STATUS_RAW_ISSUE = Shoot::STATUS_UPLOADED;
+
     const STATUS_ADMIN_VERIFIED = Shoot::STATUS_DELIVERED;
+
     const STATUS_READY_FOR_CLIENT = Shoot::STATUS_READY;
+
     const STATUS_ON_HOLD = Shoot::STATUS_ON_HOLD;
+
     const STATUS_CANCELLED = Shoot::STATUS_CANCELLED;
+
     const STATUS_DECLINED = Shoot::STATUS_DECLINED;     // admin/rep declined the request
 
     // Valid transitions for the simplified pipeline
@@ -52,15 +69,16 @@ class ShootWorkflowService
     ];
 
     protected ShootActivityLogger $activityLogger;
+
     protected ShootShareLinkService $shootShareLinkService;
+
     protected ShootEditingAssignmentService $shootEditingAssignmentService;
 
     public function __construct(
         ShootActivityLogger $activityLogger,
         ShootShareLinkService $shootShareLinkService,
         ShootEditingAssignmentService $shootEditingAssignmentService
-    )
-    {
+    ) {
         $this->activityLogger = $activityLogger;
         $this->shootShareLinkService = $shootShareLinkService;
         $this->shootEditingAssignmentService = $shootEditingAssignmentService;
@@ -74,10 +92,10 @@ class ShootWorkflowService
         // Clear dashboard overview caches for all admin users
         $adminUsers = User::whereIn('role', ['admin', 'superadmin'])->pluck('id');
         foreach ($adminUsers as $userId) {
-            Cache::forget('dashboard_overview_admin_' . $userId);
-            Cache::forget('dashboard_overview_superadmin_' . $userId);
+            Cache::forget('dashboard_overview_admin_'.$userId);
+            Cache::forget('dashboard_overview_superadmin_'.$userId);
         }
-        
+
         ShootListingService::flushCachedListings();
     }
 
@@ -90,9 +108,9 @@ class ShootWorkflowService
         $currentStatus = $shoot->workflow_status ?? $shoot->status ?? self::STATUS_ON_HOLD;
         $isAlreadyScheduled = in_array($currentStatus, [self::STATUS_SCHEDULED], true);
         $isResumingFromHold = in_array($currentStatus, [self::STATUS_ON_HOLD], true);
-        
+
         // Only validate transition if not already scheduled and not resuming from hold
-        if (!$isAlreadyScheduled && !$isResumingFromHold) {
+        if (! $isAlreadyScheduled && ! $isResumingFromHold) {
             $this->validateTransition($shoot, self::STATUS_SCHEDULED);
         }
 
@@ -114,7 +132,7 @@ class ShootWorkflowService
             $shoot->save();
 
             // Log if this is a new scheduling or resuming from hold
-            if (!$isAlreadyScheduled || $isResumingFromHold) {
+            if (! $isAlreadyScheduled || $isResumingFromHold) {
                 // Convert DateTime to Carbon for toIso8601String() method
                 $scheduledAtCarbon = \Carbon\Carbon::instance($scheduledAt);
                 $this->activityLogger->log(
@@ -128,7 +146,7 @@ class ShootWorkflowService
                 );
             }
         });
-        
+
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
 
@@ -170,7 +188,7 @@ class ShootWorkflowService
     public function startEditing(Shoot $shoot, ?User $user = null): void
     {
         $isAlreadyEditing = $this->isAlreadyInStatus($shoot, self::STATUS_EDITING);
-        if (!$isAlreadyEditing) {
+        if (! $isAlreadyEditing) {
             $this->validateTransition($shoot, self::STATUS_EDITING);
         }
 
@@ -207,7 +225,7 @@ class ShootWorkflowService
         $freshShoot = $shoot->fresh(['services.category']);
         foreach ($laneAssignments as $lane => $assignment) {
             $assignedEditor = $assignment['editor'] ?? null;
-            if (!$assignedEditor instanceof User) {
+            if (! $assignedEditor instanceof User) {
                 continue;
             }
 
@@ -245,7 +263,6 @@ class ShootWorkflowService
         }
     }
 
-
     /**
      * Mark as completed (admin/super admin finalizes)
      */
@@ -275,7 +292,7 @@ class ShootWorkflowService
                 'shoot_delivered',
                 [
                     'by' => $user?->name ?? auth()->user()?->name,
-                    'message' => 'Your photos are ready for download!'
+                    'message' => 'Your photos are ready for download!',
                 ],
                 $user
             );
@@ -283,7 +300,7 @@ class ShootWorkflowService
             // Trigger any completion jobs (archiving, notifications, etc.)
             // This can be dispatched as a job if needed
         });
-        
+
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
 
@@ -315,8 +332,7 @@ class ShootWorkflowService
         ?User $user = null,
         ?string $reason = null,
         string $activityType = 'shoot_put_on_hold'
-    ): void
-    {
+    ): void {
         $this->validateTransition($shoot, self::STATUS_ON_HOLD);
 
         DB::transaction(function () use ($shoot, $user, $reason, $activityType) {
@@ -346,8 +362,7 @@ class ShootWorkflowService
         ?string $reason = null,
         float $cancellationFee = 0.0,
         bool $suppressNotifications = false
-    ): void
-    {
+    ): void {
         $this->validateTransition($shoot, self::STATUS_CANCELLED);
 
         DB::transaction(function () use ($shoot, $user, $reason, $cancellationFee, $suppressNotifications) {
@@ -364,6 +379,10 @@ class ShootWorkflowService
             $shoot->updated_by = $user?->id ?? auth()->id();
 
             if ($cancellationFee > 0) {
+                $billableAdjustments = app(InvoiceAdjustmentService::class)
+                    ->billableItemsForShoot($shoot)
+                    ->sum(fn ($item) => (float) $item->total_amount);
+
                 $shoot->base_quote = round($cancellationFee, 2);
                 $shoot->discount_type = null;
                 $shoot->discount_value = null;
@@ -371,7 +390,10 @@ class ShootWorkflowService
                 $shoot->tax_region = 'none';
                 $shoot->tax_percent = 0;
                 $shoot->tax_amount = 0;
-                $shoot->total_quote = round($cancellationFee, 2);
+                // The cancellation fee replaces the cancelled service charge,
+                // but invoice adjustments remain independent payable order
+                // lines and must survive the workflow transition.
+                $shoot->total_quote = round($cancellationFee + $billableAdjustments, 2);
             }
 
             $shoot->save();
@@ -426,7 +448,7 @@ class ShootWorkflowService
                 $user
             );
         });
-        
+
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
     }
@@ -457,7 +479,7 @@ class ShootWorkflowService
                 $user
             );
         });
-        
+
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
     }
@@ -490,13 +512,13 @@ class ShootWorkflowService
         if (isset($legacyMap[$currentStatus])) {
             $currentStatus = $legacyMap[$currentStatus];
         }
-        
+
         $allowedTransitions = self::VALID_TRANSITIONS[$currentStatus] ?? [];
 
-        if (!in_array($targetStatus, $allowedTransitions)) {
+        if (! in_array($targetStatus, $allowedTransitions)) {
             throw new \InvalidArgumentException(
-                "Cannot transition from {$currentStatus} to {$targetStatus}. " .
-                "Allowed transitions: " . implode(', ', $allowedTransitions)
+                "Cannot transition from {$currentStatus} to {$targetStatus}. ".
+                'Allowed transitions: '.implode(', ', $allowedTransitions)
             );
         }
     }
@@ -531,6 +553,7 @@ class ShootWorkflowService
     public function getAllowedTransitions(Shoot $shoot): array
     {
         $currentStatus = $shoot->status ?? self::STATUS_ON_HOLD;
+
         return self::VALID_TRANSITIONS[$currentStatus] ?? [];
     }
 
@@ -556,6 +579,6 @@ class ShootWorkflowService
             ->groupBy('editor_id')
             ->pluck('total', 'editor_id');
 
-        return $editors->sortBy(fn($e) => $loadMap[$e->id] ?? 0)->first()->id;
+        return $editors->sortBy(fn ($e) => $loadMap[$e->id] ?? 0)->first()->id;
     }
 }

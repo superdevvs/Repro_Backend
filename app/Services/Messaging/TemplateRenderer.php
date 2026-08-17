@@ -4,6 +4,8 @@ namespace App\Services\Messaging;
 
 use App\Models\MessageTemplate;
 use App\Services\SystemEmails\EmailBrandingConfig;
+use App\Support\InvoiceReference;
+use App\Support\SupportContact;
 use Illuminate\Support\Arr;
 
 class TemplateRenderer
@@ -13,21 +15,29 @@ class TemplateRenderer
      */
     public function render(MessageTemplate $template, array $variables): array
     {
+        // Normalize static template copy before inserting any variables. This
+        // corrects legacy brand numbers without ever rewriting a client,
+        // photographer, access-contact, or SMS-recipient phone value.
+        $templateSubject = $this->normalizeLegacyContactDetails((string) ($template->subject ?? ''));
+        $templateHtml = $this->normalizeLegacyContactDetails((string) ($template->body_html ?? ''));
+        $templateText = $this->normalizeLegacyContactDetails((string) ($template->body_text ?? ''));
+        $variables['company_phone'] = SupportContact::PHONE_DISPLAY;
+
         $availableKeys = collect($template->variables_json ?? []);
-        if (!$availableKeys->contains('shoot_changes') && array_key_exists('shoot_changes', $variables)) {
+        if (! $availableKeys->contains('shoot_changes') && array_key_exists('shoot_changes', $variables)) {
             $availableKeys->push('shoot_changes');
         }
-        if (!$availableKeys->contains('shoot_changes_html') && array_key_exists('shoot_changes_html', $variables)) {
+        if (! $availableKeys->contains('shoot_changes_html') && array_key_exists('shoot_changes_html', $variables)) {
             $availableKeys->push('shoot_changes_html');
         }
 
         $placeholderKeys = $this->extractPlaceholderKeys([
-            $template->subject ?? '',
-            $template->body_html ?? '',
-            $template->body_text ?? '',
+            $templateSubject,
+            $templateHtml,
+            $templateText,
         ]);
         foreach ($placeholderKeys as $key) {
-            if (!$availableKeys->contains($key)) {
+            if (! $availableKeys->contains($key)) {
                 $availableKeys->push($key);
             }
         }
@@ -35,10 +45,12 @@ class TemplateRenderer
         $available = $availableKeys
             ->mapWithKeys(fn ($var) => [$var => Arr::get($variables, $var, '')]);
 
-        $html = $this->replacePlaceholders($template->body_html ?? '', $available->all());
-        $text = $this->replacePlaceholders($template->body_text ?? '', $available->all());
-        $subject = $this->replacePlaceholders($template->subject ?? '', $available->all());
-        $subject = $this->normalizePaymentReminderInvoiceSubject($template, $subject);
+        $html = $this->replacePlaceholders($templateHtml, $available->all());
+        $text = $this->replacePlaceholders($templateText, $available->all());
+        $subject = $this->replacePlaceholders($templateSubject, $available->all());
+        $html = $this->normalizeDuplicateInvoiceLabels($html);
+        $text = $this->normalizeDuplicateInvoiceLabels($text);
+        $subject = $this->normalizeDuplicateInvoiceLabels($subject);
         $html = $this->stripLegacyWrapper($html);
         $html = $this->stripLeadingGreetingArtifacts($html);
         $text = $this->stripLeadingTextGreetingArtifacts($text);
@@ -98,14 +110,36 @@ class TemplateRenderer
      */
     protected function replacePlaceholders(string $content, array $values): string
     {
+        if (array_key_exists('invoice_number', $values)) {
+            $content = $this->replaceInvoiceNumberPlaceholders($content, $values['invoice_number']);
+            unset($values['invoice_number']);
+        }
+
         return collect($values)->reduce(
             fn ($carry, $value, $key) => str_replace(
-                ['{{' . $key . '}}', '[' . $key . ']'],
+                ['{{'.$key.'}}', '['.$key.']'],
                 (string) $value,
                 $carry
             ),
             $content
         );
+    }
+
+    protected function replaceInvoiceNumberPlaceholders(string $content, mixed $value): string
+    {
+        $label = InvoiceReference::label($value);
+        $number = InvoiceReference::number($value);
+        $placeholder = '(?:\{\{invoice_number\}\}|\[invoice_number\])';
+        $spacingOrTag = '(?:\s|&nbsp;|&#160;|&#x0*a0;|<\/?[^>]+>)';
+        $literalLabel = '\bInvoice(?:\s+(?:Number|No\.?))?\s*(?:#|:)?'.$spacingOrTag.'*';
+
+        $content = preg_replace_callback(
+            '/(?<prefix>'.$literalLabel.')'.$placeholder.'/i',
+            fn (array $matches) => ($matches['prefix'] ?? '').$number,
+            $content
+        ) ?? $content;
+
+        return preg_replace('/'.$placeholder.'/i', $label, $content) ?? $content;
     }
 
     /**
@@ -135,25 +169,13 @@ class TemplateRenderer
         return preg_replace('/^\s*Photographers?:\s*[^\r\n]*(?:\r?\n)?/mi', '', $text) ?? $text;
     }
 
-    protected function normalizePaymentReminderInvoiceSubject(MessageTemplate $template, string $subject): string
+    protected function normalizeDuplicateInvoiceLabels(string $content): string
     {
-        if (($template->slug ?? '') !== 'payment-due-reminder') {
-            return $subject;
-        }
-
-        $normalized = preg_replace(
-            '/^(Payment Reminder\s*-\s*Invoice)\s+Invoice\s+/i',
-            '$1 ',
-            $subject
-        );
-
-        $normalized = preg_replace(
-            '/^Invoice\s+Invoice\s+(.+?)\s*-\s*Payment Reminder$/i',
-            'Invoice $1 - Payment Reminder',
-            $normalized ?? $subject
-        );
-
-        return $normalized ?? $subject;
+        return preg_replace(
+            '/\bInvoice(?:\s|&nbsp;|&#160;|&#x0*a0;)+Invoice(?=\s|&nbsp;|&#160;|&#x0*a0;|<|[:#]|$)/i',
+            'Invoice',
+            $content
+        ) ?? $content;
     }
 
     protected function wrapWithLayout(MessageTemplate $template, string $bodyHtml, string $subject): string
@@ -164,8 +186,9 @@ class TemplateRenderer
         $branding = $this->branding();
         $logoUrl = $branding['email_logo_grey_url'];
         $productName = $branding['product_name'];
-        $supportEmail = $branding['support_email'];
-        $supportPhone = $branding['support_phone'];
+        $supportEmail = $this->escapeHtml((string) $branding['support_email']);
+        $supportPhone = $this->escapeHtml(SupportContact::PHONE_DISPLAY);
+        $supportPhoneHref = $this->escapeHtml(SupportContact::PHONE_E164);
         $websiteUrl = $branding['website_url'];
         $canvasBackgroundLight = $branding['email_canvas_background_light'] ?? ($branding['email_outer_background'] ?? '#ffffff');
         $canvasBackgroundDark = $branding['email_canvas_background_dark'] ?? ($branding['email_outer_background_dark'] ?? ($branding['outer_background'] ?? '#00141d'));
@@ -246,6 +269,7 @@ TILE : '';
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="light dark">
 <meta name="supported-color-schemes" content="light dark">
+<meta name="format-detection" content="telephone=no">
 <style>
 :root {
   color-scheme: light dark;
@@ -484,11 +508,13 @@ a { color: {$linkColorLight}; text-decoration: none; }
   border-radius: 22px;
   border: 0;
   background: {$sectionSurfaceLight};
+  color: {$bodyColorLight};
   box-shadow: none;
 }
 .info-row {
   padding: 10px 0;
   border-bottom: 0;
+  color: {$bodyColorLight};
 }
 .info-row:last-child { border-bottom: 0; }
 .info-label {
@@ -501,6 +527,9 @@ a { color: {$linkColorLight}; text-decoration: none; }
   letter-spacing: 1.2px;
   text-transform: uppercase;
 }
+.info-box strong,
+.info-box b { color: {$headingColorLight}; }
+.info-box a { color: {$linkColorLight}; }
 .note {
   margin: 20px 0;
   padding: 16px 18px;
@@ -558,7 +587,17 @@ a { color: {$linkColorLight}; text-decoration: none; }
   font-size: 14px;
   line-height: 1.8;
 }
-.footer-copy a { color: {$headingColorLight} !important; text-decoration: underline; }
+.footer-copy a { color: {$headingColorLight}; text-decoration: underline; }
+.footer-contact .footer-contact-link,
+.footer-contact a,
+.footer-contact a:link,
+.footer-contact a:visited,
+.footer-contact a[x-apple-data-detectors],
+u + .email-body .footer-contact a {
+  color: {$linkColorLight} !important;
+  -webkit-text-fill-color: {$linkColorLight} !important;
+  text-decoration: underline !important;
+}
 .footer-links a { margin-right: 14px; white-space: nowrap; }
 .footer-meta {
   width: 100%;
@@ -680,13 +719,38 @@ a { color: {$linkColorLight}; text-decoration: none; }
     background-color: {$metaSurfaceDark} !important;
     border-color: {$metaBorderColorDark} !important;
   }
-  .info-box { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+  .info-box {
+    background: {$sectionSurfaceDarkGradient} !important;
+    background-color: {$sectionSurfaceDark} !important;
+    border-color: {$borderColorDark} !important;
+    color: {$bodyColorDark} !important;
+    -webkit-text-fill-color: {$bodyColorDark} !important;
+  }
+  .info-box .info-row {
+    color: {$bodyColorDark} !important;
+    -webkit-text-fill-color: {$bodyColorDark} !important;
+  }
+  .info-box .info-label {
+    color: {$mutedColorDark} !important;
+    -webkit-text-fill-color: {$mutedColorDark} !important;
+  }
+  .info-box strong,
+  .info-box b {
+    color: {$headingColorDark} !important;
+    -webkit-text-fill-color: {$headingColorDark} !important;
+  }
+  .info-box a {
+    color: {$linkColorDark} !important;
+    -webkit-text-fill-color: {$linkColorDark} !important;
+  }
   .note { background: {$noteSurfaceDarkGradient} !important; background-color: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
   .change-card { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
   .body-heading,
+  .brand-copy,
   .dark-panel-link,
   .dark-meta-value,
   .hero-title,
+  .hero-title-primary,
   .hero-title-location,
   .body-inner h1,
   .body-inner h2,
@@ -708,6 +772,7 @@ a { color: {$linkColorLight}; text-decoration: none; }
     color: {$bodyColorDark} !important;
   }
   .dark-meta-label,
+  .brand-copy span,
   .hero-overline,
   .hero-title-lead,
   .hero-title-status,
@@ -718,6 +783,15 @@ a { color: {$linkColorLight}; text-decoration: none; }
   .button-large {
     background-image: linear-gradient(135deg, #1463ff 0%, #0b83ff 100%) !important;
     color: #ffffff !important;
+  }
+  .footer-contact .footer-contact-link,
+  .footer-contact a,
+  .footer-contact a:link,
+  .footer-contact a:visited,
+  .footer-contact a[x-apple-data-detectors],
+  u + .email-body .footer-contact a {
+    color: {$linkColorDark} !important;
+    -webkit-text-fill-color: {$linkColorDark} !important;
   }
   .footer-note,
   .footer-address,
@@ -748,13 +822,38 @@ a { color: {$linkColorLight}; text-decoration: none; }
   background-color: {$metaSurfaceDark} !important;
   border-color: {$metaBorderColorDark} !important;
 }
-[data-ogsc] .info-box { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
+[data-ogsc] .info-box {
+  background: {$sectionSurfaceDarkGradient} !important;
+  background-color: {$sectionSurfaceDark} !important;
+  border-color: {$borderColorDark} !important;
+  color: {$bodyColorDark} !important;
+  -webkit-text-fill-color: {$bodyColorDark} !important;
+}
+[data-ogsc] .info-box .info-row {
+  color: {$bodyColorDark} !important;
+  -webkit-text-fill-color: {$bodyColorDark} !important;
+}
+[data-ogsc] .info-box .info-label {
+  color: {$mutedColorDark} !important;
+  -webkit-text-fill-color: {$mutedColorDark} !important;
+}
+[data-ogsc] .info-box strong,
+[data-ogsc] .info-box b {
+  color: {$headingColorDark} !important;
+  -webkit-text-fill-color: {$headingColorDark} !important;
+}
+[data-ogsc] .info-box a {
+  color: {$linkColorDark} !important;
+  -webkit-text-fill-color: {$linkColorDark} !important;
+}
 [data-ogsc] .note { background: {$noteSurfaceDarkGradient} !important; background-color: {$noteSurfaceDark} !important; color: {$bodyColorDark} !important; border-color: {$borderColorDark} !important; }
 [data-ogsc] .change-card { background: {$sectionSurfaceDarkGradient} !important; background-color: {$sectionSurfaceDark} !important; border-color: {$borderColorDark} !important; }
 [data-ogsc] .body-heading,
+[data-ogsc] .brand-copy,
 [data-ogsc] .dark-panel-link,
 [data-ogsc] .dark-meta-value,
 [data-ogsc] .hero-title,
+[data-ogsc] .hero-title-primary,
 [data-ogsc] .hero-title-location,
 [data-ogsc] .body-inner h1,
 [data-ogsc] .body-inner h2,
@@ -776,18 +875,32 @@ a { color: {$linkColorLight}; text-decoration: none; }
   color: {$bodyColorDark} !important;
 }
 [data-ogsc] .dark-meta-label,
+[data-ogsc] .brand-copy span,
 [data-ogsc] .hero-overline,
 [data-ogsc] .hero-title-lead,
 [data-ogsc] .hero-title-status,
 [data-ogsc] .info-label {
   color: {$mutedColorDark} !important;
 }
+[data-ogsc] .button,
+[data-ogsc] .button-large {
+  background-image: linear-gradient(135deg, #1463ff 0%, #0b83ff 100%) !important;
+  color: #ffffff !important;
+}
+[data-ogsc] .footer-contact .footer-contact-link,
+[data-ogsc] .footer-contact a,
+[data-ogsc] .footer-contact a:link,
+[data-ogsc] .footer-contact a:visited,
+[data-ogsc] .footer-contact a[x-apple-data-detectors] {
+  color: {$linkColorDark} !important;
+  -webkit-text-fill-color: {$linkColorDark} !important;
+}
 [data-ogsc] .footer-note,
 [data-ogsc] .footer-address,
 [data-ogsc] .dark-legal-copy { color: {$legalCopyColorDark} !important; }
 </style>
 </head>
-<body bgcolor="{$canvasBackgroundLight}">
+<body bgcolor="{$canvasBackgroundLight}" class="email-body">
 <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; max-height:0; max-width:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px;">{$preheaderText}{$preheaderFiller}</div>
 <div class="page">
   <div class="shell">
@@ -807,8 +920,8 @@ a { color: {$linkColorLight}; text-decoration: none; }
       <div class="footer-wrap">
         <div class="footer-card dark-panel-surface" style="background-color:{$footerSurfaceLight}; color:{$bodyColorLight};">
           <div class="footer-title dark-panel-copy" style="color:{$headingColorLight};">Need help with a shoot, invoice, or account question?</div>
-          <p class="footer-copy dark-panel-copy" style="color:{$bodyColorLight};">
-            If you need help, call {$supportPhone} or email us at <a href="mailto:{$supportEmail}" class="dark-panel-link" style="color:{$headingColorLight}; text-decoration:underline;">{$supportEmail}</a>.
+          <p class="footer-copy dark-panel-copy footer-contact" style="color:{$bodyColorLight};">
+            If you need help, call <a href="tel:{$supportPhoneHref}" class="footer-contact-link" style="color:{$linkColorLight}; text-decoration:underline;">{$supportPhone}</a> or email us at <a href="mailto:{$supportEmail}" class="footer-contact-link" style="color:{$linkColorLight}; text-decoration:underline;">{$supportEmail}</a>.
           </p>
           <table class="footer-meta" role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px; width:100%;">
             <tr>
@@ -878,7 +991,7 @@ HTML;
             'strong' => "color:{$headingColor};",
             'center' => 'display:block; text-align:left;',
             'a' => "color:{$linkColor}; text-decoration:none;",
-            'hr' => "border:0; border-top:0; margin:20px 0;",
+            'hr' => 'border:0; border-top:0; margin:20px 0;',
         ];
 
         foreach ($tagStyles as $tag => $style) {
@@ -887,7 +1000,7 @@ HTML;
 
         $classStyles = [
             'info-box' => "margin:20px 0; padding:18px 52px; width:100%; box-sizing:border-box; border-radius:22px; border:0; background-color:{$sectionSurface}; color:{$bodyColor}; box-shadow:none;",
-            'info-row' => "padding:10px 0; border-bottom:0;",
+            'info-row' => 'padding:10px 0; border-bottom:0;',
             'info-label' => "display:inline-block; min-width:150px; color:{$mutedColor}; font-weight:800; font-size:12px; line-height:1.5; letter-spacing:1.2px; text-transform:uppercase;",
             'note' => "margin:20px 0; padding:16px 18px; border-radius:18px; border:0; background-color:{$noteSurface}; color:{$bodyColor} !important;",
             'change-card' => "margin:22px 0; padding:20px 22px; border-radius:24px; border:0; background-color:{$sectionSurface};",
@@ -910,7 +1023,7 @@ HTML;
 
     protected function promoteInfoBoxesToFullWidth(string $bodyHtml, string $contentSurface, string $bodyColor): string
     {
-        if (!$this->containsInfoBox($bodyHtml)) {
+        if (! $this->containsInfoBox($bodyHtml)) {
             return $bodyHtml;
         }
 
@@ -934,14 +1047,14 @@ HTML;
             $offset = $end;
         }
 
-        return $result . substr($bodyHtml, $offset);
+        return $result.substr($bodyHtml, $offset);
     }
 
     protected function findMatchingDivEnd(string $html, int $start): ?int
     {
         $depth = 0;
 
-        if (!preg_match_all('/<\/?div\b[^>]*>/i', $html, $tags, PREG_OFFSET_CAPTURE, $start)) {
+        if (! preg_match_all('/<\/?div\b[^>]*>/i', $html, $tags, PREG_OFFSET_CAPTURE, $start)) {
             return null;
         }
 
@@ -951,7 +1064,7 @@ HTML;
 
             if ($isClosingTag) {
                 $depth--;
-            } elseif (!$isSelfClosing) {
+            } elseif (! $isSelfClosing) {
                 $depth++;
             }
 
@@ -989,12 +1102,12 @@ HTML;
             function (array $matches) use ($class, $style): string {
                 $openTag = $matches[0];
 
-                if (!preg_match('/\bclass\s*=\s*(["\'])(.*?)\1/i', $openTag, $classMatch)) {
+                if (! preg_match('/\bclass\s*=\s*(["\'])(.*?)\1/i', $openTag, $classMatch)) {
                     return $openTag;
                 }
 
                 $classes = preg_split('/\s+/', trim($classMatch[2])) ?: [];
-                if (!in_array($class, $classes, true)) {
+                if (! in_array($class, $classes, true)) {
                     return $openTag;
                 }
 
@@ -1008,13 +1121,13 @@ HTML;
     {
         if (preg_match('/\sstyle\s*=\s*(["\'])(.*?)\1/i', $openTag, $styleMatch, PREG_OFFSET_CAPTURE)) {
             $existing = rtrim($styleMatch[2][0]);
-            $merged = $existing === '' ? $style : rtrim($existing, ';') . '; ' . $style;
+            $merged = $existing === '' ? $style : rtrim($existing, ';').'; '.$style;
             $fullMatch = $styleMatch[0][0];
             $quote = $styleMatch[1][0];
 
             return substr_replace(
                 $openTag,
-                ' style=' . $quote . $merged . $quote,
+                ' style='.$quote.$merged.$quote,
                 $styleMatch[0][1],
                 strlen($fullMatch)
             );
@@ -1023,7 +1136,7 @@ HTML;
         $isSelfClosing = (bool) preg_match('/\/>\s*$/', $openTag);
         $trimmedTag = preg_replace('/\s*\/?>\s*$/', '', $openTag) ?? $openTag;
 
-        return $trimmedTag . ' style="' . $style . '"' . ($isSelfClosing ? ' />' : '>');
+        return $trimmedTag.' style="'.$style.'"'.($isSelfClosing ? ' />' : '>');
     }
 
     protected function normalizeLegacySuccessColors(string $bodyHtml): string
@@ -1072,14 +1185,14 @@ HTML;
                 return $text;
             }
 
-            return rtrim(mb_substr($text, 0, $limit - 1, 'UTF-8')) . '...';
+            return rtrim(mb_substr($text, 0, $limit - 1, 'UTF-8')).'...';
         }
 
         if (strlen($text) <= $limit) {
             return $text;
         }
 
-        return rtrim(substr($text, 0, $limit - 1)) . '...';
+        return rtrim(substr($text, 0, $limit - 1)).'...';
     }
 
     protected function resolveHeroCopy(MessageTemplate $template): string
@@ -1273,7 +1386,7 @@ HTML;
             return $invoiceNumber;
         }
 
-        return 'Invoice ' . $invoiceNumber;
+        return 'Invoice '.$invoiceNumber;
     }
 
     /**
@@ -1287,7 +1400,7 @@ HTML;
         ?int $statusIndex = null,
         ?string $status = null
     ): ?array {
-        if (!preg_match($pattern, $subject, $matches)) {
+        if (! preg_match($pattern, $subject, $matches)) {
             return null;
         }
 
@@ -1326,7 +1439,7 @@ HTML;
         $subject = trim($subject);
 
         foreach ($this->preferredTitleSuffixes($template) as $suffix) {
-            if ($suffix === '' || !str_ends_with($subject, $suffix)) {
+            if ($suffix === '' || ! str_ends_with($subject, $suffix)) {
                 continue;
             }
 
@@ -1431,6 +1544,11 @@ HTML;
         );
     }
 
+    protected function normalizeLegacyContactDetails(string $content): string
+    {
+        return SupportContact::normalizeReferences($content);
+    }
+
     /**
      * @param  string[]  $contents
      * @return string[]
@@ -1440,11 +1558,11 @@ HTML;
         $keys = [];
 
         foreach ($contents as $content) {
-            if (!is_string($content) || $content === '') {
+            if (! is_string($content) || $content === '') {
                 continue;
             }
 
-            if (!preg_match_all('/{{\s*([a-zA-Z0-9_]+)\s*}}|\[([a-zA-Z0-9_]+)\]/', $content, $matches)) {
+            if (! preg_match_all('/{{\s*([a-zA-Z0-9_]+)\s*}}|\[([a-zA-Z0-9_]+)\]/', $content, $matches)) {
                 continue;
             }
 
@@ -1457,8 +1575,3 @@ HTML;
         return array_values(array_unique($keys));
     }
 }
-
-
-
-
-

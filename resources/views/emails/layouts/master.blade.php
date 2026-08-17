@@ -10,7 +10,8 @@
 
     $productName = data_get($brand, 'product_name', 'R/E Pro Photos');
     $supportEmail = data_get($brand, 'support_email', 'contact@reprophotos.com');
-    $supportPhone = data_get($brand, 'support_phone', '202-868-1663');
+    $supportPhone = \App\Support\SupportContact::PHONE_DISPLAY;
+    $supportPhoneHref = \App\Support\SupportContact::PHONE_E164;
     $websiteUrl = data_get($brand, 'website_url', 'https://reprophotos.com');
     $reviewUrl = data_get($brand, 'review_url', 'https://www.google.com/maps/place/R%2FE+Pro+Photos/reviews');
     // Footer tile toggles. Default ON so every template renders unchanged; the
@@ -93,6 +94,7 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="color-scheme" content="light dark">
     <meta name="supported-color-schemes" content="light dark">
+    <meta name="format-detection" content="telephone=no">
     <title>@yield('title', $productName)</title>
     <!--[if mso]>
     <noscript>
@@ -134,6 +136,16 @@
         .footer-card-bg { background-color: {{ $footerSurfaceLight }} !important; background-image: none !important; }
         .footer-meta-bg { background-color: {{ $metaSurfaceLight }} !important; background-image: none !important; border: 0 !important; border-color: {{ $metaBorderColorLight }} !important; }
         .footer-link-dark { color: {{ $headingColorLight }} !important; }
+        .footer-contact .footer-contact-link,
+        .footer-contact a,
+        .footer-contact a:link,
+        .footer-contact a:visited,
+        .footer-contact a[x-apple-data-detectors],
+        u + .email-body .footer-contact a {
+            color: {{ $linkColorLight }} !important;
+            -webkit-text-fill-color: {{ $linkColorLight }} !important;
+            text-decoration: underline !important;
+        }
         .legal-copy-dark { color: {{ $legalCopyColorLight }} !important; }
 
         /* Shared hero title sizing (centralized). Per-template inline styles
@@ -160,6 +172,8 @@
         @media (prefers-color-scheme: dark) {
             body, .body-bg { background-color: {{ $emailCanvasBackgroundDark }} !important; }
             a { color: {{ $linkColorDark }} !important; }
+            a[style*="color:#ffffff"],
+            a[style*="color: #ffffff"] { color: #ffffff !important; }
             .hero-card-bg { background: {{ $heroSurfaceDarkGradient }} !important; background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
             .content-card-bg { background: {{ $contentSurfaceDarkGradient }} !important; background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
             .section-card-bg { background: {{ $sectionSurfaceDarkGradient }} !important; background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
@@ -178,12 +192,23 @@
             .footer-card-bg { background: {{ $footerSurfaceDarkGradient }} !important; background-color: {{ $footerSurfaceDark }} !important; }
             .footer-meta-bg { background: {{ $metaSurfaceDarkGradient }} !important; background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
             .footer-link-dark { color: {{ $headingColorDark }} !important; }
+            .footer-contact .footer-contact-link,
+            .footer-contact a,
+            .footer-contact a:link,
+            .footer-contact a:visited,
+            .footer-contact a[x-apple-data-detectors],
+            u + .email-body .footer-contact a {
+                color: {{ $linkColorDark }} !important;
+                -webkit-text-fill-color: {{ $linkColorDark }} !important;
+            }
             .legal-copy-dark { color: {{ $legalCopyColorDark }} !important; }
         }
 
         [data-ogsc] body,
         [data-ogsc] .body-bg { background-color: {{ $emailCanvasBackgroundDark }} !important; }
         [data-ogsc] a { color: {{ $linkColorDark }} !important; }
+        [data-ogsc] a[style*="color:#ffffff"],
+        [data-ogsc] a[style*="color: #ffffff"] { color: #ffffff !important; }
         [data-ogsc] .hero-card-bg { background: {{ $heroSurfaceDarkGradient }} !important; background-color: {{ $heroSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
         [data-ogsc] .content-card-bg { background: {{ $contentSurfaceDarkGradient }} !important; background-color: {{ $contentSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
         [data-ogsc] .section-card-bg { background: {{ $sectionSurfaceDarkGradient }} !important; background-color: {{ $sectionSurfaceDark }} !important; border-color: {{ $borderColorDark }} !important; }
@@ -202,11 +227,19 @@
         [data-ogsc] .footer-card-bg { background: {{ $footerSurfaceDarkGradient }} !important; background-color: {{ $footerSurfaceDark }} !important; }
         [data-ogsc] .footer-meta-bg { background: {{ $metaSurfaceDarkGradient }} !important; background-color: {{ $metaSurfaceDark }} !important; border-color: {{ $metaBorderColorDark }} !important; }
         [data-ogsc] .footer-link-dark { color: {{ $headingColorDark }} !important; }
+        [data-ogsc] .footer-contact .footer-contact-link,
+        [data-ogsc] .footer-contact a,
+        [data-ogsc] .footer-contact a:link,
+        [data-ogsc] .footer-contact a:visited,
+        [data-ogsc] .footer-contact a[x-apple-data-detectors] {
+            color: {{ $linkColorDark }} !important;
+            -webkit-text-fill-color: {{ $linkColorDark }} !important;
+        }
         [data-ogsc] .legal-copy-dark { color: {{ $legalCopyColorDark }} !important; }
     </style>
     @yield('extra-styles')
 </head>
-<body bgcolor="{{ $emailCanvasBackgroundLight }}" style="margin:0; padding:0; background-color:{{ $emailCanvasBackgroundLight }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; color:{{ $bodyColorLight }}; -webkit-text-size-adjust:100%; word-break:break-word;" class="body-bg">
+<body bgcolor="{{ $emailCanvasBackgroundLight }}" style="margin:0; padding:0; background-color:{{ $emailCanvasBackgroundLight }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; color:{{ $bodyColorLight }}; -webkit-text-size-adjust:100%; word-break:break-word;" class="body-bg email-body">
     <div style="display:none !important; visibility:hidden; opacity:0; color:transparent; height:0; width:0; overflow:hidden; mso-hide:all; font-size:0; line-height:0;">@yield('preheader', 'Updates from ' . $productName)&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;</div>
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ $emailCanvasBackgroundLight }}" style="background-color:{{ $emailCanvasBackgroundLight }};" class="body-bg">
@@ -251,9 +284,9 @@
                                         <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                                             <tr>
                                                 <td class="footer-card-bg footer-inner" style="background-color:{{ $footerSurfaceLight }}; border-radius:20px; padding:24px 26px;">
-                                                    <p style="margin:0 0 8px; font-size:18px; line-height:1.5; color:{{ $headingColorLight }}; font-weight:800;">Need help with a shoot, invoice, or account question?</p>
-                                                    <p class="dark-body" style="margin:0; font-size:14px; line-height:1.8; color:{{ $bodyColorLight }};">
-                                                        If you need help, call {{ $supportPhone }} or email us at <a href="mailto:{{ $supportEmail }}" class="footer-link-dark" style="color:{{ $headingColorLight }}; text-decoration:underline;">{{ $supportEmail }}</a>.
+                                                    <p class="dark-heading" style="margin:0 0 8px; font-size:18px; line-height:1.5; color:{{ $headingColorLight }}; font-weight:800;">Need help with a shoot, invoice, or account question?</p>
+                                                    <p class="dark-body footer-contact" style="margin:0; font-size:14px; line-height:1.8; color:{{ $bodyColorLight }};">
+                                                        If you need help, call <a href="tel:{{ $supportPhoneHref }}" class="footer-contact-link" style="color:{{ $linkColorLight }}; text-decoration:underline;">{{ $supportPhone }}</a> or email us at <a href="mailto:{{ $supportEmail }}" class="footer-contact-link" style="color:{{ $linkColorLight }}; text-decoration:underline;">{{ $supportEmail }}</a>.
                                                     </p>
                                                     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px;">
                                                         <tr>
@@ -285,7 +318,7 @@
                                                     </table>
 
                                                     @hasSection('footer_note')
-                                                    <p style="margin:16px 0 0; color:{{ $mutedColorLight }}; font-size:12px; line-height:1.7;">@yield('footer_note')</p>
+                                                    <p class="dark-muted" style="margin:16px 0 0; color:{{ $mutedColorLight }}; font-size:12px; line-height:1.7;">@yield('footer_note')</p>
                                                     @endif
                                                 </td>
                                             </tr>
@@ -325,7 +358,7 @@
                     <tr>
                         <td class="legal-copy-dark" style="padding:14px 8px 0; text-align:center; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.7;">
                             This email was sent by {{ $productName }}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.
-                            <div style="margin-top:8px; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.6;">Thank you for the opportunity.</div>
+                            <div class="legal-copy-dark" style="margin-top:8px; color:{{ $legalCopyColorLight }}; font-size:11px; line-height:1.6;">Thank you for the opportunity.</div>
                             <div style="display:none; font-size:0; line-height:0; max-height:0; overflow:hidden; opacity:0; mso-hide:all;">[CLIENT.ADDRESS]</div>
                         </td>
                     </tr>

@@ -10,13 +10,13 @@ use App\Models\MessageTemplate;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\MailService;
-use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\AutomationService;
-use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\AutomationWorkflowExecutor;
+use App\Services\Messaging\MessagingService;
+use App\Services\Messaging\OutboundDeliveryGuard;
+use App\Services\Messaging\Providers\LocalSmtpProvider;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
-use App\Services\Messaging\Providers\LocalSmtpProvider;
 use Carbon\Carbon;
 use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Auth\Events\Verified;
@@ -111,6 +111,13 @@ class MessagingAutomationTest extends TestCase
 
         $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.com']);
         $overdueTemplate = $this->createTemplate('Invoice Overdue');
+        $overdueTemplate->forceFill([
+            'slug' => 'payment-due-reminder',
+            'subject' => 'Payment Reminder - Invoice {{invoice_number}}',
+            'body_html' => '<p>Invoice <strong>{{invoice_number}}</strong></p>',
+            'body_text' => 'Invoice {{invoice_number}}',
+            'variables_json' => ['invoice_number'],
+        ])->save();
 
         $this->createAutomation('INVOICE_OVERDUE', $overdueTemplate, ['client']);
 
@@ -120,7 +127,7 @@ class MessagingAutomationTest extends TestCase
             'role' => Invoice::ROLE_CLIENT,
             'period_start' => now()->toDateString(),
             'period_end' => now()->toDateString(),
-            'invoice_number' => 'INV-1001',
+            'invoice_number' => 'Invoice 00018',
             'issue_date' => now()->subDays(3),
             'due_date' => now()->subDay(),
             'total' => 250,
@@ -134,7 +141,7 @@ class MessagingAutomationTest extends TestCase
             'role' => Invoice::ROLE_CLIENT,
             'period_start' => now()->subDays(10)->toDateString(),
             'period_end' => now()->subDays(2)->toDateString(),
-            'invoice_number' => 'INV-1002',
+            'invoice_number' => '00019',
             'issue_date' => now()->subDays(15),
             'due_date' => now()->subDays(2),
             'total' => 180,
@@ -152,6 +159,10 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame((float) $dueInvoice->balanceDue(), (float) ($dueMessage->metadata['amount_due'] ?? -1));
         $this->assertSame($dueInvoice->invoice_number, $dueMessage->metadata['invoice_number'] ?? null);
         $this->assertSame($dueInvoice->paymentLink(), $dueMessage->metadata['payment_link'] ?? null);
+        $this->assertSame('Payment Reminder - Property details unavailable - Invoice 00018', $dueMessage->subject);
+        $this->assertStringContainsString('Invoice Number: 00018', html_entity_decode(strip_tags($dueMessage->body_html)));
+        $this->assertStringContainsString('Invoice Number: 00018', $dueMessage->body_text);
+        $this->assertStringNotContainsString('Invoice Invoice', $dueMessage->subject.$dueMessage->body_html.$dueMessage->body_text);
 
         $overdueMessage = Message::where('related_invoice_id', $overdueInvoice->id)->first();
         $this->assertNotNull($overdueMessage);
@@ -160,11 +171,135 @@ class MessagingAutomationTest extends TestCase
         $this->assertSame('overdue_2d', $overdueMessage->metadata['reminder_stage'] ?? null);
         $this->assertSame($overdueInvoice->invoice_number, $overdueMessage->metadata['invoice_number'] ?? null);
         $this->assertSame($overdueInvoice->paymentLink(), $overdueMessage->metadata['payment_link'] ?? null);
+        $this->assertSame('Payment Reminder - Property details unavailable - Invoice 00019', $overdueMessage->subject);
+        $this->assertStringContainsString('Invoice Number: 00019', html_entity_decode(strip_tags($overdueMessage->body_html)));
+        $this->assertStringContainsString('Invoice Number: 00019', $overdueMessage->body_text);
+        $this->assertStringNotContainsString('Invoice Invoice', $overdueMessage->subject.$overdueMessage->body_html.$overdueMessage->body_text);
 
         Artisan::call('messaging:invoice-reminders');
 
         $this->assertSame(1, Message::where('related_invoice_id', $dueInvoice->id)->count());
         $this->assertSame(1, Message::where('related_invoice_id', $overdueInvoice->id)->count());
+    }
+
+    public function test_invoice_reminders_resolve_direct_and_unique_related_property_context(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $client = User::factory()->create(['role' => 'client', 'email' => 'property-client@example.com']);
+        $template = $this->createTemplate('Invoice Property Reminder');
+        $template->forceFill([
+            'slug' => 'payment-due-reminder-property-context',
+            'subject' => 'Payment Reminder - {{shoot_location}} - Invoice {{invoice_number}}',
+            'body_html' => '<p>Location: {{shoot_location}}</p><p>Address: {{shoot_address}}</p>',
+            'body_text' => "Location: {{shoot_location}}\nAddress: {{shoot_address}}",
+            'variables_json' => ['invoice_number', 'shoot_location', 'shoot_address'],
+        ])->save();
+        $this->createAutomation('INVOICE_OVERDUE', $template, ['client']);
+
+        $directShoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'address' => '421 Direct Avenue',
+            'city' => 'Tampa',
+            'state' => 'FL',
+            'zip' => '33602',
+        ]);
+        $directInvoice = $this->createInvoice([
+            'client_id' => $client->id,
+            'user_id' => $client->id,
+            'shoot_id' => $directShoot->id,
+            'invoice_number' => 'Invoice 00421',
+            'due_date' => now()->subDay(),
+        ]);
+
+        $uniqueShoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'address' => '422 Unique Lane',
+            'city' => 'Orlando',
+            'state' => 'FL',
+            'zip' => '32801',
+        ]);
+        $uniqueInvoice = $this->createInvoice([
+            'client_id' => $client->id,
+            'user_id' => $client->id,
+            'shoot_id' => null,
+            'invoice_number' => 'Invoice 00422',
+            'due_date' => now()->subDay(),
+        ]);
+        $uniqueInvoice->shoots()->attach($uniqueShoot->id);
+        $uniqueInvoice->items()->create([
+            'shoot_id' => $uniqueShoot->id,
+            'type' => 'charge',
+            'description' => 'Photography',
+            'quantity' => 1,
+            'unit_amount' => 100,
+            'total_amount' => 100,
+        ]);
+
+        Artisan::call('messaging:invoice-reminders');
+
+        $directMessage = Message::where('related_invoice_id', $directInvoice->id)->firstOrFail();
+        $this->assertSame('Payment Reminder - 421 Direct Avenue, Tampa, FL, 33602 - Invoice 00421', $directMessage->subject);
+        $this->assertSame(1, substr_count($directMessage->subject, 'Invoice'));
+        $this->assertSame($directShoot->id, $directMessage->related_shoot_id);
+        $this->assertSame($directShoot->id, $directMessage->metadata['shoot_id'] ?? null);
+        $this->assertStringContainsString('421 Direct Avenue, Tampa, FL, 33602', $directMessage->body_html);
+        $this->assertStringContainsString('421 Direct Avenue, Tampa, FL, 33602', $directMessage->body_text);
+
+        $uniqueMessage = Message::where('related_invoice_id', $uniqueInvoice->id)->firstOrFail();
+        $this->assertSame('Payment Reminder - 422 Unique Lane, Orlando, FL, 32801 - Invoice 00422', $uniqueMessage->subject);
+        $this->assertSame(1, substr_count($uniqueMessage->subject, 'Invoice'));
+        $this->assertSame($uniqueShoot->id, $uniqueMessage->related_shoot_id);
+        $this->assertSame($uniqueShoot->id, $uniqueMessage->metadata['shoot_id'] ?? null);
+        $this->assertStringContainsString('422 Unique Lane, Orlando, FL, 32801', $uniqueMessage->body_html);
+        $this->assertStringContainsString('422 Unique Lane, Orlando, FL, 32801', $uniqueMessage->body_text);
+    }
+
+    public function test_invoice_reminder_uses_multiple_properties_fallback_when_context_is_ambiguous(): void
+    {
+        Mail::fake();
+        $this->createDefaultEmailChannel();
+
+        $client = User::factory()->create(['role' => 'client', 'email' => 'multi-property-client@example.com']);
+        $template = $this->createTemplate('Multi-property Invoice Reminder');
+        $template->forceFill([
+            'slug' => 'payment-due-reminder-multiple-properties',
+            'subject' => 'Payment Reminder - {{shoot_location}} - Invoice {{invoice_number}}',
+            'body_html' => '<p>Location: {{shoot_location}}</p><p>Address: {{shoot_address}}</p>',
+            'body_text' => "Location: {{shoot_location}}\nAddress: {{shoot_address}}",
+            'variables_json' => ['invoice_number', 'shoot_location', 'shoot_address'],
+        ])->save();
+        $this->createAutomation('INVOICE_OVERDUE', $template, ['client']);
+
+        $shoots = Shoot::factory()->count(2)->create(['client_id' => $client->id]);
+        $invoice = $this->createInvoice([
+            'client_id' => $client->id,
+            'user_id' => $client->id,
+            'shoot_id' => null,
+            'invoice_number' => 'Invoice 00423',
+            'due_date' => now()->subDay(),
+        ]);
+        $invoice->shoots()->attach($shoots->modelKeys());
+
+        Artisan::call('messaging:invoice-reminders');
+
+        $message = Message::where('related_invoice_id', $invoice->id)->firstOrFail();
+        $visibleHtml = html_entity_decode(strip_tags($message->body_html));
+
+        $this->assertSame('Payment Reminder - Multiple properties - Invoice 00423', $message->subject);
+        $this->assertSame(1, substr_count($message->subject, 'Invoice'));
+        $this->assertNull($message->related_shoot_id);
+        $this->assertSame(2, $message->metadata['related_shoot_count'] ?? null);
+        $this->assertSame('Multiple properties', $message->metadata['shoot_location'] ?? null);
+        $this->assertGreaterThanOrEqual(2, substr_count($visibleHtml, 'Multiple properties'));
+        $this->assertStringContainsString('Multiple properties', $message->body_text);
+        foreach ($shoots as $shoot) {
+            $this->assertStringNotContainsString(
+                $shoot->address,
+                $message->subject.$message->body_html.$message->body_text
+            );
+        }
     }
 
     public function test_invoice_overdue_only_fires_on_scheduled_offsets(): void
@@ -185,7 +320,7 @@ class MessagingAutomationTest extends TestCase
                 'client_id' => $client->id,
                 'user_id' => $client->id,
                 'role' => Invoice::ROLE_CLIENT,
-                'invoice_number' => 'INV-S-' . $offset,
+                'invoice_number' => 'INV-S-'.$offset,
                 'issue_date' => now()->subDays($offset + 5),
                 'due_date' => now()->subDays($offset),
                 'total' => 200 + $offset,
@@ -199,7 +334,7 @@ class MessagingAutomationTest extends TestCase
                 'client_id' => $client->id,
                 'user_id' => $client->id,
                 'role' => Invoice::ROLE_CLIENT,
-                'invoice_number' => 'INV-K-' . $offset,
+                'invoice_number' => 'INV-K-'.$offset,
                 'issue_date' => now()->subDays($offset + 5),
                 'due_date' => now()->subDays($offset),
                 'total' => 200 + $offset,
@@ -370,12 +505,12 @@ class MessagingAutomationTest extends TestCase
         Artisan::call('messaging:invoice-summaries');
 
         $clientMessage = Message::where('send_source', 'AUTOMATION')
-            ->where('tags_json', 'like', '%INVOICE_SUMMARY:client:' . $client->id . '%')
+            ->where('tags_json', 'like', '%INVOICE_SUMMARY:client:'.$client->id.'%')
             ->first();
         $this->assertNotNull($clientMessage);
 
         $repMessage = Message::where('send_source', 'AUTOMATION')
-            ->where('tags_json', 'like', '%WEEKLY_REP_INVOICE:rep:' . $rep->id . '%')
+            ->where('tags_json', 'like', '%WEEKLY_REP_INVOICE:rep:'.$rep->id.'%')
             ->first();
         $this->assertNotNull($repMessage);
     }
@@ -613,7 +748,7 @@ class MessagingAutomationTest extends TestCase
                         && $targetShoot->id === $shoot->id
                         && $scheduledAt instanceof Carbon
                         && count($tags) === 1
-                        && str_contains($tags[0], 'SHOOT_REMINDER:24H:shoot:' . $shoot->id . ':')
+                        && str_contains($tags[0], 'SHOOT_REMINDER:24H:shoot:'.$shoot->id.':')
                         && $notifyPhotographer === false;
                 })
                 ->andReturnTrue();
@@ -658,7 +793,7 @@ class MessagingAutomationTest extends TestCase
                         && $targetShoot->id === $shoot->id
                         && $scheduledAt instanceof Carbon
                         && count($tags) === 1
-                        && str_contains($tags[0], 'SHOOT_REMINDER:24H:shoot:' . $shoot->id . ':')
+                        && str_contains($tags[0], 'SHOOT_REMINDER:24H:shoot:'.$shoot->id.':')
                         && $notifyPhotographer === false;
                 })
                 ->andReturnTrue();
@@ -740,7 +875,7 @@ class MessagingAutomationTest extends TestCase
         $workflowExecutor = Mockery::mock(AutomationWorkflowExecutor::class);
         $workflowExecutor->shouldReceive('executeEventTrigger')
             ->once()
-            ->withArgs(fn (string $triggerType, array $context) => $triggerType === 'SHOOT_REMINDER' && !empty($context['shoot_id']))
+            ->withArgs(fn (string $triggerType, array $context) => $triggerType === 'SHOOT_REMINDER' && ! empty($context['shoot_id']))
             ->andReturn($dispatchResult);
 
         return new AutomationService(
@@ -789,7 +924,7 @@ class MessagingAutomationTest extends TestCase
         }
 
         return AutomationRule::create([
-            'name' => $trigger . ' Rule',
+            'name' => $trigger.' Rule',
             'trigger_type' => $trigger,
             'template_id' => $template->id,
             'is_active' => true,
@@ -809,7 +944,7 @@ class MessagingAutomationTest extends TestCase
             'amount_paid' => 0,
             'issue_date' => now()->subDays(5),
             'due_date' => now()->addDays(10),
-            'invoice_number' => 'INV-' . strtoupper(\Illuminate\Support\Str::random(6)),
+            'invoice_number' => 'INV-'.strtoupper(\Illuminate\Support\Str::random(6)),
         ];
 
         return Invoice::create(array_merge($defaults, $overrides));

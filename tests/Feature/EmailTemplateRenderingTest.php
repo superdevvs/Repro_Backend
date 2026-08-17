@@ -20,11 +20,16 @@ use Tests\TestCase;
  */
 class EmailTemplateRenderingTest extends TestCase
 {
-    private const SUPPORT_LINE = 'If you need help, call 202-868-1663 or email us at';
+    private const SUPPORT_LINE = 'If you need help, call (202) 868-1663 or email us at';
 
     private function renderer(): TemplateRenderer
     {
         return app(TemplateRenderer::class);
+    }
+
+    private function visibleText(string $html): string
+    {
+        return preg_replace('/\s+/', ' ', html_entity_decode(strip_tags($html))) ?? '';
     }
 
     private function legacyWrappedBody(string $bodyHtml): string
@@ -34,10 +39,10 @@ class EmailTemplateRenderingTest extends TestCase
                 <h1 style="margin: 0; font-size: 20px; color: #2c3e50;">R/E Pro Photos</h1>
             </div>
 
-            ' . $bodyHtml . '
+            '.$bodyHtml.'
 
             <div class="email-footer note" style="border-top: 1px solid #eee; margin-top: 30px; padding-top: 16px; color: #666; font-size: 13px;">
-                <p style="margin: 0 0 8px 0;">If you need help, call 202-868-1663 or email us at [company_email].</p>
+                <p style="margin: 0 0 8px 0;">If you need help, call (202) 868-1663 or email us at [company_email].</p>
                 <p style="margin: 0;">Thanks,<br><strong>R/E Pro Photos</strong></p>
             </div>
         ';
@@ -66,7 +71,7 @@ class EmailTemplateRenderingTest extends TestCase
         // the unused CSS rule may remain but no element carries the class).
         $this->assertStringNotContainsString('class="hero-title-status"', $html);
         // Exact support line.
-        $this->assertStringContainsString(self::SUPPORT_LINE, $html);
+        $this->assertStringContainsString(self::SUPPORT_LINE, $this->visibleText($html));
         $this->assertStringContainsString('contact@reprophotos.com', $html);
         // Header reduced below 32px.
         $this->assertStringContainsString('font-size: 30px', $html);
@@ -92,8 +97,8 @@ class EmailTemplateRenderingTest extends TestCase
             'slug' => 'payment-due-reminder',
             'channel' => 'EMAIL',
             'subject' => 'Payment Reminder - Invoice [invoice_number]',
-            'body_html' => '<p>Amount Due: $[amount_due]</p>',
-            'body_text' => 'Amount Due: [amount_due]',
+            'body_html' => '<p>Invoice <strong>[invoice_number]</strong></p><p><span>Invoice Number:</span> [invoice_number]</p><p>Amount Due: $[amount_due]</p>',
+            'body_text' => "Invoice [invoice_number]\nInvoice Number: [invoice_number]\nAmount Due: [amount_due]",
             'variables_json' => ['invoice_number', 'amount_due'],
         ]);
 
@@ -101,10 +106,36 @@ class EmailTemplateRenderingTest extends TestCase
             'invoice_number' => 'Invoice 00018',
             'amount_due' => '250.00',
         ]);
+        $visibleHtml = html_entity_decode(strip_tags($result['html']));
 
         $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
         $this->assertStringNotContainsString('Invoice Invoice 00018', $result['html']);
-        $this->assertStringContainsString('Invoice 00018', $result['html']);
+        $this->assertStringContainsString('Invoice 00018', $visibleHtml);
+        $this->assertStringContainsString('Invoice Number: 00018', $visibleHtml);
+        $this->assertStringNotContainsString('Invoice Invoice 00018', $result['text']);
+        $this->assertStringContainsString("Invoice 00018\nInvoice Number: 00018", $result['text']);
+    }
+
+    public function test_payment_reminder_adds_one_invoice_label_when_stored_number_is_bare(): void
+    {
+        $template = new MessageTemplate([
+            'slug' => 'payment-due-reminder',
+            'channel' => 'EMAIL',
+            'subject' => 'Payment Reminder - Invoice {{invoice_number}}',
+            'body_html' => '<p>{{invoice_number}}</p><p>Invoice <strong>{{invoice_number}}</strong></p>',
+            'body_text' => "{{invoice_number}}\nInvoice {{invoice_number}}",
+            'variables_json' => ['invoice_number'],
+        ]);
+
+        $result = $this->renderer()->render($template, [
+            'invoice_number' => '00018',
+        ]);
+        $visibleHtml = html_entity_decode(strip_tags($result['html']));
+
+        $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
+        $this->assertStringContainsString('Invoice 00018', $visibleHtml);
+        $this->assertSame("Invoice 00018\nInvoice 00018", $result['text']);
+        $this->assertStringNotContainsString('Invoice Invoice', $result['html'].$result['text'].$result['subject']);
     }
 
     public function test_payment_reminder_strips_legacy_body_wrapper_and_empty_greeting_artifact(): void
@@ -150,7 +181,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('body-inner-after-wide', $html);
         $this->assertStringContainsString('Jul 01, 2026', $html);
         $this->assertStringContainsString('https://pay.example/inv-00018', $html);
-        $this->assertStringContainsString(self::SUPPORT_LINE, $html);
+        $this->assertStringContainsString(self::SUPPORT_LINE, $this->visibleText($html));
         $this->assertStringNotContainsString('class="email-header"', $html);
         $this->assertStringNotContainsString('class="email-footer note"', $html);
         $this->assertStringNotContainsString('border-bottom: 2px solid #007bff', $html);
@@ -209,7 +240,7 @@ class EmailTemplateRenderingTest extends TestCase
 
     public function test_account_created_db_render_uses_single_url_and_new_closing(): void
     {
-        $seeder = new MessagingSystemSeeder();
+        $seeder = new MessagingSystemSeeder;
         $method = new ReflectionMethod($seeder, 'getAccountCreatedTemplate');
         $method->setAccessible(true);
         /** @var string $body */
@@ -244,7 +275,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringNotContainsString('>Website<', $html);
         $this->assertStringNotContainsString('>Dashboard<', $html);
         // Support line present.
-        $this->assertStringContainsString(self::SUPPORT_LINE, $html);
+        $this->assertStringContainsString(self::SUPPORT_LINE, $this->visibleText($html));
     }
 
     public function test_account_created_blade_render_hides_website_and_has_new_closing(): void
@@ -269,7 +300,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringNotContainsString('font-size:32px', $html);
         $this->assertStringNotContainsString('font-size:48px', $html);
         // Support contact.
-        $this->assertStringContainsString('202-868-1663', $html);
+        $this->assertStringContainsString('(202) 868-1663', $html);
         $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
         $this->assertStringNotContainsString('202-868-1113', $html);
     }
@@ -293,7 +324,7 @@ class EmailTemplateRenderingTest extends TestCase
             }
         }
 
-        $this->assertSame([], $offenders, 'Hero titles must not use font-size:48px: ' . implode(', ', $offenders));
+        $this->assertSame([], $offenders, 'Hero titles must not use font-size:48px: '.implode(', ', $offenders));
     }
 
     public function test_new_account_email_exposes_only_dashboard_url_links(): void

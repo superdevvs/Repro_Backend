@@ -4,8 +4,10 @@ namespace App\Services\SystemEmails;
 
 use App\Models\MessageTemplate;
 use App\Services\Messaging\TemplateRenderer;
-use Carbon\CarbonInterface;
+use App\Services\Messaging\TemplateVariableResolver;
+use App\Support\InvoiceReference;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -15,8 +17,8 @@ class SystemEmailRenderer
 {
     public function __construct(
         private readonly ?TemplateRenderer $templateRenderer = null,
-    ) {
-    }
+        private readonly ?TemplateVariableResolver $variableResolver = null,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $payload
@@ -27,10 +29,12 @@ class SystemEmailRenderer
         // Opt-in override: if an admin has enabled a DB template for this
         // protected email type, render that instead of the hardcoded Blade
         // view. Disabled by default, so behavior is unchanged until enabled.
-        if ($override = $this->resolveOverrideTemplate($definition)) {
-            $rendered = $this->renderOverride($override, $definition, $payload, $subject);
-            if ($rendered !== null) {
-                return $rendered;
+        if (! $this->mustUseProtectedBlade($definition, $payload)) {
+            if ($override = $this->resolveOverrideTemplate($definition)) {
+                $rendered = $this->renderOverride($override, $definition, $payload, $subject);
+                if ($rendered !== null) {
+                    return $rendered;
+                }
             }
         }
 
@@ -44,6 +48,19 @@ class SystemEmailRenderer
             'body_text' => $text,
             'view_data' => $viewData,
         ];
+    }
+
+    /**
+     * The SHOOT_REQUESTED alias serves both the client receipt and the internal
+     * admin review notification. Its editable template is client-authored copy,
+     * so admin recipients must keep the audience-specific protected Blade.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function mustUseProtectedBlade(EmailTypeDefinition $definition, array $payload): bool
+    {
+        return $definition->alias === 'SHOOT_REQUESTED'
+            && (bool) Arr::get($payload, 'meta.is_admin', false);
     }
 
     private function resolveOverrideTemplate(EmailTypeDefinition $definition): ?MessageTemplate
@@ -114,8 +131,56 @@ class SystemEmailRenderer
         $firstName = (string) (Arr::get($recipient, 'first_name') ?? Str::before($recipientName, ' '));
         $lastName = (string) (Arr::get($recipient, 'last_name') ?? trim(Str::after($recipientName, ' ')));
         $portalUrl = (string) (Arr::get($links, 'dashboard') ?? Arr::get($branding, 'dashboard_url') ?? '');
+        $recipientType = strtolower((string) (Arr::get($meta, 'recipient_type') ?? Arr::get($recipient, 'role') ?? 'client'));
+        $invoiceId = Arr::get($invoice, 'id');
+        $storedInvoiceNumber = Arr::get($invoice, 'invoice_number')
+            ?? Arr::get($invoice, 'number')
+            ?? Arr::get($meta, 'invoice_number');
+        $invoiceReference = InvoiceReference::number($storedInvoiceNumber, $invoiceId);
+        $invoiceLabel = InvoiceReference::label($storedInvoiceNumber, $invoiceId);
+        $invoiceTotal = (float) (Arr::get($invoice, 'total_amount') ?? Arr::get($invoice, 'total') ?? 0);
+        $amountPaid = (float) (Arr::get($invoice, 'amount_paid') ?? 0);
+        $invoiceItems = (array) (Arr::get($invoice, 'items') ?? []);
 
-        return [
+        $resolverContext = array_merge($this->scalarPayloadVariables($payload), [
+            'recipient' => $recipient,
+            'recipient_type' => $recipientType,
+            'recipient_name' => $recipientName,
+            'account_id' => Arr::get($account, 'id') ?? Arr::get($recipient, 'id'),
+            'shoot_id' => Arr::get($shoot, 'id'),
+            'invoice_id' => $invoiceId,
+            'shoot_changes' => Arr::get($meta, 'shoot_changes') ?? Arr::get($meta, 'changes_summary'),
+        ]);
+
+        // formatShootData exposes a display-only `shoot.photographer` string.
+        // The resolver's `photographer` context key is intentionally a User or
+        // user-shaped array, so do not let the flattened display value collide.
+        unset($resolverContext['photographer']);
+
+        if (in_array($recipientType, ['client', 'photographer', 'rep'], true)) {
+            $resolverContext[$recipientType] = $recipient;
+        }
+
+        $payloadPhotographerName = trim((string) (Arr::get($shoot, 'primary_photographer')
+            ?? Arr::get($shoot, 'photographer')
+            ?? ''));
+        if ($recipientType !== 'photographer' && $payloadPhotographerName !== '') {
+            $resolverContext['photographer'] = ['name' => $payloadPhotographerName];
+        }
+
+        $resolver = $this->variableResolver ?? app(TemplateVariableResolver::class);
+        $resolved = $resolver->resolve(array_filter(
+            $resolverContext,
+            fn (mixed $value) => $value !== null
+        ));
+
+        $photographerName = trim((string) ($resolved['photographer_name'] ?? ''));
+        if ($photographerName === '') {
+            $photographerName = $payloadPhotographerName;
+        }
+        [$photographerFirstName, $photographerLastName] = $this->splitName($photographerName);
+
+        return array_merge($resolved, $this->scalarPayloadVariables($payload), [
             'greeting' => $firstName !== '' ? "Hello {$firstName}" : 'Hello',
             'client_first_name' => $firstName,
             'client_last_name' => $lastName,
@@ -128,14 +193,120 @@ class SystemEmailRenderer
             'portal_url' => $portalUrl,
             'password_reset_link' => (string) (Arr::get($links, 'reset_password') ?? ''),
             'shoot_location' => (string) (Arr::get($shoot, 'location') ?? Arr::get($shoot, 'address') ?? ''),
-            'shoot_date' => (string) (Arr::get($shoot, 'date') ?? ''),
-            'shoot_time' => (string) (Arr::get($shoot, 'time') ?? ''),
-            'invoice_number' => (string) (Arr::get($invoice, 'number') ?? Arr::get($meta, 'invoice_number') ?? ''),
-            'amount_due' => (string) (Arr::get($invoice, 'amount_due') ?? Arr::get($meta, 'amount_due') ?? ''),
+            'shoot_date' => $this->overrideShootDate($shoot, $resolved),
+            'shoot_time' => (string) ($resolved['shoot_time'] ?? Arr::get($shoot, 'time') ?? ''),
+            'photographer_name' => $photographerName,
+            'photographer_first_name' => $photographerFirstName,
+            'photographer_last_name' => $photographerLastName,
+            'invoice_number' => $invoiceLabel,
+            'invoice_label' => $invoiceLabel,
+            'invoice_reference' => $invoiceReference,
+            'amount_due' => (string) (Arr::get($invoice, 'amount_due') ?? Arr::get($meta, 'amount_due') ?? max($invoiceTotal - $amountPaid, 0)),
             'due_date' => (string) (Arr::get($invoice, 'due_date') ?? Arr::get($meta, 'due_date') ?? ''),
             'payment_link' => (string) (Arr::get($links, 'payment') ?? ''),
             'payment_amount' => (string) (Arr::get($payment, 'amount') ?? Arr::get($meta, 'amount') ?? ''),
-        ];
+            'recipient_role' => (string) (Arr::get($meta, 'recipient_role') ?? $recipientType),
+            'billing_period' => (string) (Arr::get($meta, 'billing_period') ?? Arr::get($meta, 'period') ?? ''),
+            'invoice_status' => Str::headline((string) (Arr::get($invoice, 'status') ?? 'draft')),
+            'invoice_total' => '$'.number_format($invoiceTotal, 2),
+            'invoice_items_html' => $this->invoiceItemsHtml($invoiceItems),
+            'invoice_items_text' => $this->invoiceItemsText($invoiceItems),
+            'dashboard_url' => $portalUrl,
+            'invoice_next_step' => (string) (Arr::get($meta, 'invoice_next_step')
+                ?? 'Open the dashboard to review the invoice, confirm line items, and add any missing expenses before approval moves forward.'),
+            'approval_note' => (string) (Arr::get($meta, 'approval_note')
+                ?? 'Changes made after generation may trigger a fresh approval review before payout is finalized.'),
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $shoot
+     * @param  array<string, mixed>  $resolved
+     */
+    private function overrideShootDate(array $shoot, array $resolved): string
+    {
+        $resolvedDate = trim((string) ($resolved['shoot_date'] ?? ''));
+        if ($resolvedDate !== '') {
+            return $resolvedDate;
+        }
+
+        $date = trim((string) (Arr::get($shoot, 'date') ?? ''));
+        $time = trim((string) (Arr::get($shoot, 'time') ?? ''));
+
+        if ($date !== '' && $time !== '') {
+            $date = preg_replace('/\s+at\s+'.preg_quote($time, '/').'$/i', '', $date) ?? $date;
+        }
+
+        return $date;
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function splitName(string $name): array
+    {
+        $parts = preg_split('/\s+/', trim($name)) ?: [];
+        $firstName = array_shift($parts) ?? '';
+
+        return [$firstName, implode(' ', $parts)];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, scalar|null>
+     */
+    private function scalarPayloadVariables(array $payload): array
+    {
+        $variables = [];
+
+        foreach (['recipient', 'account', 'shoot', 'invoice', 'payment', 'links', 'branding', 'meta'] as $section) {
+            foreach ((array) ($payload[$section] ?? []) as $key => $value) {
+                if (is_scalar($value) || $value === null) {
+                    $variables[(string) $key] = $value;
+                }
+            }
+        }
+
+        return $variables;
+    }
+
+    /**
+     * @param  array<int, mixed>  $items
+     */
+    private function invoiceItemsHtml(array $items): string
+    {
+        if ($items === []) {
+            return '<p style="margin:0;">Line items will appear here once charges or expenses are attached to the invoice.</p>';
+        }
+
+        return collect($items)->map(function (mixed $item): string {
+            $item = (array) $item;
+            $type = e(Str::headline((string) ($item['type'] ?? 'line item')));
+            $description = e((string) ($item['description'] ?? 'Line item'));
+            $amount = e('$'.number_format((float) ($item['total_amount'] ?? $item['total'] ?? 0), 2));
+
+            return '<div class="info-row"><span class="info-label">'.$type.'</span> '
+                .$description.' <strong style="float:right;">'.$amount.'</strong></div>';
+        })->implode("\n");
+    }
+
+    /**
+     * @param  array<int, mixed>  $items
+     */
+    private function invoiceItemsText(array $items): string
+    {
+        if ($items === []) {
+            return '- No line items have been attached yet.';
+        }
+
+        return collect($items)->map(function (mixed $item): string {
+            $item = (array) $item;
+            $type = Str::headline((string) ($item['type'] ?? 'line item'));
+            $description = trim((string) ($item['description'] ?? 'Line item'));
+            $amount = '$'.number_format((float) ($item['total_amount'] ?? $item['total'] ?? 0), 2);
+
+            return "- {$description} ({$type}): {$amount}";
+        })->implode("\n");
     }
 
     /**
@@ -152,6 +323,14 @@ class SystemEmailRenderer
         $links = (array) ($payload['links'] ?? []);
         $branding = $this->objectify($payload['branding'] ?? []);
         $meta = $this->objectify($payload['meta'] ?? []);
+        $invoiceReference = InvoiceReference::number(
+            $invoice->invoice_number ?? $invoice->number ?? null,
+            $invoice->id ?? null
+        );
+        $invoiceLabel = InvoiceReference::label(
+            $invoice->invoice_number ?? $invoice->number ?? null,
+            $invoice->id ?? null
+        );
 
         $shared = [
             'payload' => $payload,
@@ -164,6 +343,8 @@ class SystemEmailRenderer
             'branding' => $branding,
             'meta' => $meta,
             'user' => $recipient,
+            'invoiceReference' => $invoiceReference,
+            'invoiceLabel' => $invoiceLabel,
         ];
 
         return match ($definition->alias) {
@@ -277,10 +458,6 @@ class SystemEmailRenderer
         };
     }
 
-    /**
-     * @param  mixed  $value
-     * @return mixed
-     */
     private function objectify(mixed $value): mixed
     {
         if ($value instanceof CarbonInterface) {
@@ -292,7 +469,7 @@ class SystemEmailRenderer
                 return array_map(fn ($item) => $this->objectify($item), $value);
             }
 
-            $object = new stdClass();
+            $object = new stdClass;
             foreach ($value as $key => $item) {
                 $object->{$key} = $this->objectify($item);
             }

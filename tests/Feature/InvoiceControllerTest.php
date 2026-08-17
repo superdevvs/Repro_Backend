@@ -51,7 +51,9 @@ class InvoiceControllerTest extends TestCase
         $response->assertCreated();
         $response->assertJsonPath('data.role', Invoice::ROLE_CLIENT);
         $response->assertJsonPath('data.user_id', $client->id);
-        $response->assertJsonPath('data.charges_total', '275.00');
+        $response->assertJsonPath('data.charges_total', '250.00');
+        $response->assertJsonPath('data.tax', 25);
+        $response->assertJsonPath('data.total_amount', '275.00');
         $response->assertJsonPath('data.payments_total', '100.00');
         $response->assertJsonPath('data.balance_due', '175.00');
 
@@ -109,7 +111,7 @@ class InvoiceControllerTest extends TestCase
         $index->assertJsonFragment(['id' => $invoice->id]);
         $index->assertJsonPath('data.0.items.0.type', InvoiceItem::TYPE_CHARGE);
 
-        $show = $this->getJson('/api/admin/invoices/' . $invoice->id);
+        $show = $this->getJson('/api/admin/invoices/'.$invoice->id);
         $show->assertOk();
         $show->assertJsonPath('id', $invoice->id);
         $show->assertJsonPath('items.0.type', InvoiceItem::TYPE_CHARGE);
@@ -143,7 +145,7 @@ class InvoiceControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $paidResponse = $this->postJson('/api/admin/invoices/' . $invoice->id . '/mark-paid', [
+        $paidResponse = $this->postJson('/api/admin/invoices/'.$invoice->id.'/mark-paid', [
             'paid_at' => '2025-08-15T10:30:00Z',
             'payment_method' => 'check',
             'payment_details' => [
@@ -234,7 +236,7 @@ class InvoiceControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->getJson('/api/admin/invoices/' . $invoice->id);
+        $response = $this->getJson('/api/admin/invoices/'.$invoice->id);
 
         $response->assertOk();
         $response->assertJsonPath('payment_method', 'square');
@@ -272,7 +274,7 @@ class InvoiceControllerTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/invoice');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/invoice');
 
         $response->assertOk();
         $response->assertJsonPath('data.id', $invoice->id);

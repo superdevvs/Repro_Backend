@@ -25,7 +25,7 @@
     @endif
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:18px 0 8px; table-layout:fixed;">
         @if(!empty($verificationLink))
-        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">1. Verify your email</td></tr>@endif
+        @if($isPhotographer)<tr><td class="dark-heading" style="padding:0 0 7px; color:#071223; font-size:14px; line-height:1.5; font-weight:700;">1. Verify your email</td></tr>@endif
         <tr>
             <td align="center" style="padding-bottom:10px;">
                 <a href="{{ $verificationLink }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Verify Email</a>
@@ -33,7 +33,7 @@
         </tr>
         @endif
         @if(!empty($resetLink) && !empty($includePasswordCreationLink))
-        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">2. Create your password</td></tr>@endif
+        @if($isPhotographer)<tr><td class="dark-heading" style="padding:0 0 7px; color:#071223; font-size:14px; line-height:1.5; font-weight:700;">2. Create your password</td></tr>@endif
         <tr>
             <td align="center" style="padding-bottom:10px;">
                 <a href="{{ $resetLink }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Create Password</a>
@@ -41,14 +41,14 @@
         </tr>
         @endif
         @if(!empty($equipmentVerificationUrl))
-        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">3. Review and verify equipment</td></tr>@endif
+        @if($isPhotographer)<tr><td class="dark-heading" style="padding:0 0 7px; color:#071223; font-size:14px; line-height:1.5; font-weight:700;">3. Review and verify equipment</td></tr>@endif
         <tr>
             <td align="center" style="padding-bottom:10px;">
                 <a href="{{ $equipmentVerificationUrl }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Verify Equipment</a>
             </td>
         </tr>
         @endif
-        @if($isPhotographer)<tr><td style="padding:0 0 7px; color:#e8edf5; font-size:14px; line-height:1.5; font-weight:700;">4. Open your photographer dashboard</td></tr>@endif
+        @if($isPhotographer)<tr><td class="dark-heading" style="padding:0 0 7px; color:#071223; font-size:14px; line-height:1.5; font-weight:700;">4. Open your photographer dashboard</td></tr>@endif
         <tr>
             <td align="center">
                 <a href="{{ data_get($branding ?? null, 'dashboard_url', 'https://reprodashboard.com') }}" style="display:block; box-sizing:border-box; width:100%; max-width:100%; padding:14px 18px; border-radius:999px; background-color:#1463ff; color:#ffffff; font-weight:800; font-size:14px; line-height:1.25; text-decoration:none; text-align:center; white-space:normal; overflow-wrap:anywhere;">Open Dashboard</a>

@@ -46,7 +46,7 @@ $sample = [
 
     'company_name'             => 'R/E Pro Photos',
     'company_email'            => 'contact@reprophotos.com',
-    'company_phone'            => '202-868-1663',
+    'company_phone'            => '(202) 868-1663',
     'company_address'          => 'Washington, DC Metro Area',
     'portal_url'               => 'https://reprodashboard.com',
     'current_date'             => date('M j, Y'),

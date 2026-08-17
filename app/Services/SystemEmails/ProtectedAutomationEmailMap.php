@@ -39,6 +39,37 @@ class ProtectedAutomationEmailMap
     }
 
     /**
+     * The single seeded template that may override each protected email type.
+     *
+     * Keeping this map one-to-one avoids ambiguous "latest updated" selection
+     * when multiple legacy templates represented the same protected workflow.
+     *
+     * @return array<string, string>
+     */
+    public function canonicalTemplateSlugToAlias(): array
+    {
+        return [
+            'account-created' => 'ACCOUNT_CREATED',
+            'shoot-scheduled' => 'SHOOT_SCHEDULED',
+            'shoot-reminder' => 'SHOOT_REMINDER',
+            'shoot-updated' => 'SHOOT_UPDATED',
+            'shoot-requested' => 'SHOOT_REQUESTED',
+            'shoot-request-declined' => 'SHOOT_REQUEST_DECLINED',
+            'shoot-ready' => 'SHOOT_DELIVERED',
+            'shoot-deleted' => 'SHOOT_REMOVED',
+            'payment-thank-you' => 'PAYMENT_CONFIRMATION',
+            'weekly-invoice-generated' => 'INVOICE_GENERATED',
+            'shoot-cancelled' => 'SHOOT_CANCELLED',
+            'photographer-changed' => 'PHOTOGRAPHER_CHANGED',
+        ];
+    }
+
+    public function canonicalAliasForTemplateSlug(string $slug): ?string
+    {
+        return $this->canonicalTemplateSlugToAlias()[strtolower(trim($slug))] ?? null;
+    }
+
+    /**
      * @return array<int, string>
      */
     public function protectedTriggers(): array

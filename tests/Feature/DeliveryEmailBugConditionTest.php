@@ -223,7 +223,7 @@ class DeliveryEmailBugConditionTest extends TestCase
     {
         $html = $this->renderDeliveredEmailHtml();
 
-        $this->assertStringContainsString('202-868-1663', $html, 'The delivered email must show the correct support phone.');
+        $this->assertStringContainsString('(202) 868-1663', $html, 'The delivered email must show the correct support phone.');
         $this->assertStringNotContainsString('202-868-1113', $html, 'The delivered email must not show the wrong support phone.');
     }
 

@@ -43,9 +43,10 @@ return [
 
     'contact_address' => env('MAIL_CONTACT_ADDRESS', 'contact@reprophotos.com'),
 
-    // Canonical client-facing support number, matching reprophotos.com. Every
-    // email/SMS footer resolves back to this value, so change it here only.
-    'contact_phone' => env('MAIL_CONTACT_PHONE', '202-868-1663'),
+    // Canonical client-facing support number. This is deliberately not
+    // environment-overridable: an old MAIL_CONTACT_PHONE value on a server
+    // must never put the retired support number back into customer messages.
+    'contact_phone' => '(202) 868-1663',
 
     'accounting_address' => env('MAIL_ACCOUNTING_ADDRESS', 'accounting@reprophotos.com'),
 

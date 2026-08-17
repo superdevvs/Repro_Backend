@@ -6,6 +6,7 @@ use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\InvoiceService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -15,9 +16,9 @@ class ShootEditablePayloadService
 {
     public function __construct(
         protected ShootMutationSupportService $support,
-        protected InvoiceService $invoiceService
-    ) {
-    }
+        protected InvoiceService $invoiceService,
+        protected InvoiceAdjustmentService $invoiceAdjustments
+    ) {}
 
     public function validationRules(): array
     {
@@ -227,7 +228,7 @@ class ShootEditablePayloadService
             $invoiceNeedsRefresh = true;
         }
 
-        $shouldRecalculatePricing = !$paymentFieldsProvided && (
+        $shouldRecalculatePricing = ! $paymentFieldsProvided && (
             array_key_exists('services', $validated)
             || array_key_exists('client_id', $validated)
             || array_key_exists('state', $validated)
@@ -248,17 +249,20 @@ class ShootEditablePayloadService
             $shoot->tax_region = $pricingCalculation['tax_region'];
             $shoot->tax_percent = $pricingCalculation['tax_percent'];
             $shoot->tax_amount = $pricingCalculation['tax_amount'];
-            $shoot->total_quote = $pricingCalculation['total_quote'];
+            $billableAdjustments = $this->invoiceAdjustments
+                ->billableItemsForShoot($shoot)
+                ->sum(fn ($item) => (float) $item->total_amount);
+            $shoot->total_quote = round($pricingCalculation['total_quote'] + $billableAdjustments, 2);
             $invoiceNeedsRefresh = true;
         }
 
         if (array_key_exists('services', $validated) || $shouldRecalculatePricing || $paymentFieldsProvided) {
             $hasServices = count($targetServices) > 0;
-            if (!$hasServices) {
+            if (! $hasServices) {
                 $shoot->product_status = Shoot::PRODUCT_STATUS_NO_PRODUCT;
             } elseif ((float) ($shoot->total_quote ?? 0) <= 0.01) {
                 $shoot->product_status = Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT;
-            } elseif (!array_key_exists('product_status', $validated)) {
+            } elseif (! array_key_exists('product_status', $validated)) {
                 $shoot->product_status = Shoot::PRODUCT_STATUS_HAS_PRODUCT;
             }
 
@@ -347,7 +351,7 @@ class ShootEditablePayloadService
             ], static fn ($value) => $value !== null && $value !== '');
         }
 
-        if (!empty($autoPropertyTourLinks)) {
+        if (! empty($autoPropertyTourLinks)) {
             $currentTourLinks = $shoot->tour_links ?? [];
             if (is_string($currentTourLinks)) {
                 $currentTourLinks = json_decode($currentTourLinks, true) ?? [];

@@ -2,10 +2,10 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
@@ -13,19 +13,28 @@ use Illuminate\Support\Str;
 class Invoice extends Model
 {
     use HasFactory;
+
     public const STATUS_DRAFT = 'draft';
+
     public const STATUS_SENT = 'sent';
+
     public const STATUS_PAID = 'paid';
 
     public const ROLE_CLIENT = 'client';
+
     public const ROLE_PHOTOGRAPHER = 'photographer';
+
     public const ROLE_SALES_REP = 'salesRep';
 
     // Approval status constants
     public const APPROVAL_STATUS_PENDING = 'pending';
+
     public const APPROVAL_STATUS_APPROVED = 'accounts_approved';
+
     public const APPROVAL_STATUS_LEGACY_APPROVED = 'approved';
+
     public const APPROVAL_STATUS_REJECTED = 'rejected';
+
     public const APPROVAL_STATUS_PENDING_APPROVAL = 'pending_approval';
 
     protected $fillable = [
@@ -166,12 +175,27 @@ class Invoice extends Model
                 $isAdminMisc = ($meta['source'] ?? null) === 'admin_misc';
                 $billsClient = (bool) ($meta['bills_client'] ?? false);
 
-                return $isAdminMisc && !$billsClient;
+                return $isAdminMisc && ! $billsClient;
             })
             ->sum('total_amount');
-        $payments = $items->where('type', InvoiceItem::TYPE_PAYMENT)->sum('total_amount');
+        $itemPayments = (float) $items->where('type', InvoiceItem::TYPE_PAYMENT)->sum('total_amount');
+        $hasPaymentRecords = $this->role === self::ROLE_CLIENT && $this->hasRelatedPaymentRecords();
+        if ($hasPaymentRecords) {
+            $payments = $this->totalPaid();
+        } elseif ($this->role === self::ROLE_CLIENT && $itemPayments <= 0) {
+            $payments = max(
+                (float) ($this->getAttribute('amount_paid') ?? 0),
+                (float) ($this->getAttribute('payments_total') ?? 0)
+            );
+        } else {
+            $payments = $itemPayments;
+        }
 
         $totalCharges = $charges + $expenses;
+        $tax = (float) ($this->tax ?? 0);
+        $invoiceTotal = round($totalCharges + $tax, 2);
+        $payments = round((float) $payments, 2);
+        $balance = round(max($invoiceTotal - $payments, 0), 2);
 
         // Update fields if they exist in the schema
         if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'charges_total')) {
@@ -181,18 +205,22 @@ class Invoice extends Model
             $this->payments_total = $payments;
         }
         if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'balance_due')) {
-            $this->balance_due = $totalCharges - $payments;
+            $this->balance_due = $balance;
         }
 
         // Update total_amount if it exists
         if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'total_amount')) {
-            $this->total_amount = $totalCharges;
+            $this->total_amount = $invoiceTotal;
         }
         if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'subtotal')) {
             $this->subtotal = $totalCharges;
         }
         if ($this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'total')) {
-            $this->total = $totalCharges + ($this->tax ?? 0);
+            $this->total = $invoiceTotal;
+        }
+        if ($this->role === self::ROLE_CLIENT
+            && $this->getConnection()->getSchemaBuilder()->hasColumn($this->getTable(), 'amount_paid')) {
+            $this->amount_paid = $payments;
         }
 
         $this->save();
@@ -346,7 +374,7 @@ class Invoice extends Model
 
     public function hasBlockingWarnings(): bool
     {
-        return !empty($this->unresolved_warnings);
+        return ! empty($this->unresolved_warnings);
     }
 
     public function recordAuditEvent(string $event, ?User $actor = null, ?string $summary = null, array $metadata = []): InvoiceAuditEvent
@@ -435,7 +463,13 @@ class Invoice extends Model
         return [
             'payment_method' => $resolvedMethod,
             'payment_details' => $details !== [] ? $details : ($latestPayment?->payment_details ?? null),
-            'paid_at' => $paidAt ?: $latestPayment?->processed_at,
+            // paid_at means the invoice became fully paid, not merely that it
+            // has received a partial payment. Reopened/refunded invoices must
+            // serialize the cleared lifecycle value instead of repopulating it
+            // from the latest payment record.
+            'paid_at' => $this->status === self::STATUS_PAID
+                ? ($paidAt ?: $latestPayment?->processed_at)
+                : null,
         ];
     }
 
@@ -443,7 +477,7 @@ class Invoice extends Model
     {
         $resolved = $this->resolvePaymentMetadata();
 
-        if (!empty($resolved['payment_method'])) {
+        if (! empty($resolved['payment_method'])) {
             $this->setAttribute('payment_method', $resolved['payment_method']);
         }
 
@@ -451,7 +485,7 @@ class Invoice extends Model
             $this->setAttribute('payment_details', $resolved['payment_details']);
         }
 
-        if (!empty($resolved['paid_at'])) {
+        if (! empty($resolved['paid_at'])) {
             $this->setAttribute('paid_at', $resolved['paid_at']);
         }
 
@@ -460,40 +494,69 @@ class Invoice extends Model
 
     public function totalPaid(): float
     {
+        $payments = $this->relatedPaymentRecords();
+        if ($payments->isNotEmpty()) {
+            return round((float) $payments->sum(function (Payment $payment) {
+                if ($payment->status === Payment::STATUS_REFUNDED) {
+                    return 0.0;
+                }
+
+                return $payment->netAmount();
+            }), 2);
+        }
+
         if ($this->getAttribute('total_paid_amount') !== null) {
             return (float) $this->getAttribute('total_paid_amount');
         }
 
-        return (float) $this->relatedCompletedPayments()
-            ->sum(fn (Payment $payment) => (float) $payment->amount);
+        return 0.0;
+    }
+
+    public function hasRelatedPaymentRecords(): bool
+    {
+        return $this->relatedPaymentRecords()->isNotEmpty();
+    }
+
+    public function latestEffectivePaymentAt(): ?Carbon
+    {
+        $payment = $this->relatedPaymentRecords()
+            ->filter(fn (Payment $payment) => $payment->status === Payment::STATUS_COMPLETED && $payment->netAmount() > 0)
+            ->sortByDesc(fn (Payment $payment) => optional($payment->processed_at)->timestamp ?? 0)
+            ->first();
+
+        if (! $payment?->processed_at) {
+            return null;
+        }
+
+        return $payment->processed_at instanceof Carbon
+            ? $payment->processed_at
+            : Carbon::parse($payment->processed_at);
     }
 
     public function balanceDue(): float
     {
         $total = $this->total ?? $this->total_amount ?? $this->charges_total ?? 0;
-        $paid = $this->totalPaid();
-
-        if ($paid <= 0 && $this->getAttribute('amount_paid') !== null) {
-            $paid = (float) $this->getAttribute('amount_paid');
-        }
-
-        if ($paid <= 0 && $this->getAttribute('payments_total') !== null) {
-            $paid = (float) $this->getAttribute('payments_total');
-        }
+        $hasPaymentRecords = $this->hasRelatedPaymentRecords();
+        $paid = $hasPaymentRecords
+            ? $this->totalPaid()
+            : max(
+                (float) ($this->getAttribute('amount_paid') ?? 0),
+                (float) ($this->getAttribute('payments_total') ?? 0)
+            );
 
         return max((float) $total - (float) $paid, 0);
     }
 
     public function paymentLink(): string
     {
-        if (!$this->exists || !$this->getKey()) {
+        if (! $this->exists || ! $this->getKey()) {
             return '';
         }
 
         $baseUrl = rtrim((string) config('app.url', ''), '/');
-        $path = '/pay/invoice/' . $this->getKey();
+        $path = '/pay/invoice/'.$this->getKey();
 
-        return $baseUrl !== '' ? $baseUrl . $path : $path;
+        return $baseUrl !== '' ? $baseUrl.$path : $path;
     }
 
     public function isPastDue(): bool
@@ -505,53 +568,47 @@ class Invoice extends Model
             && $this->balanceDue() > 0;
     }
 
+    /**
+     * Payment rows related through the invoice itself or any of the three shoot
+     * association shapes used by legacy and period invoices.
+     *
+     * @return Collection<int, Payment>
+     */
+    public function relatedPaymentRecords(): Collection
+    {
+        $shootIds = collect([$this->shoot_id])
+            ->merge($this->exists ? $this->shoots()->pluck('shoots.id') : [])
+            ->merge($this->exists ? $this->items()->whereNotNull('shoot_id')->pluck('shoot_id') : [])
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        if (! $this->exists && $shootIds->isEmpty()) {
+            return collect();
+        }
+
+        return Payment::query()
+            ->with('refunds')
+            ->whereIn('status', [Payment::STATUS_COMPLETED, Payment::STATUS_REFUNDED])
+            ->where(function ($query) use ($shootIds) {
+                if ($this->exists) {
+                    $query->where('invoice_id', $this->id);
+                }
+                if ($shootIds->isNotEmpty()) {
+                    $method = $this->exists ? 'orWhereIn' : 'whereIn';
+                    $query->{$method}('shoot_id', $shootIds->all());
+                }
+            })
+            ->get()
+            ->unique(fn (Payment $payment) => $this->paymentDeduplicationKey($payment))
+            ->values();
+    }
+
     private function relatedCompletedPayments(): Collection
     {
-        $payments = collect();
-
-        if ($this->relationLoaded('payments')) {
-            $payments = $payments->merge($this->payments);
-        } else {
-            $payments = $payments->merge(
-                $this->payments()
-                    ->where('status', Payment::STATUS_COMPLETED)
-                    ->get()
-            );
-        }
-
-        $shoots = collect();
-
-        if ($this->relationLoaded('shoot') && $this->shoot) {
-            $shoots->push($this->shoot);
-        } elseif ($this->shoot_id) {
-            $shoot = $this->shoot()->first();
-            if ($shoot) {
-                $shoots->push($shoot);
-            }
-        }
-
-        if ($this->relationLoaded('shoots')) {
-            $shoots = $shoots->merge($this->shoots);
-        } elseif ($this->exists) {
-            $shoots = $shoots->merge($this->shoots()->get());
-        }
-
-        $shootPayments = $shoots
-            ->filter()
-            ->flatMap(function ($shoot) {
-                if ($shoot->relationLoaded('payments')) {
-                    return $shoot->payments;
-                }
-
-                return $shoot->payments()
-                    ->where('status', Payment::STATUS_COMPLETED)
-                    ->get();
-            });
-
-        return $payments
-            ->merge($shootPayments)
-            ->filter(fn ($payment) => $payment instanceof Payment && $payment->status === Payment::STATUS_COMPLETED)
-            ->unique(fn (Payment $payment) => $this->paymentDeduplicationKey($payment))
+        return $this->relatedPaymentRecords()
+            ->filter(fn (Payment $payment) => $payment->status === Payment::STATUS_COMPLETED && $payment->netAmount() > 0)
             ->values();
     }
 
@@ -566,7 +623,7 @@ class Invoice extends Model
 
                 return [
                     'method' => $method,
-                    'amount' => round((float) $groupedPayments->sum('amount'), 2),
+                    'amount' => round((float) $groupedPayments->sum(fn (Payment $payment) => $payment->netAmount()), 2),
                     'details' => is_array($latestPayment?->payment_details) ? $latestPayment->payment_details : null,
                     'paid_at' => $latestPayment?->processed_at instanceof Carbon
                         ? $latestPayment->processed_at->toIso8601String()
@@ -598,18 +655,18 @@ class Invoice extends Model
 
     private function paymentDeduplicationKey(Payment $payment): string
     {
-        if (!empty($payment->stripe_session_id)) {
-            return 'stripe_session:' . $payment->stripe_session_id;
+        if (! empty($payment->stripe_session_id)) {
+            return 'stripe_session:'.$payment->stripe_session_id;
         }
 
-        if (!empty($payment->stripe_payment_id)) {
-            return 'stripe_payment:' . $payment->stripe_payment_id;
+        if (! empty($payment->stripe_payment_id)) {
+            return 'stripe_payment:'.$payment->stripe_payment_id;
         }
 
-        if (!empty($payment->square_payment_id)) {
-            return 'square_payment:' . $payment->square_payment_id;
+        if (! empty($payment->square_payment_id)) {
+            return 'square_payment:'.$payment->square_payment_id;
         }
 
-        return 'payment:' . (string) ($payment->id ?? spl_object_id($payment));
+        return 'payment:'.(string) ($payment->id ?? spl_object_id($payment));
     }
 }

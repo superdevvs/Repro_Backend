@@ -11,13 +11,14 @@ use App\Models\ShootFile;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Models\WorkflowLog;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -30,126 +31,126 @@ class DashboardController extends Controller
     {
         $user = $request->user();
 
-        if (!$user || !in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
+        if (! $user || ! in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         // Cache key includes user role to ensure proper access control
-        $cacheKey = 'dashboard_overview_' . $user->role . '_' . $user->id;
+        $cacheKey = 'dashboard_overview_'.$user->role.'_'.$user->id;
         $todayDate = now()->startOfDay()->toDateString();
-        
-        $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () use ($user) {
+
+        $data = app(ScheduleDateScopeService::class)->rememberForDate($todayDate, $cacheKey, 60, function () {
             $today = now()->startOfDay();
             $todayDate = $today->toDateString();
             $scheduleScope = app(ScheduleDateScopeService::class);
 
-        // Optimize: Use select to only load necessary columns
-        $upcomingShoots = $this->formatShoots(
-            $scheduleScope->upcomingShoots(
-                $todayDate,
-                30,
-                ['id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
-                         'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
-                         'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
-                         'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                         'scheduled_at', 'timezone'],
-                [
-                    'client:id,name,company_name,phonenumber',
-                    'photographer:id,name,avatar',
-                    'service:id,name,icon,category_id',
-                    'service.category:id,name,icon',
-                    'services:id,name,icon,category_id',
-                    'services.category:id,name,icon',
-                ],
-            ),
-            $today
-        );
+            // Optimize: Use select to only load necessary columns
+            $upcomingShoots = $this->formatShoots(
+                $scheduleScope->upcomingShoots(
+                    $todayDate,
+                    30,
+                    ['id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
+                        'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
+                        'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
+                        'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
+                        'scheduled_at', 'timezone'],
+                    [
+                        'client:id,name,company_name,phonenumber',
+                        'photographer:id,name,avatar',
+                        'service:id,name,icon,category_id',
+                        'service.category:id,name,icon',
+                        'services:id,name,icon,category_id',
+                        'services.category:id,name,icon',
+                    ],
+                ),
+                $today
+            );
 
-        $photographers = $this->buildPhotographerSummaries($today, $scheduleScope);
+            $photographers = $this->buildPhotographerSummaries($today, $scheduleScope);
 
-        // Pending reviews removed - avoid a no-op query
-        $pendingReviews = collect([]);
+            // Pending reviews removed - avoid a no-op query
+            $pendingReviews = collect([]);
 
-        // Merge activities from both WorkflowLog and ShootActivityLog
-        $workflowActivities = WorkflowLog::with(['user:id,name'])
-            ->latest()
-            ->limit(15)
-            ->get()
-            ->map(function (WorkflowLog $log) {
-                return [
-                    'id' => 'wf-' . $log->id,
-                    'message' => $log->details ?? $log->action,
-                    'action' => $log->action,
-                    'type' => $this->inferActivityType($log->action),
-                    'timestamp' => optional($log->created_at)->toDateTimeString(),
-                    'user' => $log->user ? [
-                        'id' => $log->user->id,
-                        'name' => $log->user->name,
-                    ] : null,
-                    'shootId' => $log->shoot_id,
-                ];
-            });
+            // Merge activities from both WorkflowLog and ShootActivityLog
+            $workflowActivities = WorkflowLog::with(['user:id,name'])
+                ->latest()
+                ->limit(15)
+                ->get()
+                ->map(function (WorkflowLog $log) {
+                    return [
+                        'id' => 'wf-'.$log->id,
+                        'message' => $log->details ?? $log->action,
+                        'action' => $log->action,
+                        'type' => $this->inferActivityType($log->action),
+                        'timestamp' => optional($log->created_at)->toDateTimeString(),
+                        'user' => $log->user ? [
+                            'id' => $log->user->id,
+                            'name' => $log->user->name,
+                        ] : null,
+                        'shootId' => $log->shoot_id,
+                    ];
+                });
 
-        $shootActivities = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
-            ->latest()
-            ->limit(15)
-            ->get()
-            ->map(function (ShootActivityLog $log) {
-                return [
-                    'id' => 'sa-' . $log->id,
-                    'message' => $log->description ?? $log->action,
-                    'action' => $log->action,
-                    'type' => $this->inferActivityType($log->action),
-                    'timestamp' => optional($log->created_at)->toDateTimeString(),
-                    'user' => $log->user ? [
-                        'id' => $log->user->id,
-                        'name' => $log->user->name,
-                    ] : null,
-                    'shootId' => $log->shoot_id,
-                    'address' => $log->shoot?->address,
-                ];
-            });
+            $shootActivities = ShootActivityLog::with(['user:id,name', 'shoot:id,address'])
+                ->latest()
+                ->limit(15)
+                ->get()
+                ->map(function (ShootActivityLog $log) {
+                    return [
+                        'id' => 'sa-'.$log->id,
+                        'message' => $log->description ?? $log->action,
+                        'action' => $log->action,
+                        'type' => $this->inferActivityType($log->action),
+                        'timestamp' => optional($log->created_at)->toDateTimeString(),
+                        'user' => $log->user ? [
+                            'id' => $log->user->id,
+                            'name' => $log->user->name,
+                        ] : null,
+                        'shootId' => $log->shoot_id,
+                        'address' => $log->shoot?->address,
+                    ];
+                });
 
-        $activity = $workflowActivities->concat($shootActivities)
-            ->sortByDesc('timestamp')
-            ->take(20)
-            ->values();
+            $activity = $workflowActivities->concat($shootActivities)
+                ->sortByDesc('timestamp')
+                ->take(20)
+                ->values();
 
-        $issues = $this->buildIssueFeed($today);
+            $issues = $this->buildIssueFeed($today);
 
-        $workflow = $this->buildWorkflowColumns($today);
+            $workflow = $this->buildWorkflowColumns($today);
 
-        $stats = [
-            'total_shoots' => Shoot::count(),
-            'scheduled_today' => $scheduleScope->rememberForDate(
-                $todayDate,
-                'dashboard-overview:scheduled-today',
-                60,
-                fn () => $scheduleScope->countForLocalDate($todayDate)
-            ),
-            'flagged_shoots' => Shoot::where('is_flagged', true)->count(),
-        ];
+            $stats = [
+                'total_shoots' => Shoot::count(),
+                'scheduled_today' => $scheduleScope->rememberForDate(
+                    $todayDate,
+                    'dashboard-overview:scheduled-today',
+                    60,
+                    fn () => $scheduleScope->countForLocalDate($todayDate)
+                ),
+                'flagged_shoots' => Shoot::where('is_flagged', true)->count(),
+            ];
 
-        // Pending cancellation requests
-        $pendingCancellations = $this->formatShoots(
-            Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip', 
-                         'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
-                         'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
-                         'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
-                ->with([
-                    'client:id,name,company_name,phonenumber',
-                    'photographer:id,name,avatar',
-                    'service:id,name,icon,category_id',
-                    'service.category:id,name,icon',
-                    'services:id,name,icon,category_id',
-                    'services.category:id,name,icon',
-                ])
-                ->whereNotNull('cancellation_requested_at')
-                ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
-                ->orderBy('cancellation_requested_at', 'desc')
-                ->get(),
-            $today
-        );
+            // Pending cancellation requests
+            $pendingCancellations = $this->formatShoots(
+                Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
+                    'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
+                    'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
+                    'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
+                    ->with([
+                        'client:id,name,company_name,phonenumber',
+                        'photographer:id,name,avatar',
+                        'service:id,name,icon,category_id',
+                        'service.category:id,name,icon',
+                        'services:id,name,icon,category_id',
+                        'services.category:id,name,icon',
+                    ])
+                    ->whereNotNull('cancellation_requested_at')
+                    ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED])
+                    ->orderBy('cancellation_requested_at', 'desc')
+                    ->get(),
+                $today
+            );
 
             return [
                 'stats' => $stats,
@@ -162,7 +163,7 @@ class DashboardController extends Controller
                 'pending_cancellations' => $pendingCancellations->values()->all(), // Pending cancellation requests
             ];
         });
-        
+
         return response()->json([
             'data' => $data,
         ]);
@@ -177,12 +178,12 @@ class DashboardController extends Controller
     {
         $user = $request->user();
 
-        if (!$user) {
+        if (! $user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
         $allowed = ['editor', 'admin', 'superadmin', 'editing_manager'];
-        if (!in_array($user->role, $allowed, true)) {
+        if (! in_array($user->role, $allowed, true)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -198,14 +199,14 @@ class DashboardController extends Controller
 
         $todayCount = $scheduleScope->rememberForDate(
             $todayDate,
-            'dashboard:schedule-summary:today:' . md5(json_encode($excluded)),
+            'dashboard:schedule-summary:today:'.md5(json_encode($excluded)),
             60,
             fn () => $scheduleScope->countForLocalDate($todayDate, $excluded)
         );
 
         $tomorrowCount = $scheduleScope->rememberForDate(
             $tomorrowDate,
-            'dashboard:schedule-summary:tomorrow:' . md5(json_encode($excluded)),
+            'dashboard:schedule-summary:tomorrow:'.md5(json_encode($excluded)),
             60,
             fn () => $scheduleScope->countForLocalDate($tomorrowDate, $excluded)
         );
@@ -219,7 +220,7 @@ class DashboardController extends Controller
 
         $weekCount = $scheduleScope->rememberForDates(
             $summaryDates,
-            'dashboard:schedule-summary:week:' . md5(json_encode($excluded)),
+            'dashboard:schedule-summary:week:'.md5(json_encode($excluded)),
             60,
             fn () => $scheduleScope->countForLocalRange($todayDate, $weekEndDate, $excluded)
         );
@@ -259,8 +260,8 @@ class DashboardController extends Controller
                     'filename',
                     'stored_filename'
                 )
-                ->orderBy('sort_order', 'asc')
-                ->orderBy('created_at', 'desc');
+                    ->orderBy('sort_order', 'asc')
+                    ->orderBy('created_at', 'desc');
             }]);
         }
 
@@ -314,13 +315,14 @@ class DashboardController extends Controller
                 $summary['hero_image'] = $heroImage;
                 $summary['preview_images'] = $previewImages;
             }
+
             return $summary;
         })->values();
     }
 
     protected function buildShootPreviewImages(Shoot $shoot): array
     {
-        if (!$shoot->relationLoaded('files') || $shoot->files->isEmpty()) {
+        if (! $shoot->relationLoaded('files') || $shoot->files->isEmpty()) {
             return [];
         }
 
@@ -368,6 +370,7 @@ class DashboardController extends Controller
         }
 
         $filename = strtolower((string) ($file->filename ?? $file->stored_filename ?? $file->path ?? ''));
+
         return Str::endsWith($filename, ['.jpg', '.jpeg', '.png', '.webp', '.gif']);
     }
 
@@ -387,7 +390,7 @@ class DashboardController extends Controller
         }
 
         if ($file->dropbox_path) {
-            return url('/api/shoots/' . $file->shoot_id . '/files/' . $file->id . '/preview');
+            return url('/api/shoots/'.$file->shoot_id.'/files/'.$file->id.'/preview');
         }
 
         return null;
@@ -395,7 +398,7 @@ class DashboardController extends Controller
 
     protected function resolveMediaUrl(?string $path): ?string
     {
-        if (!$path) {
+        if (! $path) {
             return null;
         }
 
@@ -412,7 +415,7 @@ class DashboardController extends Controller
             return Storage::disk('public')->url($clean);
         }
 
-        return url('storage/' . $clean);
+        return url('storage/'.$clean);
     }
 
     /**
@@ -561,31 +564,31 @@ class DashboardController extends Controller
         $columns = collect($config)->map(function (array $column) use ($today, $scheduleScope, $todayDate) {
             // Optimize: Use select to only load necessary columns
             $columns = ['id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
-                             'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
-                             'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
-                             'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
-                             'scheduled_at', 'timezone'];
+                'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
+                'editing_completed_at', 'submitted_for_review_at', 'shoot_notes', 'company_notes',
+                'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
+                'scheduled_at', 'timezone'];
 
             $query = Shoot::select($columns)
-                    ->with([
-                        'client:id,name,company_name',
-                        'photographer:id,name,avatar',
-                        'service:id,name,icon,category_id',
-                        'service.category:id,name,icon',
-                        'services:id,name,icon,category_id',
-                        'services.category:id,name,icon',
-                    ]);
-            
+                ->with([
+                    'client:id,name,company_name',
+                    'photographer:id,name,avatar',
+                    'service:id,name,icon,category_id',
+                    'service.category:id,name,icon',
+                    'services:id,name,icon,category_id',
+                    'services.category:id,name,icon',
+                ]);
+
             // For delivered/ready column, check both workflow_status AND status columns
-            if (!empty($column['check_status_column'])) {
+            if (! empty($column['check_status_column'])) {
                 $query->where(function ($q) use ($column) {
                     $q->whereIn('workflow_status', $column['statuses'])
-                      ->orWhereIn('status', $column['statuses']);
+                        ->orWhereIn('status', $column['statuses']);
                 });
             } else {
                 $query->whereIn('workflow_status', $column['statuses']);
             }
-            
+
             // For scheduled/booked column, only show shoots from today onwards
             if ($column['key'] === 'booked') {
                 $shoots = $scheduleScope->upcomingShoots(
@@ -608,7 +611,7 @@ class DashboardController extends Controller
                 $query->orderByDesc('updated_at');
                 $shoots = $query->limit(15)->get();
             }
-            
+
             $shoots = $this->formatShoots(
                 $shoots,
                 $today,
@@ -637,14 +640,32 @@ class DashboardController extends Controller
             $services = collect([$shoot->service]);
         }
 
-        return $services
+        $serviceTags = $services
             ->filter(fn ($service) => filled($service->name))
             ->unique(fn ($service) => $service->id ?: Str::slug($service->name))
             ->map(fn ($service) => [
                 'label' => $service->name,
-                'type' => $service->id ? 'service_' . $service->id : Str::slug($service->name, '_'),
+                'type' => $service->id ? 'service_'.$service->id : Str::slug($service->name, '_'),
                 'icon' => $service->icon ?? $service->category?->icon,
             ])
+            ->values();
+
+        $adjustmentTags = collect(app(InvoiceAdjustmentService::class)->summaries($shoot))
+            ->map(fn (array $item) => [
+                'label' => $item['name'],
+                'type' => 'invoice_adjustment_'.$item['invoice_item_id'],
+                'icon' => null,
+                'invoice_item_id' => $item['invoice_item_id'],
+                'quantity' => $item['quantity'],
+                'unit_amount' => $item['unit_amount'],
+                'total_amount' => $item['total_amount'],
+                'charge_type' => $item['charge_type'],
+                'bills_client' => true,
+                'is_invoice_adjustment' => true,
+            ]);
+
+        return $serviceTags
+            ->merge($adjustmentTags)
             ->values()
             ->all();
     }
@@ -657,12 +678,12 @@ class DashboardController extends Controller
             $shoot->zip,
         ]);
 
-        return trim($shoot->address . ', ' . implode(' ', $pieces));
+        return trim($shoot->address.', '.implode(' ', $pieces));
     }
 
     protected function getDayLabel(?Carbon $date, Carbon $today): string
     {
-        if (!$date) {
+        if (! $date) {
             return 'Unscheduled';
         }
 
@@ -683,7 +704,7 @@ class DashboardController extends Controller
 
     protected function combineDateAndTime($date, ?string $time): ?Carbon
     {
-        if (!$date) {
+        if (! $date) {
             return null;
         }
 
@@ -696,12 +717,13 @@ class DashboardController extends Controller
                 $hour = (int) $matches[1];
                 if ($hour >= 13) {
                     // Remove AM/PM for 24-hour format
-                    $timeString = $matches[1] . ':' . $matches[2];
+                    $timeString = $matches[1].':'.$matches[2];
                 }
             }
 
             // Try parsing with the normalized time string
-            $dateTimeString = $datePart->format('Y-m-d') . ' ' . $timeString;
+            $dateTimeString = $datePart->format('Y-m-d').' '.$timeString;
+
             return Carbon::parse($dateTimeString);
         } catch (\Throwable $e) {
             // Log the error for debugging but don't fail the request
@@ -710,11 +732,12 @@ class DashboardController extends Controller
                 'time' => $time,
                 'error' => $e->getMessage(),
             ]);
-            
+
             // Final fallback to default time if parsing still fails
             try {
                 $datePart = $date instanceof Carbon ? $date : Carbon::parse($date);
-                return Carbon::parse($datePart->format('Y-m-d') . ' 09:00');
+
+                return Carbon::parse($datePart->format('Y-m-d').' 09:00');
             } catch (\Throwable $e2) {
                 // If even the fallback fails, return null
                 return null;
@@ -732,7 +755,7 @@ class DashboardController extends Controller
             // Extract hour from time string
             if (preg_match('/(\d{1,2}):(\d{2})/i', $timeString, $matches)) {
                 $hour = (int) $matches[1];
-                
+
                 // If hour is 13 or greater, it's already 24-hour format, remove AM/PM
                 if ($hour >= 13) {
                     $timeString = preg_replace('/\s*(AM|PM)\b/i', '', $timeString);
@@ -747,10 +770,10 @@ class DashboardController extends Controller
         }
 
         // Final validation - ensure we have a valid time format
-        if (!preg_match('/^\d{1,2}:\d{2}(\s*(AM|PM))?$/i', $timeString)) {
+        if (! preg_match('/^\d{1,2}:\d{2}(\s*(AM|PM))?$/i', $timeString)) {
             // If format is still invalid, try to extract just the time part
             if (preg_match('/(\d{1,2}):(\d{2})/i', $timeString, $matches)) {
-                $timeString = $matches[1] . ':' . $matches[2];
+                $timeString = $matches[1].':'.$matches[2];
             } else {
                 $timeString = '09:00';
             }
@@ -765,12 +788,13 @@ class DashboardController extends Controller
         if (is_string($metadata)) {
             $metadata = json_decode($metadata, true) ?? [];
         }
+
         return $metadata[$field] ?? null;
     }
 
     protected function inferPhotographerStatus(int $loadToday, bool $hasUpcomingShoot, bool $hasAvailability): string
     {
-        if (!$hasUpcomingShoot && !$hasAvailability) {
+        if (! $hasUpcomingShoot && ! $hasAvailability) {
             return 'offline';
         }
 
@@ -819,7 +843,7 @@ class DashboardController extends Controller
             // ImpersonationMiddleware handles user swap - $request->user() returns impersonated user if applicable
             $user = $request->user();
 
-            if (!$user) {
+            if (! $user) {
                 return response()->json(['message' => 'Unauthorized'], 401);
             }
 
@@ -828,8 +852,8 @@ class DashboardController extends Controller
             $isImpersonating = $request->attributes->get('is_impersonating', false);
 
             // Cache key includes user ID and role for proper access control
-            $cacheKey = 'notifications_' . $role . '_' . $userId . ($isImpersonating ? '_impersonate' : '');
-            
+            $cacheKey = 'notifications_'.$role.'_'.$userId.($isImpersonating ? '_impersonate' : '');
+
             $activityLogs = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($role, $userId) {
                 return $this->getActivityLogsForRole($role, $userId);
             });
@@ -845,6 +869,7 @@ class DashboardController extends Controller
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
+
             return response()->json([
                 'message' => 'Failed to load notifications',
                 'data' => [
@@ -947,7 +972,7 @@ class DashboardController extends Controller
 
         // Format and sanitize the activity logs, filtering out logs with deleted shoots
         $formattedShootLogs = $shootActivityLogs
-            ->filter(fn ($log) => $log->shoot !== null && !($log->metadata['suppress_notifications'] ?? false))
+            ->filter(fn ($log) => $log->shoot !== null && ! ($log->metadata['suppress_notifications'] ?? false))
             ->map(function (ShootActivityLog $log) use ($role) {
                 return $this->formatActivityLogForRole($log, $role);
             });
@@ -971,7 +996,7 @@ class DashboardController extends Controller
     protected function getEmailNotificationsForRole(string $role, int $userId): Collection
     {
         $user = User::find($userId);
-        if (!$user) {
+        if (! $user) {
             return collect([]);
         }
 
@@ -1033,12 +1058,12 @@ class DashboardController extends Controller
 
         return $emails->map(function (Message $email) {
             $isInbound = $email->direction === 'INBOUND';
-            $isInternal = $email->provider === 'INTERNAL' && !empty($email->related_shoot_id);
+            $isInternal = $email->provider === 'INTERNAL' && ! empty($email->related_shoot_id);
             $bodyPreview = trim(preg_replace('/\s+/u', ' ', strip_tags((string) ($email->body_text ?: $email->body_html))) ?? '');
             $preview = Str::limit($bodyPreview !== '' ? $bodyPreview : ($email->subject ?? '(No Subject)'), 70);
 
             return [
-                'id' => 'email-' . $email->id,
+                'id' => 'email-'.$email->id,
                 'message' => $isInternal
                     ? "New message from {$email->sender_display_name}: {$preview}"
                     : ($isInbound
@@ -1050,7 +1075,7 @@ class DashboardController extends Controller
                 // Internal message clicks must open the conversation, not the
                 // generic shoot modal.
                 'shootId' => $isInternal ? null : $email->related_shoot_id,
-                'actionUrl' => $isInternal ? '/messaging/email/inbox?message=' . $email->id : null,
+                'actionUrl' => $isInternal ? '/messaging/email/inbox?message='.$email->id : null,
                 'actionLabel' => $isInternal ? 'View message' : null,
                 'emailId' => $email->id,
                 'from' => $email->from_address,
@@ -1111,7 +1136,7 @@ class DashboardController extends Controller
             $accountSearch = rawurlencode((string) ($log->user?->email ?: $log->user?->name ?: ''));
 
             return [
-                'id' => 'email-issue-' . $log->id,
+                'id' => 'email-issue-'.$log->id,
                 'message' => $log->description ?: $log->title,
                 'action' => $log->event_type,
                 'type' => 'system',
@@ -1124,7 +1149,7 @@ class DashboardController extends Controller
                 'direction' => 'SYSTEM',
                 'actionUrl' => $role === 'client'
                     ? '/settings?tab=profile'
-                    : ($accountSearch !== '' ? '/accounts?role=client&search=' . $accountSearch : '/accounts?role=client'),
+                    : ($accountSearch !== '' ? '/accounts?role=client&search='.$accountSearch : '/accounts?role=client'),
                 'actionLabel' => $role === 'client' ? 'Update email' : 'View account',
                 'metadata' => array_merge($log->metadata ?? [], [
                     'email_status' => $log->user?->email_status,
@@ -1139,7 +1164,7 @@ class DashboardController extends Controller
     protected function formatActivityLogForRole(ShootActivityLog $log, string $role): array
     {
         $baseData = [
-            'id' => 'sa-' . $log->id,
+            'id' => 'sa-'.$log->id,
             'message' => $log->description ?? $log->action ?? 'Activity',
             'action' => $log->action ?? '',
             'type' => $this->inferActivityType($log->action ?? ''),
@@ -1210,8 +1235,8 @@ class DashboardController extends Controller
     public function robbieInsights(Request $request)
     {
         $user = $request->user();
-        
-        if (!$user) {
+
+        if (! $user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
@@ -1264,10 +1289,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-new-requests',
                 'priority' => 'blocking',
-                'message' => $newRequests === 1 
-                    ? "1 new booking request from a client awaiting review."
+                'message' => $newRequests === 1
+                    ? '1 new booking request from a client awaiting review.'
                     : "{$newRequests} new booking requests from clients awaiting review.",
-                'prompt' => "Show me new booking requests.",
+                'prompt' => 'Show me new booking requests.',
                 'intent' => 'manage_booking',
                 'action' => 'Review requests',
                 'insightType' => 'new_requests',
@@ -1284,10 +1309,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-flagged',
                 'priority' => 'blocking',
-                'message' => $flaggedCount === 1 
-                    ? "1 shoot has been flagged and needs your attention."
+                'message' => $flaggedCount === 1
+                    ? '1 shoot has been flagged and needs your attention.'
                     : "{$flaggedCount} shoots have issues that need your attention.",
-                'prompt' => "Show me shoots with issues.",
+                'prompt' => 'Show me shoots with issues.',
                 'intent' => 'manage_booking',
                 'action' => 'View issues',
                 'insightType' => 'flagged_shoots',
@@ -1310,10 +1335,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-pending-delivery',
                 'priority' => 'attention',
-                'message' => $pendingDelivery === 1 
-                    ? "1 shoot is past due and awaiting delivery."
+                'message' => $pendingDelivery === 1
+                    ? '1 shoot is past due and awaiting delivery.'
                     : "{$pendingDelivery} shoots are past due and need to be delivered.",
-                'prompt' => "Show me shoots pending delivery.",
+                'prompt' => 'Show me shoots pending delivery.',
                 'intent' => 'manage_booking',
                 'action' => 'View pending',
                 'insightType' => 'pending_delivery',
@@ -1337,10 +1362,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-stuck-editing',
                 'priority' => 'attention',
-                'message' => $stuckInEditing === 1 
-                    ? "1 shoot has been in editing for over 24 hours."
+                'message' => $stuckInEditing === 1
+                    ? '1 shoot has been in editing for over 24 hours.'
                     : "{$stuckInEditing} shoots are stuck in editing — may need follow-up.",
-                'prompt' => "Show me shoots stuck in editing.",
+                'prompt' => 'Show me shoots stuck in editing.',
                 'intent' => 'manage_booking',
                 'action' => 'Review editing',
                 'insightType' => 'stuck_editing',
@@ -1360,10 +1385,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-late-raw',
                 'priority' => 'attention',
-                'message' => $lateRawUploads === 1 
-                    ? "1 completed shoot is still waiting for RAW uploads."
+                'message' => $lateRawUploads === 1
+                    ? '1 completed shoot is still waiting for RAW uploads.'
                     : "{$lateRawUploads} completed shoots are waiting for RAW uploads.",
-                'prompt' => "Show me shoots missing uploads.",
+                'prompt' => 'Show me shoots missing uploads.',
                 'intent' => 'manage_booking',
                 'action' => 'Review uploads',
                 'insightType' => 'late_raw_uploads',
@@ -1426,14 +1451,14 @@ class DashboardController extends Controller
                 $maxUser = User::find($maxEditor->editor_id);
                 $unassigned = $editingQueueMetrics['unassigned_shoots'];
 
-                $msg = ($maxUser?->name ?? 'An editor') . " has {$maxEditor->total} in queue";
+                $msg = ($maxUser?->name ?? 'An editor')." has {$maxEditor->total} in queue";
                 if ($unassigned > 0) {
                     $msg .= " — {$unassigned} unassigned";
                 }
                 $insights[] = [
                     'id' => 'admin-editor-imbalance',
                     'priority' => 'attention',
-                    'message' => $msg . ". Consider rebalancing.",
+                    'message' => $msg.'. Consider rebalancing.',
                     'prompt' => 'Show me editor workloads.',
                     'intent' => 'manage_booking',
                     'action' => 'Balance queue',
@@ -1455,10 +1480,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-pending-cancel',
                 'priority' => 'attention',
-                'message' => $pendingCancellations === 1 
-                    ? "1 client requested a cancellation — needs your approval."
+                'message' => $pendingCancellations === 1
+                    ? '1 client requested a cancellation — needs your approval.'
                     : "{$pendingCancellations} cancellation requests need your approval.",
-                'prompt' => "Show me cancellation requests.",
+                'prompt' => 'Show me cancellation requests.',
                 'intent' => 'manage_booking',
                 'action' => 'Review',
                 'insightType' => 'pending_cancellations',
@@ -1475,7 +1500,7 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-today-shoots',
                 'priority' => 'insight',
-                'message' => $todayShoots === 1 
+                'message' => $todayShoots === 1
                     ? "1 shoot on today's schedule."
                     : "{$todayShoots} shoots on today's schedule.",
                 'prompt' => "Show me today's shoots.",
@@ -1495,10 +1520,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'admin-all-clear',
                 'priority' => 'assistive',
-                'message' => $totalShoots > 0 
+                'message' => $totalShoots > 0
                     ? "All clear! {$totalShoots} shoots in the system, no issues."
-                    : "Ready to get started — book your first shoot!",
-                'prompt' => "Give me a system overview.",
+                    : 'Ready to get started — book your first shoot!',
+                'prompt' => 'Give me a system overview.',
                 'intent' => 'manage_booking',
                 'action' => 'View dashboard',
                 'insightType' => 'all_clear',
@@ -1529,7 +1554,7 @@ class DashboardController extends Controller
                 'id' => 'client-payment',
                 'priority' => 'blocking',
                 'message' => "Payment is required to release delivery for {$awaitingPayment} shoot(s).",
-                'prompt' => "Show me shoots that need payment.",
+                'prompt' => 'Show me shoots that need payment.',
                 'intent' => 'accounting',
                 'action' => 'View payment',
                 'insightType' => 'pending_payment',
@@ -1550,7 +1575,7 @@ class DashboardController extends Controller
                 'id' => 'client-approval',
                 'priority' => 'attention',
                 'message' => "Your approval is needed for {$awaitingApproval} shoot(s).",
-                'prompt' => "Show me shoots that need my approval.",
+                'prompt' => 'Show me shoots that need my approval.',
                 'intent' => 'manage_booking',
                 'action' => 'Review approval',
                 'insightType' => 'pending_approval',
@@ -1571,7 +1596,7 @@ class DashboardController extends Controller
                 'id' => 'client-upcoming',
                 'priority' => 'insight',
                 'message' => "You have {$upcomingShoots} upcoming shoot(s).",
-                'prompt' => "Show me my upcoming shoots.",
+                'prompt' => 'Show me my upcoming shoots.',
                 'intent' => 'manage_booking',
                 'action' => 'View schedule',
                 'insightType' => 'upcoming_shoots',
@@ -1587,8 +1612,8 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'client-default',
                 'priority' => 'assistive',
-                'message' => "Need help booking a shoot or checking status?",
-                'prompt' => "Help me book a new shoot.",
+                'message' => 'Need help booking a shoot or checking status?',
+                'prompt' => 'Help me book a new shoot.',
                 'intent' => 'manage_booking',
                 'action' => 'Get help',
                 'insightType' => 'general_help',
@@ -1617,7 +1642,7 @@ class DashboardController extends Controller
                 'id' => 'photographer-today',
                 'priority' => 'attention',
                 'message' => "You have {$todayShoots} shoot(s) scheduled for today.",
-                'prompt' => "Show me my shoots for today.",
+                'prompt' => 'Show me my shoots for today.',
                 'intent' => 'manage_booking',
                 'action' => 'View today',
                 'insightType' => 'todays_shoots',
@@ -1639,7 +1664,7 @@ class DashboardController extends Controller
                 'id' => 'photographer-upload',
                 'priority' => 'blocking',
                 'message' => "{$needsUpload} shoot(s) need raw files uploaded.",
-                'prompt' => "Show me shoots that need files uploaded.",
+                'prompt' => 'Show me shoots that need files uploaded.',
                 'intent' => 'manage_booking',
                 'action' => 'Upload files',
                 'insightType' => 'missing_uploads',
@@ -1661,7 +1686,7 @@ class DashboardController extends Controller
                 'id' => 'photographer-week',
                 'priority' => 'insight',
                 'message' => "You have {$weekShoots} shoot(s) this week.",
-                'prompt' => "Show me my schedule for this week.",
+                'prompt' => 'Show me my schedule for this week.',
                 'intent' => 'availability',
                 'action' => 'View week',
                 'insightType' => 'upcoming_shoots',
@@ -1678,8 +1703,8 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'photographer-default',
                 'priority' => 'assistive',
-                'message' => "No scheduled shoots. Update your availability to get more bookings!",
-                'prompt' => "Help me update my availability.",
+                'message' => 'No scheduled shoots. Update your availability to get more bookings!',
+                'prompt' => 'Help me update my availability.',
                 'intent' => 'availability',
                 'action' => 'Set availability',
                 'insightType' => 'general_help',
@@ -1704,7 +1729,7 @@ class DashboardController extends Controller
                 'id' => 'editor-queue',
                 'priority' => 'attention',
                 'message' => "{$editingQueue} shoot(s) in your editing queue.",
-                'prompt' => "Show me my editing queue.",
+                'prompt' => 'Show me my editing queue.',
                 'intent' => 'manage_booking',
                 'action' => 'View queue',
                 'insightType' => 'editing_queue',
@@ -1722,7 +1747,7 @@ class DashboardController extends Controller
                 'id' => 'editor-assigned',
                 'priority' => 'insight',
                 'message' => "{$assignedShoots} shoot(s) assigned to you.",
-                'prompt' => "Show me shoots assigned to me.",
+                'prompt' => 'Show me shoots assigned to me.',
                 'intent' => 'manage_booking',
                 'action' => 'View assigned',
                 'insightType' => 'editing_queue',
@@ -1739,8 +1764,8 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'editor-default',
                 'priority' => 'assistive',
-                'message' => "No shoots in your queue. Check back soon for new assignments!",
-                'prompt' => "Show me the editing workflow.",
+                'message' => 'No shoots in your queue. Check back soon for new assignments!',
+                'prompt' => 'Show me the editing workflow.',
                 'intent' => 'manage_booking',
                 'action' => 'View workflow',
                 'insightType' => 'general_help',
@@ -1775,7 +1800,7 @@ class DashboardController extends Controller
                 'id' => 'rep-pending',
                 'priority' => 'attention',
                 'message' => "{$pendingBookings} booking(s) pending for your clients.",
-                'prompt' => "Show me pending bookings for my clients.",
+                'prompt' => 'Show me pending bookings for my clients.',
                 'intent' => 'manage_booking',
                 'action' => 'Review bookings',
                 'insightType' => 'pending_approval',
@@ -1796,7 +1821,7 @@ class DashboardController extends Controller
                 'id' => 'rep-payment',
                 'priority' => 'attention',
                 'message' => "{$awaitingPayment} shoot(s) awaiting payment.",
-                'prompt' => "Show me shoots awaiting payment.",
+                'prompt' => 'Show me shoots awaiting payment.',
                 'intent' => 'accounting',
                 'action' => 'View payments',
                 'insightType' => 'pending_payment',
@@ -1815,7 +1840,7 @@ class DashboardController extends Controller
                 'id' => 'rep-clients',
                 'priority' => 'insight',
                 'message' => "You have {$activeClients} active client(s).",
-                'prompt' => "Show me my clients.",
+                'prompt' => 'Show me my clients.',
                 'intent' => 'client_stats',
                 'action' => 'View clients',
                 'insightType' => 'client_activity',
@@ -1831,8 +1856,8 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'rep-default',
                 'priority' => 'assistive',
-                'message' => "Ready to help your clients book their next shoot?",
-                'prompt' => "Help me create a new booking for a client.",
+                'message' => 'Ready to help your clients book their next shoot?',
+                'prompt' => 'Help me create a new booking for a client.',
                 'intent' => 'manage_booking',
                 'action' => 'New booking',
                 'insightType' => 'general_help',
@@ -1858,10 +1883,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'em-unassigned-queue',
                 'priority' => 'blocking',
-                'message' => $unassignedQueue === 1 
-                    ? "1 shoot is waiting to be assigned to an editor."
+                'message' => $unassignedQueue === 1
+                    ? '1 shoot is waiting to be assigned to an editor.'
                     : "{$unassignedQueue} shoots are waiting to be assigned to editors.",
-                'prompt' => "Show me unassigned editing queue.",
+                'prompt' => 'Show me unassigned editing queue.',
                 'intent' => 'manage_booking',
                 'action' => 'Assign editors',
                 'insightType' => 'unassigned_editing',
@@ -1881,10 +1906,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'em-stuck-editing',
                 'priority' => 'blocking',
-                'message' => $stuckInEditing === 1 
-                    ? "1 shoot has been in editing for over 24 hours."
+                'message' => $stuckInEditing === 1
+                    ? '1 shoot has been in editing for over 24 hours.'
                     : "{$stuckInEditing} shoots have been in editing over 24 hours — may need follow-up.",
-                'prompt' => "Show me shoots stuck in editing.",
+                'prompt' => 'Show me shoots stuck in editing.',
                 'intent' => 'manage_booking',
                 'action' => 'Review editing',
                 'insightType' => 'stuck_editing',
@@ -1917,7 +1942,7 @@ class DashboardController extends Controller
                 $insights[] = [
                     'id' => 'em-editor-imbalance',
                     'priority' => 'attention',
-                    'message' => ($maxUser?->name ?? 'An editor') . " has {$maxEditor->total} in queue — workload may be imbalanced.",
+                    'message' => ($maxUser?->name ?? 'An editor')." has {$maxEditor->total} in queue — workload may be imbalanced.",
                     'prompt' => 'Show me editor workloads.',
                     'intent' => 'manage_booking',
                     'action' => 'Balance queue',
@@ -1938,8 +1963,8 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'em-total-queue',
                 'priority' => 'insight',
-                'message' => "{$totalQueue} shoot(s) in editing queue — {$assignedCount} assigned, " . ($totalQueue - $assignedCount) . " unassigned.",
-                'prompt' => "Show me the full editing queue.",
+                'message' => "{$totalQueue} shoot(s) in editing queue — {$assignedCount} assigned, ".($totalQueue - $assignedCount).' unassigned.',
+                'prompt' => 'Show me the full editing queue.',
                 'intent' => 'manage_booking',
                 'action' => 'View queue',
                 'insightType' => 'editing_queue',
@@ -1957,10 +1982,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'em-ready-review',
                 'priority' => 'attention',
-                'message' => $readyForReview === 1 
-                    ? "1 shoot is ready for quality review."
+                'message' => $readyForReview === 1
+                    ? '1 shoot is ready for quality review.'
                     : "{$readyForReview} shoots are ready for quality review.",
-                'prompt' => "Show me shoots ready for review.",
+                'prompt' => 'Show me shoots ready for review.',
                 'intent' => 'manage_booking',
                 'action' => 'Review edits',
                 'insightType' => 'qa_ready',
@@ -1977,10 +2002,10 @@ class DashboardController extends Controller
             $insights[] = [
                 'id' => 'em-all-clear',
                 'priority' => 'assistive',
-                'message' => $totalEditors > 0 
+                'message' => $totalEditors > 0
                     ? "All clear! {$totalEditors} active editor(s), no backlog."
-                    : "Editing queue is empty. Great work!",
-                'prompt' => "Show me editor performance this week.",
+                    : 'Editing queue is empty. Great work!',
+                'prompt' => 'Show me editor performance this week.',
                 'intent' => 'manage_booking',
                 'action' => 'View stats',
                 'insightType' => 'all_clear',

@@ -2,8 +2,8 @@
 
 namespace Database\Seeders;
 
-use App\Models\MessageTemplate;
 use App\Models\AutomationRule;
+use App\Models\MessageTemplate;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Schema;
@@ -11,9 +11,13 @@ use Illuminate\Support\Facades\Schema;
 class MessagingSystemSeeder extends Seeder
 {
     private const BRAND_NAME = 'R/E Pro Photos';
-    private const BRAND_PHONE = '202-868-1663';
+
+    private const BRAND_PHONE = '(202) 868-1663';
+
     private const BRAND_EMAIL = 'contact@reprophotos.com';
+
     private const BRAND_SITE = 'https://reprophotos.com';
+
     private const BRAND_PORTAL = 'https://reprodashboard.com';
 
     private array $tokenMap = [
@@ -170,7 +174,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 2. Shoot Scheduled
             [
                 'channel' => 'EMAIL',
@@ -186,7 +190,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 3. Shoot Requested
             [
                 'channel' => 'EMAIL',
@@ -202,7 +206,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 4. Shoot Request Approved
             [
                 'channel' => 'EMAIL',
@@ -218,7 +222,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 5. Shoot Request Modified/Verified
             [
                 'channel' => 'EMAIL',
@@ -234,7 +238,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 6. Shoot Request Declined
             [
                 'channel' => 'EMAIL',
@@ -250,7 +254,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 7. Shoot Reminder
             [
                 'channel' => 'EMAIL',
@@ -266,7 +270,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 8. Shoot Updated
             [
                 'channel' => 'EMAIL',
@@ -282,7 +286,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 9. Shoot Ready
             [
                 'channel' => 'EMAIL',
@@ -298,7 +302,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 10. Shoot Delivered
             [
                 'channel' => 'EMAIL',
@@ -336,17 +340,17 @@ class MessagingSystemSeeder extends Seeder
                 'channel' => 'EMAIL',
                 'name' => 'Invoice Payment Reminder',
                 'slug' => 'payment-due-reminder',
-                'description' => 'Invoice payment reminder for pending balances',
+                'description' => 'Payment reminder for pending balance for {{shoot_location}}.',
                 'category' => 'INVOICE',
-                'subject' => 'Payment Reminder - Invoice [invoice_number]',
+                'subject' => 'Payment Reminder - {{shoot_location}} - Invoice {{invoice_number}}',
                 'body_html' => $this->getPaymentDueReminderTemplate(),
                 'body_text' => $this->getPaymentDueReminderPlainText(),
-                'variables_json' => ['greeting', 'client_first_name', 'client_name', 'company_email', 'invoice_number', 'amount_due', 'due_date', 'payment_link'],
+                'variables_json' => ['greeting', 'client_first_name', 'client_name', 'shoot_location', 'shoot_address', 'company_email', 'company_phone', 'portal_url', 'invoice_number', 'amount_due', 'due_date', 'payment_link'],
                 'scope' => 'SYSTEM',
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 13. Thank You For Payment
             [
                 'channel' => 'EMAIL',
@@ -362,7 +366,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 14. Shoot Summary
             [
                 'channel' => 'EMAIL',
@@ -378,7 +382,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 15. Shoot Deleted
             [
                 'channel' => 'EMAIL',
@@ -394,7 +398,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 16. Refund Submitted
             [
                 'channel' => 'EMAIL',
@@ -410,7 +414,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 17. Property Contact Reminder
             [
                 'channel' => 'EMAIL',
@@ -426,7 +430,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 18. Property Contact Reminder SMS
             [
                 'channel' => 'SMS',
@@ -442,7 +446,7 @@ class MessagingSystemSeeder extends Seeder
                 'is_system' => true,
                 'is_active' => true,
             ],
-            
+
             // 19. Photographer Assigned
             [
                 'channel' => 'EMAIL',
@@ -538,26 +542,42 @@ class MessagingSystemSeeder extends Seeder
             ],
         ];
 
-        $canonicalSlugs = collect($templates)
-            ->pluck('slug')
-            ->filter()
-            ->values()
-            ->all();
-
         foreach ($templates as $template) {
             $normalized = $this->normalizeTemplateDefinition($template);
 
-            MessageTemplate::updateOrCreate(
-                ['slug' => $normalized['slug']],
-                $normalized
-            );
-        }
+            $existing = MessageTemplate::query()
+                ->where('slug', $normalized['slug'])
+                ->first();
 
-        MessageTemplate::query()
-            ->where('is_system', true)
-            ->whereNotNull('slug')
-            ->whereNotIn('slug', $canonicalSlugs)
-            ->delete();
+            if ($existing === null) {
+                MessageTemplate::create($normalized);
+
+                continue;
+            }
+
+            $existingVariables = is_array($existing->variables_json)
+                ? $existing->variables_json
+                : [];
+            $canonicalVariables = is_array($normalized['variables_json'] ?? null)
+                ? $normalized['variables_json']
+                : [];
+
+            // Template copy is operational data once an admin edits it. A
+            // seeder rerun may repair structural metadata and add newly required
+            // variables, but it must never replace that persisted copy or
+            // reactivate a template the admin intentionally disabled.
+            $existing->forceFill([
+                'channel' => $normalized['channel'],
+                'name' => $normalized['name'],
+                'category' => $normalized['category'],
+                'scope' => $normalized['scope'],
+                'is_system' => true,
+                'variables_json' => array_values(array_unique(array_merge(
+                    $canonicalVariables,
+                    $existingVariables
+                ))),
+            ])->save();
+        }
     }
 
     private function seedRequiredAutomations(): void
@@ -902,13 +922,13 @@ class MessagingSystemSeeder extends Seeder
     // by the wrapper footer). Keeps [company_email] as a token.
     private function getContactLineHtml(): string
     {
-        return '<p style="margin: 0 0 8px 0;">If you need help, call ' . self::BRAND_PHONE . ' or email us at [company_email].</p>';
+        return '<p style="margin: 0 0 8px 0;">If you need help, call '.self::BRAND_PHONE.' or email us at [company_email].</p>';
     }
 
     // Brand contact line - canonical plain-text wording.
     private function getContactLineText(): string
     {
-        return 'If you need help, call ' . self::BRAND_PHONE . ' or email us at [company_email].';
+        return 'If you need help, call '.self::BRAND_PHONE.' or email us at [company_email].';
     }
 
     // Closing sign-off + signature - canonical HTML wording (the closing voice
@@ -921,9 +941,9 @@ class MessagingSystemSeeder extends Seeder
 
         return '<p style="margin: 0;">
                     Thanks,<br>
-                    <strong>' . $brand . '</strong><br>
-                    ' . $phone . '<br>
-                    ' . $siteDisplay . '
+                    <strong>'.$brand.'</strong><br>
+                    '.$phone.'<br>
+                    '.$siteDisplay.'
                 </p>';
     }
 
@@ -933,9 +953,9 @@ class MessagingSystemSeeder extends Seeder
         $siteDisplay = preg_replace('#^https?://#', '', self::BRAND_SITE);
 
         return "Thanks,\n"
-            . self::BRAND_NAME . "\n"
-            . self::BRAND_PHONE . "\n"
-            . $siteDisplay;
+            .self::BRAND_NAME."\n"
+            .self::BRAND_PHONE."\n"
+            .$siteDisplay;
     }
 
     // TEMPLATE HTML METHODS
@@ -951,7 +971,7 @@ class MessagingSystemSeeder extends Seeder
         $content = '
             <p>[greeting]!</p>
             
-            <p>A new account has been created for you on the <strong>' . self::BRAND_NAME . '</strong> client portal: <a href="[portal_url]">[portal_url]</a></p>
+            <p>A new account has been created for you on the <strong>'.self::BRAND_NAME.'</strong> client portal: <a href="[portal_url]">[portal_url]</a></p>
             
             <p>[password_resetlink]</p>
             
@@ -977,7 +997,7 @@ class MessagingSystemSeeder extends Seeder
 
             <p>Thank you for the opportunity.</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1025,7 +1045,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p><strong>Thanks for scheduling, we appreciate your business!</strong></p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1064,15 +1084,15 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            ' . $this->getPropertyPrepHtml() . '
+            '.$this->getPropertyPrepHtml().'
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            ' . $this->getCancellationPolicyHtml() . '
+            '.$this->getCancellationPolicyHtml().'
             
             <p><strong>Thanks for requesting a photo shoot, your business is appreciated!</strong></p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1111,7 +1131,7 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            ' . $this->getPropertyPrepHtml() . '
+            '.$this->getPropertyPrepHtml().'
             
             <center>
                 <a href="[pay_link]" class="button">Pay Now</a>
@@ -1121,11 +1141,11 @@ class MessagingSystemSeeder extends Seeder
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            ' . $this->getCancellationPolicyHtml() . '
+            '.$this->getCancellationPolicyHtml().'
             
             <p><strong>Thanks for scheduling, your business is appreciated!</strong></p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1168,17 +1188,17 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            ' . $this->getPropertyPrepHtml() . '
+            '.$this->getPropertyPrepHtml().'
             
             <p style="font-size: 13px; color: #666;">Payment may be made at any time throughout the shoot process. Although the image proofs will be posted to your account prior to payment being made, your final images will not be accessible until payment has been received in full.</p>
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
-            ' . $this->getCancellationPolicyHtml() . '
+            '.$this->getCancellationPolicyHtml().'
             
             <p><strong>Thanks for scheduling, your business is appreciated!</strong></p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1218,7 +1238,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1250,17 +1270,17 @@ class MessagingSystemSeeder extends Seeder
             <p><strong>Notes:</strong></p>
             <p>[shoot_notes]</p>
             
-            ' . $this->getPropertyPrepHtml() . '
+            '.$this->getPropertyPrepHtml().'
             
             <p style="font-size: 13px; color: #666;">Don\'t want to receive email reminders? Login to your account, click <strong>My Account</strong>, and turn OFF Email Reminders.</p>
             
-            ' . $this->getCancellationPolicyHtml() . '
+            '.$this->getCancellationPolicyHtml().'
             
             <p>If you have any questions about this photo shoot please feel free to reply to this email, or email <a href="mailto:[company_email]">[company_email]</a> directly.</p>
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1307,7 +1327,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1348,7 +1368,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1400,33 +1420,33 @@ class MessagingSystemSeeder extends Seeder
     private function getPaymentDueReminderTemplate(): string
     {
         $content = '
-            <p>[greeting]!</p>
+            <p>{{greeting}}!</p>
 
-            <p>This is a reminder that your invoice still has an outstanding balance.</p>
+            <p>This is a reminder that your invoice for {{shoot_address}} still has an outstanding balance.</p>
 
             <div class="info-box">
                 <div class="info-row">
-                    <span class="info-label">Invoice Number:</span> [invoice_number]
+                    <span class="info-label">Invoice Number:</span> {{invoice_number}}
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Amount Due:</span> <strong style="font-size: 18px; color: #dc2626;">$[amount_due]</strong>
+                    <span class="info-label">Amount Due:</span> <strong style="font-size: 18px; color: #dc2626;">${{amount_due}}</strong>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Due Date:</span> [due_date]
+                    <span class="info-label">Due Date:</span> {{due_date}}
                 </div>
             </div>
 
-            <p>Please use the payment link below to complete the balance.</p>
+            <p>Please use the payment link below or log in to your account at <a href="{{portal_url}}">{{portal_url}}</a> to make a payment.</p>
 
             <center>
-                <a href="[payment_link]" class="button button-large">Pay Now</a>
+                <a href="{{payment_link}}" class="button button-large">Pay Now</a>
             </center>
 
-            <p>If you have already paid this invoice, please disregard this notice. If you need help, reply to this email or contact <a href="mailto:[company_email]">[company_email]</a>.</p>
+            <p>If you have already paid this invoice, please disregard this notice. If you need help, call {{company_phone}} or email <a href="mailto:{{company_email}}">{{company_email}}</a>.</p>
 
-            <p>Thank you!</p>
+            <p>Thank you,<br><strong>R/E Pro Photos</strong></p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1501,7 +1521,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p><strong>Thank you!</strong></p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1562,7 +1582,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1589,7 +1609,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1617,7 +1637,7 @@ class MessagingSystemSeeder extends Seeder
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -1757,7 +1777,7 @@ class MessagingSystemSeeder extends Seeder
     }
 
     // PLAIN TEXT VERSIONS
-    
+
     private function getAccountCreatedPlainText(): string
     {
         return '[greeting], [realtor_first]!
@@ -1781,7 +1801,7 @@ Thank you for the opportunity.
 
 Customer Service Team
 R/E Pro Photos
-202-868-1663
+(202) 868-1663
 contact@reprophotos.com
 https://reprophotos.com';
     }
@@ -1913,7 +1933,7 @@ Photographer: [photographer_first] [photographer_last]
 
 [shoot_notes]
 
-' . $this->getCancellationPolicyText() . '
+'.$this->getCancellationPolicyText().'
 
 Thank you!';
     }
@@ -1965,19 +1985,21 @@ Thank you!';
 
     private function getPaymentDueReminderPlainText(): string
     {
-        return '[greeting]!
+        return '{{greeting}}!
 
-This is a reminder that your invoice still has an outstanding balance.
+This is a reminder that your invoice for {{shoot_address}} still has an outstanding balance.
 
-Invoice Number: [invoice_number]
-Amount Due: $[amount_due]
-Due Date: [due_date]
+Invoice Number: {{invoice_number}}
+Amount Due: ${{amount_due}}
+Due Date: {{due_date}}
 
-Payment link: [payment_link]
+Payment link: {{payment_link}}
+Dashboard: {{portal_url}}
 
-If you have already paid this invoice, please disregard this notice. If you need help, reply to this email or contact [company_email].
+If you have already paid this invoice, please disregard this notice. If you need help, call {{company_phone}} or email {{company_email}}.
 
-Thank you!';
+Thank you,
+R/E Pro Photos';
     }
 
     private function getShootDeliveredPlainText(): string
@@ -2215,9 +2237,9 @@ You can update this information by visiting: [portal_url]
 
 This information is essential for our photographer to access the property on the scheduled date.
 
-' . $this->getContactLineText() . '
+'.$this->getContactLineText().'
 
-' . $this->getSignOffText() . '
+'.$this->getSignOffText().'
 
 ---
 This is an automated reminder. If you have already provided this information, please disregard this message.';
@@ -2260,7 +2282,7 @@ This is an automated reminder. If you have already provided this information, pl
             
             <p>Thank you!</p>
         ';
-        
+
         return $this->getEmailWrapper($content);
     }
 
@@ -2361,12 +2383,12 @@ Thank you!';
     private function normalizeTemplateDefinition(array $template): array
     {
         foreach (['subject', 'body_html', 'body_text', 'description'] as $field) {
-            if (!empty($template[$field])) {
+            if (! empty($template[$field])) {
                 $template[$field] = $this->transformContent($template[$field]);
             }
         }
 
-        if (!empty($template['variables_json']) && is_array($template['variables_json'])) {
+        if (! empty($template['variables_json']) && is_array($template['variables_json'])) {
             $template['variables_json'] = $this->mapVariables($template['variables_json']);
         }
 
@@ -2396,9 +2418,3 @@ Thank you!';
         return array_values(array_unique($mapped));
     }
 }
-
-
-
-
-
-

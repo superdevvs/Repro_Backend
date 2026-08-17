@@ -8,19 +8,22 @@ use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Carbon;
+use Illuminate\Validation\ValidationException;
 
 class InvoiceController extends Controller
 {
-    public function __construct(private readonly InvoiceService $invoiceService)
-    {
-    }
+    public function __construct(
+        private readonly InvoiceService $invoiceService,
+        private readonly InvoiceAdjustmentService $invoiceAdjustments
+    ) {}
 
     public function index(Request $request)
     {
@@ -79,7 +82,7 @@ class InvoiceController extends Controller
     {
         $data = $request->validate([
             'user_id' => ['required', 'exists:users,id'],
-            'role' => ['required', 'in:' . implode(',', [Invoice::ROLE_CLIENT, Invoice::ROLE_PHOTOGRAPHER])],
+            'role' => ['required', 'in:'.implode(',', [Invoice::ROLE_CLIENT, Invoice::ROLE_PHOTOGRAPHER])],
             'period_start' => ['required', 'date'],
             'period_end' => ['required', 'date', 'after_or_equal:period_start'],
         ]);
@@ -126,11 +129,11 @@ class InvoiceController extends Controller
                 'manual' => 'other',
                 default => $paymentType,
             }
-            : null;
+        : null;
 
         if ($paymentMethod === 'other') {
             $notes = is_array($paymentDetails) ? ($paymentDetails['notes'] ?? null) : null;
-            if (!$notes) {
+            if (! $notes) {
                 if ($paymentType === 'manual') {
                     $paymentDetails = ['notes' => 'Legacy manual payment'];
                 } else {
@@ -143,7 +146,7 @@ class InvoiceController extends Controller
 
         if ($paymentMethod === 'check') {
             $checkNumber = is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null;
-            if (!$checkNumber) {
+            if (! $checkNumber) {
                 return response()->json([
                     'message' => 'Check number is required for check payments',
                 ], 422);
@@ -158,7 +161,7 @@ class InvoiceController extends Controller
 
         $invoiceTotal = round((float) ($invoice->total ?? $invoice->total_amount ?? 0), 2);
         $currentPaid = round($invoice->totalPaid(), 2);
-        if ($currentPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
+        if (! $invoice->hasRelatedPaymentRecords() && $currentPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
             $currentPaid = round((float) $invoice->getAttribute('amount_paid'), 2);
         }
         $remainingBalance = round(max($invoiceTotal - $currentPaid, 0), 2);
@@ -181,6 +184,14 @@ class InvoiceController extends Controller
 
         if ($remainingBalance <= 0) {
             $paymentAmount = 0.0;
+        }
+
+        if ($invoice->role === Invoice::ROLE_CLIENT
+            && $paymentAmount > 0
+            && $this->invoiceAdjustments->relatedShoots($invoice)->count() > 1) {
+            return response()->json([
+                'message' => 'This invoice covers multiple shoots. Record the payment against a specific shoot so it can be allocated correctly.',
+            ], 422);
         }
 
         $paidAt = isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now();
@@ -270,16 +281,17 @@ class InvoiceController extends Controller
         mixed $paymentDetails,
         Carbon $paidAt
     ): void {
-        if ($paymentAmount <= 0) {
+        if ($paymentAmount <= 0 || $invoice->role !== Invoice::ROLE_CLIENT) {
             return;
         }
 
-        $shoot = $invoice->shoot ?: ($invoice->shoot_id ? Shoot::find($invoice->shoot_id) : null);
-        if (!$shoot) {
+        $relatedShoots = $this->invoiceAdjustments->relatedShoots($invoice);
+        if ($relatedShoots->count() !== 1) {
             return;
         }
+        $shoot = $relatedShoots->first();
 
-        Payment::create([
+        $payment = Payment::create([
             'shoot_id' => $shoot->id,
             'invoice_id' => $invoice->id,
             'amount' => $paymentAmount,
@@ -292,11 +304,17 @@ class InvoiceController extends Controller
 
         $shoot->loadMissing('payments');
         $shoot->syncPaymentStatusFromRecords($paymentMethod ?: $shoot->payment_type);
+        $this->invoiceAdjustments->reconcileClientInvoicesForShoot(
+            $shoot,
+            $payment,
+            $paymentMethod,
+            $paymentDetails
+        );
     }
 
     private function markPayoutShootsPaid(Invoice $invoice, Carbon $paidAt): void
     {
-        if (!in_array($invoice->role, [Invoice::ROLE_PHOTOGRAPHER, Invoice::ROLE_SALES_REP], true)) {
+        if (! in_array($invoice->role, [Invoice::ROLE_PHOTOGRAPHER, Invoice::ROLE_SALES_REP], true)) {
             return;
         }
 
@@ -305,17 +323,17 @@ class InvoiceController extends Controller
         foreach ($invoice->shoots as $shoot) {
             $updateData = [];
 
-            if ($invoice->photographer_id && !$shoot->photographer_paid_at) {
+            if ($invoice->photographer_id && ! $shoot->photographer_paid_at) {
                 $updateData['photographer_paid_at'] = $paidAt;
                 $updateData['photographer_paid_invoice_id'] = $invoice->id;
             }
 
-            if ($invoice->sales_rep_id && !$shoot->sales_rep_paid_at) {
+            if ($invoice->sales_rep_id && ! $shoot->sales_rep_paid_at) {
                 $updateData['sales_rep_paid_at'] = $paidAt;
                 $updateData['sales_rep_paid_invoice_id'] = $invoice->id;
             }
 
-            if (!empty($updateData)) {
+            if (! empty($updateData)) {
                 $shoot->update($updateData);
             }
         }
@@ -355,6 +373,8 @@ class InvoiceController extends Controller
             'charge_type' => ['nullable', 'string', 'max:50'],
             // Optional client-supplied idempotency key to prevent double-submit duplicates.
             'dedupe_key' => ['nullable', 'string', 'max:100'],
+            // Required when a period invoice contains more than one shoot.
+            'shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
         ]);
 
         $quantity = $data['quantity'] ?? 1;
@@ -365,6 +385,12 @@ class InvoiceController extends Controller
 
         try {
             DB::beginTransaction();
+            $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+            $targetShoot = $this->invoiceAdjustments->resolveTargetShoot(
+                $invoice,
+                $data['shoot_id'] ?? null,
+                $billsClient
+            );
 
             // Idempotency guard: if an identical dedupe_key already exists on this invoice,
             // return the existing item instead of creating a duplicate (double-click / retry).
@@ -376,18 +402,29 @@ class InvoiceController extends Controller
                     ->first();
 
                 if ($existing) {
+                    $affectedShoots = $this->invoiceAdjustments->relatedShoots($invoice);
+                    if ($existing->shoot_id) {
+                        $itemShoot = Shoot::find($existing->shoot_id);
+                        if ($itemShoot) {
+                            $affectedShoots->push($itemShoot);
+                        }
+                    }
+                    $affectedShoots = $affectedShoots
+                        ->unique(fn (Shoot $shoot) => (int) $shoot->id)
+                        ->values();
                     DB::commit();
 
                     return response()->json([
                         'message' => 'Misc item already added',
                         'item' => $existing,
-                        'invoice' => $invoice->fresh(['items', 'user']),
+                        'invoice' => $this->buildInvoiceResponse($invoice),
+                        'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
                     ], 200);
                 }
             }
 
             $item = $invoice->items()->create([
-                'shoot_id' => $invoice->shoot_id,
+                'shoot_id' => $targetShoot?->id,
                 'type' => InvoiceItem::TYPE_EXPENSE,
                 'description' => $data['description'],
                 'quantity' => $quantity,
@@ -402,25 +439,37 @@ class InvoiceController extends Controller
                 ], fn ($value) => $value !== null),
             ]);
 
-            $invoice->refreshTotals();
+            if ($billsClient && $totalAmount >= 0.005) {
+                $this->invoiceAdjustments->applyInvoiceTotalDelta($invoice, $totalAmount);
+            }
             $invoice->update([
                 'modified_by' => $request->user()?->id,
                 'modified_at' => now(),
             ]);
 
             // Only billable adjustments move the canonical client payable.
-            if ($billsClient) {
-                $this->syncShootPayableForBillableDelta($invoice, $totalAmount);
-            }
-            $this->refreshInvoiceStatusFromBalance($invoice);
+            $updatedShoot = $billsClient
+                ? $this->invoiceAdjustments->applyShootPayableDelta($targetShoot, $totalAmount)
+                : $targetShoot;
 
             DB::commit();
+
+            $affectedShoots = $this->invoiceAdjustments->relatedShoots($invoice)
+                ->when($updatedShoot, fn ($shoots) => $shoots->push($updatedShoot))
+                ->unique(fn (Shoot $shoot) => (int) $shoot->id)
+                ->values();
+            $this->invoiceAdjustments->invalidateShootCaches($affectedShoots);
 
             return response()->json([
                 'message' => 'Misc item added successfully',
                 'item' => $item,
-                'invoice' => $invoice->fresh(['items', 'user']),
+                'invoice' => $this->buildInvoiceResponse($invoice),
+                'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ], 201);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+
+            throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Failed to add misc item to invoice', [
@@ -437,43 +486,66 @@ class InvoiceController extends Controller
 
     public function updateMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
     {
-        if ($item->invoice_id !== $invoice->id) {
-            return response()->json(['message' => 'Item does not belong to this invoice'], 422);
-        }
-
-        $source = is_array($item->meta) ? ($item->meta['source'] ?? null) : null;
-        if ($item->type !== InvoiceItem::TYPE_EXPENSE || $source !== 'admin_misc') {
-            return response()->json(['message' => 'Item is not an admin misc item'], 422);
-        }
-
         $data = $request->validate([
             'description' => ['required', 'string', 'max:500'],
             'amount' => ['required', 'numeric', 'min:0'],
             'quantity' => ['nullable', 'integer', 'min:1'],
             'bills_client' => ['nullable', 'boolean'],
             'charge_type' => ['nullable', 'string', 'max:50'],
+            'shoot_id' => ['nullable', 'integer', 'exists:shoots,id'],
         ]);
-
-        $meta = is_array($item->meta) ? $item->meta : [];
-        $quantity = $data['quantity'] ?? 1;
-        $newBillsClient = array_key_exists('bills_client', $data)
-            ? (bool) $data['bills_client']
-            : (bool) ($meta['bills_client'] ?? false);
-        $newChargeType = $data['charge_type'] ?? ($meta['charge_type'] ?? 'misc');
-        $newTotal = round($quantity * (float) $data['amount'], 2);
-
-        // Billable contribution before vs after so we can apply the precise payable delta.
-        $oldBillable = ((bool) ($meta['bills_client'] ?? false)) ? (float) $item->total_amount : 0.0;
-        $newBillable = $newBillsClient ? $newTotal : 0.0;
 
         try {
             DB::beginTransaction();
+
+            // Route-model instances may be stale by the time a concurrent
+            // request reaches this point. Lock and re-read both records before
+            // deriving ownership, the previous contribution, or either target.
+            $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+            $item = InvoiceItem::query()->lockForUpdate()->findOrFail($item->id);
+
+            if ((int) $item->invoice_id !== (int) $invoice->id) {
+                DB::rollBack();
+
+                return response()->json(['message' => 'Item does not belong to this invoice'], 422);
+            }
+
+            $meta = is_array($item->meta) ? $item->meta : [];
+            if ($item->type !== InvoiceItem::TYPE_EXPENSE || ($meta['source'] ?? null) !== 'admin_misc') {
+                DB::rollBack();
+
+                return response()->json(['message' => 'Item is not an admin misc item'], 422);
+            }
+
+            $quantity = $data['quantity'] ?? 1;
+            $newBillsClient = array_key_exists('bills_client', $data)
+                ? (bool) $data['bills_client']
+                : (bool) ($meta['bills_client'] ?? false);
+            $newChargeType = $data['charge_type'] ?? ($meta['charge_type'] ?? 'misc');
+            $newTotal = round($quantity * (float) $data['amount'], 2);
+
+            $oldBillable = (bool) ($meta['bills_client'] ?? false)
+                ? (float) $item->total_amount
+                : 0.0;
+            $newBillable = $newBillsClient ? $newTotal : 0.0;
+            $oldTargetShoot = $item->shoot_id
+                ? Shoot::query()->lockForUpdate()->find($item->shoot_id)
+                : $this->invoiceAdjustments->resolveTargetShoot($invoice, null, false);
+            $requestedShootId = array_key_exists('shoot_id', $data)
+                ? $data['shoot_id']
+                : ($item->shoot_id ?? $oldTargetShoot?->id);
+            $newTargetShoot = $this->invoiceAdjustments->resolveTargetShoot(
+                $invoice,
+                $requestedShootId,
+                $newBillsClient
+            );
 
             $meta['source'] = 'admin_misc';
             $meta['bills_client'] = $newBillsClient;
             $meta['charge_type'] = $newChargeType;
 
             $item->update([
+                'shoot_id' => $newTargetShoot?->id,
                 'description' => $data['description'],
                 'quantity' => $quantity,
                 'unit_amount' => $data['amount'],
@@ -481,22 +553,59 @@ class InvoiceController extends Controller
                 'meta' => $meta,
             ]);
 
-            $invoice->refreshTotals();
+            $invoiceDelta = $newBillable - $oldBillable;
+            if (abs($invoiceDelta) >= 0.005) {
+                $this->invoiceAdjustments->applyInvoiceTotalDelta($invoice, $invoiceDelta);
+            }
             $invoice->update([
                 'modified_by' => $request->user()?->id,
                 'modified_at' => now(),
             ]);
 
-            $this->syncShootPayableForBillableDelta($invoice, $newBillable - $oldBillable);
-            $this->refreshInvoiceStatusFromBalance($invoice);
+            $updatedShoots = collect();
+            if ($oldTargetShoot && $newTargetShoot && (int) $oldTargetShoot->id === (int) $newTargetShoot->id) {
+                $updated = $this->invoiceAdjustments->applyShootPayableDelta(
+                    $newTargetShoot,
+                    $newBillable - $oldBillable
+                );
+                if ($updated) {
+                    $updatedShoots->push($updated);
+                }
+            } else {
+                if ($oldTargetShoot && $oldBillable > 0) {
+                    $updated = $this->invoiceAdjustments->applyShootPayableDelta($oldTargetShoot, -$oldBillable);
+                    if ($updated) {
+                        $updatedShoots->push($updated);
+                    }
+                }
+                if ($newTargetShoot && $newBillable > 0) {
+                    $updated = $this->invoiceAdjustments->applyShootPayableDelta($newTargetShoot, $newBillable);
+                    if ($updated) {
+                        $updatedShoots->push($updated);
+                    }
+                }
+            }
 
             DB::commit();
+
+            $affectedShoots = $this->invoiceAdjustments->relatedShoots($invoice)
+                ->merge($updatedShoots)
+                ->when($oldTargetShoot, fn ($shoots) => $shoots->push($oldTargetShoot))
+                ->when($newTargetShoot, fn ($shoots) => $shoots->push($newTargetShoot))
+                ->unique(fn (Shoot $shoot) => (int) $shoot->id)
+                ->values();
+            $this->invoiceAdjustments->invalidateShootCaches($affectedShoots);
 
             return response()->json([
                 'message' => 'Misc item updated successfully',
                 'item' => $item->fresh(),
-                'invoice' => $invoice->fresh(['items', 'user']),
+                'invoice' => $this->buildInvoiceResponse($invoice),
+                'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ]);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+
+            throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Failed to update misc item on invoice', [
@@ -512,88 +621,59 @@ class InvoiceController extends Controller
         }
     }
 
-    /**
-     * Keep shoot.total_quote (the canonical client payable) in sync with billable admin
-     * invoice adjustments, then recompute the shoot payment status. Display-only
-     * adjustments pass a zero delta and never reach this method.
-     */
-    private function syncShootPayableForBillableDelta(Invoice $invoice, float $billableDelta): void
-    {
-        if (abs($billableDelta) < 0.01) {
-            return;
-        }
-
-        $shoot = $invoice->shoot;
-        if (!$shoot) {
-            return;
-        }
-
-        $newTotalQuote = round(max((float) ($shoot->total_quote ?? 0) + $billableDelta, 0), 2);
-        $shoot->total_quote = $newTotalQuote;
-
-        // A shoot that now carries a real balance should not stay auto-bypassed/paid.
-        if ($newTotalQuote > 0.01 && $shoot->bypass_paywall) {
-            $shoot->bypass_paywall = false;
-        }
-
-        $shoot->save();
-        $shoot->syncPaymentStatusFromRecords();
-    }
-
-    /**
-     * Recompute the invoice paid flag/status from its current balance so the
-     * client/admin invoice view reflects a balance created or cleared by an
-     * adjustment. Only flips a previously "paid" invoice back to "sent" when a
-     * real balance appears; never force-marks an unpaid invoice as paid here.
-     */
-    private function refreshInvoiceStatusFromBalance(Invoice $invoice): void
-    {
-        $invoice->refresh();
-        $balance = (float) ($invoice->balance_due ?? 0);
-        $isPaid = $balance <= 0.01;
-
-        $invoice->is_paid = $isPaid;
-        if ($isPaid && $invoice->status !== Invoice::STATUS_PAID) {
-            $invoice->status = Invoice::STATUS_PAID;
-        } elseif (!$isPaid && $invoice->status === Invoice::STATUS_PAID) {
-            $invoice->status = Invoice::STATUS_SENT;
-        }
-        $invoice->save();
-    }
-
     public function removeMiscItem(Request $request, Invoice $invoice, InvoiceItem $item)
     {
-        if ($item->invoice_id !== $invoice->id) {
-            return response()->json(['message' => 'Item does not belong to this invoice'], 422);
-        }
-
-        $source = is_array($item->meta) ? ($item->meta['source'] ?? null) : null;
-        if ($item->type !== InvoiceItem::TYPE_EXPENSE || $source !== 'admin_misc') {
-            return response()->json(['message' => 'Item is not an admin misc item'], 422);
-        }
-
         try {
             DB::beginTransaction();
 
+            $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+            $item = InvoiceItem::query()->lockForUpdate()->findOrFail($item->id);
+
+            if ((int) $item->invoice_id !== (int) $invoice->id) {
+                DB::rollBack();
+
+                return response()->json(['message' => 'Item does not belong to this invoice'], 422);
+            }
+
             $meta = is_array($item->meta) ? $item->meta : [];
-            $billableContribution = ((bool) ($meta['bills_client'] ?? false)) ? (float) $item->total_amount : 0.0;
+            if ($item->type !== InvoiceItem::TYPE_EXPENSE || ($meta['source'] ?? null) !== 'admin_misc') {
+                DB::rollBack();
+
+                return response()->json(['message' => 'Item is not an admin misc item'], 422);
+            }
+
+            $billableContribution = (bool) ($meta['bills_client'] ?? false)
+                ? (float) $item->total_amount
+                : 0.0;
+            $targetShoot = $item->shoot_id
+                ? Shoot::query()->lockForUpdate()->find($item->shoot_id)
+                : $this->invoiceAdjustments->resolveTargetShoot($invoice, null, false);
 
             $item->delete();
-            $invoice->refreshTotals();
+            if ($billableContribution > 0) {
+                $this->invoiceAdjustments->applyInvoiceTotalDelta($invoice, -$billableContribution);
+            }
             $invoice->update([
                 'modified_by' => $request->user()?->id,
                 'modified_at' => now(),
             ]);
 
-            // Reverse the client payable only if this adjustment was billable.
-            $this->syncShootPayableForBillableDelta($invoice, -$billableContribution);
-            $this->refreshInvoiceStatusFromBalance($invoice);
+            $updatedShoot = $billableContribution > 0
+                ? $this->invoiceAdjustments->applyShootPayableDelta($targetShoot, -$billableContribution)
+                : $targetShoot;
 
             DB::commit();
 
+            $affectedShoots = $this->invoiceAdjustments->relatedShoots($invoice)
+                ->when($updatedShoot, fn ($shoots) => $shoots->push($updatedShoot))
+                ->unique(fn (Shoot $shoot) => (int) $shoot->id)
+                ->values();
+            $this->invoiceAdjustments->invalidateShootCaches($affectedShoots);
+
             return response()->json([
                 'message' => 'Misc item removed successfully',
-                'invoice' => $invoice->fresh(['items', 'user']),
+                'invoice' => $this->buildInvoiceResponse($invoice),
+                'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ]);
         } catch (\Exception $e) {
             DB::rollBack();

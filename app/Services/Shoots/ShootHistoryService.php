@@ -2,8 +2,6 @@
 
 namespace App\Services\Shoots;
 
-use App\Models\Invoice;
-use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
@@ -42,8 +40,9 @@ class ShootHistoryService
                 'impersonate_header' => $request->header('X-Impersonate-User-Id'),
             ]);
 
-            if (!$this->userCanViewHistory($user)) {
+            if (! $this->userCanViewHistory($user)) {
                 Log::warning('User cannot view history', ['user_id' => $user?->id, 'role' => $user?->role]);
+
                 return response()->json(['message' => 'Forbidden'], 403);
             }
 
@@ -110,7 +109,7 @@ class ShootHistoryService
 
     public function exportHistory(Request $request, ?User $user): StreamedResponse
     {
-        if (!$this->userCanViewHistory($user)) {
+        if (! $this->userCanViewHistory($user)) {
             abort(403, 'Forbidden');
         }
 
@@ -127,7 +126,7 @@ class ShootHistoryService
             return $this->transformHistoryShoot($shoot, $clientCounts);
         });
 
-        $filename = 'shoot-history-' . now()->format('Ymd-His') . '.csv';
+        $filename = 'shoot-history-'.now()->format('Ymd-His').'.csv';
         $includeClientDetails = strtolower($user->role ?? '') !== 'editor';
 
         return response()->streamDownload(function () use ($rows, $includeClientDetails) {
@@ -146,7 +145,7 @@ class ShootHistoryService
 
     protected function userCanViewHistory(?User $user): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -192,7 +191,7 @@ class ShootHistoryService
             $this->normalizeArrayQuery($request, 'client_id'),
             $this->normalizeArrayQuery($request, 'client_ids')
         );
-        if (!empty($clientIds)) {
+        if (! empty($clientIds)) {
             $query->whereIn('client_id', $clientIds);
         }
 
@@ -200,12 +199,12 @@ class ShootHistoryService
             $this->normalizeArrayQuery($request, 'photographer_id'),
             $this->normalizeArrayQuery($request, 'photographer_ids')
         );
-        if (!empty($photographerIds)) {
+        if (! empty($photographerIds)) {
             $query->whereIn('photographer_id', $photographerIds);
         }
 
         $services = $this->normalizeArrayQuery($request, 'services');
-        if (!empty($services)) {
+        if (! empty($services)) {
             $query->whereHas('services', function (Builder $serviceQuery) use ($services) {
                 $serviceQuery->whereIn('services.id', $services)
                     ->orWhereIn(DB::raw('LOWER(services.name)'), array_map('strtolower', $services));
@@ -342,9 +341,20 @@ class ShootHistoryService
             ? app(ShootEditingAssignmentService::class)->filterServicesForEditor($shoot, auth()->user())
             : collect($shoot->services);
         $services = $visibleServices->pluck('name')->filter()->values()->all();
+        $orderItems = $isEditor
+            ? []
+            : app(ShootServiceItemSupport::class)->summaries($shoot);
 
-        $miscItems = $isEditor ? [] : $this->getInvoiceMiscItemNames($shoot);
-        if (!empty($miscItems)) {
+        $miscItems = collect($orderItems)
+            ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+            ->pluck('name')
+            ->filter()
+            ->values()
+            ->all();
+        $invoiceAdjustmentTotal = collect($orderItems)
+            ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
+            ->sum(fn ($item) => (float) ($item['total_amount'] ?? $item['subtotal'] ?? 0));
+        if (! empty($miscItems)) {
             $services = array_merge($services, $miscItems);
         }
 
@@ -381,6 +391,10 @@ class ShootHistoryService
                 'name' => $isEditor ? null : ($shoot->photographer->name ?? null),
             ],
             'services' => $services,
+            'serviceItems' => $orderItems,
+            'service_items' => $orderItems,
+            'orderItems' => $orderItems,
+            'order_items' => $orderItems,
             'financials' => [
                 'baseQuote' => $isEditor ? 0.0 : (float) $shoot->base_quote,
                 'taxPercent' => $isEditor ? 0.0 : $taxPercent,
@@ -389,6 +403,8 @@ class ShootHistoryService
                 'totalPaid' => $isEditor ? 0.0 : $payments['totalPaid'],
                 'lastPaymentDate' => $isEditor ? null : $payments['lastPaymentDate'],
                 'lastPaymentType' => $isEditor ? null : $shoot->payment_type,
+                'invoiceAdjustmentsTotal' => $isEditor ? 0.0 : round($invoiceAdjustmentTotal, 2),
+                'orderTotal' => $isEditor ? 0.0 : (float) $shoot->total_quote,
             ],
             'tourPurchased' => $this->determineTourPurchased($shoot),
             'notes' => [
@@ -447,26 +463,6 @@ class ShootHistoryService
                 ? $lastPayment->processed_at->toDateString()
                 : null,
         ];
-    }
-
-    protected function getInvoiceMiscItemNames(Shoot $shoot): array
-    {
-        $invoice = Invoice::where('shoot_id', $shoot->id)->first();
-        if (!$invoice) {
-            return [];
-        }
-
-        return $invoice->items()
-            ->where('type', InvoiceItem::TYPE_EXPENSE)
-            ->get()
-            ->filter(function ($item) {
-                $meta = is_array($item->meta) ? $item->meta : [];
-                return ($meta['source'] ?? null) === 'admin_misc';
-            })
-            ->pluck('description')
-            ->filter()
-            ->values()
-            ->all();
     }
 
     protected function determineTourPurchased(Shoot $shoot): bool

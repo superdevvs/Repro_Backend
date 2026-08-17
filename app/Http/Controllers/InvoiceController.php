@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
@@ -15,13 +16,14 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class InvoiceController extends Controller
 {
     private const ADMIN_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
+
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
 
     public function index(Request $request)
     {
         $user = $request->user();
-        
-        if (!$user) {
+
+        if (! $user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
@@ -58,35 +60,35 @@ class InvoiceController extends Controller
 
             $query->where(function ($q) use ($clientIds) {
                 $q->whereIn('client_id', $clientIds)
-                  ->orWhereHas('shoots', function ($shootQuery) use ($clientIds) {
-                      $shootQuery->whereIn('client_id', $clientIds);
-                  });
+                    ->orWhereHas('shoots', function ($shootQuery) use ($clientIds) {
+                        $shootQuery->whereIn('client_id', $clientIds);
+                    });
             });
         } elseif ($user->role === 'photographer') {
             // Photographers can only see invoices for their own shoots
             $query->where(function ($q) use ($user) {
                 $q->where('photographer_id', $user->id)
-                  ->orWhereHas('shoots', function ($shootQuery) use ($user) {
-                      $shootQuery->where('photographer_id', $user->id);
-                  });
+                    ->orWhereHas('shoots', function ($shootQuery) use ($user) {
+                        $shootQuery->where('photographer_id', $user->id);
+                    });
             });
         } elseif ($this->hasRole($user, self::SALES_REP_ROLES)) {
             // Sales reps can only see invoices for their clients
             $query->where(function ($q) use ($user) {
                 $q->where('sales_rep_id', $user->id)
-                  ->orWhereHas('shoots', function ($shootQuery) use ($user) {
-                      $shootQuery->where('rep_id', $user->id);
-                  })
-                  ->orWhereHas('shoots.client', function ($clientQuery) use ($user) {
-                      // Also check if client has this rep in metadata
-                      $clientQuery->where(function ($cq) use ($user) {
-                          $cq->whereRaw("JSON_EXTRACT(metadata, '$.accountRepId') = ?", [$user->id])
-                             ->orWhereRaw("JSON_EXTRACT(metadata, '$.account_rep_id') = ?", [$user->id])
-                             ->orWhereRaw("JSON_EXTRACT(metadata, '$.repId') = ?", [$user->id])
-                             ->orWhereRaw("JSON_EXTRACT(metadata, '$.rep_id') = ?", [$user->id])
-                             ->orWhere('created_by_id', $user->id);
-                      });
-                  });
+                    ->orWhereHas('shoots', function ($shootQuery) use ($user) {
+                        $shootQuery->where('rep_id', $user->id);
+                    })
+                    ->orWhereHas('shoots.client', function ($clientQuery) use ($user) {
+                        // Also check if client has this rep in metadata
+                        $clientQuery->where(function ($cq) use ($user) {
+                            $cq->whereRaw("JSON_EXTRACT(metadata, '$.accountRepId') = ?", [$user->id])
+                                ->orWhereRaw("JSON_EXTRACT(metadata, '$.account_rep_id') = ?", [$user->id])
+                                ->orWhereRaw("JSON_EXTRACT(metadata, '$.repId') = ?", [$user->id])
+                                ->orWhereRaw("JSON_EXTRACT(metadata, '$.rep_id') = ?", [$user->id])
+                                ->orWhere('created_by_id', $user->id);
+                        });
+                    });
             });
         } elseif ($user->role === 'editor') {
             return response()->json(['data' => [], 'message' => 'Editors cannot view client invoices'], 403);
@@ -129,7 +131,7 @@ class InvoiceController extends Controller
 
     public function download(Invoice $invoice): StreamedResponse
     {
-        if (!$this->canViewInvoice($invoice, request()->user())) {
+        if (! $this->canViewInvoice($invoice, request()->user())) {
             abort(403, 'Forbidden');
         }
 
@@ -147,7 +149,7 @@ class InvoiceController extends Controller
 
             fputcsv($handle, ['Invoice ID', $invoice->id]);
             fputcsv($handle, ['Photographer', optional($invoice->photographer)->name]);
-            fputcsv($handle, ['Billing Period', $invoice->billing_period_start->toDateString() . ' - ' . $invoice->billing_period_end->toDateString()]);
+            fputcsv($handle, ['Billing Period', $invoice->billing_period_start->toDateString().' - '.$invoice->billing_period_end->toDateString()]);
             fputcsv($handle, []);
             fputcsv($handle, ['Shoot ID', 'Scheduled Date', 'Client', 'Total Quote', 'Payments Received']);
 
@@ -179,8 +181,8 @@ class InvoiceController extends Controller
     public function markPaid(Request $request, Invoice $invoice)
     {
         $user = $request->user();
-        
-        if (!$user) {
+
+        if (! $user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
@@ -192,7 +194,7 @@ class InvoiceController extends Controller
             $canMarkPaid = true;
         }
 
-        if (!$canMarkPaid) {
+        if (! $canMarkPaid) {
             return response()->json(['message' => 'You do not have permission to mark this invoice as paid'], 403);
         }
 
@@ -212,11 +214,11 @@ class InvoiceController extends Controller
                 'manual' => 'other',
                 default => $paymentType,
             }
-            : null;
+        : null;
 
         if ($paymentMethod === 'other') {
             $notes = is_array($paymentDetails) ? ($paymentDetails['notes'] ?? null) : null;
-            if (!$notes) {
+            if (! $notes) {
                 if ($paymentType === 'manual') {
                     $paymentDetails = ['notes' => 'Legacy manual payment'];
                 } else {
@@ -229,7 +231,7 @@ class InvoiceController extends Controller
 
         if ($paymentMethod === 'check') {
             $checkNumber = is_array($paymentDetails) ? ($paymentDetails['check_number'] ?? null) : null;
-            if (!$checkNumber) {
+            if (! $checkNumber) {
                 return response()->json([
                     'message' => 'Check number is required for check payments',
                 ], 422);
@@ -244,7 +246,7 @@ class InvoiceController extends Controller
 
         $invoiceTotal = round((float) ($invoice->total ?? $invoice->total_amount ?? 0), 2);
         $currentPaid = round($invoice->totalPaid(), 2);
-        if ($currentPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
+        if (! $invoice->hasRelatedPaymentRecords() && $currentPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
             $currentPaid = round((float) $invoice->getAttribute('amount_paid'), 2);
         }
         $remainingBalance = round(max($invoiceTotal - $currentPaid, 0), 2);
@@ -267,6 +269,14 @@ class InvoiceController extends Controller
 
         if ($remainingBalance <= 0) {
             $paymentAmount = 0.0;
+        }
+
+        if ($invoice->role === Invoice::ROLE_CLIENT
+            && $paymentAmount > 0
+            && app(InvoiceAdjustmentService::class)->relatedShoots($invoice)->count() > 1) {
+            return response()->json([
+                'message' => 'This invoice covers multiple shoots. Record the payment against a specific shoot so it can be allocated correctly.',
+            ], 422);
         }
 
         $paidAt = isset($data['paid_at']) ? Carbon::parse($data['paid_at']) : now();
@@ -377,16 +387,18 @@ class InvoiceController extends Controller
         mixed $paymentDetails,
         Carbon $paidAt
     ): void {
-        if ($paymentAmount <= 0) {
+        if ($paymentAmount <= 0 || $invoice->role !== Invoice::ROLE_CLIENT) {
             return;
         }
 
-        $shoot = $invoice->shoot ?: ($invoice->shoot_id ? Shoot::find($invoice->shoot_id) : null);
-        if (!$shoot) {
+        $invoiceAdjustments = app(InvoiceAdjustmentService::class);
+        $relatedShoots = $invoiceAdjustments->relatedShoots($invoice);
+        if ($relatedShoots->count() !== 1) {
             return;
         }
+        $shoot = $relatedShoots->first();
 
-        Payment::create([
+        $payment = Payment::create([
             'shoot_id' => $shoot->id,
             'invoice_id' => $invoice->id,
             'amount' => $paymentAmount,
@@ -399,11 +411,17 @@ class InvoiceController extends Controller
 
         $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords($paymentMethod)
             ?? $shoot->syncPaymentStatusFromRecords($paymentMethod);
+        $invoiceAdjustments->reconcileClientInvoicesForShoot(
+            $shoot,
+            $payment,
+            $paymentMethod,
+            $paymentDetails
+        );
     }
 
     private function markPayoutShootsPaid(Invoice $invoice, Carbon $paidAt): void
     {
-        if (!in_array($invoice->role, [Invoice::ROLE_PHOTOGRAPHER, Invoice::ROLE_SALES_REP], true)) {
+        if (! in_array($invoice->role, [Invoice::ROLE_PHOTOGRAPHER, Invoice::ROLE_SALES_REP], true)) {
             return;
         }
 
@@ -412,17 +430,17 @@ class InvoiceController extends Controller
         foreach ($invoice->shoots as $shoot) {
             $updateData = [];
 
-            if ($invoice->photographer_id && !$shoot->photographer_paid_at) {
+            if ($invoice->photographer_id && ! $shoot->photographer_paid_at) {
                 $updateData['photographer_paid_at'] = $paidAt;
                 $updateData['photographer_paid_invoice_id'] = $invoice->id;
             }
 
-            if ($invoice->sales_rep_id && !$shoot->sales_rep_paid_at) {
+            if ($invoice->sales_rep_id && ! $shoot->sales_rep_paid_at) {
                 $updateData['sales_rep_paid_at'] = $paidAt;
                 $updateData['sales_rep_paid_invoice_id'] = $invoice->id;
             }
 
-            if (!empty($updateData)) {
+            if (! empty($updateData)) {
                 $shoot->update($updateData);
             }
         }
@@ -430,7 +448,7 @@ class InvoiceController extends Controller
 
     private function hasRole($user, array $allowedRoles): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -452,7 +470,7 @@ class InvoiceController extends Controller
 
     private function canViewInvoice(Invoice $invoice, $user): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 

@@ -7,8 +7,7 @@ class SystemEmailBuilder
     public function __construct(
         private readonly EmailTypeRegistry $registry,
         private readonly SystemEmailRenderer $renderer,
-    ) {
-    }
+    ) {}
 
     /**
      * @param  array<string, mixed>  $payload
@@ -23,7 +22,7 @@ class SystemEmailBuilder
 
         return [
             'definition' => $definition,
-            'subject' => $subject,
+            'subject' => $rendered['subject'] ?? $subject,
             'body_html' => $rendered['body_html'],
             'body_text' => $rendered['body_text'],
             'payload' => $payload,
@@ -37,7 +36,7 @@ class SystemEmailBuilder
     private function assertRequiredSections(EmailTypeDefinition $definition, array $payload): void
     {
         foreach ($definition->requiredSections as $section) {
-            if (!array_key_exists($section, $payload)) {
+            if (! array_key_exists($section, $payload)) {
                 throw new \InvalidArgumentException("Missing required system email payload section [{$section}] for [{$definition->alias}].");
             }
         }
@@ -64,21 +63,21 @@ class SystemEmailBuilder
             'SHOOT_REMINDER' => 'Shoot Reminder: 24 Hours to Go',
             'SHOOT_REMOVED' => 'Photo Shoot Removed from Schedule',
             'SHOOT_REQUEST_DECLINED' => 'Your Shoot Request Was Declined',
-            'SHOOT_REQUESTED' => !empty($meta['is_admin']) ? 'New Shoot Request Needs Review' : 'We Received Your Shoot Request',
+            'SHOOT_REQUESTED' => ! empty($meta['is_admin']) ? 'New Shoot Request Needs Review' : 'We Received Your Shoot Request',
             'SHOOT_CANCELLATION_REQUESTED' => 'Shoot Cancellation Request Received',
             'SHOOT_DELIVERED' => 'Your Shoot Has Been Delivered',
             'PAYMENT_CONFIRMATION' => 'Thank You for Your Payment!',
-            'INVOICE_GENERATED' => 'Weekly Invoice - ' . ($meta['period'] ?? 'Current Period'),
-            'INVOICE_PENDING_APPROVAL' => 'Invoice Requires Approval - ' . ($meta['payee_name'] ?? 'Unknown') . ' - ' . ($meta['period'] ?? 'Current Period'),
-            'INVOICE_APPROVED' => 'Invoice Approved - ' . ($meta['period'] ?? 'Current Period'),
-            'INVOICE_REJECTED' => 'Invoice Rejected - ' . ($meta['period'] ?? 'Current Period'),
+            'INVOICE_GENERATED' => 'Weekly Invoice - '.($meta['period'] ?? 'Current Period'),
+            'INVOICE_PENDING_APPROVAL' => 'Invoice Requires Approval - '.($meta['payee_name'] ?? 'Unknown').' - '.($meta['period'] ?? 'Current Period'),
+            'INVOICE_APPROVED' => 'Invoice Approved - '.($meta['period'] ?? 'Current Period'),
+            'INVOICE_REJECTED' => 'Invoice Rejected - '.($meta['period'] ?? 'Current Period'),
             'SHOOT_PAID' => 'Payment Confirmed for Your Shoot',
             'SHOOT_CANCELLED' => 'Your Shoot Has Been Cancelled',
             'PHOTOGRAPHER_CHANGED' => 'Photographer Assignment Updated',
-            'CANCELLATION_FEE_INVOICE' => 'Cancellation Fee Invoice - ' . ($meta['address'] ?? 'Property'),
-            'OFFLINE_PAYMENT_INTENT_SUBMITTED' => 'Offline Payment Submitted - ' . (($meta['payment_method_label'] ?? 'Cash') . ' $' . number_format((float) ($meta['amount'] ?? 0), 2)),
+            'CANCELLATION_FEE_INVOICE' => 'Cancellation Fee Invoice - '.($meta['address'] ?? 'Property'),
+            'OFFLINE_PAYMENT_INTENT_SUBMITTED' => 'Offline Payment Submitted - '.(($meta['payment_method_label'] ?? 'Cash').' $'.number_format((float) ($meta['amount'] ?? 0), 2)),
             'OFFLINE_PAYMENT_INTENT_DECLINED' => 'Offline Payment Was Not Accepted',
-            'INTERNAL_MESSAGE_NOTIFICATION' => 'New Dashboard Message from ' . ($meta['sender_name'] ?? 'R/E Pro Photos'),
+            'INTERNAL_MESSAGE_NOTIFICATION' => 'New Dashboard Message from '.($meta['sender_name'] ?? 'R/E Pro Photos'),
             default => $definition->alias,
         };
     }

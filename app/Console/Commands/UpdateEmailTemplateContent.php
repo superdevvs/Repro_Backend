@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\MessageTemplate;
+use App\Support\SupportContact;
 use Illuminate\Console\Command;
 
 /**
@@ -28,8 +29,6 @@ class UpdateEmailTemplateContent extends Command
      * @var array<int, array{0: string, 1: string}>
      */
     private array $globalReplacements = [
-        ['202-868-1113', '202-868-1663'],
-        ['(202) 868-1113', '(202) 868-1663'],
         ['or email {{company_email}}.', 'or email us at {{company_email}}.'],
         ['or email [company_email].', 'or email us at [company_email].'],
     ];
@@ -54,13 +53,11 @@ class UpdateEmailTemplateContent extends Command
             $this->warn('DRY RUN: no changes will be saved.');
         }
 
-        $emailTemplates = MessageTemplate::query()
-            ->where('channel', 'EMAIL')
-            ->get();
+        $messageTemplates = MessageTemplate::query()->get();
 
         $changed = 0;
 
-        foreach ($emailTemplates as $template) {
+        foreach ($messageTemplates as $template) {
             $replacements = $this->globalReplacements;
             if ($template->slug === 'account-created') {
                 $replacements = array_merge($replacements, $this->accountCreatedReplacements);
@@ -70,10 +67,12 @@ class UpdateEmailTemplateContent extends Command
                 'subject' => (string) $template->subject,
                 'body_html' => (string) $template->body_html,
                 'body_text' => (string) $template->body_text,
+                'description' => (string) $template->description,
             ];
 
             $updated = $original;
-            foreach (['subject', 'body_html', 'body_text'] as $field) {
+            foreach (['subject', 'body_html', 'body_text', 'description'] as $field) {
+                $updated[$field] = SupportContact::normalizeReferences($updated[$field]);
                 foreach ($replacements as [$search, $replace]) {
                     $updated[$field] = str_replace($search, $replace, $updated[$field]);
                 }

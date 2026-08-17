@@ -73,4 +73,83 @@ class MessageTemplateControllerTest extends TestCase
         $this->assertStringNotContainsString('Original body', $capturedPayload['body_html']);
         $this->assertSame('Draft body', $capturedPayload['body_text']);
     }
+
+    public function test_enabling_override_atomically_disables_previous_template_for_alias(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        $first = MessageTemplate::create([
+            'channel' => 'EMAIL',
+            'name' => 'First Account Override',
+            'slug' => 'first-account-override',
+            'category' => 'ACCOUNT',
+            'subject' => 'First subject',
+            'body_html' => '<p>First body</p>',
+            'body_text' => 'First body',
+            'scope' => 'SYSTEM',
+            'is_system' => true,
+            'is_active' => true,
+            'email_type' => 'ACCOUNT_CREATED',
+            'override_enabled' => true,
+        ]);
+        $second = MessageTemplate::create([
+            'channel' => 'EMAIL',
+            'name' => 'Second Account Override',
+            'slug' => 'second-account-override',
+            'category' => 'ACCOUNT',
+            'subject' => 'Second subject',
+            'body_html' => '<p>Second body</p>',
+            'body_text' => 'Second body',
+            'scope' => 'SYSTEM',
+            'is_system' => true,
+            'is_active' => true,
+            'email_type' => null,
+            'override_enabled' => false,
+        ]);
+
+        Sanctum::actingAs($user);
+
+        $response = $this->putJson("/api/messaging/templates/{$second->id}", [
+            'channel' => 'EMAIL',
+            'name' => $second->name,
+            'category' => 'ACCOUNT',
+            'subject' => 'Second edited subject',
+            'body_html' => '<p>Second edited body</p>',
+            'body_text' => 'Second edited body',
+            'scope' => 'SYSTEM',
+            'is_system' => true,
+            'is_active' => true,
+            'email_type' => 'ACCOUNT_CREATED',
+            'override_enabled' => true,
+        ]);
+
+        $response
+            ->assertOk()
+            ->assertJsonPath('id', $second->id)
+            ->assertJsonPath('email_type', 'ACCOUNT_CREATED')
+            ->assertJsonPath('override_enabled', true);
+
+        $this->assertFalse($first->fresh()->override_enabled);
+        $this->assertTrue($second->fresh()->override_enabled);
+        $this->assertSame($user->id, $second->fresh()->updated_by);
+    }
+
+    public function test_override_email_type_must_be_a_registered_protected_alias(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($user);
+
+        $this->postJson('/api/messaging/templates', [
+            'channel' => 'EMAIL',
+            'name' => 'Invalid Override',
+            'category' => 'GENERAL',
+            'subject' => 'Invalid subject',
+            'body_html' => '<p>Invalid body</p>',
+            'body_text' => 'Invalid body',
+            'scope' => 'SYSTEM',
+            'is_system' => true,
+            'is_active' => true,
+            'email_type' => 'NOT_A_REAL_EMAIL_TYPE',
+            'override_enabled' => true,
+        ])->assertUnprocessable()->assertJsonValidationErrors('email_type');
+    }
 }

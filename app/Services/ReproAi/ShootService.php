@@ -2,21 +2,25 @@
 
 namespace App\Services\ReproAi;
 
-use App\Models\Shoot;
 use App\Models\Service;
+use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
-use App\Services\ShootWorkflowService;
-use App\Services\ShootTaxService;
+use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\ShootActivityLogger;
+use App\Services\ShootTaxService;
+use App\Services\ShootWorkflowService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ShootService
 {
     private DropboxWorkflowService $dropboxService;
+
     private ShootWorkflowService $workflowService;
+
     private ShootTaxService $taxService;
+
     private ShootActivityLogger $activityLogger;
 
     public function __construct()
@@ -36,7 +40,7 @@ class ShootService
             $user = User::findOrFail($userId);
             $clientId = (int) ($data['client_id'] ?? $userId);
             $client = User::whereKey($clientId)->where('role', 'client')->first();
-            if (!$client) {
+            if (! $client) {
                 throw new \Exception('A valid client is required before booking a shoot');
             }
 
@@ -61,11 +65,11 @@ class ShootService
 
             // Parse date and time
             $scheduledAt = null;
-            if (!empty($data['date'])) {
+            if (! empty($data['date'])) {
                 $date = \Carbon\Carbon::parse($data['date']);
                 $timeWindow = $data['time_window'] ?? 'Flexible';
                 $time = $this->parseTimeWindow($timeWindow);
-                
+
                 if ($time) {
                     $scheduledAt = $date->copy()->setTimeFromTimeString($time);
                 } else {
@@ -74,8 +78,8 @@ class ShootService
             }
 
             // Use ShootWorkflowService constants for status
-            $initialStatus = $scheduledAt 
-                ? ShootWorkflowService::STATUS_SCHEDULED 
+            $initialStatus = $scheduledAt
+                ? ShootWorkflowService::STATUS_SCHEDULED
                 : ShootWorkflowService::STATUS_HOLD_ON;
 
             // Create shoot
@@ -157,6 +161,7 @@ class ShootService
         foreach ($services as $service) {
             $total += ($service->price ?? 0);
         }
+
         return round($total, 2);
     }
 
@@ -169,6 +174,7 @@ class ShootService
         } elseif (str_contains($timeWindow, 'Evening')) {
             return '17:00'; // Default evening time
         }
+
         return '12:00'; // Default to noon
     }
 
@@ -179,14 +185,14 @@ class ShootService
     {
         return Shoot::where(function ($query) use ($userId) {
             $query->where('client_id', $userId)
-                  ->orWhere('rep_id', $userId);
+                ->orWhere('rep_id', $userId);
         })
-        ->where('scheduled_at', '>=', now())
-        ->where('scheduled_at', '<=', now()->addDays(30))
-        ->whereNotIn('status', ['cancelled', 'completed'])
-        ->orderBy('scheduled_at', 'asc')
-        ->limit($limit)
-        ->get();
+            ->where('scheduled_at', '>=', now())
+            ->where('scheduled_at', '<=', now()->addDays(30))
+            ->whereNotIn('status', ['cancelled', 'completed'])
+            ->orderBy('scheduled_at', 'asc')
+            ->limit($limit)
+            ->get();
     }
 
     /**
@@ -196,11 +202,11 @@ class ShootService
     {
         return DB::transaction(function () use ($shoot, $data, $user) {
             // Update scheduled date/time if provided
-            if (!empty($data['date'])) {
+            if (! empty($data['date'])) {
                 $date = \Carbon\Carbon::parse($data['date']);
                 $timeWindow = $data['time_window'] ?? $shoot->time ?? '12:00';
                 $time = $this->parseTimeWindow($timeWindow);
-                
+
                 if ($time) {
                     $scheduledAt = $date->copy()->setTimeFromTimeString($time);
                 } else {
@@ -213,7 +219,7 @@ class ShootService
             }
 
             // Update services if provided
-            if (!empty($data['service_ids'])) {
+            if (! empty($data['service_ids'])) {
                 $services = Service::whereIn('id', $data['service_ids'])->get();
                 if ($services->isNotEmpty()) {
                     $baseQuote = $this->calculateBaseQuote($services);
@@ -222,9 +228,16 @@ class ShootService
                         $shoot->tax_region ?? 'CA'
                     );
 
+                    $billableAdjustments = app(InvoiceAdjustmentService::class)
+                        ->billableItemsForShoot($shoot)
+                        ->sum(fn ($item) => (float) $item->total_amount);
+
                     $shoot->base_quote = $taxCalculation['base_quote'];
                     $shoot->tax_amount = $taxCalculation['tax_amount'];
-                    $shoot->total_quote = $taxCalculation['total_quote'];
+                    $shoot->total_quote = round(
+                        (float) $taxCalculation['total_quote'] + $billableAdjustments,
+                        2
+                    );
 
                     $pivotData = $services->mapWithKeys(function ($service) {
                         return [
@@ -314,7 +327,7 @@ class ShootService
 
         while ($current <= $endTime) {
             $timeStr = $current->format('H:i');
-            if (!in_array($timeStr, $bookedTimes)) {
+            if (! in_array($timeStr, $bookedTimes)) {
                 $availableSlots[] = [
                     'time' => $timeStr,
                     'display' => $current->format('g:i A'),
@@ -326,4 +339,3 @@ class ShootService
         return $availableSlots;
     }
 }
-

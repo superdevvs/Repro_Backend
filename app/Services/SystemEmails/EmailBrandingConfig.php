@@ -2,6 +2,8 @@
 
 namespace App\Services\SystemEmails;
 
+use App\Support\SupportContact;
+
 class EmailBrandingConfig
 {
     /**
@@ -12,14 +14,14 @@ class EmailBrandingConfig
     {
         $dashboardUrl = rtrim((string) config('app.frontend_url', 'https://reprodashboard.com'), '/');
         $appUrl = rtrim((string) config('app.url', 'https://api.reprodashboard.com'), '/');
-        $emailLogoGreyUrl = $appUrl . '/images/repro-email-logo-grey.png';
-        $verificationLogoLightUrl = $appUrl . '/images/repro-email-logo-light.png';
-        $socialIconBase = $appUrl . '/images/social';
+        $emailLogoGreyUrl = $appUrl.'/images/repro-email-logo-grey.png';
+        $verificationLogoLightUrl = $appUrl.'/images/repro-email-logo-light.png';
+        $socialIconBase = $appUrl.'/images/social';
 
-        return array_replace_recursive([
+        $branding = array_replace_recursive([
             'product_name' => 'R/E Pro Photos',
-            'support_email' => config('mail.contact_address', 'contact@reprophotos.com'),
-            'support_phone' => config('mail.contact_phone', '202-868-1663'),
+            'support_email' => config('mail.contact_address', SupportContact::EMAIL),
+            'support_phone' => SupportContact::PHONE_DISPLAY,
             'dashboard_url' => $dashboardUrl,
             'base_url' => $dashboardUrl,
             'website_url' => 'https://reprophotos.com',
@@ -29,9 +31,9 @@ class EmailBrandingConfig
             'social_facebook_url' => 'https://www.facebook.com/reprophotos',
             'social_instagram_url' => 'https://www.instagram.com/reprophotos',
             'social_linkedin_url' => 'https://www.linkedin.com/company/reprophotos',
-            'social_facebook_icon_url' => $socialIconBase . '/facebook.png',
-            'social_instagram_icon_url' => $socialIconBase . '/instagram.png',
-            'social_linkedin_icon_url' => $socialIconBase . '/linkedin.png',
+            'social_facebook_icon_url' => $socialIconBase.'/facebook.png',
+            'social_instagram_icon_url' => $socialIconBase.'/instagram.png',
+            'social_linkedin_icon_url' => $socialIconBase.'/linkedin.png',
             // Temporary aliases for older callers during the branding refactor.
             'logo_url' => $emailLogoGreyUrl,
             'verification_logo_url' => $verificationLogoLightUrl,
@@ -108,5 +110,12 @@ class EmailBrandingConfig
             'region' => (string) config('app.region', 'us'),
             'timezone' => (string) config('app.timezone', 'UTC'),
         ], $overrides);
+
+        // The support number is brand-owned, not tenant/user data. Force the
+        // canonical value after overrides so stale cached config or legacy
+        // caller-provided branding cannot reintroduce the retired number.
+        $branding['support_phone'] = SupportContact::PHONE_DISPLAY;
+
+        return $branding;
     }
 }
