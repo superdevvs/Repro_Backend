@@ -1151,18 +1151,21 @@ class UserController extends Controller
 
         if (!$this->shouldRequireEmailVerificationForRole($user->role)) {
             return response()->json([
+                'sent' => false,
                 'message' => 'Verification emails are not required for this account role.',
             ], 422);
         }
 
         if (blank($user->email)) {
             return response()->json([
+                'sent' => false,
                 'message' => 'This account does not have an email address on file.',
             ], 422);
         }
 
         if (strtolower((string) $user->email_status) === EmailHealthService::STATUS_VERIFIED) {
             return response()->json([
+                'sent' => false,
                 'message' => 'This email address is already verified.',
             ], 422);
         }
@@ -1175,8 +1178,9 @@ class UserController extends Controller
 
         if (!$sent) {
             return response()->json([
+                'sent' => false,
                 'message' => 'Failed to send verification email. Please try again.',
-            ], 500);
+            ], 422);
         }
 
         $this->emailHealthService->markVerificationSent($user);
@@ -1196,6 +1200,8 @@ class UserController extends Controller
         $user->refresh();
 
         return response()->json([
+            'sent' => true,
+            'email' => $user->email,
             'message' => 'Verification email sent successfully.',
             'user' => $this->presentUserForViewer($user, $admin),
         ]);

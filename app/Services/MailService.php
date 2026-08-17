@@ -306,19 +306,26 @@ class MailService
             $issuedContext = (string) ($verificationToken->issued_context ?? '');
             $isExplicitResend = in_array($issuedContext, ['dashboard_resend', 'admin_profile_resend', 'email_change'], true);
 
-            $this->dispatchProtectedEmail('CLIENT_EMAIL_VERIFICATION', $payload, $user->email, [], [], [
+            $dispatched = $this->dispatchProtectedEmail('CLIENT_EMAIL_VERIFICATION', $payload, $user->email, [], [], [
                 'related_account_id' => $user->id,
                 // Verification must be deliverable even when the address is still unverified.
                 'enforce_email_health_gate' => false,
             ], [
                 'idempotency_key' => sprintf('CLIENT_EMAIL_VERIFICATION:%d:%d', $user->id, $verificationToken->id),
-                'force' => $isExplicitResend,
+                // Resend must always create a new outbound message, never reuse a prior send.
+                'force' => true,
+                'require_fresh_send' => true,
                 'canonical_metadata' => [
                     'verification_token_id' => $verificationToken->id,
                     'verification_issued_context' => $verificationToken->issued_context,
                     'verification_expires_at' => $verificationToken->expires_at?->toIso8601String(),
+                    'forced_resend' => $isExplicitResend,
                 ],
             ]);
+
+            if ($dispatched !== true) {
+                throw new \RuntimeException('The mail provider did not accept a new verification email.');
+            }
 
             Log::info('Account email verification email sent', [
                 'user_id' => $user->id,
@@ -2902,6 +2909,10 @@ class MailService
             'force' => $options['force'] ?? false,
             'canonical_metadata' => $options['canonical_metadata'] ?? [],
         ]);
+
+        if (($options['require_fresh_send'] ?? false) === true) {
+            return (bool) ($result['sent'] ?? false);
+        }
 
         return $result['sent'] || $result['duplicate'];
     }

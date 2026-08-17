@@ -37,6 +37,8 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
 
         $this->postJson('/api/profile/email-verification/resend')
             ->assertOk()
+            ->assertJsonPath('sent', true)
+            ->assertJsonPath('email', 'legacy-null-status@example.com')
             ->assertJsonPath('message', 'Verification email sent. Check your inbox to verify your address.')
             ->assertJsonPath('user.email_health.status', 'unverified');
 
@@ -61,6 +63,8 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
 
         $this->postJson('/api/profile/email-verification/resend')
             ->assertOk()
+            ->assertJsonPath('sent', true)
+            ->assertJsonPath('email', 'needs-verify@example.com')
             ->assertJsonPath('message', 'Verification email sent. Check your inbox to verify your address.');
 
         $this->assertDatabaseHas('client_email_verification_tokens', [
@@ -71,6 +75,16 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
             'email_alias' => 'CLIENT_EMAIL_VERIFICATION',
             'related_account_id' => $user->id,
         ]);
+
+        $this->postJson('/api/profile/email-verification/resend')
+            ->assertOk()
+            ->assertJsonPath('sent', true);
+
+        $this->assertSame(2, \App\Models\ClientEmailVerificationToken::query()->where('user_id', $user->id)->count());
+        $this->assertSame(2, \Illuminate\Support\Facades\DB::table('system_email_dispatches')
+            ->where('email_alias', 'CLIENT_EMAIL_VERIFICATION')
+            ->where('related_account_id', $user->id)
+            ->count());
     }
 
     public function test_admin_resend_returns_a_clear_error_when_already_verified(): void
@@ -86,6 +100,7 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
 
         $this->postJson("/api/admin/users/{$client->id}/resend-verification")
             ->assertStatus(422)
+            ->assertJsonPath('sent', false)
             ->assertJsonPath('message', 'This email address is already verified.');
     }
 

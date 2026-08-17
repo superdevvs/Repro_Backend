@@ -503,6 +503,7 @@ class AuthController extends Controller
 
         if (!$this->shouldRequireEmailVerificationForRole($user->role)) {
             return response()->json([
+                'sent' => false,
                 'message' => 'Verification emails are not required for this account role.',
                 'user' => $user->fresh(),
             ], 422);
@@ -510,6 +511,7 @@ class AuthController extends Controller
 
         if (strtolower((string) ($user->email_status ?? '')) === EmailHealthService::STATUS_VERIFIED) {
             return response()->json([
+                'sent' => false,
                 'message' => 'This email address is already verified.',
                 'user' => $this->presentAuthenticatedUser($user->fresh()),
             ], 422);
@@ -520,6 +522,7 @@ class AuthController extends Controller
             'issued_by' => $user->id,
         ])) {
             return response()->json([
+                'sent' => false,
                 'message' => 'Unable to send a verification email right now. Please try again.',
             ], 422);
         }
@@ -536,9 +539,13 @@ class AuthController extends Controller
             ]
         );
 
+        $freshUser = $user->fresh();
+
         return response()->json([
+            'sent' => true,
+            'email' => $freshUser->email,
             'message' => 'Verification email sent. Check your inbox to verify your address.',
-            'user' => $this->presentAuthenticatedUser($user->fresh()),
+            'user' => $this->presentAuthenticatedUser($freshUser),
         ]);
     }
 
