@@ -65,6 +65,7 @@ class CubiCasaPerShootIdempotencyPropertyTest extends TestCase
         parent::setUp();
 
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', self::BASE_URL);
         config()->set('services.cubicasa.environment', 'production');
     }
@@ -186,11 +187,14 @@ class CubiCasaPerShootIdempotencyPropertyTest extends TestCase
             // Re-fake on every iteration: Http::fake() resets the recorded
             // request log so per-iteration counts/headers stay isolated.
             Http::fake([
+                // Create path — sequenced according to the iteration's outcomes.
+                // MUST precede the '/orders/*' sync stub: Http::fake() matches
+                // patterns in array order and '/orders/*' also matches
+                // '/orders/draft', which would otherwise swallow every create.
+                self::BASE_URL . '/orders/draft' => $this->buildPostOrdersSequence($outcomes, $expectedPosts),
                 // Sync path for an already-linked shoot — return a successful
                 // payload so the post-success attempts complete their sync.
                 self::BASE_URL . '/orders/*' => Http::response($this->successPayload(), 200),
-                // Create path — sequenced according to the iteration's outcomes.
-                self::BASE_URL . '/orders' => $this->buildPostOrdersSequence($outcomes, $expectedPosts),
             ]);
 
             $actor = User::factory()->create(['role' => 'admin']);
@@ -245,7 +249,7 @@ class CubiCasaPerShootIdempotencyPropertyTest extends TestCase
             //     surfaced as a counterexample rather than silently ignored.
             $postOrdersRequests = Http::recorded(function ($request) {
                 return $request->method() === 'POST'
-                    && $request->url() === self::BASE_URL . '/orders';
+                    && $request->url() === self::BASE_URL . '/orders/draft';
             });
 
             $this->assertCount(

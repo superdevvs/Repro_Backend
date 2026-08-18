@@ -24,11 +24,20 @@ use Illuminate\Support\Str;
  */
 class CubiCasaService
 {
+    /** v3 requires a country on every order; we only serve US properties today. */
+    private const DEFAULT_COUNTRY = 'United States';
+
+    /** CubiCasa package tiers. A 2D floor plan is `base`, a 3D floor plan `plus_3d`. */
+    private const PACKAGE_BASE = 'base';
+    private const PACKAGE_PLUS_3D = 'plus_3d';
+
     public const FAILURE_NONE = null;
     public const FAILURE_NOT_LINKED = 'not_linked'; // shoot has no cubicasa_order_id
     public const FAILURE_NOT_FOUND = 'not_found';
     public const FAILURE_AUTH = 'auth';
     public const FAILURE_OTHER = 'other';
+    /** Required configuration is missing; retrying will not help. */
+    public const FAILURE_CONFIG = 'config';
 
     public const SYNC_STATUS_QUEUED = 'queued';
     public const SYNC_STATUS_RUNNING = 'running';
@@ -282,6 +291,24 @@ class CubiCasaService
             return null;
         }
 
+        // v3 rejects an order with no owner_email. Bail out before spending an
+        // idempotency key or an HTTP round trip on a request that cannot succeed.
+        // Logged at error level deliberately: warnings are dropped under
+        // LOG_LEVEL=error, which is exactly how the /orders payload bug stayed
+        // invisible for seven weeks.
+        if (trim((string) config('services.cubicasa.owner_email')) === '') {
+            $this->lastFailureReason = self::FAILURE_CONFIG;
+            Log::error('CubiCasa createOrder skipped: CUBICASA_OWNER_EMAIL is not configured.', [
+                'shoot_id' => $shoot->id,
+            ]);
+            $this->auditLog->record($createEvent, $actor, $shoot, [
+                'outcome' => 'failed',
+                'failure_reason' => $this->lastFailureReason,
+            ]);
+
+            return null;
+        }
+
         // AC 19.6 — reuse a per-shoot Idempotency-Key so repeated create requests
         // never duplicate the order. Persist it on first use.
         $idempotencyKey = $shoot->cubicasa_idempotency_key
@@ -293,7 +320,7 @@ class CubiCasaService
         try {
             $resp = $this->client()
                 ->withHeaders(['Idempotency-Key' => $idempotencyKey])
-                ->post($this->baseUrl . '/orders', $this->buildOrderPayload($shoot));
+                ->post($this->baseUrl . '/orders/draft', $this->buildOrderPayload($shoot));
         } catch (\Throwable $e) {
             $this->lastFailureReason = self::FAILURE_OTHER;
             Log::error('CubiCasa createOrder exception', [
@@ -335,7 +362,14 @@ class CubiCasaService
     }
 
     /**
-     * Build the `POST /orders` request body for a manual order creation.
+     * Build the `POST /orders/draft` request body.
+     *
+     * v3 takes a FLAT body — street/city/country are top-level and required,
+     * `info` is a free-text string (not an object), and `owner_email` must name
+     * a user in our CubiCasa company account. Nesting these under an `address`
+     * object, as this builder used to, is rejected with HTTP 400
+     * "field required". See the contract:
+     * https://integrate.docs.cubi.casa/create-a-draft-order-20093452e0
      *
      * The external_id is scoped to the Shoot (`shoot-{id}`) so the order can be
      * matched back to this Shoot by {@see findOrderByExternalId()} and the
@@ -350,32 +384,44 @@ class CubiCasaService
 
         $suite = $details['apt_suite'] ?? $details['aptSuite'] ?? $details['suite'] ?? null;
 
-        $address = array_filter([
+        $payload = array_filter([
             'street' => $shoot->address,
             'suite' => is_string($suite) && trim($suite) !== '' ? $suite : null, // Req 7.1
             'city' => $shoot->city,
             'state' => $shoot->state,
             'postalCode' => $shoot->zip,
+            'external_id' => 'shoot-' . $shoot->id, // Req 7.3
+            'info' => 'REPRO shoot ' . $shoot->id,
+            'owner_email' => config('services.cubicasa.owner_email'),
+            'package_type' => $this->resolvePackageType($shoot),
         ], static fn ($value): bool => is_string($value) ? trim($value) !== '' : $value !== null);
 
-        // Req 7.2 — default country to US when state + zip present and no country set.
-        $hasState = isset($address['state']);
-        $hasZip = isset($address['postalCode']);
-        if ($hasState && $hasZip && empty($address['country'])) {
-            $address['country'] = 'US';
-        }
-
-        $payload = [
-            'info' => [
-                'external_id' => 'shoot-' . $shoot->id, // Req 7.3
-            ],
-        ];
-
-        if (!empty($address)) {
-            $payload['address'] = $address;
-        }
+        // Req 7.2 — country is required by v3, so it is always sent. We only
+        // serve US properties today and a Shoot has no country attribute.
+        $payload['country'] = self::DEFAULT_COUNTRY;
 
         return $payload;
+    }
+
+    /**
+     * Map the shoot's booked services onto a CubiCasa package tier.
+     *
+     * A shoot selling both a 2D and a 3D floor plan places one order at the
+     * higher tier rather than two orders.
+     */
+    private function resolvePackageType(Shoot $shoot): string
+    {
+        $services = $shoot->relationLoaded('services')
+            ? $shoot->services
+            : $shoot->services()->get();
+
+        foreach ($services as $service) {
+            if (str_contains(strtolower((string) $service->name), '3d floor')) {
+                return self::PACKAGE_PLUS_3D;
+            }
+        }
+
+        return self::PACKAGE_BASE;
     }
     public function findOrderByExternalId(string $externalId): ?array
     {
@@ -605,13 +651,33 @@ class CubiCasaService
         // in `cubicasa_data.tour` for reference but is NOT promoted to the
         // managed `tour_links` slots.
 
-        $shoot->cubicasa_last_synced_at = now();
-        if (Schema::hasColumn('shoots', 'cubicasa_sync_status')) {
-            $shoot->cubicasa_sync_status = self::SYNC_STATUS_SUCCEEDED;
+        // Only claim success once the shoot is actually linked. A 2xx whose body
+        // carries no order id leaves it unlinked, and stamping "succeeded" there
+        // reports a healthy sync for a shoot that has no order — in the UI that
+        // is indistinguishable from a real success, and it is precisely how a
+        // broken integration can look fine.
+        $isLinked = !empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id);
+
+        if ($isLinked) {
+            $shoot->cubicasa_last_synced_at = now();
+            if (Schema::hasColumn('shoots', 'cubicasa_sync_status')) {
+                $shoot->cubicasa_sync_status = self::SYNC_STATUS_SUCCEEDED;
+            }
+            if (Schema::hasColumn('shoots', 'cubicasa_last_sync_error')) {
+                $shoot->cubicasa_last_sync_error = null;
+            }
+        } else {
+            Log::error('CubiCasa returned a success response with no order id; shoot left unlinked.', [
+                'shoot_id' => $shoot->id,
+            ]);
+            if (Schema::hasColumn('shoots', 'cubicasa_sync_status')) {
+                $shoot->cubicasa_sync_status = self::SYNC_STATUS_FAILED;
+            }
+            if (Schema::hasColumn('shoots', 'cubicasa_last_sync_error')) {
+                $shoot->cubicasa_last_sync_error = 'Provider returned no order id.';
+            }
         }
-        if (Schema::hasColumn('shoots', 'cubicasa_last_sync_error')) {
-            $shoot->cubicasa_last_sync_error = null;
-        }
+
         $shoot->save();
 
         return $shoot;

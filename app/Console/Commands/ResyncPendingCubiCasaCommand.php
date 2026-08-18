@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\IngestCubiCasaAssetsJob;
 use App\Models\Shoot;
 use App\Services\CubiCasaService;
@@ -50,7 +51,45 @@ class ResyncPendingCubiCasaCommand extends Command
             $count++;
         }
 
-        $this->info("Re-synced {$count} CubiCasa shoot(s).");
+        $created = $this->backfillMissingOrders($limit);
+
+        $this->info("Re-synced {$count} CubiCasa shoot(s); queued {$created} missing order(s).");
         return self::SUCCESS;
+    }
+
+    /**
+     * Queue orders for shoots that should have one but don't.
+     *
+     * The re-sync loop above only ever looked at shoots that already carry a
+     * cubicasa_order_id, so a shoot whose order was never created — because the
+     * create 400'd, or because it reached "scheduled" by a route that never
+     * dispatched — could never be recovered by the scheduled job. That made a
+     * missing order permanent and silent. This is the safety net.
+     */
+    private function backfillMissingOrders(int $limit): int
+    {
+        $terminal = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED];
+
+        $candidates = Shoot::query()
+            ->with('services.category')
+            ->whereNull('cubicasa_order_id')
+            ->whereNull('cubicasa_external_id')
+            ->whereNotNull('scheduled_at')
+            ->whereNotIn('status', $terminal)
+            ->whereNotIn('workflow_status', $terminal)
+            ->orderByDesc('id')
+            ->limit($limit);
+
+        $created = 0;
+        foreach ($candidates->cursor() as $shoot) {
+            if (!$shoot->hasCubiCasaEligibleService()) {
+                continue;
+            }
+
+            CreateCubiCasaOrderJob::dispatch($shoot->id, 'backfill');
+            $created++;
+        }
+
+        return $created;
     }
 }

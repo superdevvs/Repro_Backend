@@ -21,6 +21,7 @@ class CubiCasaCreateOrderTest extends TestCase
     {
         parent::setUp();
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', self::BASE_URL);
         config()->set('services.cubicasa.environment', 'production');
     }
@@ -43,7 +44,7 @@ class CubiCasaCreateOrderTest extends TestCase
     public function test_create_when_unlinked_creates_links_and_audits(): void
     {
         Http::fake([
-            self::BASE_URL . '/orders' => Http::response(
+            self::BASE_URL . '/orders/draft' => Http::response(
                 $this->createdOrderPayload('shoot-PLACEHOLDER'),
                 200
             ),
@@ -90,7 +91,7 @@ class CubiCasaCreateOrderTest extends TestCase
     {
         Http::fake([
             self::BASE_URL . '/orders/*' => Http::response($this->createdOrderPayload('shoot-1'), 200),
-            self::BASE_URL . '/orders' => Http::response(['id' => 'should-not-be-created'], 200),
+            self::BASE_URL . '/orders/draft' => Http::response(['id' => 'should-not-be-created'], 200),
         ]);
 
         $actor = User::factory()->create(['role' => 'admin']);
@@ -125,7 +126,7 @@ class CubiCasaCreateOrderTest extends TestCase
     {
         // Provider rejects so the shoot never links, allowing a second create attempt.
         Http::fake([
-            self::BASE_URL . '/orders' => Http::response(['message' => 'upstream error'], 502),
+            self::BASE_URL . '/orders/draft' => Http::response(['message' => 'upstream error'], 502),
         ]);
 
         $actor = User::factory()->create(['role' => 'admin']);

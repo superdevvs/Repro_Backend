@@ -96,6 +96,7 @@ class AuditedActionLoggingPropertyTest extends TestCase
 
         // CubiCasa provider config so createOrder()'s credential gate passes.
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', self::CUBICASA_BASE_URL);
         config()->set('services.cubicasa.environment', 'production');
 
@@ -542,7 +543,7 @@ class AuditedActionLoggingPropertyTest extends TestCase
 
         Http::fake([
             self::CUBICASA_BASE_URL . '/orders/*' => Http::response($payload, 200),
-            self::CUBICASA_BASE_URL . '/orders'   => Http::response($payload, 200),
+            self::CUBICASA_BASE_URL . '/orders/draft'   => Http::response($payload, 200),
         ]);
     }
 

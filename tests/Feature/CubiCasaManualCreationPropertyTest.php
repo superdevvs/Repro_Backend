@@ -68,6 +68,7 @@ class CubiCasaManualCreationPropertyTest extends TestCase
         parent::setUp();
 
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', self::BASE_URL);
         config()->set('services.cubicasa.environment', 'production');
     }
@@ -169,7 +170,7 @@ class CubiCasaManualCreationPropertyTest extends TestCase
                 200
             ),
             // Create path.
-            self::BASE_URL . '/orders' => Http::response(
+            self::BASE_URL . '/orders/draft' => Http::response(
                 $this->payload(self::NEW_ORDER_ID, $externalId, $status),
                 200
             ),
@@ -205,7 +206,7 @@ class CubiCasaManualCreationPropertyTest extends TestCase
         // AC 19.5 — exactly ONE create POST regardless of repeat count; the
         // remaining calls sync the existing order (no duplicate creation).
         $postOrders = Http::recorded(function ($request) {
-            return $request->method() === 'POST' && $request->url() === self::BASE_URL . '/orders';
+            return $request->method() === 'POST' && $request->url() === self::BASE_URL . '/orders/draft';
         });
         $this->assertCount(1, $postOrders, "[19.5] exactly one POST /orders despite {$repeat} create call(s) for {$context}");
 
@@ -236,7 +237,7 @@ class CubiCasaManualCreationPropertyTest extends TestCase
                 200
             ),
             // Guard: must never be hit for an already-linked shoot.
-            self::BASE_URL . '/orders' => Http::response(['id' => 'should-not-be-created'], 200),
+            self::BASE_URL . '/orders/draft' => Http::response(['id' => 'should-not-be-created'], 200),
         ]);
 
         $actor = User::factory()->create(['role' => 'admin']);
@@ -256,7 +257,7 @@ class CubiCasaManualCreationPropertyTest extends TestCase
 
         // AC 19.5 — no creation POST ever issued for an already-linked shoot.
         Http::assertNotSent(function ($request) {
-            return $request->method() === 'POST' && $request->url() === self::BASE_URL . '/orders';
+            return $request->method() === 'POST' && $request->url() === self::BASE_URL . '/orders/draft';
         });
 
         // Still linked to the original order — no duplicate/replacement.

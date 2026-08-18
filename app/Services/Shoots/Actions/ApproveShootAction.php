@@ -2,7 +2,6 @@
 
 namespace App\Services\Shoots\Actions;
 
-use App\Jobs\CreateCubiCasaOrderJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
@@ -108,23 +107,10 @@ class ApproveShootAction
         $shoot->refresh();
         $shoot->load(['client', 'photographer', 'rep', 'service', 'services']);
 
-        $alreadyLinked = !empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id);
-
-        if ($wasRequested && $shoot->hasCubiCasaEligibleService() && !$alreadyLinked) {
-            // CubiCasa is a post-approval side effect. With the sync test queue,
-            // PendingDispatch runs on destruction, so resolve it inside the try
-            // and contain provider failures without rolling back approval. Real
-            // queue workers retain the job's retry/backoff behavior.
-            try {
-                $pending = CreateCubiCasaOrderJob::dispatch($shoot->id, 'approval')->afterCommit();
-                unset($pending);
-            } catch (\Throwable $e) {
-                Log::warning('CubiCasa auto-create failed during approval; approval completed regardless.', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
+        // CubiCasa ordering is no longer dispatched here. Approval moves the
+        // shoot to scheduled, and ShootObserver dispatches for ANY route to a
+        // confirmed, dated, eligible, unlinked shoot — approval included. Doing
+        // it in both places issued two concurrent creates for one shoot.
 
         $context = $this->automationService->buildShootContext($shoot);
         if ($shoot->rep) {

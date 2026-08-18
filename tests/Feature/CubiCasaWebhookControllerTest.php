@@ -22,6 +22,7 @@ class CubiCasaWebhookControllerTest extends TestCase
     {
         parent::setUp();
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', 'https://app.cubi.casa/api/integrate/v3');
         config()->set('services.cubicasa.webhook_secret', null);
     }

@@ -124,6 +124,9 @@ return [
         'base_url' => env('CUBICASA_BASE_URL', env('CUBICASA_ENVIRONMENT', 'staging') === 'production'
             ? 'https://app.cubi.casa/api/integrate/v3'
             : 'https://qa-customers.cubi.casa/api/integrate/v3'),
+        // Required on every order. Must name a user in our CubiCasa company
+        // account — the shared ops mailbox photographers work out of.
+        'owner_email' => env('CUBICASA_OWNER_EMAIL'),
         // Public URL CubiCasa should POST status events to. Defaults to {APP_URL}/cubicasa_webhook.php.
         'webhook_url' => env('CUBICASA_WEBHOOK_URL'),
         // Optional shared secret for webhook signature verification (header pinned at first delivery).

@@ -33,6 +33,7 @@ class CubiCasaCreateOrderEndpointTest extends TestCase
     {
         parent::setUp();
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', self::BASE_URL);
         config()->set('services.cubicasa.environment', 'production');
     }
@@ -55,7 +56,7 @@ class CubiCasaCreateOrderEndpointTest extends TestCase
     public function test_create_endpoint_creates_and_links_unlinked_shoot(): void
     {
         Http::fake([
-            self::BASE_URL . '/orders' => Http::response($this->fakeOrderPayload('shoot-1'), 200),
+            self::BASE_URL . '/orders/draft' => Http::response($this->fakeOrderPayload('shoot-1'), 200),
         ]);
 
         Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
@@ -103,7 +104,7 @@ class CubiCasaCreateOrderEndpointTest extends TestCase
         Http::fake([
             // Sync path on an already-linked shoot fetches by id; never POST /orders.
             self::BASE_URL . '/orders/*' => Http::response($this->fakeOrderPayload('shoot-2', 'In Progress'), 200),
-            self::BASE_URL . '/orders' => Http::response(['id' => 'should-not-be-created'], 200),
+            self::BASE_URL . '/orders/draft' => Http::response(['id' => 'should-not-be-created'], 200),
         ]);
 
         Sanctum::actingAs(User::factory()->create(['role' => 'admin']));

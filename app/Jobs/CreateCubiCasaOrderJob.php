@@ -80,6 +80,18 @@ class CreateCubiCasaOrderJob implements ShouldQueue
                 return;
             }
 
+            // A missing env var is not transient, so burning three attempts and
+            // an 18-minute backoff on it is pointless. CubiCasaService has
+            // already logged the specific cause at error level.
+            if ($reason === CubiCasaService::FAILURE_CONFIG) {
+                Log::info('CubiCasa auto-create skipped: configuration incomplete.', [
+                    'shoot_id' => $shoot->id,
+                    'failure_reason' => $reason,
+                ]);
+
+                return;
+            }
+
             // Req 5.1 / 5.2 — transient null: warn with failure reason, then throw to retry.
             Log::warning('CubiCasa auto-create returned no order.', [
                 'shoot_id' => $shoot->id,

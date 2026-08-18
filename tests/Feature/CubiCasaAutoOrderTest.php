@@ -35,8 +35,8 @@ use Tests\TestCase;
  * Http::fake() / Http::assertSent(), because the payload builder
  * (CubiCasaService::buildOrderPayload()) is private and must NOT be exercised
  * via reflection. We trigger the real code path with
- * CubiCasaService::createOrder($shoot) (which POSTs to /orders) and assert
- * against the recorded request body.
+ * CubiCasaService::createOrder($shoot) (which POSTs to /orders/draft) and
+ * assert against the recorded request body.
  *
  * Subsequent tasks (1.4, 1.5, 1.6, ...) add further methods to this class.
  */
@@ -64,6 +64,7 @@ class CubiCasaAutoOrderTest extends TestCase
         parent::setUp();
 
         config()->set('services.cubicasa.api_key', 'test-key');
+        config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', self::BASE_URL);
         config()->set('services.cubicasa.environment', 'production');
     }
@@ -89,7 +90,7 @@ class CubiCasaAutoOrderTest extends TestCase
      *
      * For any shoot whose property_details contain a non-empty suite value
      * under any of the keys apt_suite, aptSuite, or suite, the recorded
-     * POST /orders request body's address.suite equals that value.
+     * POST /orders/draft request body's top-level `suite` equals that value.
      *
      * Validates: Requirements 7.1
      */
@@ -112,7 +113,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 $this->app->bound('events') ? $this->app->make('events') : null
             ));
             Http::fake([
-                self::BASE_URL . '/orders' => Http::response($this->successPayload('shoot-prop-2'), 200),
+                self::BASE_URL . '/orders/draft' => Http::response($this->successPayload('shoot-prop-2'), 200),
             ]);
 
             $shoot = Shoot::factory()->create([
@@ -143,12 +144,12 @@ class CubiCasaAutoOrderTest extends TestCase
                 }
 
                 $body = $request->data();
-                $sentSuite = $body['address']['suite'] ?? null;
+                $sentSuite = $body['suite'] ?? null;
 
                 $this->assertSame(
                     $suiteValue,
                     $sentSuite,
-                    "POST /orders address.suite must equal the property_details suite for {$context}"
+                    "POST /orders/draft suite must equal the property_details suite for {$context}"
                 );
 
                 return true;
@@ -157,20 +158,18 @@ class CubiCasaAutoOrderTest extends TestCase
     }
 
     /**
-     * Feature: auto-create-cubicasa-order, Property 3: Country defaults to US
-     * when state and zip are present.
+     * Feature: auto-create-cubicasa-order, Property 3: Country is always sent.
      *
-     * For any shoot that has a non-empty state and a non-empty zip and no
-     * country value, the recorded POST /orders request body's address.country
-     * equals "US". Conversely, when either state or zip is absent/empty, the
-     * service must NOT default the country (no address.country is sent). A
-     * shoot has no first-class country attribute, so the only path to
-     * address.country is this default; the "preserve an existing country"
-     * branch is guarded by empty($address['country']) and never overwrites.
+     * CubiCasa v3 rejects an order with no `country` ("field required"), so it
+     * is sent unconditionally — a Shoot has no country attribute and we only
+     * serve US properties today. This previously defaulted to "US" only when
+     * state AND zip were both present, which meant any shoot missing either one
+     * produced a 400. The randomized state/zip combinations here exist to prove
+     * country no longer depends on them.
      *
      * Validates: Requirements 7.2
      */
-    public function test_country_defaults_to_us_when_state_and_zip_present(): void
+    public function test_country_is_always_sent_regardless_of_state_and_zip(): void
     {
         mt_srand(self::SEED);
 
@@ -183,16 +182,13 @@ class CubiCasaAutoOrderTest extends TestCase
             $state = $hasState ? $this->randomState() : '';
             $zip = $hasZip ? $this->randomZip() : '';
 
-            // The default only applies when BOTH state and zip are non-empty.
-            $expectUsCountry = $hasState && $hasZip;
-
             // Fresh Http factory each iteration so prior stubs/recorded
             // requests cannot leak into this iteration's assertions.
             Http::swap(new HttpFactory(
                 $this->app->bound('events') ? $this->app->make('events') : null
             ));
             Http::fake([
-                self::BASE_URL . '/orders' => Http::response($this->successPayload('shoot-prop-3'), 200),
+                self::BASE_URL . '/orders/draft' => Http::response($this->successPayload('shoot-prop-3'), 200),
             ]);
 
             $shoot = Shoot::factory()->create([
@@ -207,16 +203,15 @@ class CubiCasaAutoOrderTest extends TestCase
             ]);
 
             $context = sprintf(
-                'iteration %d, state=%s, zip=%s, expectUsCountry=%s',
+                'iteration %d, state=%s, zip=%s',
                 $i,
                 json_encode($state),
-                json_encode($zip),
-                $expectUsCountry ? 'true' : 'false'
+                json_encode($zip)
             );
 
             app(CubiCasaService::class)->createOrder($shoot);
 
-            Http::assertSent(function ($request) use ($expectUsCountry, $context) {
+            Http::assertSent(function ($request) use ($context) {
                 if ($request->method() !== 'POST'
                     || ! str_starts_with($request->url(), self::BASE_URL . '/orders')
                 ) {
@@ -224,20 +219,12 @@ class CubiCasaAutoOrderTest extends TestCase
                 }
 
                 $body = $request->data();
-                $sentCountry = $body['address']['country'] ?? null;
 
-                if ($expectUsCountry) {
-                    $this->assertSame(
-                        'US',
-                        $sentCountry,
-                        "POST /orders address.country must default to 'US' when state and zip are present for {$context}"
-                    );
-                } else {
-                    $this->assertNull(
-                        $sentCountry,
-                        "POST /orders must NOT set address.country when state or zip is absent for {$context}"
-                    );
-                }
+                $this->assertSame(
+                    'United States',
+                    $body['country'] ?? null,
+                    "POST /orders/draft must always carry a country for {$context}"
+                );
 
                 return true;
             });
@@ -278,7 +265,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 $this->app->bound('events') ? $this->app->make('events') : null
             ));
             Http::fake([
-                self::BASE_URL . '/orders' => Http::response($this->successPayload('shoot-prop-4'), 200),
+                self::BASE_URL . '/orders/draft' => Http::response($this->successPayload('shoot-prop-4'), 200),
             ]);
 
             $shoot = Shoot::factory()->create([
@@ -310,7 +297,7 @@ class CubiCasaAutoOrderTest extends TestCase
                 }
 
                 $body = $request->data();
-                $sentExternalId = $body['info']['external_id'] ?? null;
+                $sentExternalId = $body['external_id'] ?? null;
 
                 $this->assertSame(
                     $expectedExternalId,
@@ -336,7 +323,7 @@ class CubiCasaAutoOrderTest extends TestCase
     public function test_auto_source_records_auto_create_audit_event(): void
     {
         Http::fake([
-            self::BASE_URL . '/orders' => Http::response($this->successPayload('shoot-auto'), 200),
+            self::BASE_URL . '/orders/draft' => Http::response($this->successPayload('shoot-auto'), 200),
         ]);
 
         $shoot = $this->unlinkedShoot();
@@ -373,7 +360,7 @@ class CubiCasaAutoOrderTest extends TestCase
     public function test_manual_source_records_manual_create_audit_event(): void
     {
         Http::fake([
-            self::BASE_URL . '/orders' => Http::response($this->successPayload('shoot-manual'), 200),
+            self::BASE_URL . '/orders/draft' => Http::response($this->successPayload('shoot-manual'), 200),
         ]);
 
         $actor = User::factory()->create(['role' => 'admin']);
@@ -412,7 +399,7 @@ class CubiCasaAutoOrderTest extends TestCase
     public function test_omitted_source_defaults_to_manual_create_audit_event(): void
     {
         Http::fake([
-            self::BASE_URL . '/orders' => Http::response($this->successPayload('shoot-default'), 200),
+            self::BASE_URL . '/orders/draft' => Http::response($this->successPayload('shoot-default'), 200),
         ]);
 
         $shoot = $this->unlinkedShoot();
@@ -1343,20 +1330,24 @@ class CubiCasaAutoOrderTest extends TestCase
     }
 
     /**
-     * Feature: auto-create-cubicasa-order, Task 5.2 (example): approving a
-     * shoot that was NOT a requested shoot (e.g. it is already scheduled) must
-     * NOT dispatch the job, even when it is eligible and unlinked.
+     * Feature: auto-create-cubicasa-order, Task 5.2 (example): a shoot that is
+     * already SCHEDULED, eligible and unlinked DOES get an order.
      *
-     * The dispatch is gated on the $wasRequested flag captured at the start of
-     * execute() from the pre-approval status. We start from a SCHEDULED shoot
-     * (so $wasRequested === false) and bind a no-op workflow service so the
-     * approve() call succeeds and execution reaches the dispatch gate. Because
-     * the shoot is eligible and unlinked, the ONLY reason the job is not
-     * dispatched is the not-requested gate.
+     * This previously asserted the opposite. Dispatch used to be gated on the
+     * $wasRequested flag, so an already-scheduled shoot fell through every
+     * dispatch site and silently never got a floor plan — one of the coverage
+     * gaps that made the integration look dead. Dispatch is now centralised in
+     * ShootObserver and keyed on the shoot's state (confirmed + dated +
+     * eligible + unlinked) rather than on which action happened to run, so this
+     * scenario is exactly the one that must produce an order.
+     *
+     * ApproveShootAction no longer dispatches directly, so the single push
+     * asserted here comes from the observer — which also proves the two are not
+     * both firing.
      *
      * Validates: Requirements 2.2
      */
-    public function test_approval_does_not_dispatch_when_not_requested(): void
+    public function test_approval_of_an_already_scheduled_eligible_shoot_dispatches_once(): void
     {
         Queue::fake();
         $this->bindApprovalSideEffectFakes();
@@ -1371,8 +1362,8 @@ class CubiCasaAutoOrderTest extends TestCase
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
         ])->save();
-        // Eligible + unlinked so the only gate that can stop dispatch is the
-        // not-requested gate.
+        // Eligible + unlinked: the shoot is in exactly the state that should
+        // produce an order.
         $this->attachCubicasaService($shoot);
 
         $this->approveShoot($shoot, $admin, [
@@ -1382,7 +1373,12 @@ class CubiCasaAutoOrderTest extends TestCase
             'notify_photographer' => false,
         ]);
 
-        Queue::assertNotPushed(CreateCubiCasaOrderJob::class);
+        Queue::assertPushed(
+            CreateCubiCasaOrderJob::class,
+            fn (CreateCubiCasaOrderJob $job) => $job->shootId === $shoot->id
+        );
+        // Exactly one: the observer, not the observer plus a direct dispatch.
+        Queue::assertPushed(CreateCubiCasaOrderJob::class, 1);
     }
 
     /**

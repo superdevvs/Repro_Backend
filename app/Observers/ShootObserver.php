@@ -2,13 +2,18 @@
 
 namespace App\Observers;
 
+use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Shoot;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ShootObserver
 {
     public function updated(Shoot $shoot): void
     {
+        $this->ensureCubiCasaOrder($shoot);
+
         if (!$shoot->wasChanged('workflow_status') && !$shoot->wasChanged('status')) {
             return;
         }
@@ -34,5 +39,79 @@ class ShootObserver
                 GenerateShootMediaArchiveJob::dispatch($shoot->id, 'edited', 'small');
             }
         }
+    }
+
+    /**
+     * Dispatch a CubiCasa order whenever a shoot arrives at "scheduled with a
+     * floor-plan service" by ANY route.
+     *
+     * CreateShootAction and ApproveShootAction dispatch explicitly, but they
+     * were the only two paths that did — scheduling an existing shoot, a plain
+     * PATCH to requested -> scheduled, applying an alternate date and the
+     * AI-chat booking flow all produced no order at all. Hooking the lifecycle
+     * covers those and any path added later. Duplicate dispatches are harmless:
+     * CreateCubiCasaOrderJob no-ops on an already-linked shoot, and repeated
+     * creates reuse the shoot's persisted Idempotency-Key.
+     */
+    private function ensureCubiCasaOrder(Shoot $shoot): void
+    {
+        // Only react to a transition, and order the cheap checks before the
+        // relationship query that hasCubiCasaEligibleService() performs.
+        if (!$shoot->wasChanged('scheduled_at')
+            && !$shoot->wasChanged('workflow_status')
+            && !$shoot->wasChanged('status')
+        ) {
+            return;
+        }
+
+        if ($shoot->scheduled_at === null) {
+            return;
+        }
+
+        if (!empty($shoot->cubicasa_order_id) || !empty($shoot->cubicasa_external_id)) {
+            return;
+        }
+
+        // Never order for a shoot that is not yet confirmed. A client request
+        // can carry a preferred date while still awaiting approval, and paying
+        // for a scan before anyone approves the booking is not recoverable.
+        $blocked = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_REQUESTED];
+        if (in_array($shoot->status, $blocked, true)
+            || in_array($shoot->workflow_status, $blocked, true)
+        ) {
+            return;
+        }
+
+        if (!$shoot->hasCubiCasaEligibleService()) {
+            return;
+        }
+
+        // Never let an ordering side effect break the save that triggered it.
+        // The catch must live INSIDE the deferred callback: on a sync queue the
+        // job executes when the transaction commits, which is after this method
+        // has returned, so a try/catch around dispatch()->afterCommit() here
+        // would not contain the throw and would 500 the caller.
+        // Logged at error level on purpose: warnings are dropped under
+        // LOG_LEVEL=error, which is how the original 400 stayed invisible.
+        $dispatch = static function () use ($shoot): void {
+            try {
+                CreateCubiCasaOrderJob::dispatch($shoot->id, 'lifecycle');
+            } catch (\Throwable $e) {
+                Log::error('CubiCasa lifecycle auto-create failed; shoot update completed regardless.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        };
+
+        // Defer past the surrounding transaction so the job never reads a row
+        // that has not been committed yet.
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit($dispatch);
+
+            return;
+        }
+
+        $dispatch();
     }
 }
