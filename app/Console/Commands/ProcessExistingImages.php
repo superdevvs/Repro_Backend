@@ -13,15 +13,33 @@ class ProcessExistingImages extends Command
     protected $signature = 'images:process-existing {--limit=100} {--force}';
     protected $description = 'Process existing images that haven\'t been processed yet';
 
+    /**
+     * Media types that carry a still image and therefore have renditions.
+     *
+     * This used to be `media_type IN ('image','raw')`, but no row uses 'image'.
+     * The real values are edited, drone, twilight, green_grass, virtual_staging,
+     * extra, floorplan, raw and video — so the command only ever matched the
+     * handful of raw files and could never backfill the client-facing photos it
+     * exists to fix. `video` stays out: image renditions are meaningless for it.
+     */
+    private const IMAGE_MEDIA_TYPES = [
+        'image',
+        'raw',
+        'edited',
+        'drone',
+        'twilight',
+        'green_grass',
+        'virtual_staging',
+        'extra',
+        'floorplan',
+    ];
+
     public function handle(): int
     {
         $limit = $this->option('limit');
         $force = $this->option('force');
 
-        $query = ShootFile::where(function ($query) {
-            $query->where('media_type', 'image')
-                  ->orWhere('media_type', 'raw');
-        })
+        $query = ShootFile::whereIn('media_type', self::IMAGE_MEDIA_TYPES)
         ->where(function ($query) use ($force) {
             $query->whereNull('processed_at')
                 ->orWhereNull('thumbnail_path')

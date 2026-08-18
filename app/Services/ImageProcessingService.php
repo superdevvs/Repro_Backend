@@ -140,21 +140,46 @@ class ImageProcessingService
                 }
             }
             
-            // Update shoot file with generated paths
-            $shootFile->update([
-                'thumbnail_path' => $generatedPaths['thumbnail'] ?? null,
-                'grid_path' => $generatedPaths['grid'] ?? null,
-                'web_path' => $generatedPaths['web'] ?? null,
-                'placeholder_path' => $generatedPaths['placeholder'] ?? null,
-                'processed_at' => now(),
-                'processing_failed_at' => null,
-                'processing_error' => null,
-            ]);
-            
             // Clean up
             if (is_resource($image)) {
                 imagedestroy($image);
             }
+
+            // A run that produced nothing is a failure, not a success. These
+            // columns used to be written unconditionally as
+            // `$generatedPaths[$size] ?? null`, so a run in which every
+            // generateSize() call failed blanked four working renditions whose
+            // image files were still on disk — and returned true while doing it.
+            // Record the failure and leave the existing paths untouched.
+            if (empty($generatedPaths)) {
+                Log::error("Image processing produced no renditions", [
+                    'file_id' => $shootFile->id,
+                    'filename' => $fileName,
+                ]);
+
+                $shootFile->update([
+                    'processing_failed_at' => now(),
+                    'processing_error' => 'Image processing produced no renditions.',
+                ]);
+
+                return false;
+            }
+
+            // Write only the sizes actually generated: a partial run must
+            // upgrade what it could and preserve everything else.
+            $updates = [
+                'processed_at' => now(),
+                'processing_failed_at' => null,
+                'processing_error' => null,
+            ];
+
+            foreach (array_keys(self::SIZES) as $sizeName) {
+                if (!empty($generatedPaths[$sizeName])) {
+                    $updates["{$sizeName}_path"] = $generatedPaths[$sizeName];
+                }
+            }
+
+            $shootFile->update($updates);
             
             Log::info("Successfully processed image: {$fileName}");
             return true;
