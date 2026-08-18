@@ -519,8 +519,13 @@ class ImageProcessingService
             // Determine storage path
             $storagePath = "shoots/{$shootId}/{$sizeName}s/{$newFileName}";
             
-            // Save to appropriate disk
-            $disk = in_array($sizeName, ['thumbnail', 'web', 'placeholder']) ? 'public' : 'local';
+            // Save to appropriate disk. Every browser-facing rendition must land
+            // on `public`; the `local` disk root is storage/app/private, which is
+            // not web-accessible. `grid` was missing from this list, so it was
+            // written somewhere the browser could never fetch it — generation
+            // reported success and grid_path was stored, but tiles silently fell
+            // back to the 300px thumbnail and looked blurred.
+            $disk = in_array($sizeName, ['thumbnail', 'grid', 'web', 'placeholder']) ? 'public' : 'local';
             
             // Create temporary file
             $tempFile = tempnam(sys_get_temp_dir(), 'img_process_') . '.jpg';

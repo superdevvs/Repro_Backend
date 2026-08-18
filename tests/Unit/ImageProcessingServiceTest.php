@@ -76,4 +76,59 @@ class ImageProcessingServiceTest extends TestCase
 
         @unlink($rawPath);
     }
+
+    /**
+     * The `grid` rendition (1000px) exists so desktop media tiles stop upscaling
+     * the 300px thumbnail. It is only useful if the browser can actually fetch
+     * it, which means it must land on the PUBLIC disk alongside the other
+     * web-facing renditions.
+     *
+     * It previously fell through to the `local` disk, whose root is
+     * storage/app/private — outside the web-accessible tree. Generation
+     * reported success and grid_path was recorded, but the file could never be
+     * served, so every tile silently fell back to the 300px thumbnail and
+     * looked blurred.
+     */
+    #[Test]
+    public function it_stores_the_grid_rendition_on_the_public_disk(): void
+    {
+        Storage::fake('public');
+
+        $uploadedImage = UploadedFile::fake()->image('grid-source.jpg', 2400, 1600);
+
+        $service = app(ImageProcessingService::class);
+        $generated = $service->processImageFromPath(
+            789,
+            $uploadedImage->getClientOriginalName(),
+            $uploadedImage->getRealPath()
+        );
+
+        $this->assertArrayHasKey('grid', $generated, 'the grid rendition must be generated');
+        Storage::disk('public')->assertExists($generated['grid']);
+    }
+
+    /**
+     * A grid tile is only sharper than the thumbnail if it is actually bigger.
+     */
+    #[Test]
+    public function the_grid_rendition_is_larger_than_the_thumbnail(): void
+    {
+        Storage::fake('public');
+
+        $uploadedImage = UploadedFile::fake()->image('grid-size.jpg', 2400, 1600);
+
+        $service = app(ImageProcessingService::class);
+        $generated = $service->processImageFromPath(
+            790,
+            $uploadedImage->getClientOriginalName(),
+            $uploadedImage->getRealPath()
+        );
+
+        $grid = getimagesize(Storage::disk('public')->path($generated['grid']));
+        $thumb = getimagesize(Storage::disk('public')->path($generated['thumbnail']));
+
+        $this->assertNotFalse($grid);
+        $this->assertGreaterThan(600, $grid[0], 'grid must be big enough for a 2x desktop tile');
+        $this->assertGreaterThan($thumb[0], $grid[0]);
+    }
 }
