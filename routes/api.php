@@ -6,6 +6,7 @@ use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\API\ShootIssuesController;
 use App\Http\Controllers\API\ShootMediaController;
 use App\Http\Controllers\API\ShootNotesController;
+use App\Http\Controllers\API\ClientDeliveryNotificationController;
 use App\Http\Controllers\API\ShootPaymentsController;
 use App\Http\Controllers\API\ShootPublicAssetsController;
 use App\Http\Controllers\Admin\PermissionController;
@@ -83,6 +84,7 @@ use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
 use App\Http\Controllers\API\SystemEmailHealthController;
 use App\Http\Controllers\API\ClientEmailVerificationController;
+use App\Http\Controllers\API\LegalDocumentController;
 use App\Http\Controllers\API\Admin\SystemOverviewController;
 use App\Http\Controllers\API\UploadSourceController;
 use App\Http\Controllers\Admin\AccountLinkController;
@@ -91,6 +93,11 @@ use App\Http\Controllers\StripePaymentController;
 
 
 Route::get('/user', [AuthController::class, 'currentUser'])->middleware('auth:sanctum');
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/legal-documents/current', [LegalDocumentController::class, 'current']);
+    Route::post('/legal-acceptances', [LegalDocumentController::class, 'accept']);
+});
 
 Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController::class, 'me']);
 
@@ -681,6 +688,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/notes', [ShootNotesController::class, 'getNotes']);
     Route::post('/shoots/{shoot}/notes', [ShootNotesController::class, 'storeNote']);
     Route::patch('/shoots/{shoot}/notes', [ShootNotesController::class, 'updateNotesSimple']);
+
+    Route::get('/client/delivery-notifications', [ClientDeliveryNotificationController::class, 'index']);
+    Route::post('/client/delivery-notifications/{notification}/seen', [ClientDeliveryNotificationController::class, 'seen']);
     
     // Activity Log
     Route::get('/shoots/{shoot}/activity-log', [ShootNotesController::class, 'getActivityLog']);

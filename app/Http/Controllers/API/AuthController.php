@@ -19,6 +19,7 @@ use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\Users\PhotographerAddressPolicy;
+use App\Services\Legal\LegalDocumentService;
 
 class AuthController extends Controller
 {
@@ -582,6 +583,7 @@ class AuthController extends Controller
         $payload['zipcode'] = $payload['zip'] ?? $user->zip;
         $payload['phone'] = $payload['phonenumber'] ?? $user->phonenumber;
         $payload['email_health'] = $user->email_health;
+        $payload['legal_status'] = app(LegalDocumentService::class)->statusFor($user);
 
         return app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $user, $user);
     }

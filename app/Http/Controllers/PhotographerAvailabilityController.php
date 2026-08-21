@@ -843,6 +843,7 @@ class PhotographerAvailabilityController extends Controller
         $authUser = $request->user();
         $privilegedRoles = ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative', 'photographer', 'editor'];
         $includeSensitiveSlotFields = $authUser !== null && in_array($authUser->role, $privilegedRoles, true);
+        $isAuthenticatedClient = $authUser !== null && strtolower((string) $authUser->role) === 'client';
 
         $date = \Carbon\Carbon::parse($validated['date']);
         $shootAddress = $validated['shoot_address'];
@@ -856,6 +857,7 @@ class PhotographerAvailabilityController extends Controller
 
         // Get photographers
         $query = \App\Models\User::where('role', 'photographer')
+            ->with(['serviceAreas:id,kind,value,label'])
             ->select('id', 'name', 'email', 'metadata', 'address', 'city', 'state', 'zip');
         
         if ($photographerIds) {
@@ -1179,12 +1181,26 @@ class PhotographerAvailabilityController extends Controller
                 }
             }
 
-            $result[] = [
+            // Service-area labels are explicitly administrator-authored, coarse public
+            // descriptions (for example, "Northern Virginia"). A client's fallback is
+            // city/state only; anonymous callers never receive home-profile fallback.
+            $serviceAreaLabel = $photographer->serviceAreas
+                ->map(fn ($area) => trim((string) ($area->label ?? '')))
+                ->first(fn ($label) => $label !== '');
+            if (! $serviceAreaLabel && $isAuthenticatedClient) {
+                $serviceAreaLabel = collect([$homeCity, $homeState])
+                    ->map(fn ($part) => trim((string) $part))
+                    ->filter()
+                    ->implode(', ');
+            }
+            $serviceAreaLabel = $serviceAreaLabel ?: null;
+
+            $photographerResult = [
                 'id' => $photographerId,
                 'name' => $photographer->name,
                 'distance' => $distanceMiles,
                 'distance_from' => $distanceFrom,
-                'previous_shoot_id' => $previousShootId,
+                'service_area_label' => $serviceAreaLabel,
                 'availability_slots' => $availabilitySlots->map(fn($s) => [
                     'start_time' => $s->start_time,
                     'end_time' => $s->end_time,
@@ -1205,6 +1221,12 @@ class PhotographerAvailabilityController extends Controller
                 'has_availability' => count($netAvailableSlots) > 0,
                 'shoots_count_today' => $shootsOnDate->count(),
             ];
+
+            if ($includeSensitiveSlotFields) {
+                $photographerResult['previous_shoot_id'] = $previousShootId;
+            }
+
+            $result[] = $photographerResult;
         }
 
         return response()->json(['data' => $result]);

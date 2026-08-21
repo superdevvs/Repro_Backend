@@ -396,7 +396,7 @@ class UpdateShootAction
             unset($validated['is_featured']);
         }
 
-        $this->editablePayloadService->apply($shoot, $validated);
+        $this->editablePayloadService->apply($shoot, $validated, $user);
         if ($featuredFlagProvided) {
             $this->applyFeaturedRequestState($shoot, (bool) $requestedFeaturedState, $user, $canApproveFeaturedShoot);
             $shoot->save();

@@ -79,7 +79,7 @@ class ApproveShootAction
             );
         }
 
-        $this->editablePayloadService->apply($shoot, $validated);
+        $this->editablePayloadService->apply($shoot, $validated, $user);
 
         if (!empty($shoot->photographer_id)) {
             if (!$skipAvailabilityCheck) {
@@ -131,11 +131,27 @@ class ApproveShootAction
             if ($this->hasClientFacingRequestModifications($validated)) {
                 $requestApprovalTrigger = 'SHOOT_REQUEST_MODIFIED';
                 $context['request_modified'] = true;
+                $clientRequestChanges = $this->mailService->buildClientRequestChangeSummary($beforeSnapshot, $shoot);
+                $context['shoot_changes'] = $clientRequestChanges['summary'] ?? ($shootChangeSummary['summary'] ?? 'Please review updated details in the dashboard.');
+                $context['shoot_changes_html'] = null;
+                $context['shoot_service_deltas'] = $clientRequestChanges['service_deltas'] ?? [];
             }
 
             $requestApprovalAttemptedAt = now();
             $requestApprovalDispatch = $this->automationService->handleEvent($requestApprovalTrigger, $context);
             $requestApprovalClientEmailSent = (bool) ($requestApprovalDispatch['client_email_sent'] ?? false);
+            if (
+                $requestApprovalTrigger === 'SHOOT_REQUEST_MODIFIED'
+                && $notifyClient !== false
+                && ! $requestApprovalClientEmailSent
+                && $shoot->client
+            ) {
+                $requestApprovalClientEmailSent = $this->mailService->sendShootRequestModifiedEmail(
+                    $shoot->client,
+                    $shoot,
+                    (string) ($context['shoot_changes'] ?? '')
+                );
+            }
             Log::info('Shoot request approval dispatch evaluated', [
                 'shoot_id' => $shoot->id,
                 'trigger_type' => $requestApprovalTrigger,
@@ -147,7 +163,11 @@ class ApproveShootAction
         // and firing it again on approval can cause duplicate emails to the photographer when the
         // SHOOT_BOOKED rule and the SHOOT_SCHEDULED fallback both target the photographer.
         $shootScheduledAttemptedAt = now();
-        $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $context);
+        $scheduledContext = $context;
+        if ($wasRequested && $requestApprovalClientEmailSent) {
+            $scheduledContext['notify_client'] = false;
+        }
+        $shootScheduledDispatch = $this->automationService->handleEvent('SHOOT_SCHEDULED', $scheduledContext);
         $shouldUseFallback = $this->automationService->shouldUseFallback('SHOOT_SCHEDULED', $shootScheduledDispatch) !== false;
         Log::info('Shoot approval fallback decision evaluated', [
             'shoot_id' => $shoot->id,

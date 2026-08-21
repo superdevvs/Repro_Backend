@@ -12,7 +12,7 @@ class ShootAuthorizationSupport
 {
     public function hasRole(?User $user, array $roles): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -25,7 +25,7 @@ class ShootAuthorizationSupport
     public function ensureRole(array $roles, ?User $user = null, string $message = 'Forbidden'): void
     {
         $user = $user ?? auth()->user();
-        if (!$this->hasRole($user, $roles)) {
+        if (! $this->hasRole($user, $roles)) {
             abort(403, $message);
         }
     }
@@ -45,11 +45,11 @@ class ShootAuthorizationSupport
     public function ensureClientOwnsShoot(Shoot $shoot, ?User $user = null): void
     {
         $user = $user ?? auth()->user();
-        if (!$this->isClientUser($user)) {
+        if (! $this->isClientUser($user)) {
             return;
         }
 
-        if (!$this->canClientAccessShoot($shoot, $user)) {
+        if (! $this->canClientAccessShoot($shoot, $user)) {
             abort(403, 'Forbidden');
         }
     }
@@ -57,7 +57,7 @@ class ShootAuthorizationSupport
     public function canClientAccessShoot(Shoot $shoot, ?User $user = null): bool
     {
         $user = $user ?? auth()->user();
-        if (!$this->isClientUser($user)) {
+        if (! $this->isClientUser($user)) {
             return false;
         }
 
@@ -69,7 +69,7 @@ class ShootAuthorizationSupport
             return true;
         }
 
-        if (!$this->isShootDeliveredForClientAccess($shoot)) {
+        if (! $this->isShootDeliveredForClientAccess($shoot)) {
             return false;
         }
 
@@ -84,7 +84,7 @@ class ShootAuthorizationSupport
 
     private function canClientAccessLinkedShoot(Shoot $shoot, User $user): bool
     {
-        if (!$shoot->client_id) {
+        if (! $shoot->client_id) {
             return false;
         }
 
@@ -113,7 +113,7 @@ class ShootAuthorizationSupport
     public function canAccessShootMedia(Shoot $shoot, ?User $user = null): bool
     {
         $user = $user ?? auth()->user();
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -140,10 +140,73 @@ class ShootAuthorizationSupport
         return false;
     }
 
+    /**
+     * Determine whether an actor may create media for this shoot.
+     *
+     * Read access is intentionally not sufficient here: clients, linked
+     * accounts, ghost recipients, and sales representatives can be allowed to
+     * view a shoot without ever being allowed to mutate its media collection.
+     */
+    public function canUploadShootMedia(
+        Shoot $shoot,
+        ?User $user = null,
+        string $uploadType = 'raw',
+        ?int $shootServiceId = null
+    ): bool {
+        $user = $user ?? auth()->user();
+        if (! $user) {
+            return false;
+        }
+
+        $normalizedUploadType = strtolower(trim($uploadType));
+        if (! in_array($normalizedUploadType, ['raw', 'edited'], true)) {
+            return false;
+        }
+
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+            return true;
+        }
+
+        if ($this->hasRole($user, ['photographer'])) {
+            if ($normalizedUploadType !== 'raw') {
+                return false;
+            }
+
+            return $shootServiceId
+                ? $this->canPhotographerAccessServiceItem($shoot, $shootServiceId, $user)
+                : $this->isPhotographerAssignedToShoot($shoot, $user);
+        }
+
+        if (! $this->hasRole($user, ['editor']) || $normalizedUploadType !== 'edited') {
+            return false;
+        }
+
+        $assignmentService = app(ShootEditingAssignmentService::class);
+        if (! $shootServiceId) {
+            return $assignmentService->editorHasAssignment($shoot, $user);
+        }
+
+        $serviceItem = $shoot->serviceItems()
+            ->with('service')
+            ->whereKey($shootServiceId)
+            ->first();
+
+        if (! $serviceItem || ! ($serviceItem->service?->requiresEditing() ?? true)) {
+            return false;
+        }
+
+        // Legacy top-level editors retain access to all editing-required items.
+        if ((string) $shoot->editor_id === (string) $user->id) {
+            return true;
+        }
+
+        return (string) $serviceItem->editor_id === (string) $user->id;
+    }
+
     public function canViewShootDetails(Shoot $shoot, ?User $user = null): bool
     {
         $user = $user ?? auth()->user();
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -212,16 +275,16 @@ class ShootAuthorizationSupport
 
     public function isClientInteractableEditedFile(ShootFile $file): bool
     {
-        if (!in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)) {
+        if (! in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)) {
             return false;
         }
 
-        return !$this->isRawCameraFile($file);
+        return ! $this->isRawCameraFile($file);
     }
 
     public function isClientHeroEligibleFile(ShootFile $file): bool
     {
-        if (!$this->isClientManageableEditedFile($file)) {
+        if (! $this->isClientManageableEditedFile($file)) {
             return false;
         }
 
@@ -240,7 +303,7 @@ class ShootAuthorizationSupport
     public function canInteractWithShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
     {
         $user = $user ?? auth()->user();
-        if (!$this->canAccessShootMedia($shoot, $user)) {
+        if (! $this->canAccessShootMedia($shoot, $user)) {
             return false;
         }
 
@@ -262,7 +325,7 @@ class ShootAuthorizationSupport
     public function canDownloadShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
     {
         $user = $user ?? auth()->user();
-        if (!$this->canAccessShootMedia($shoot, $user)) {
+        if (! $this->canAccessShootMedia($shoot, $user)) {
             return false;
         }
 
@@ -283,7 +346,7 @@ class ShootAuthorizationSupport
 
     public function canEditorDownloadRawFile(Shoot $shoot, ShootFile $file, User $editor): bool
     {
-        if (!app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $editor)) {
+        if (! app(ShootEditingAssignmentService::class)->canEditorAccessFile($shoot, $file, $editor)) {
             return false;
         }
 
@@ -310,7 +373,7 @@ class ShootAuthorizationSupport
 
     public function canPhotographerAccessServiceItem(Shoot $shoot, ?int $shootServiceId, User $photographer): bool
     {
-        if (!$shootServiceId) {
+        if (! $shootServiceId) {
             return $this->isPhotographerAssignedToShoot($shoot, $photographer);
         }
 
@@ -318,7 +381,7 @@ class ShootAuthorizationSupport
             ->whereKey($shootServiceId)
             ->first();
 
-        if (!$serviceItem) {
+        if (! $serviceItem) {
             return false;
         }
 
@@ -331,7 +394,7 @@ class ShootAuthorizationSupport
 
     public function canPhotographerAccessFile(Shoot $shoot, ShootFile $file, User $photographer): bool
     {
-        if (!$file->shoot_service_id) {
+        if (! $file->shoot_service_id) {
             return $this->isPhotographerAssignedToShoot($shoot, $photographer);
         }
 

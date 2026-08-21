@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Models\SystemEmailDispatch;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
+use Illuminate\Database\QueryException;
 
 class EmailAuditService
 {
@@ -46,36 +47,55 @@ class EmailAuditService
             ? $idempotencyKey . ':force:' . Str::uuid()->toString()
             : $idempotencyKey;
 
-        $dispatch = SystemEmailDispatch::create([
-            'email_type' => $definition->resolvedType(),
-            'email_alias' => $definition->alias,
-            'email_version' => $definition->version,
-            'category' => $definition->category,
-            'idempotency_key' => $effectiveKey,
-            'correlation_id' => (string) Str::uuid(),
-            'recipient_email' => (string) ($transport['to'] ?? ''),
-            'recipient_type' => $transport['contact_type'] ?? Arr::get($payload, 'meta.recipient_type'),
-            'related_account_id' => $transport['related_account_id'] ?? null,
-            'related_shoot_id' => $transport['related_shoot_id'] ?? null,
-            'related_invoice_id' => $transport['related_invoice_id'] ?? null,
-            'send_source' => $transport['send_source'] ?? $definition->alias,
-            'delivery_mode' => $definition->deliveryMode,
-            'template_view' => $definition->templateView,
-            'template_version' => $definition->templateVersion,
-            'status' => 'pending',
-            'attempt_count' => 1,
-            'payload_snapshot' => $payload,
-            'transport_snapshot' => $transport,
-            'metadata' => [
-                'requested_idempotency_key' => $idempotencyKey,
-                'forced' => $force,
-                'canonical_metadata' => is_array($options['canonical_metadata'] ?? null)
-                    ? $options['canonical_metadata']
-                    : [],
-            ],
-        ]);
+        try {
+            $dispatch = SystemEmailDispatch::create([
+                'email_type' => $definition->resolvedType(),
+                'email_alias' => $definition->alias,
+                'email_version' => $definition->version,
+                'category' => $definition->category,
+                'idempotency_key' => $effectiveKey,
+                'correlation_id' => (string) Str::uuid(),
+                'recipient_email' => (string) ($transport['to'] ?? ''),
+                'recipient_type' => $transport['contact_type'] ?? Arr::get($payload, 'meta.recipient_type'),
+                'related_account_id' => $transport['related_account_id'] ?? null,
+                'related_shoot_id' => $transport['related_shoot_id'] ?? null,
+                'related_invoice_id' => $transport['related_invoice_id'] ?? null,
+                'send_source' => $transport['send_source'] ?? $definition->alias,
+                'delivery_mode' => $definition->deliveryMode,
+                'template_view' => $definition->templateView,
+                'template_version' => $definition->templateVersion,
+                'status' => 'pending',
+                'attempt_count' => 1,
+                'payload_snapshot' => $payload,
+                'transport_snapshot' => $transport,
+                'metadata' => [
+                    'requested_idempotency_key' => $idempotencyKey,
+                    'forced' => $force,
+                    'canonical_metadata' => is_array($options['canonical_metadata'] ?? null)
+                        ? $options['canonical_metadata']
+                        : [],
+                ],
+            ]);
+        } catch (QueryException $exception) {
+            if ($force || ! $this->isUniqueConstraintViolation($exception)) {
+                throw $exception;
+            }
+
+            $dispatch = SystemEmailDispatch::query()->where('idempotency_key', $effectiveKey)->first();
+            if (! $dispatch) {
+                throw $exception;
+            }
+
+            return ['dispatch' => $dispatch, 'duplicate' => true];
+        }
 
         return ['dispatch' => $dispatch, 'duplicate' => false];
+    }
+
+    private function isUniqueConstraintViolation(QueryException $exception): bool
+    {
+        return in_array((string) $exception->getCode(), ['23000', '23505'], true)
+            || str_contains(strtolower($exception->getMessage()), 'unique');
     }
 
     public function sent(SystemEmailDispatch $dispatch, Message $message): SystemEmailDispatch
@@ -101,6 +121,32 @@ class EmailAuditService
             'failed_at' => now(),
             'error_code' => class_basename($exception),
             'error_message' => $exception->getMessage(),
+        ]);
+
+        return $dispatch->fresh();
+    }
+
+    /**
+     * Preserve a claimed row when the provider outcome may be uncertain. A
+     * processing row is intentionally not eligible for automated resend; ops
+     * must reconcile the provider before changing it back to pending.
+     */
+    public function uncertain(
+        SystemEmailDispatch $dispatch,
+        \Throwable $exception,
+        ?Message $message = null
+    ): SystemEmailDispatch {
+        $dispatch->update([
+            'message_id' => $message?->id ?? $dispatch->message_id,
+            'provider' => $message?->provider ?? $dispatch->provider,
+            'provider_message_id' => $message?->provider_message_id ?? $dispatch->provider_message_id,
+            'status' => 'processing',
+            'error_code' => class_basename($exception),
+            'error_message' => $exception->getMessage(),
+            'metadata' => array_merge($dispatch->metadata ?? [], [
+                'reconciliation_required' => true,
+                'uncertain_at' => now()->toIso8601String(),
+            ]),
         ]);
 
         return $dispatch->fresh();

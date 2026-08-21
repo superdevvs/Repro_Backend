@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Carbon\CarbonInterface;
 use App\Models\ClientEmailVerificationToken;
@@ -644,6 +645,10 @@ class MailService
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
                     $normalizedEmail = $this->normalizeDeliverableEmail($photographer->email);
                     $photographerShootData = $this->formatShootData($shoot, $photographer, 'photographer');
+                    $photographerChangesSummary = $this->photographerScopedChangeSummary(
+                        $normalizedChangesSummary,
+                        $photographerShootData
+                    );
 
                     if ($normalizedEmail === null) {
                         $this->logSkippedShootEmailDelivery('SHOOT_UPDATED', $shoot, $photographer, 'photographer');
@@ -659,8 +664,8 @@ class MailService
                             'is_photographer' => true,
                             'role_context' => 'photographer',
                             'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
-                            'changes_summary' => $normalizedChangesSummary,
-                            'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
+                            'changes_summary' => $photographerChangesSummary,
+                            'event_version' => sha1($photographerChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                         ],
                     ]);
                     $this->dispatchProtectedEmail('SHOOT_UPDATED', $payload, $normalizedEmail, [], [], [
@@ -671,7 +676,7 @@ class MailService
                             $shoot->id,
                             $photographer->id,
                             $this->serviceScopeHash($photographerShootData),
-                            sha1($normalizedChangesSummary)
+                            sha1($photographerChangesSummary)
                         ),
                     ]);
                     $sentPhotographer = true;
@@ -703,6 +708,102 @@ class MailService
 
             return false;
         }
+    }
+
+    public function sendShootRequestModifiedEmail(User $client, Shoot $shoot, ?string $changesSummary): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'payments.refunds', 'services.category']) ?? $shoot;
+            $shootData = $this->formatShootData($shoot);
+            $normalizedChanges = $this->normalizeChangeSummaryText($changesSummary);
+            $address = $this->formatFullAddress($shoot);
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($client),
+                'account' => $this->formatUserData($client),
+                'shoot' => $shootData,
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'address' => $address !== '' ? $address : 'Shoot #'.$shoot->id,
+                    'changes_summary' => $normalizedChanges,
+                    'event_version' => sha1($normalizedChanges),
+                ],
+            ]);
+
+            return $this->dispatchProtectedEmail(
+                'SHOOT_REQUEST_MODIFIED',
+                $payload,
+                (string) $client->email,
+                $this->resolveShootCcEmailsForRecipient($shoot, $client),
+                [],
+                $this->automatedClientPayload($client, ['related_shoot_id' => $shoot->id]),
+                ['idempotency_key' => sprintf('SHOOT_REQUEST_MODIFIED:%d:%d:%s', $shoot->id, $client->id, sha1($normalizedChanges))]
+            );
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send modified shoot-request outcome.', [
+                'shoot_id' => $shoot->id,
+                'client_id' => $client->id,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Client-facing approval deltas deliberately exclude workflow transitions,
+     * internal notes, personnel names, and aggregate full-shoot summaries.
+     * Service deltas retain the shoot_service pivot identifier so repeated
+     * services cannot be confused.
+     *
+     * @return array{summary: string, lines: array<int, string>, service_deltas: array<int, array<string, mixed>>}
+     */
+    public function buildClientRequestChangeSummary(array $before, Shoot $shoot): array
+    {
+        $shoot = $shoot->fresh(['services.category']) ?? $shoot;
+        $afterProperty = $this->normalizePropertyDetails($shoot->property_details);
+        $lines = [];
+
+        $this->addChangeLine($lines, 'Schedule',
+            $this->formatScheduleValue($before['scheduled_date'] ?? null, $before['time'] ?? null, $before['scheduled_at'] ?? null),
+            $this->formatScheduleValue($shoot->scheduled_date?->toDateString(), $shoot->time, $shoot->scheduled_at?->toISOString())
+        );
+        $this->addChangeLine($lines, 'Location', $before['location'] ?? 'TBD', $this->formatFullAddress($shoot) ?: 'TBD');
+        $this->addChangeLine($lines, 'Shoot Type', $this->formatStatusValue($before['shoot_type'] ?? null), $this->formatStatusValue($shoot->shoot_type));
+        $this->addChangeLine($lines, 'Listing Type', $this->formatStatusValue($before['listing_type'] ?? null), $this->formatStatusValue($shoot->listing_type));
+        $this->addChangeLine($lines, 'Bedrooms', $this->formatNumberValue($before['property_details']['bedrooms'] ?? null), $this->formatNumberValue($afterProperty['bedrooms'] ?? $afterProperty['beds'] ?? null));
+        $this->addChangeLine($lines, 'Bathrooms', $this->formatNumberValue($before['property_details']['bathrooms'] ?? null, 1), $this->formatNumberValue($afterProperty['bathrooms'] ?? $afterProperty['baths'] ?? null, 1));
+        $this->addChangeLine($lines, 'Square Footage', $this->formatSquareFootage($before['property_details']['sqft'] ?? null), $this->formatSquareFootage($afterProperty['sqft'] ?? $afterProperty['squareFeet'] ?? null));
+
+        $beforeServices = collect($before['services'] ?? [])->keyBy(fn (array $service) => (int) ($service['id'] ?? 0));
+        $afterServices = collect($this->formatServicesForComparison($shoot))->keyBy(fn (array $service) => (int) ($service['id'] ?? 0));
+        $serviceDeltas = $beforeServices->keys()->merge($afterServices->keys())->unique()->sort()->map(function ($shootServiceId) use ($beforeServices, $afterServices): ?array {
+            $previous = $beforeServices->get($shootServiceId);
+            $current = $afterServices->get($shootServiceId);
+            $publicPrevious = $previous ? Arr::only($previous, ['id', 'name', 'quantity', 'price', 'scheduled_at']) : null;
+            $publicCurrent = $current ? Arr::only($current, ['id', 'name', 'quantity', 'price', 'scheduled_at']) : null;
+
+            if ($publicPrevious === $publicCurrent) {
+                return null;
+            }
+
+            return [
+                'shoot_service_id' => (int) $shootServiceId,
+                'before' => $publicPrevious,
+                'after' => $publicCurrent,
+            ];
+        })->filter()->values()->all();
+
+        foreach ($serviceDeltas as $delta) {
+            $beforeLabel = $delta['before']['name'] ?? 'Not included';
+            $afterLabel = $delta['after']['name'] ?? 'Removed';
+            $this->addChangeLine($lines, 'Service item #'.$delta['shoot_service_id'], $beforeLabel, $afterLabel);
+        }
+
+        return [
+            'summary' => implode("\n", $lines),
+            'lines' => $lines,
+            'service_deltas' => $serviceDeltas,
+        ];
     }
 
     private function normalizeDeliverableEmail(?string $email): ?string
@@ -861,12 +962,15 @@ class MailService
 
             if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_REMOVED)) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $photographerShootData = $this->formatShootData($shoot, $photographer, 'photographer');
                     $payload = $this->buildProtectedEmailPayload([
                         'recipient' => $this->formatUserData($photographer),
                         'account' => $this->formatUserData($shoot->client),
-                        'shoot' => $shootData,
+                        'shoot' => $photographerShootData,
                         'meta' => [
                             'recipient_type' => 'photographer',
+                            'is_photographer' => true,
+                            'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
                             'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                         ],
                     ]);
@@ -1175,13 +1279,13 @@ class MailService
                     'event_version' => $payment->transaction_id ?: $payment->id,
                 ],
             ]);
-            $this->dispatchProtectedEmail('PAYMENT_CONFIRMATION', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+            $this->queueProtectedEmail('PAYMENT_CONFIRMATION', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
                 'related_shoot_id' => $shoot->id,
             ]), [
-                'idempotency_key' => sprintf('PAYMENT_CONFIRMATION:%d:%d:%s', $shoot->id, $user->id, $payment->transaction_id ?: $payment->id),
+                'idempotency_key' => $this->paymentReceiptIdempotencyKey($user, $payment),
             ]);
             
-            Log::info('Payment confirmation email sent', [
+            Log::info('Payment confirmation email queued', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'payment_id' => $payment->id,
@@ -1197,6 +1301,119 @@ class MailService
                 'error' => $e->getMessage()
             ]);
             
+            return false;
+        }
+    }
+
+    public function sendPaymentCompletedEmail(User $user, Shoot $shoot): bool
+    {
+        try {
+            $shoot = $shoot->fresh(['client', 'payments.refunds', 'services.category']) ?? $shoot;
+            $summary = app(\App\Services\Payments\ShootPaymentEligibilityService::class)->summarize($shoot);
+            if ($summary['payable']) {
+                return false;
+            }
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($shoot->client),
+                'shoot' => $this->formatShootData($shoot),
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'event_version' => 'paid:'.number_format($summary['paid'], 2, '.', ''),
+                ],
+            ]);
+
+            return $this->dispatchProtectedEmail(
+                'PAYMENT_COMPLETED',
+                $payload,
+                (string) $user->email,
+                $this->resolveShootCcEmailsForRecipient($shoot, $user),
+                [],
+                $this->automatedClientPayload($user, ['related_shoot_id' => $shoot->id]),
+                ['idempotency_key' => sprintf('PAYMENT_COMPLETED:%d:%d', $shoot->id, $user->id)]
+            );
+        } catch (\Throwable $exception) {
+            Log::error('Failed to send final-balance automation email.', [
+                'shoot_id' => $shoot->id,
+                'user_id' => $user->id,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Queue one itemized receipt after all rows for a provider transaction are
+     * present. Individual receipt calls for the same provider transaction use
+     * the same idempotency key and therefore cannot create a second receipt.
+     *
+     * @param  \Illuminate\Support\Collection<int, Payment>|array<int, Payment>  $payments
+     */
+    public function sendGroupedPaymentConfirmationEmail(User $user, iterable $payments): bool
+    {
+        try {
+            $payments = collect($payments)->filter(fn ($payment) => $payment instanceof Payment)->values();
+            if ($payments->isEmpty()) {
+                return false;
+            }
+
+            /** @var Payment $representative */
+            $representative = $payments->first();
+            $payments->each(fn (Payment $payment) => $payment->loadMissing('shoot.payments.refunds'));
+            $items = $payments->map(function (Payment $payment): array {
+                $shoot = $payment->shoot;
+                $summary = $shoot
+                    ? app(\App\Services\Payments\ShootPaymentEligibilityService::class)->summarize($shoot)
+                    : ['remaining' => 0];
+
+                return [
+                    'shoot_id' => $shoot?->id,
+                    'address' => $shoot ? ($this->formatFullAddress($shoot) ?: 'Shoot #'.$shoot->id) : 'Shoot',
+                    'amount' => (float) $payment->amount,
+                    'formatted_amount' => $this->formatCurrency($payment->amount),
+                    'remaining_balance' => (float) $summary['remaining'],
+                    'formatted_remaining_balance' => $this->formatCurrency($summary['remaining']),
+                ];
+            })->all();
+            $primaryShoot = $representative->shoot;
+            if (! $primaryShoot) {
+                return false;
+            }
+
+            $payload = $this->buildProtectedEmailPayload([
+                'recipient' => $this->formatUserData($user),
+                'account' => $this->formatUserData($user),
+                'shoot' => $this->formatShootData($primaryShoot),
+                'payment' => array_merge((array) $this->formatPaymentData($representative), [
+                    'amount' => (float) $payments->sum(fn (Payment $payment) => (float) $payment->amount),
+                    'items' => $items,
+                    'is_grouped' => true,
+                ]),
+                'meta' => [
+                    'recipient_type' => 'client',
+                    'is_grouped_receipt' => true,
+                    'shoot_ids' => $payments->pluck('shoot_id')->map(fn ($id) => (int) $id)->all(),
+                    'event_version' => $this->paymentProviderTransactionReference($representative) ?: $representative->id,
+                ],
+            ]);
+
+            return $this->queueProtectedEmail(
+                'PAYMENT_CONFIRMATION',
+                $payload,
+                (string) $user->email,
+                [],
+                [],
+                $this->automatedClientPayload($user),
+                ['idempotency_key' => $this->paymentReceiptIdempotencyKey($user, $representative)]
+            );
+        } catch (\Throwable $exception) {
+            Log::error('Failed to queue grouped payment confirmation email', [
+                'user_id' => $user->id,
+                'error' => $exception->getMessage(),
+            ]);
+
             return false;
         }
     }
@@ -1764,7 +1981,7 @@ class MailService
             'currency' => $payment->currency ?? 'USD',
             'status' => $payment->status,
             'payment_method' => $payment->payment_method ?? 'Card',
-            'transaction_id' => $payment->transaction_id,
+            'transaction_id' => $this->paymentProviderTransactionReference($payment),
             'created_at' => $payment->created_at->format('M j, Y g:i A')
         ];
     }
@@ -1929,7 +2146,7 @@ class MailService
             if ($quantity > 1) {
                 $meta[] = 'Qty ' . $quantity;
             }
-            if ($unitPrice > 0) {
+            if ($unitPrice > 0 && $roleContext !== 'photographer') {
                 $meta[] = $this->formatCurrency($unitPrice) . ' each';
             }
 
@@ -1943,11 +2160,11 @@ class MailService
                 'display_name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
                 'quantity' => $quantity,
                 'category' => $service->category?->name,
-                'unit_price' => $unitPrice,
-                'line_total' => $lineTotal,
-                'formatted_total' => $this->formatCurrency($lineTotal),
-                'photographer_name' => $resolvedPhotographer?->name,
-                'photographer_id' => $resolvedPhotographerId ? (int) $resolvedPhotographerId : null,
+                'unit_price' => $roleContext === 'photographer' ? null : $unitPrice,
+                'line_total' => $roleContext === 'photographer' ? null : $lineTotal,
+                'formatted_total' => $roleContext === 'photographer' ? null : $this->formatCurrency($lineTotal),
+                'photographer_name' => $roleContext === 'photographer' ? null : $resolvedPhotographer?->name,
+                'photographer_id' => $roleContext === 'photographer' ? null : ($resolvedPhotographerId ? (int) $resolvedPhotographerId : null),
                 'editor_id' => $resolvedEditorId ? (int) $resolvedEditorId : null,
                 'scheduled_at' => $scheduledAt instanceof \DateTimeInterface ? $scheduledAt->format(DATE_ATOM) : $scheduledAt,
                 'schedule' => $formattedSchedule,
@@ -2181,24 +2398,15 @@ class MailService
 
     private function shouldShowShootReadyPaymentLink(Shoot $shoot): bool
     {
-        if ((bool) ($shoot->bypass_paywall ?? false)) {
-            return false;
-        }
-
-        $totalQuote = (float) ($shoot->total_quote ?? 0);
-        $totalPaid = $shoot->relationLoaded('payments')
-            ? $shoot->calculateCanonicalTotalPaid()
-            : (float) ($shoot->total_paid ?? 0);
-
-        if (max($totalQuote - $totalPaid, 0) <= 0.01) {
-            return false;
-        }
-
-        return in_array($this->resolveShootPaymentStatus($shoot), ['unpaid', 'partial'], true);
+        return app(\App\Services\Payments\ShootPaymentEligibilityService::class)->canPay($shoot);
     }
 
     public function generatePaymentLink(Shoot $shoot): string
     {
+        if (! app(\App\Services\Payments\ShootPaymentEligibilityService::class)->canPay($shoot)) {
+            return '';
+        }
+
         return app(\App\Services\Payments\PublicPaymentAccessTokenService::class)
             ->buildPublicUrl($shoot);
     }
@@ -2578,44 +2786,25 @@ class MailService
     public function sendShootPaidEmail(User $user, Shoot $shoot, float $amount): bool
     {
         try {
-            $shoot = $shoot->fresh(['client', 'photographer', 'services.category']) ?? $shoot;
-            $shootData = $this->formatShootData($shoot);
-            $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
-            
-            if (!empty($user->email)) {
-                $payload = $this->buildProtectedEmailPayload([
-                    'recipient' => $this->formatUserData($user),
-                    'account' => $this->formatUserData($shoot->client),
-                    'shoot' => $shootData,
-                    'meta' => [
-                        'recipient_type' => 'client',
-                        'amount' => $amount,
-                        'event_version' => sha1((string) $amount),
-                    ],
-                ]);
-                $this->dispatchProtectedEmail('SHOOT_PAID', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
-                    'related_shoot_id' => $shoot->id,
-                ]), [
-                    'idempotency_key' => sprintf('SHOOT_PAID:%d:%d:%s', $shoot->id, $user->id, sha1((string) $amount)),
-                ]);
-                
-                Log::info('Shoot paid email sent', [
-                    'user_id' => $user->id,
-                    'shoot_id' => $shoot->id,
-                    'email' => $user->email,
-                    'amount' => $amount
-                ]);
-            } else {
-                Log::warning('Shoot paid email skipped because recipient email is missing', [
+            $payment = $shoot->payments()
+                ->where('status', Payment::STATUS_COMPLETED)
+                ->whereBetween('amount', [$amount - 0.005, $amount + 0.005])
+                ->latest('id')
+                ->first();
+
+            if (! $payment) {
+                Log::warning('Legacy shoot-paid receipt request skipped because no durable Payment row matched.', [
                     'user_id' => $user->id,
                     'shoot_id' => $shoot->id,
                     'amount' => $amount,
                 ]);
+
+                return false;
             }
 
-            return true;
+            return $this->sendPaymentConfirmationEmail($user, $shoot, $payment);
         } catch (\Throwable $e) {
-            Log::error('Failed to send shoot paid email', [
+            Log::error('Failed to route legacy shoot-paid request to canonical receipt', [
                 'user_id' => $user->id,
                 'shoot_id' => $shoot->id,
                 'email' => $user->email ?? null,
@@ -2659,12 +2848,15 @@ class MailService
 
             if ($this->shouldSendAssignedPhotographerEmails($shoot, $user, ShootEmailMatrix::SHOOT_CANCELLED)) {
                 foreach ($this->resolveAssignedPhotographers($shoot, $user->id) as $photographer) {
+                    $photographerShootData = $this->formatShootData($shoot, $photographer, 'photographer');
                     $payload = $this->buildProtectedEmailPayload([
                         'recipient' => $this->formatUserData($photographer),
                         'account' => $this->formatUserData($shoot->client),
-                        'shoot' => $shootData,
+                        'shoot' => $photographerShootData,
                         'meta' => [
                             'recipient_type' => 'photographer',
+                            'is_photographer' => true,
+                            'shoot_service_ids' => $photographerShootData->service_item_ids ?? [],
                             'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                         ],
                     ]);
@@ -2702,12 +2894,12 @@ class MailService
     ): bool {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
-            $shootData = $this->formatShootData($shoot);
-            $normalizedChangesSummary = $this->normalizeChangeSummaryText($changesSummary);
             $isAssignedAfterChange = $this->resolveAssignedPhotographers($shoot)
                 ->pluck('id')
                 ->map(fn ($id) => (int) $id)
                 ->contains((int) $user->id);
+            $shootData = $this->formatShootData($shoot, $user, 'photographer');
+            $normalizedChangesSummary = $this->photographerScopedChangeSummary($changesSummary, $shootData, $isAssignedAfterChange);
 
             $payload = $this->buildProtectedEmailPayload([
                 'recipient' => $this->formatUserData($user),
@@ -2716,7 +2908,7 @@ class MailService
                 'meta' => [
                     'recipient_type' => 'photographer',
                     'changes_summary' => $normalizedChangesSummary,
-                    'previous_photographer' => $this->formatUserData($previousPhotographer),
+                    'previous_photographer' => [],
                     'is_assigned_after_change' => $isAssignedAfterChange,
                     'event_version' => sha1($normalizedChangesSummary . '|' . ($shoot->updated_at?->toIso8601String() ?? $shoot->id)),
                 ],
@@ -2861,7 +3053,68 @@ class MailService
      */
     private function buildProtectedEmailPayload(array $sections): array
     {
-        return $this->emailContextBuilder->build($sections);
+        $payload = $this->emailContextBuilder->build($sections);
+
+        if (strtolower((string) data_get($payload, 'meta.recipient_type')) !== 'photographer') {
+            return $payload;
+        }
+
+        $payload['shoot'] = (array) ($payload['shoot'] ?? []);
+        $payload['account'] = [];
+        foreach ([
+            'client_email', 'client_phone', 'rep_name', 'photographers',
+            'photographers_label', 'primary_photographer', 'total', 'tax',
+            'tax_rate', 'grand_total', 'formatted_subtotal', 'formatted_tax',
+            'formatted_grand_total', 'payment_status', 'remaining_balance',
+            'formatted_remaining_balance', 'packages',
+        ] as $field) {
+            unset($payload['shoot'][$field]);
+        }
+
+        $payload['shoot']['services'] = collect($payload['shoot']['services'] ?? [])->map(function (array $service): array {
+            return Arr::except($service, [
+                'unit_price', 'line_total', 'formatted_total', 'photographer_name',
+                'photographer_id', 'editor_id', 'payment_status',
+            ]);
+        })->values()->all();
+        $payload['shoot']['service_items'] = $payload['shoot']['services'];
+        $payload['shoot']['photographers'] = [];
+        $payload['shoot']['photographers_label'] = 'Your assignment';
+        $payload['shoot']['primary_photographer'] = null;
+
+        return $payload;
+    }
+
+    private function photographerScopedChangeSummary(?string $summary, object $shootData, bool $isAssignedAfterChange = true): string
+    {
+        if (! $isAssignedAfterChange) {
+            return 'Assignment: Your former assignment was removed.';
+        }
+
+        $allowedLabels = [
+            'Status', 'Workflow Status', 'Schedule', 'Timezone', 'Location',
+            'Shoot Type', 'Product Status', 'Listing Type', 'Property Status',
+            'MLS ID', 'MLS Image Width', 'iGUIDE Property ID', 'iGUIDE Work Order ID',
+            'Photographer Notes', 'Bedrooms', 'Bathrooms', 'Square Footage',
+            'Access Type', 'Access Contact Name', 'Access Contact Phone',
+            'Lockbox Code', 'Lockbox Location', 'Private Listing',
+        ];
+        $lines = collect(preg_split('/\r\n|\r|\n/', trim((string) $summary)) ?: [])
+            ->filter(function (string $line) use ($allowedLabels): bool {
+                return in_array(trim((string) Str::before($line, ':')), $allowedLabels, true);
+            })
+            ->values();
+
+        if (Str::contains((string) $summary, 'Services:')) {
+            $serviceNames = collect($shootData->services ?? [])->pluck('display_name')->filter()->unique()->implode(', ');
+            if ($serviceNames !== '') {
+                $lines->push('Your assigned services: '.$serviceNames);
+            }
+        }
+
+        return $lines->isEmpty()
+            ? 'Assignment details were updated. Review your assigned services in the dashboard.'
+            : $lines->implode("\n");
     }
 
     private function formatUserData(?User $user): array
@@ -2919,6 +3172,64 @@ class MailService
         }
 
         return $result['sent'] || $result['duplicate'];
+    }
+
+    /**
+     * @param  array<int, string>  $cc
+     * @param  array<int, string>  $tags
+     * @param  array<string, mixed>  $extraPayload
+     * @param  array<string, mixed>  $options
+     */
+    private function queueProtectedEmail(
+        string $emailAlias,
+        array $payload,
+        string $to,
+        array $cc = [],
+        array $tags = [],
+        array $extraPayload = [],
+        array $options = []
+    ): bool {
+        $result = $this->systemEmailOrchestrator->queue($emailAlias, $payload, [
+            'to' => $to,
+            'cc' => $this->sanitizeEmailAddresses($cc, $to),
+            'related_account_id' => $extraPayload['related_account_id'] ?? null,
+            'related_shoot_id' => $extraPayload['related_shoot_id'] ?? null,
+            'related_invoice_id' => $extraPayload['related_invoice_id'] ?? null,
+            'send_source' => $emailAlias,
+            'contact_email' => $to,
+            'contact_name' => $payload['recipient']['name'] ?? 'Recipient',
+            'contact_type' => $payload['meta']['recipient_type'] ?? 'other',
+            'tags_json' => $tags !== [] ? array_values($tags) : null,
+        ], [
+            'enforce_email_health_gate' => $extraPayload['enforce_email_health_gate'] ?? true,
+            'idempotency_key' => $options['idempotency_key'] ?? null,
+            'canonical_metadata' => $options['canonical_metadata'] ?? [],
+        ]);
+
+        return (bool) ($result['sent'] || $result['queued'] || $result['duplicate']);
+    }
+
+    private function paymentReceiptIdempotencyKey(User $user, Payment $payment): string
+    {
+        $provider = strtolower(trim((string) ($payment->payment_method ?? 'manual')));
+        $transaction = $this->paymentProviderTransactionReference($payment);
+
+        if (in_array($provider, ['stripe', 'square'], true) && $transaction !== '') {
+            return sprintf('PAYMENT_CONFIRMATION:client:%d:provider:%s:%s', $user->id, $provider, $transaction);
+        }
+
+        return sprintf('PAYMENT_CONFIRMATION:client:%d:payment:%d', $user->id, $payment->id);
+    }
+
+    private function paymentProviderTransactionReference(Payment $payment): string
+    {
+        return trim((string) (
+            $payment->stripe_payment_id
+            ?: $payment->square_payment_id
+            ?: data_get($payment->payment_details, 'provider_transaction_id')
+            ?: data_get($payment->payment_details, 'transaction_id')
+            ?: ''
+        ));
     }
 
     /**
@@ -3202,7 +3513,8 @@ HTML;
             $scheduledAt = $s->pivot?->scheduled_at;
 
             return [
-                'id' => $s->id,
+                'id' => (int) ($s->pivot?->id ?? $s->id),
+                'service_id' => (int) $s->id,
                 'name' => $s->name ?? $s->service_name ?? 'Service',
                 'price' => (float) ($s->pivot->price ?? $s->price ?? 0),
                 'quantity' => (int) ($s->pivot->quantity ?? 1),

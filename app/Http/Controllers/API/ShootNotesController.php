@@ -8,6 +8,8 @@ use App\Models\Shoot;
 use App\Models\WorkflowLog;
 use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootNotesAccessService;
+use App\Services\Shoots\ShootNotesCompatibilityService;
 use Illuminate\Http\Request;
 
 class ShootNotesController extends Controller
@@ -22,26 +24,25 @@ class ShootNotesController extends Controller
 
     public function __construct(
         protected ShootActivityLogger $activityLogger,
-        protected StripePaymentMetadataService $stripePaymentMetadataService
+        protected StripePaymentMetadataService $stripePaymentMetadataService,
+        protected ShootNotesAccessService $notesAccess,
+        protected ShootNotesCompatibilityService $notesCompatibility
     )
     {
     }
 
     public function getNotes(Request $request, Shoot $shoot)
     {
-        $role = strtolower($request->user()->role ?? '');
+        $user = $request->user();
+        if (! $user || ! $this->notesAccess->canRead($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         $notes = $shoot->notes()
             ->with('author:id,name,email')
-            ->get()
-            ->filter(function ($note) use ($role) {
-                if ($role === 'editor') {
-                    return $note->type === 'editing';
-                }
-
-                return true;
-            })
-            ->filter(fn ($note) => $note->isVisibleToRole($role))
+            ->latest('id')
+            ->get();
+        $notes = $this->notesAccess->visibleNotes($notes, $user)
             ->values();
 
         return response()->json([
@@ -51,9 +52,12 @@ class ShootNotesController extends Controller
                     'type' => $note->type,
                     'visibility' => $note->visibility,
                     'content' => $note->content,
-                    'author' => [
+                    'author' => $note->author ? [
                         'id' => $note->author->id,
                         'name' => $note->author->name,
+                    ] : [
+                        'id' => null,
+                        'name' => 'Legacy/System',
                     ],
                     'created_at' => $note->created_at->toIso8601String(),
                     'updated_at' => $note->updated_at->toIso8601String(),
@@ -65,31 +69,20 @@ class ShootNotesController extends Controller
     public function storeNote(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        $role = strtolower($user->role ?? '');
-
         $validated = $request->validate([
             'type' => 'required|in:shoot,company,photographer,editing',
             'visibility' => 'required|in:internal,photographer_only,client_visible',
             'content' => 'required|string|max:5000',
         ]);
 
-        $allowedTypes = match ($role) {
-            'admin', 'superadmin' => ['shoot', 'company', 'photographer', 'editing'],
-            'client' => ['shoot'],
-            'photographer' => ['photographer', 'shoot'],
-            'editor' => [],
-            default => [],
-        };
-
-        if (!in_array($validated['type'], $allowedTypes, true)) {
+        if (! $this->notesAccess->canCreate(
+            $shoot,
+            $user,
+            $validated['type'],
+            $validated['visibility']
+        )) {
             return response()->json([
                 'message' => 'You are not authorized to create notes of this type',
-            ], 403);
-        }
-
-        if ($role === 'client' && $validated['visibility'] !== 'client_visible') {
-            return response()->json([
-                'message' => 'Clients can only create client-visible notes',
             ], 403);
         }
 
@@ -99,6 +92,12 @@ class ShootNotesController extends Controller
             'visibility' => $validated['visibility'],
             'content' => $validated['content'],
         ]);
+
+        $scalarField = $this->notesCompatibility->scalarFieldFor($note->type, $note->visibility);
+        if ($scalarField) {
+            $shoot->{$scalarField} = $note->content;
+            $shoot->save();
+        }
 
         $this->activityLogger->log(
             $shoot,
@@ -127,32 +126,25 @@ class ShootNotesController extends Controller
         ], 201);
     }
 
-    public function updateNotesSimple(Request $request, $shootId)
+    public function updateNotesSimple(Request $request, Shoot $shoot)
     {
-        $shoot = Shoot::findOrFail($shootId);
-        $role = strtolower(str_replace('-', '_', $request->user()->role ?? ''));
+        $user = $request->user();
+        if (! $user || ! $this->notesAccess->canRead($shoot, $user)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
 
         $request->validate([
-            'shoot_notes' => 'nullable|string',
-            'company_notes' => 'nullable|string',
-            'photographer_notes' => 'nullable|string',
-            'editor_notes' => 'nullable|string',
+            'shoot_notes' => 'nullable|string|max:5000',
+            'company_notes' => 'nullable|string|max:5000',
+            'photographer_notes' => 'nullable|string|max:5000',
+            'editor_notes' => 'nullable|string|max:5000',
+            'shootNotes' => 'nullable|string|max:5000',
+            'companyNotes' => 'nullable|string|max:5000',
+            'photographerNotes' => 'nullable|string|max:5000',
+            'editingNotes' => 'nullable|string|max:5000',
+            'editorNotes' => 'nullable|string|max:5000',
         ]);
 
-        $allowed = [];
-        if (in_array($role, ['admin', 'superadmin'], true)) {
-            $allowed = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
-        } elseif ($role === 'client') {
-            $allowed = ['shoot_notes'];
-        } elseif ($role === 'photographer') {
-            $allowed = ['photographer_notes'];
-        }
-
-        if (empty($allowed)) {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
-        $data = $request->only($allowed);
         $camel = [
             'shootNotes' => 'shoot_notes',
             'companyNotes' => 'company_notes',
@@ -160,20 +152,44 @@ class ShootNotesController extends Controller
             'editingNotes' => 'editor_notes',
             'editorNotes' => 'editor_notes',
         ];
+        $data = [];
+        foreach (['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'] as $field) {
+            if ($request->exists($field)) {
+                $data[$field] = $request->input($field);
+            }
+        }
         foreach ($camel as $from => $to) {
-            if (in_array($to, $allowed, true) && $request->has($from) && !array_key_exists($to, $data)) {
+            if ($request->exists($from) && ! array_key_exists($to, $data)) {
                 $data[$to] = $request->input($from);
             }
         }
 
-        if (!empty($data)) {
-            $shoot->fill($data);
+        $authorized = [];
+        foreach ($data as $field => $value) {
+            if ($this->notesAccess->canUpdateScalar($shoot, $user, $field)) {
+                $authorized[$field] = $value;
+            }
+        }
+
+        if ($data !== [] && $authorized === []) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $previous = [];
+        foreach ($authorized as $field => $value) {
+            $previous[$field] = $shoot->{$field};
+            $shoot->{$field} = $value;
+        }
+        if ($authorized !== []) {
             $shoot->save();
+            foreach ($authorized as $field => $value) {
+                $this->notesCompatibility->syncScalarField($shoot, $field, $value, $user, $previous[$field]);
+            }
         }
 
         return response()->json([
-            'message' => empty($data) ? 'No changes detected' : 'Notes updated',
-            'data' => $shoot->only(['id', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes']),
+            'message' => $authorized === [] ? 'No changes detected' : 'Notes updated',
+            'data' => $this->visibleScalarNotes($shoot, $user),
         ]);
     }
 
@@ -339,6 +355,20 @@ class ShootNotesController extends Controller
             'source' => 'activity',
             'sort_at' => $log->created_at,
         ];
+    }
+
+    private function visibleScalarNotes(Shoot $shoot, $user): array
+    {
+        $role = strtolower(str_replace(['-', ' '], '_', (string) ($user->role ?? '')));
+        $fields = match ($role) {
+            'admin', 'superadmin' => ['id', 'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'],
+            'client' => ['id', 'shoot_notes'],
+            'photographer' => ['id', 'shoot_notes', 'photographer_notes'],
+            'editor' => ['id', 'editor_notes'],
+            default => ['id'],
+        };
+
+        return $shoot->only($fields);
     }
 
     private function formatWorkflowLogEntry(WorkflowLog $log): array

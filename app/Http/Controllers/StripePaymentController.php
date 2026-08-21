@@ -612,20 +612,36 @@ class StripePaymentController extends Controller
         $paymentIntentId = $session->payment_intent;
         $metadata = $session->metadata;
 
-        // Prevent duplicate processing
-        if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
-            Log::info('Stripe webhook: Session already processed', ['session_id' => $sessionId]);
+        // Browser-return reconciliation and the Stripe webhook can arrive at
+        // the same time. Serialize the canonical session finalizer so both
+        // paths cannot create competing Payment rows before either commits.
+        $lock = Cache::lock('stripe_checkout_finalize_'.$sessionId, 120);
+        if (! $lock->get()) {
+            Log::info('Stripe checkout finalization already in progress.', [
+                'session_id' => $sessionId,
+            ]);
 
             return false;
         }
 
-        $type = $metadata->type ?? 'single';
+        try {
+            // Prevent duplicate processing
+            if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
+                Log::info('Stripe webhook: Session already processed', ['session_id' => $sessionId]);
 
-        if ($type === 'multiple') {
-            return $this->processMultipleShootPayment($session);
+                return false;
+            }
+
+            $type = $metadata->type ?? 'single';
+
+            if ($type === 'multiple') {
+                return $this->processMultipleShootPayment($session);
+            }
+
+            return $this->processSingleShootPayment($session);
+        } finally {
+            $lock->release();
         }
-
-        return $this->processSingleShootPayment($session);
     }
 
     /**
@@ -726,6 +742,7 @@ class StripePaymentController extends Controller
 
                 // Map line items to shoots by order
                 $lineItemsList = $lineItems->data ?? [];
+                $createdPayments = collect();
                 foreach ($shootIds as $index => $shootId) {
                     $shoot = $shoots->get($shootId);
                     if (! $shoot) {
@@ -751,7 +768,13 @@ class StripePaymentController extends Controller
 
                     $payment = $this->stripePaymentMetadataService->hydratePaymentRecord($payment, $session);
                     $this->serviceItemSupport->allocatePayment($payment, $shoot, []);
-                    $this->updateShootPaymentStatus($shoot, $payment, $amount);
+                    $this->updateShootPaymentStatus($shoot, $payment, $amount, false);
+                    $createdPayments->push($payment->fresh('shoot'));
+                }
+
+                $receiptClient = $createdPayments->first()?->shoot?->client;
+                if ($receiptClient && $createdPayments->isNotEmpty()) {
+                    $this->mailService->sendGroupedPaymentConfirmationEmail($receiptClient, $createdPayments);
                 }
 
                 return true;
@@ -1087,7 +1110,7 @@ class StripePaymentController extends Controller
     /**
      * Update shoot payment status, log activity, fire automation, send email.
      */
-    protected function updateShootPaymentStatus(Shoot $shoot, Payment $payment, float $amount): void
+    protected function updateShootPaymentStatus(Shoot $shoot, Payment $payment, float $amount, bool $dispatchReceipt = true): void
     {
         $oldPaymentStatus = $shoot->payment_status;
         $paymentSummary = $shoot->fresh(['payments'])?->syncPaymentStatusFromRecords('stripe')
@@ -1150,13 +1173,7 @@ class StripePaymentController extends Controller
 
         // Send payment confirmation email fallback only when no automation is active.
         $client = User::find($shoot->client_id);
-        if (
-            $client
-            && $this->automationService->shouldUseFallback(
-                'PAYMENT_COMPLETED',
-                $paymentCompletedDispatch ?? null
-            ) !== false
-        ) {
+        if ($client && $dispatchReceipt) {
             try {
                 $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment);
 

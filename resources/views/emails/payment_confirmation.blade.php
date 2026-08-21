@@ -37,7 +37,29 @@
         </tr>
     </table>
 
-    @include('emails.partials.shoot-summary', ['shoot' => $shoot])
+    @if(!empty($payment->is_grouped) && !empty($payment->items))
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+            <tr>
+                <td class="section-card-bg section-inner" style="background-color:#ffffff; border:1px solid #dbe6f3; border-radius:18px; padding:20px 22px;">
+                    <p class="dark-muted" style="margin:0 0 8px; font-size:11px; line-height:1.4; letter-spacing:1.8px; text-transform:uppercase; color:#6c84a2; font-weight:700;">Payment allocations</p>
+                    @foreach($payment->items as $item)
+                        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                            <tr>
+                                <td class="detail-border dark-heading" style="padding:12px 12px 12px 0; border-bottom:1px solid #edf2f7; color:#10233b; font-size:14px; line-height:1.55; font-weight:700;">{{ $item->address }}</td>
+                                <td class="detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; color:#10233b; font-size:14px; line-height:1.55; font-weight:700; text-align:right; white-space:nowrap;">{{ $item->formatted_amount }}</td>
+                            </tr>
+                            <tr>
+                                <td class="dark-muted" style="padding:8px 12px 14px 0; color:#6f86a4; font-size:12px;">Remaining balance</td>
+                                <td class="dark-muted" style="padding:8px 0 14px; color:#6f86a4; font-size:12px; text-align:right;">{{ $item->formatted_remaining_balance }}</td>
+                            </tr>
+                        </table>
+                    @endforeach
+                </td>
+            </tr>
+        </table>
+    @else
+        @include('emails.partials.shoot-summary', ['shoot' => $shoot])
+    @endif
 
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
         <tr>

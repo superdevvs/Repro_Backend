@@ -2,226 +2,39 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\Shoot;
-use App\Services\DropboxWorkflowService;
-use App\Services\Shoots\ShootMediaMutationSupportService;
-use App\Services\UploadValidationService;
-use App\Models\ShootFile;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
+use App\Services\Shoots\Actions\UploadShootFilesAction;
+use App\Services\Shoots\ShootAuthorizationSupport;
+use Illuminate\Http\Request;
 
 class FileUploadController extends Controller
 {
-    protected $dropboxService;
-    protected $mediaMutationSupport;
-    protected UploadValidationService $uploadValidation;
-
     public function __construct(
-        DropboxWorkflowService $dropboxService,
-        ShootMediaMutationSupportService $mediaMutationSupport,
-        UploadValidationService $uploadValidation
-    )
-    {
-        $this->dropboxService = $dropboxService;
-        $this->mediaMutationSupport = $mediaMutationSupport;
-        $this->uploadValidation = $uploadValidation;
-    }
+        protected UploadShootFilesAction $uploadShootFilesAction,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport
+    ) {}
 
     /**
      * Upload files from PC to shoot folder
      */
-    public function uploadFromPC(Request $request, \App\Models\Shoot $shoot)
+    public function uploadFromPC(Request $request, Shoot $shoot)
     {
-        // Basic shape only — per-file size/type checks below are delegated to
-        // UploadValidationService so every upload entry uses the same rules
-        // (Req 14.5/14.6). The historical inline `mimes:` / `max:` allow-list
-        // is preserved as a defensive first pass before the service runs.
-        $request->validate([
-            'files' => 'required|array',
-            // Allow up to ~1 GiB per file (max in KB), plus common photo/video mimes
-            'files.*' => 'required|file|max:1048576|mimes:jpeg,jpg,png,gif,mp4,mov,avi,raw,cr2,cr3,nef,arw,tiff,bmp,heic,heif,zip',
-            'service_category' => 'nullable|string|in:P,iGuide,Video',
-            'upload_type' => 'nullable|string|in:raw,edited',
-            'media_type' => 'nullable|string|in:floorplan,extra,virtual_staging,green_grass,twilight,drone',
-            'is_extra' => 'nullable|boolean',
-        ]);
+        $user = $request->user();
+        $shootServiceId = $request->filled('shoot_service_id')
+            ? (int) $request->input('shoot_service_id')
+            : null;
+        $uploadType = (string) $request->input('upload_type', 'raw');
 
-        // Pre-scan validation (Req 14.5/14.6): reject oversize / disallowed-type
-        // files with HTTP 422 BEFORE creating any ShootFile row or enqueuing a
-        // scan job. ValidationException -> 422 with field-keyed errors.
-        $filesForValidation = $request->file('files');
-        if ($filesForValidation instanceof \Illuminate\Http\UploadedFile) {
-            $filesForValidation = [$filesForValidation];
-        }
-        if (is_array($filesForValidation)) {
-            $this->uploadValidation->validateMany($filesForValidation, 'files', auth()->user()?->role);
+        if (! $this->shootAuthorizationSupport->canUploadShootMedia($shoot, $user, $uploadType, $shootServiceId)) {
+            return $this->uploadForbiddenResponse();
         }
 
-        // Route model binding provides $shoot
-        $uploadType = $request->input('upload_type', 'raw');
-        Log::info('uploadFromPC: received request', [
-            'shoot_id' => $shoot->id,
-            'user_id' => auth()->id(),
-            'upload_type' => $uploadType,
-        ]);
-        
-        // Be defensive about uploaded files shape
-        $filesInput = $request->file('files');
-        if ($filesInput instanceof \Illuminate\Http\UploadedFile) {
-            $files = [$filesInput];
-        } elseif (is_array($filesInput)) {
-            $files = $filesInput;
-        } else {
-            // Fallback: attempt to gather from allFiles in case client sent slightly different keys
-            $allFiles = $request->allFiles();
-            $files = [];
-            foreach ($allFiles as $key => $f) {
-                if ($f instanceof \Illuminate\Http\UploadedFile) {
-                    $files[] = $f;
-                } elseif (is_array($f)) {
-                    foreach ($f as $ff) {
-                        if ($ff instanceof \Illuminate\Http\UploadedFile) {
-                            $files[] = $ff;
-                        }
-                    }
-                }
-            }
-        }
-        if (empty($files)) {
-            Log::warning('uploadFromPC: no files received', [ 'shoot_id' => $shoot->id ]);
-            return response()->json([
-                'success' => false,
-                'message' => 'No files received by server',
-            ], 422);
-        }
-        
-        // Check if user is admin (admins can upload at any stage)
-        $user = auth()->user();
-        $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager']);
-        $isEditedUploadManager = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor']);
+        // Keep this compatibility route, but make the canonical action its only
+        // implementation so it shares provenance, idempotency, compensation,
+        // partial-result, and serializer behavior with /shoots/{shoot}/upload.
+        $result = $this->uploadShootFilesAction->execute($request, $shoot, $user);
 
-        // Check workflow permissions based on upload type
-        if ($uploadType === 'raw' && !$isAdmin && !$shoot->canUploadPhotos()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot upload raw photos at this workflow stage',
-                'current_status' => $shoot->workflow_status
-            ], 400);
-        }
-        if ($uploadType === 'edited' && !$isEditedUploadManager) {
-            return response()->json([
-                'success' => false,
-                'message' => 'You do not have permission to upload edited files',
-                'current_status' => $shoot->workflow_status
-            ], 403);
-        }
-        if ($uploadType === 'edited' && !in_array($shoot->workflow_status, [
-            Shoot::STATUS_UPLOADED,
-            Shoot::STATUS_EDITING,
-            Shoot::STATUS_READY,
-        ])) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot upload edited files at this workflow stage',
-                'current_status' => $shoot->workflow_status
-            ], 400);
-        }
-
-        $uploadedFiles = [];
-        $errors = [];
-
-        try {
-            $mediaTypeOverride = $request->input('media_type');
-            $isExtra = $request->boolean('is_extra', false);
-            foreach ($files as $file) {
-                try {
-                    $serviceCategory = $request->input('service_category', 'P');
-                    $resolvedMediaType = null;
-                    if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)) {
-                        $resolvedMediaType = $mediaTypeOverride;
-                    } elseif ($isExtra) {
-                        $resolvedMediaType = 'extra';
-                    }
-                    Log::info('uploadFromPC: processing file', [
-                        'shoot_id' => $shoot->id,
-                        'name' => $file->getClientOriginalName(),
-                        'size' => $file->getSize(),
-                        'type' => $file->getMimeType(),
-                        'upload_type' => $uploadType,
-                    ]);
-                    
-                    if ($uploadType === 'raw') {
-                        // Upload to ToDo folder
-                        $shootFile = $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
-                    } else {
-                        // Upload directly to Completed folder (for edited files)
-                        $shootFile = $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
-                    }
-
-                    // The ShootFile is created with scan_status='quarantined'
-                    // (migration default) and DropboxWorkflowService now
-                    // enqueues ScanShootFileJob in place of ProcessImageJob, so
-                    // downstream processing is held back until task 13.5/13.6.
-                    // No further dispatch is required at this layer.
-
-                    $uploadedFiles[] = [
-                        'id' => $shootFile->id,
-                        'filename' => $shootFile->filename,
-                        'workflow_stage' => $shootFile->workflow_stage,
-                        'dropbox_path' => $shootFile->dropbox_path,
-                        'file_size' => $shootFile->file_size,
-                        'uploaded_at' => $shootFile->created_at
-                    ];
-                } catch (\Exception $e) {
-                    Log::error('uploadFromPC: per-file error', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                    $errors[] = [
-                        'filename' => $file->getClientOriginalName(),
-                        'error' => $e->getMessage()
-                    ];
-                }
-            }
-
-            $shoot = $this->mediaMutationSupport->refreshMediaCounters($shoot->fresh());
-            $this->mediaMutationSupport->clearShootFilesCache($shoot, $user);
-
-            if (
-                $uploadType === 'edited' &&
-                count($uploadedFiles) > 0 &&
-                !in_array($shoot->workflow_status, [Shoot::STATUS_READY, Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified'], true)
-            ) {
-                $shoot->updateWorkflowStatus(Shoot::STATUS_READY, auth()->id());
-                $shoot->refresh();
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Files processed successfully',
-                'uploaded_files' => $uploadedFiles,
-                'errors' => $errors,
-                'success_count' => count($uploadedFiles),
-                'error_count' => count($errors),
-                'raw_photo_count' => $shoot->raw_photo_count,
-                'edited_photo_count' => $shoot->edited_photo_count,
-                'raw_missing_count' => $shoot->raw_missing_count,
-                'edited_missing_count' => $shoot->edited_missing_count,
-                'shoot_status' => $shoot->workflow_status,
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('uploadFromPC: failed', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-            ]);
-            return response()->json([
-                'success' => false,
-                'message' => 'Upload failed: ' . $e->getMessage()
-            ], 500);
-        }
+        return response()->json($result['payload'], $result['status']);
     }
 
     /**
@@ -229,181 +42,63 @@ class FileUploadController extends Controller
      */
     public function listDropboxFiles(Request $request)
     {
-        $request->validate([
-            'path' => 'nullable|string',
-            'cursor' => 'nullable|string'
-        ]);
-
-        $path = $request->input('path', '');
-        $cursor = $request->input('cursor');
-
-        try {
-            $accessToken = config('services.dropbox.access_token');
-            
-            if ($cursor) {
-                // Continue listing with cursor
-                $response = Http::withToken($accessToken)
-                    ->withOptions(['verify' => config('app.env') === 'production'])
-                    ->withHeaders(['Content-Type' => 'application/json'])
-                    ->withBody(json_encode(['cursor' => $cursor]))
-                    ->post('https://api.dropboxapi.com/2/files/list_folder/continue');
-            } else {
-                // Initial listing
-                $response = Http::withToken($accessToken)
-                    ->withOptions(['verify' => config('app.env') === 'production'])
-                    ->withHeaders(['Content-Type' => 'application/json'])
-                    ->withBody(json_encode([
-                        'path' => $path === '/' ? '' : $path,
-                        'recursive' => false,
-                        'include_media_info' => true,
-                        'include_deleted' => false,
-                        'include_has_explicit_shared_members' => false
-                    ]))
-                    ->post('https://api.dropboxapi.com/2/files/list_folder');
-            }
-
-            if ($response->successful()) {
-                $data = $response->json();
-                
-                // Filter and format files
-                $files = [];
-                foreach ($data['entries'] as $entry) {
-                    if ($entry['.tag'] === 'file') {
-                        // Check if it's an image or video file
-                        $extension = strtolower(pathinfo($entry['name'], PATHINFO_EXTENSION));
-                        $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'mp4', 'mov', 'avi', 'raw', 'cr2', 'cr3', 'nef', 'arw', 'tiff', 'bmp'];
-                        
-                        if (in_array($extension, $allowedExtensions)) {
-                            $files[] = [
-                                'id' => $entry['id'],
-                                'name' => $entry['name'],
-                                'path_lower' => $entry['path_lower'],
-                                'path_display' => $entry['path_display'],
-                                'size' => $entry['size'],
-                                'client_modified' => $entry['client_modified'] ?? null,
-                                'server_modified' => $entry['server_modified'],
-                                'is_downloadable' => $entry['is_downloadable'] ?? true,
-                                'extension' => $extension,
-                                'file_type' => $this->getFileType($extension)
-                            ];
-                        }
-                    } elseif ($entry['.tag'] === 'folder') {
-                        $files[] = [
-                            'id' => $entry['id'],
-                            'name' => $entry['name'],
-                            'path_lower' => $entry['path_lower'],
-                            'path_display' => $entry['path_display'],
-                            'is_folder' => true
-                        ];
-                    }
-                }
-
-                return response()->json([
-                    'success' => true,
-                    'files' => $files,
-                    'has_more' => $data['has_more'],
-                    'cursor' => $data['cursor'] ?? null,
-                    'current_path' => $path
-                ]);
-            } else {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Failed to list Dropbox files',
-                    'error' => $response->json()
-                ], $response->status());
-            }
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Error listing Dropbox files: ' . $e->getMessage()
-            ], 500);
-        }
+        return response()->json([
+            'error_type' => 'upload_path_retired',
+            'message' => 'Shared Dropbox browsing has moved to connected upload sources.',
+            'replacement' => '/api/upload-sources/dropbox/items',
+        ], 410);
     }
 
     /**
      * Copy files from user's Dropbox to shoot folder
      */
-    public function copyFromDropbox(Request $request, \App\Models\Shoot $shoot)
+    public function copyFromDropbox(Request $request, Shoot $shoot)
     {
-        $request->validate([
-            'files' => 'required|array',
-            'files.*.path' => 'required|string',
-            'files.*.name' => 'required|string',
-            'service_category' => 'nullable|string|in:P,iGuide,Video'
-        ]);
-
-        // Route model binding provides $shoot
-        
-        if (!$shoot->canUploadPhotos()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot upload photos at this workflow stage',
-                'current_status' => $shoot->workflow_status
-            ], 400);
+        $shootServiceId = $request->filled('shoot_service_id')
+            ? (int) $request->input('shoot_service_id')
+            : null;
+        if (! $this->shootAuthorizationSupport->canUploadShootMedia(
+            $shoot,
+            $request->user(),
+            'raw',
+            $shootServiceId
+        )) {
+            return $this->uploadForbiddenResponse();
         }
 
-        $copiedFiles = [];
-        $errors = [];
-
-        try {
-            foreach ($request->input('files') as $fileInfo) {
-                try {
-                    $serviceCategory = $request->input('service_category');
-                    $shootFile = $this->dropboxService->copyFromDropboxToTodo(
-                        $shoot, 
-                        $fileInfo['path'], 
-                        $fileInfo['name'], 
-                        auth()->id(), 
-                        $serviceCategory
-                    );
-                    
-                    $copiedFiles[] = [
-                        'id' => $shootFile->id,
-                        'filename' => $shootFile->filename,
-                        'workflow_stage' => $shootFile->workflow_stage,
-                        'dropbox_path' => $shootFile->dropbox_path,
-                        'file_size' => $shootFile->file_size,
-                        'uploaded_at' => $shootFile->created_at
-                    ];
-                } catch (\Exception $e) {
-                    $errors[] = [
-                        'filename' => $fileInfo['name'],
-                        'error' => $e->getMessage()
-                    ];
-                }
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Files copied successfully',
-                'copied_files' => $copiedFiles,
-                'errors' => $errors,
-                'success_count' => count($copiedFiles),
-                'error_count' => count($errors)
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Copy failed: ' . $e->getMessage()
-            ], 500);
-        }
+        // This legacy path copied objects with no canonical service provenance
+        // or replay protection. Callers must use the source-import endpoint,
+        // which downloads each item and runs it through UploadShootFilesAction.
+        return response()->json([
+            'error_type' => 'upload_path_retired',
+            'message' => 'Dropbox copy uploads have moved to the upload source endpoint.',
+            'replacement' => "/api/shoots/{$shoot->id}/upload-from-source",
+            'uploaded_files' => [],
+            'errors' => [[
+                'error_type' => 'upload_path_retired',
+                'message' => 'Use the upload source endpoint for Dropbox imports.',
+                'retryable' => false,
+            ]],
+            'success_count' => 0,
+            'error_count' => 1,
+            'partial_success' => false,
+        ], 410);
     }
 
-    /**
-     * Get file type category from extension
-     */
-    private function getFileType($extension)
+    private function uploadForbiddenResponse()
     {
-        $imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'raw', 'cr2', 'cr3', 'nef', 'arw', 'tiff', 'bmp'];
-        $videoExtensions = ['mp4', 'mov', 'avi'];
-
-        if (in_array($extension, $imageExtensions)) {
-            return 'image';
-        } elseif (in_array($extension, $videoExtensions)) {
-            return 'video';
-        }
-
-        return 'unknown';
+        return response()->json([
+            'error_type' => 'forbidden',
+            'message' => 'You do not have permission to upload media for this shoot.',
+            'uploaded_files' => [],
+            'errors' => [[
+                'error_type' => 'forbidden',
+                'message' => 'You do not have permission to upload media for this shoot.',
+                'retryable' => false,
+            ]],
+            'success_count' => 0,
+            'error_count' => 1,
+            'partial_success' => false,
+        ], 403);
     }
 }

@@ -19,8 +19,7 @@ class WeatherController extends Controller
 
     public function __construct(
         private readonly WeatherLookupService $weatherLookupService,
-    ) {
-    }
+    ) {}
 
     public function show(Request $request): JsonResponse
     {
@@ -41,7 +40,7 @@ class WeatherController extends Controller
         $hasLocation = filled($request->input('location'));
         $hasCoords = $request->filled('latitude') && $request->filled('longitude');
 
-        if (!$hasLocation && !$hasCoords) {
+        if (! $hasLocation && ! $hasCoords) {
             return response()->json([
                 'error' => 'Validation failed',
                 'errors' => [
@@ -51,7 +50,7 @@ class WeatherController extends Controller
         }
 
         try {
-            $cacheKey = 'weather:' . sha1(json_encode([
+            $cacheKey = 'weather:'.sha1(json_encode([
                 'location' => $request->input('location'),
                 'latitude' => $request->input('latitude'),
                 'longitude' => $request->input('longitude'),
@@ -59,7 +58,7 @@ class WeatherController extends Controller
             ]));
 
             $weather = $this->safeCacheGet($cacheKey);
-            $cacheMiss = !$weather;
+            $cacheMiss = ! $weather;
 
             if ($cacheMiss) {
                 $weather = $this->weatherLookupService->lookup([
@@ -70,15 +69,16 @@ class WeatherController extends Controller
                 ]);
             }
 
-            if (!$weather) {
+            if (! $weather) {
                 // Do not persist a transient upstream miss: drop the empty entry so the
                 // next request retries upstream rather than serving a cached null.
                 $this->safeCacheForget($cacheKey);
 
                 return response()->json([
                     'success' => false,
+                    'data' => null,
                     'message' => 'Weather data was not available for the requested location.',
-                ], 404);
+                ]);
             }
 
             // Do not rewrite a hit: doing so creates a sliding expiration and a

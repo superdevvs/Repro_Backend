@@ -39,6 +39,7 @@ class ShootActivityBroadcast implements ShouldBroadcast
         'shoot_submitted_for_review',
         'payment_done',
         'media_uploaded',
+        'shoot_finalized_delivered',
     ];
 
     /**

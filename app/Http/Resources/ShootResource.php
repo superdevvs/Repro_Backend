@@ -111,6 +111,8 @@ class ShootResource extends JsonResource
         }
 
         $requestingUser = $request->user();
+        $canViewInvoice = app(\App\Services\Invoices\InvoiceAuthorizationService::class)
+            ->canViewShootInvoice($this->resource, $requestingUser);
         $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor';
         $isPhotographer = strtolower((string) ($requestingUser?->role ?? '')) === 'photographer';
         $assignmentService = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
@@ -410,6 +412,8 @@ class ShootResource extends JsonResource
             'can_submit_raw' => $this->computeCanSubmitRaw($requestingUser),
             'can_submit_edits' => $this->computeCanSubmitEdits($requestingUser),
             'can_approve_editing_review' => $this->computeCanApproveEditingReview($requestingUser),
+            'canViewInvoice' => $canViewInvoice,
+            'can_view_invoice' => $canViewInvoice,
             'payment' => [
                 'serviceSubtotal' => $isEditor ? 0.0 : (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
                 'baseQuote' => $isEditor ? 0.0 : (float) $this->base_quote,
@@ -579,51 +583,8 @@ class ShootResource extends JsonResource
 
     protected function computeCanSubmitRaw(?User $user): bool
     {
-        if (! $user) {
-            return false;
-        }
-
-        $role = strtolower((string) ($user->role ?? ''));
-        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'photographer'];
-        if (! in_array($role, $allowedRoles, true)) {
-            return false;
-        }
-
-        if ($role === 'photographer') {
-            $isPrimaryPhotographer = (int) $this->photographer_id === (int) $user->id;
-            $isServicePhotographer = $this->serviceItems()
-                ->where('photographer_id', $user->id)
-                ->exists();
-
-            if (! $isPrimaryPhotographer && ! $isServicePhotographer) {
-                return false;
-            }
-        }
-
-        $status = strtolower((string) ($this->workflow_status ?? $this->status ?? ''));
-        $hasRawFiles = (int) ($this->raw_photo_count ?? 0) > 0
-            || $this->files()->where('workflow_stage', ShootFile::STAGE_TODO)->exists();
-
-        if (! $hasRawFiles) {
-            return false;
-        }
-
-        if (in_array($status, self::SUBMIT_RAW_ALLOWED_STATUSES, true)) {
-            return true;
-        }
-
-        if ($status !== 'uploaded') {
-            return false;
-        }
-
-        if (! $this->photos_uploaded_at) {
-            return true;
-        }
-
-        return $this->files()
-            ->where('workflow_stage', ShootFile::STAGE_TODO)
-            ->where('created_at', '>', $this->photos_uploaded_at)
-            ->exists();
+        return app(\App\Services\Shoots\ShootSubmissionCapabilityService::class)
+            ->canSubmitRaw($this->resource, $user);
     }
 
     protected function computeCanSubmitEdits(?User $user): bool

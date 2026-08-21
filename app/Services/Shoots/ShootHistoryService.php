@@ -337,6 +337,7 @@ class ShootHistoryService
         $client = $shoot->client;
         $requestingRole = strtolower((string) (auth()->user()?->role ?? ''));
         $isEditor = $requestingRole === 'editor';
+        $isClient = $requestingRole === 'client';
         $visibleServices = $isEditor
             ? app(ShootEditingAssignmentService::class)->filterServicesForEditor($shoot, auth()->user())
             : collect($shoot->services);
@@ -409,9 +410,9 @@ class ShootHistoryService
             'tourPurchased' => $this->determineTourPurchased($shoot),
             'notes' => [
                 'shoot' => $isEditor ? null : ($shoot->shoot_notes ?? $shoot->notes),
-                'photographer' => $isEditor ? null : $shoot->photographer_notes,
-                'company' => $isEditor ? null : $shoot->company_notes,
-                'editing' => $shoot->editor_notes,
+                'photographer' => ($isEditor || $isClient) ? null : $shoot->photographer_notes,
+                'company' => ($isEditor || $isClient) ? null : $shoot->company_notes,
+                'editing' => $isClient ? null : $shoot->editor_notes,
             ],
             'userCreatedBy' => $shoot->created_by,
             'mls_id' => $shoot->mls_id,

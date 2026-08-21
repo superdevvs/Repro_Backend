@@ -319,7 +319,12 @@ class TemplateVariableResolver
             : ($scheduledAt?->format('M j, Y'));
         $shootTime = $this->formatShootTime($shoot);
         $total = $shoot->total_quote ?? $shoot->base_quote ?? null;
-        $paymentLink = ($shoot->exists && $shoot->id && $this->canUseApplicationContainer())
+        $paymentLink = (
+            $shoot->exists
+            && $shoot->id
+            && $this->canUseApplicationContainer()
+            && app(\App\Services\Payments\ShootPaymentEligibilityService::class)->canPay($shoot)
+        )
             ? app(\App\Services\Payments\PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot)
             : null;
         $formattedServices = $this->formatServices($shoot);

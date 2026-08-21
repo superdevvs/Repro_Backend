@@ -28,6 +28,9 @@ class MessageTemplate extends Model
         'is_active',
         'email_type',
         'override_enabled',
+        'override_health_status',
+        'override_health_message',
+        'override_health_checked_at',
     ];
 
     protected $casts = [
@@ -35,6 +38,7 @@ class MessageTemplate extends Model
         'is_system' => 'bool',
         'is_active' => 'bool',
         'override_enabled' => 'bool',
+        'override_health_checked_at' => 'datetime',
     ];
 
     public function creator(): BelongsTo

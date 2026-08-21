@@ -8,9 +8,13 @@ use Illuminate\Support\Str;
 class EmailHealthService
 {
     public const STATUS_VERIFIED = 'verified';
+
     public const STATUS_UNVERIFIED = 'unverified';
+
     public const STATUS_RISKY = 'risky';
+
     public const STATUS_BOUNCED = 'bounced';
+
     public const STATUS_INVALID = 'invalid';
 
     /**
@@ -105,6 +109,7 @@ class EmailHealthService
         'SHOOT_CANCELLED',
         'SHOOT_CANCELED',
         'SHOOT_REQUESTED',
+        'SHOOT_REQUEST_MODIFIED',
         'SHOOT_REQUEST_DECLINED',
         'SHOOT_CANCELLATION_REQUESTED',
         'SHOOT_PAID',
@@ -137,7 +142,7 @@ class EmailHealthService
     {
         $normalized = Str::lower(trim($email));
 
-        if (!filter_var($normalized, FILTER_VALIDATE_EMAIL)) {
+        if (! filter_var($normalized, FILTER_VALIDATE_EMAIL)) {
             return [
                 'valid' => false,
                 'normalized_email' => $normalized,
@@ -168,7 +173,7 @@ class EmailHealthService
             ];
         }
 
-        if (!$this->domainCanReceiveMail($domain)) {
+        if (! $this->domainCanReceiveMail($domain)) {
             return [
                 'valid' => false,
                 'normalized_email' => $normalized,
@@ -292,7 +297,7 @@ class EmailHealthService
 
     public function automatedSendBlockedReason(?User $recipient, string $sendSource): ?string
     {
-        if (!$recipient || $recipient->role !== 'client') {
+        if (! $recipient || $recipient->role !== 'client') {
             return null;
         }
 
@@ -329,12 +334,12 @@ class EmailHealthService
         [$local, $domain] = explode('@', Str::lower(trim($email)), 2);
 
         if (isset(self::DOMAIN_SUGGESTIONS[$domain])) {
-            return $local . '@' . self::DOMAIN_SUGGESTIONS[$domain];
+            return $local.'@'.self::DOMAIN_SUGGESTIONS[$domain];
         }
 
         $closestCommonDomain = $this->detectClosestCommonDomain($domain);
         if ($closestCommonDomain !== null) {
-            return $local . '@' . $closestCommonDomain;
+            return $local.'@'.$closestCommonDomain;
         }
 
         $domainParts = explode('.', $domain);
@@ -344,7 +349,7 @@ class EmailHealthService
 
         $tld = array_pop($domainParts);
         if (isset(self::COMMON_TLD_CORRECTIONS[$tld])) {
-            return $local . '@' . implode('.', $domainParts) . '.' . self::COMMON_TLD_CORRECTIONS[$tld];
+            return $local.'@'.implode('.', $domainParts).'.'.self::COMMON_TLD_CORRECTIONS[$tld];
         }
 
         return null;

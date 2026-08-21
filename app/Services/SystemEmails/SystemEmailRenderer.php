@@ -10,6 +10,7 @@ use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use stdClass;
 
@@ -26,14 +27,29 @@ class SystemEmailRenderer
      */
     public function render(EmailTypeDefinition $definition, array $payload, string $subject): array
     {
+        $payload = $this->sanitizePaymentOutcome($payload);
+
         // Opt-in override: if an admin has enabled a DB template for this
         // protected email type, render that instead of the hardcoded Blade
         // view. Disabled by default, so behavior is unchanged until enabled.
         if (! $this->mustUseProtectedBlade($definition, $payload)) {
             if ($override = $this->resolveOverrideTemplate($definition)) {
                 $rendered = $this->renderOverride($override, $definition, $payload, $subject);
-                if ($rendered !== null) {
+                if ($rendered !== null && ! $this->violatesProtectedOutcome($definition, $payload, $rendered)) {
+                    $this->recordOverrideHealth($override, 'healthy', null);
                     return $rendered;
+                }
+
+                if ($rendered !== null) {
+                    $this->recordOverrideHealth(
+                        $override,
+                        'unhealthy',
+                        'Protected payment or recipient outcome would be changed; canonical renderer used.'
+                    );
+                    Log::warning('Unsafe protected email override ignored in favor of canonical renderer.', [
+                        'email_alias' => $definition->alias,
+                        'template_id' => $override->id,
+                    ]);
                 }
             }
         }
@@ -50,6 +66,74 @@ class SystemEmailRenderer
         ];
     }
 
+    private function recordOverrideHealth(MessageTemplate $template, string $status, ?string $message): void
+    {
+        if (! Schema::hasColumn('message_templates', 'override_health_status')) {
+            return;
+        }
+
+        if (
+            $template->override_health_status === $status
+            && $template->override_health_message === $message
+            && $template->override_health_checked_at?->greaterThan(now()->subHour())
+        ) {
+            return;
+        }
+
+        $template->forceFill([
+            'override_health_status' => $status,
+            'override_health_message' => $message,
+            'override_health_checked_at' => now(),
+        ])->save();
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function sanitizePaymentOutcome(array $payload): array
+    {
+        if ($this->payableFromPayload($payload)) {
+            return $payload;
+        }
+
+        $payload['links']['payment'] = null;
+        $payload['meta']['payment_copy'] = null;
+        $payload['meta']['payment_cta'] = null;
+
+        return $payload;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function payableFromPayload(array $payload): bool
+    {
+        $shoot = (array) ($payload['shoot'] ?? []);
+        if ((bool) ($shoot['bypass_paywall'] ?? false)) {
+            return false;
+        }
+
+        $remaining = (float) ($shoot['remaining_balance'] ?? 0);
+        $status = strtolower(trim((string) ($shoot['payment_status'] ?? '')));
+
+        return $remaining > 0.01 && in_array($status, ['unpaid', 'partial'], true);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $rendered
+     */
+    private function violatesProtectedOutcome(EmailTypeDefinition $definition, array $payload, array $rendered): bool
+    {
+        if ($this->payableFromPayload($payload)) {
+            return false;
+        }
+
+        if (! in_array($definition->alias, ['SHOOT_SCHEDULED', 'SHOOT_DELIVERED', 'SHOOT_REQUESTED'], true)) {
+            return false;
+        }
+
+        $copy = strip_tags((string) ($rendered['body_html'] ?? '')).' '.(string) ($rendered['body_text'] ?? '');
+
+        return preg_match('/\b(pay\s+now|pay\s+remaining|remaining\s+balance|complete\s+(?:the\s+)?payment)\b/i', $copy) === 1;
+    }
+
     /**
      * The SHOOT_REQUESTED alias serves both the client receipt and the internal
      * admin review notification. Its editable template is client-authored copy,
@@ -59,8 +143,20 @@ class SystemEmailRenderer
      */
     private function mustUseProtectedBlade(EmailTypeDefinition $definition, array $payload): bool
     {
-        return $definition->alias === 'SHOOT_REQUESTED'
-            && (bool) Arr::get($payload, 'meta.is_admin', false);
+        $requiresScopedPhotographerRenderer = strtolower((string) Arr::get($payload, 'meta.recipient_type')) === 'photographer'
+            && in_array($definition->alias, [
+                'SHOOT_SCHEDULED',
+                'SHOOT_UPDATED',
+                'SHOOT_REMINDER',
+                'SHOOT_REMOVED',
+                'SHOOT_CANCELLED',
+                'PHOTOGRAPHER_CHANGED',
+            ], true);
+
+        return $requiresScopedPhotographerRenderer
+            || $definition->alias === 'SHOOT_REQUEST_MODIFIED'
+            || ($definition->alias === 'SHOOT_REQUESTED'
+                && (bool) Arr::get($payload, 'meta.is_admin', false));
     }
 
     private function resolveOverrideTemplate(EmailTypeDefinition $definition): ?MessageTemplate
@@ -318,6 +414,16 @@ class SystemEmailRenderer
         $recipient = $this->objectify($payload['recipient'] ?? []);
         $account = $this->objectify($payload['account'] ?? []);
         $shoot = $this->objectify($payload['shoot'] ?? []);
+        if (is_object($shoot)) {
+            foreach (['services', 'service_items', 'packages', 'property_highlights', 'access_details'] as $collection) {
+                if (isset($shoot->{$collection}) && is_array($shoot->{$collection})) {
+                    $shoot->{$collection} = array_map(
+                        fn (mixed $item) => is_object($item) ? get_object_vars($item) : $item,
+                        $shoot->{$collection}
+                    );
+                }
+            }
+        }
         $invoice = $this->objectify($payload['invoice'] ?? []);
         $payment = $this->objectify($payload['payment'] ?? []);
         $links = (array) ($payload['links'] ?? []);
@@ -390,9 +496,15 @@ class SystemEmailRenderer
                 'changesSummary' => $meta->changes_summary ?? null,
                 'isPhotographer' => (bool) ($meta->is_photographer ?? false),
             ],
+            'SHOOT_REQUEST_MODIFIED' => $shared + [
+                'changesSummary' => $meta->changes_summary ?? null,
+            ],
             'SHOOT_REMINDER' => $shared + [
                 'scheduledAt' => $this->hydrateCarbon($meta->scheduled_at ?? null),
                 'isPhotographer' => (bool) ($meta->is_photographer ?? false),
+            ],
+            'SHOOT_REMOVED', 'SHOOT_CANCELLED' => $shared + [
+                'isPhotographer' => (bool) ($meta->is_photographer ?? ($meta->recipient_type ?? null) === 'photographer'),
             ],
             'SHOOT_REQUEST_DECLINED' => $shared + [
                 'declineReason' => $meta->decline_reason ?? null,

@@ -343,7 +343,7 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
-    public function photographer_receives_structured_invalid_workflow_stage_error_for_raw_uploads(): void
+    public function sales_rep_receives_structured_forbidden_error_for_raw_uploads(): void
     {
         Storage::fake('public');
 
@@ -355,9 +355,8 @@ class ShootFilesTest extends TestCase
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
 
-        // Assigned photographers deliberately bypass the stage gate for raw
-        // revision uploads. Use a non-bypass staff actor to exercise the
-        // structured invalid-stage response itself.
+        // Sales representatives may view their assigned shoots, but upload
+        // provenance is restricted to admins and assigned production roles.
         Sanctum::actingAs($salesRep);
 
         $response = $this->postJson('/api/shoots/' . $shoot->id . '/upload', [
@@ -367,18 +366,11 @@ class ShootFilesTest extends TestCase
             ],
         ]);
 
-        $response->assertStatus(400);
-        $response->assertJsonPath('error_type', 'invalid_workflow_stage');
-        $response->assertJsonPath('message', 'Cannot upload raw files at this workflow stage');
-        $response->assertJsonStructure([
-            'upload_limits' => [
-                'per_file',
-                'per_file_bytes',
-                'total_request',
-                'total_request_bytes',
-                'max_file_uploads',
-            ],
-        ]);
+        $response->assertForbidden();
+        $response->assertJsonPath('error_type', 'forbidden');
+        $response->assertJsonPath('message', 'You do not have permission to upload media for this shoot.');
+        $response->assertJsonPath('success_count', 0);
+        $response->assertJsonPath('partial_success', false);
     }
 
     #[Test]

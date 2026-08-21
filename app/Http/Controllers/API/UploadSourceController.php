@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Services\Shoots\Actions\UploadShootFilesAction;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\UploadSourceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -14,12 +15,16 @@ class UploadSourceController extends Controller
 {
     public function __construct(
         protected UploadSourceService $uploadSources,
-        protected UploadShootFilesAction $uploadShootFiles
-    ) {
-    }
+        protected UploadShootFilesAction $uploadShootFiles,
+        protected ShootAuthorizationSupport $shootAuthorizationSupport
+    ) {}
 
     public function index(Request $request)
     {
+        if (! $this->canUseUploadSources($request)) {
+            return $this->sourceForbiddenResponse();
+        }
+
         return response()->json([
             'providers' => $this->uploadSources->statuses($request->user()),
         ]);
@@ -27,13 +32,17 @@ class UploadSourceController extends Controller
 
     public function connect(Request $request, string $provider)
     {
+        if (! $this->canUseUploadSources($request)) {
+            return $this->sourceForbiddenResponse();
+        }
+
         $validated = $request->validate([
             'account_type' => 'nullable|string|in:personal,shared',
         ]);
 
         $accountType = ($validated['account_type'] ?? 'personal') === 'shared' ? 'shared' : 'personal';
         $user = $request->user();
-        if ($accountType === 'shared' && !in_array($user?->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+        if ($accountType === 'shared' && ! in_array($user?->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             return response()->json([
                 'error_type' => 'forbidden',
                 'message' => 'Only admins can connect shared upload source accounts.',
@@ -60,13 +69,13 @@ class UploadSourceController extends Controller
             );
 
             return response(
-                '<!doctype html><title>Connected</title><body style="font-family:system-ui;padding:32px">Upload source connected. You can close this window.</body><script>window.opener&&window.opener.postMessage({type:"upload-source-connected",provider:"' . e($provider) . '"},"*"); window.close();</script>',
+                '<!doctype html><title>Connected</title><body style="font-family:system-ui;padding:32px">Upload source connected. You can close this window.</body><script>window.opener&&window.opener.postMessage({type:"upload-source-connected",provider:"'.e($provider).'"},"*"); window.close();</script>',
                 200,
                 ['Content-Type' => 'text/html']
             );
         } catch (Throwable $e) {
             return response(
-                '<!doctype html><title>Connection failed</title><body style="font-family:system-ui;padding:32px">Could not connect upload source: ' . e($e->getMessage()) . '</body>',
+                '<!doctype html><title>Connection failed</title><body style="font-family:system-ui;padding:32px">Could not connect upload source: '.e($e->getMessage()).'</body>',
                 400,
                 ['Content-Type' => 'text/html']
             );
@@ -75,6 +84,10 @@ class UploadSourceController extends Controller
 
     public function disconnect(Request $request, string $provider)
     {
+        if (! $this->canUseUploadSources($request)) {
+            return $this->sourceForbiddenResponse();
+        }
+
         $this->uploadSources->disconnect($provider, $request->user());
 
         return response()->json(['message' => 'Upload source disconnected.']);
@@ -82,6 +95,10 @@ class UploadSourceController extends Controller
 
     public function items(Request $request, string $provider)
     {
+        if (! $this->canUseUploadSources($request)) {
+            return $this->sourceForbiddenResponse();
+        }
+
         try {
             return response()->json($this->uploadSources->listItems($provider, $request->user(), $request->query()));
         } catch (Throwable $e) {
@@ -94,6 +111,31 @@ class UploadSourceController extends Controller
 
     public function import(Request $request, Shoot $shoot)
     {
+        $shootServiceId = $request->filled('shoot_service_id')
+            ? (int) $request->input('shoot_service_id')
+            : null;
+
+        if (! $this->shootAuthorizationSupport->canUploadShootMedia(
+            $shoot,
+            $request->user(),
+            (string) $request->input('upload_type', 'raw'),
+            $shootServiceId
+        )) {
+            return response()->json([
+                'error_type' => 'forbidden',
+                'message' => 'You do not have permission to upload media for this shoot.',
+                'uploaded_files' => [],
+                'errors' => [[
+                    'error_type' => 'forbidden',
+                    'message' => 'You do not have permission to upload media for this shoot.',
+                    'retryable' => false,
+                ]],
+                'success_count' => 0,
+                'error_count' => 1,
+                'partial_success' => false,
+            ], 403);
+        }
+
         $validated = $request->validate([
             'upload_type' => 'nullable|string|in:raw,edited',
             'source_type' => 'required|string|in:url,provider',
@@ -109,6 +151,8 @@ class UploadSourceController extends Controller
             'media_type' => 'nullable|string',
             'is_extra' => 'nullable|boolean',
             'service_category' => 'nullable|string',
+            'shoot_service_id' => 'nullable|integer',
+            'idempotency_key' => 'nullable|string|max:191',
             'photographer_notes' => 'nullable|string',
             'editor_notes' => 'nullable|string',
         ]);
@@ -125,6 +169,10 @@ class UploadSourceController extends Controller
         }
 
         $uploadBatchId = count($entries) > 1 ? (string) Str::uuid() : null;
+        $idempotencyBase = trim((string) ($validated['idempotency_key'] ?? $request->header('Idempotency-Key', '')));
+        if ($idempotencyBase === '') {
+            $idempotencyBase = (string) Str::uuid();
+        }
         $uploadedFiles = [];
         $errors = [];
         $latestPayload = [];
@@ -136,7 +184,13 @@ class UploadSourceController extends Controller
                     ? $this->uploadSources->makeUploadedFileFromUrl((string) $entry['url'])
                     : $this->uploadSources->makeUploadedFileFromProviderItem((string) $validated['provider'], $request->user(), $entry);
 
-                $uploadRequest = Request::create('/source-upload', 'POST', $this->buildUploadPayload($validated, $uploadBatchId, $index, count($entries)));
+                $uploadRequest = Request::create('/source-upload', 'POST', $this->buildUploadPayload(
+                    $validated,
+                    $uploadBatchId,
+                    $index,
+                    count($entries),
+                    'source:'.hash('sha256', $idempotencyBase.':'.$index)
+                ));
                 $uploadRequest->headers->set('Content-Length', (string) ($uploadedFile->getSize() ?: 0));
                 $uploadRequest->files->set('files', [$uploadedFile]);
 
@@ -144,7 +198,7 @@ class UploadSourceController extends Controller
                 $payload = $result['payload'] ?? [];
                 $latestPayload = $payload;
 
-                if (($result['status'] ?? 500) >= 300 || !empty($payload['errors'])) {
+                if (($result['status'] ?? 500) >= 300 || ! empty($payload['errors'])) {
                     foreach (($payload['errors'] ?? []) as $error) {
                         $errors[] = $error;
                     }
@@ -182,11 +236,16 @@ class UploadSourceController extends Controller
             'success_count' => count($uploadedFiles),
             'error_count' => count($errors),
             'partial_success' => count($uploadedFiles) > 0 && count($errors) > 0,
-        ]), count($uploadedFiles) > 0 ? 200 : 422);
+        ]), 200);
     }
 
-    private function buildUploadPayload(array $validated, ?string $batchId, int $index, int $total): array
-    {
+    private function buildUploadPayload(
+        array $validated,
+        ?string $batchId,
+        int $index,
+        int $total,
+        string $idempotencyKey
+    ): array {
         $payload = collect($validated)
             ->only([
                 'upload_type',
@@ -194,11 +253,14 @@ class UploadSourceController extends Controller
                 'media_type',
                 'is_extra',
                 'service_category',
+                'shoot_service_id',
                 'photographer_notes',
                 'editor_notes',
             ])
             ->filter(fn ($value) => $value !== null && $value !== '')
             ->all();
+
+        $payload['idempotency_key'] = mb_substr($idempotencyKey, 0, 191);
 
         if ($batchId) {
             $payload['upload_batch_id'] = $batchId;
@@ -207,5 +269,24 @@ class UploadSourceController extends Controller
         }
 
         return $payload;
+    }
+
+    private function canUseUploadSources(Request $request): bool
+    {
+        return $this->shootAuthorizationSupport->hasRole($request->user(), [
+            'admin',
+            'superadmin',
+            'editing_manager',
+            'photographer',
+            'editor',
+        ]);
+    }
+
+    private function sourceForbiddenResponse()
+    {
+        return response()->json([
+            'error_type' => 'forbidden',
+            'message' => 'You do not have permission to access upload sources.',
+        ], 403);
     }
 }

@@ -26,8 +26,7 @@ class ShootMediaReadService
         protected ShootPaymentStatusSupport $paymentStatusSupport,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected \App\Services\Media\MediaStorage $mediaStorage
-    ) {
-    }
+    ) {}
 
     public function previewFileResponse(ShootFile $file, bool $needsWatermark = false)
     {
@@ -102,7 +101,7 @@ class ShootMediaReadService
         $userRole = $user ? $user->role : 'guest';
         $filesUpdatedAt = (string) $shoot->files()->max('updated_at');
         $serviceItemsUpdatedAt = (string) $shoot->serviceItems()->max('updated_at');
-        $cacheKey = 'shoot_files_' . $shoot->id . '_' . $type . '_' . $userId . '_' . $userRole . '_' . md5(
+        $cacheKey = 'shoot_files_'.$shoot->id.'_'.$type.'_'.$userId.'_'.$userRole.'_'.md5(
             implode('|', [
                 (string) $shoot->updated_at,
                 $filesUpdatedAt,
@@ -165,7 +164,7 @@ class ShootMediaReadService
             $fileNeedsWatermark = $needsWatermark
                 && $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
-            return $this->formatFile($file, $dropboxUrls, $fileNeedsWatermark);
+            return $this->formatFileSafely($file, $dropboxUrls, $fileNeedsWatermark);
         })->values()->all();
 
         Cache::put($cacheKey, $formattedFiles, now()->addSeconds(30));
@@ -229,6 +228,27 @@ class ShootMediaReadService
         ];
     }
 
+    /**
+     * Format a freshly accepted upload with the same contract used by gallery reads.
+     * A broken rendition must remain a per-file state and must never turn the whole
+     * successful batch into a 500 response.
+     */
+    public function formatUploadedFile(ShootFile $file): array
+    {
+        try {
+            $dropboxUrls = $this->resolveDropboxUrls(collect([$file]));
+        } catch (\Throwable $exception) {
+            $dropboxUrls = [];
+            Log::warning('Accepted media URLs could not be resolved.', [
+                'shoot_id' => $file->shoot_id,
+                'shoot_file_id' => $file->id,
+                'exception' => $exception::class,
+            ]);
+        }
+
+        return $this->formatFileSafely($file->fresh() ?? $file, $dropboxUrls, false);
+    }
+
     public function resolveBulkDownloadUrls(Shoot $shoot, array $fileIds): array
     {
         // The client downloads these URLs in the order we return them, so they
@@ -273,7 +293,7 @@ class ShootMediaReadService
         $dropboxUrls = $this->resolveDropboxUrls($files);
 
         return $files->map(function (ShootFile $file) use ($dropboxUrls) {
-            return $this->formatFile($file, $dropboxUrls, false);
+            return $this->formatFileSafely($file, $dropboxUrls, false);
         })->values()->all();
     }
 
@@ -305,8 +325,41 @@ class ShootMediaReadService
         $dropboxUrls = $this->resolveDropboxUrls($files);
 
         return $files->map(function (ShootFile $file) use ($dropboxUrls) {
-            return $this->formatFile($file, $dropboxUrls, false);
+            return $this->formatFileSafely($file, $dropboxUrls, false);
         })->values()->all();
+    }
+
+    protected function formatFileSafely(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
+    {
+        try {
+            return $this->formatFile($file, $dropboxUrls, $needsWatermark);
+        } catch (\Throwable $exception) {
+            $correlationId = (string) Str::uuid();
+            Log::warning('Media file could not be fully formatted.', [
+                'shoot_id' => $file->shoot_id,
+                'shoot_file_id' => $file->id,
+                'correlation_id' => $correlationId,
+                'exception' => $exception::class,
+            ]);
+
+            return [
+                'id' => $file->id,
+                'shoot_id' => $file->shoot_id,
+                'shoot_service_id' => $file->shoot_service_id,
+                'shootServiceId' => $file->shoot_service_id,
+                'filename' => $file->filename ?? $file->stored_filename ?? 'unknown',
+                'workflow_stage' => $file->workflow_stage,
+                'workflowStage' => $file->workflow_stage,
+                'file_size' => $file->file_size,
+                'fileSize' => $file->file_size,
+                'media_type' => $file->media_type,
+                'is_ai_edited' => (bool) $file->is_ai_edited,
+                'isAiEdited' => (bool) $file->is_ai_edited,
+                'media_state' => 'preview_unavailable',
+                'media_error' => 'Preview formatting is temporarily unavailable.',
+                'correlation_id' => $correlationId,
+            ];
+        }
     }
 
     protected function filterFilesForPhotographer(Collection $files, Shoot $shoot, User $user): Collection
@@ -319,11 +372,11 @@ class ShootMediaReadService
     protected function resolveDropboxUrls($files): array
     {
         $dropboxUrls = [];
-        $dropboxFiles = $files->filter(fn (ShootFile $file) => $file->dropbox_path && !$file->url && !$file->path);
+        $dropboxFiles = $files->filter(fn (ShootFile $file) => $file->dropbox_path && ! $file->url && ! $file->path);
 
         foreach ($dropboxFiles as $file) {
             try {
-                $urlCacheKey = 'dropbox_url_' . md5($file->dropbox_path);
+                $urlCacheKey = 'dropbox_url_'.md5($file->dropbox_path);
                 $url = Cache::remember($urlCacheKey, now()->addHours(4), function () use ($file) {
                     return $this->dropboxService->getTemporaryLink($file->dropbox_path);
                 });
@@ -345,14 +398,14 @@ class ShootMediaReadService
     {
         $isClient = $this->authorizationSupport->isClientUser($user);
         $paymentStatus = $shoot->payment_status;
-        if (!$paymentStatus || $paymentStatus === 'pending') {
+        if (! $paymentStatus || $paymentStatus === 'pending') {
             $paymentStatus = $this->paymentStatusSupport->calculatePaymentStatus(
                 (float) ($shoot->total_paid ?? 0),
                 (float) ($shoot->total_quote ?? 0)
             );
         }
 
-        return $isClient && !$shoot->bypass_paywall && $paymentStatus !== 'paid';
+        return $isClient && ! $shoot->bypass_paywall && $paymentStatus !== 'paid';
     }
 
     protected function formatFile(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
@@ -383,7 +436,7 @@ class ShootMediaReadService
             $originalUrl = $url;
             $placeholderUrl = $this->resolvePreviewPath($file->watermarked_placeholder_path);
 
-            if (!$thumbUrl && !$mediumUrl && $file->shouldBeWatermarked()) {
+            if (! $thumbUrl && ! $mediumUrl && $file->shouldBeWatermarked()) {
                 $this->queueWatermark($file);
             }
         } else {
@@ -397,8 +450,8 @@ class ShootMediaReadService
             }
 
             $originalUrl = $dropboxUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
-            if (!$originalUrl && $this->isVideoFile($file)) {
-                $originalUrl = url('/api/shoots/' . $file->shoot_id . '/files/' . $file->id . '/preview');
+            if (! $originalUrl && $this->isVideoFile($file)) {
+                $originalUrl = url('/api/shoots/'.$file->shoot_id.'/files/'.$file->id.'/preview');
             }
             $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
             $webUrl = $this->resolvePreviewPath($file->web_path);
@@ -409,9 +462,9 @@ class ShootMediaReadService
             $largeUrl = $webUrl;
             $placeholderUrl = $this->resolvePreviewPath($file->placeholder_path);
 
-            if (!$webUrl && $this->shouldGenerateOptimizedPreview($file)) {
+            if (! $webUrl && $this->shouldGenerateOptimizedPreview($file)) {
                 $generated = $this->shootFileAccessService->generateOptimizedVersions($file);
-                if (!empty($generated)) {
+                if (! empty($generated)) {
                     $file->refresh();
                     $thumbUrl = $this->resolvePreviewPath(
                         $generated['thumbnail'] ?? $file->thumbnail_path ?? $file->placeholder_path
@@ -425,7 +478,7 @@ class ShootMediaReadService
 
             $url = $webUrl ?? $thumbUrl ?? $placeholderUrl ?? $originalUrl;
 
-            if (!$thumbUrl) {
+            if (! $thumbUrl) {
                 $thumbUrl = $webUrl ?? $placeholderUrl ?? $originalUrl;
             }
         }
@@ -507,8 +560,8 @@ class ShootMediaReadService
         }
 
         $comments = $this->extractComments($file);
-        $latestComment = !empty($comments) ? $comments[count($comments) - 1] : null;
-        if (!empty($comments)) {
+        $latestComment = ! empty($comments) ? $comments[count($comments) - 1] : null;
+        if (! empty($comments)) {
             $fileData['comments'] = $comments;
             $fileData['comment_count'] = count($comments);
             $fileData['latest_comment'] = $latestComment;
@@ -524,7 +577,7 @@ class ShootMediaReadService
             // Floorplan PDF page previews (generated by FloorplanPreviewService). Surface
             // resolved URLs so the UI can show each page image and offer image downloads,
             // while `original_url` still points at the source PDF for the PDF download.
-            if (!empty($file->metadata['preview_images']) && is_array($file->metadata['preview_images'])) {
+            if (! empty($file->metadata['preview_images']) && is_array($file->metadata['preview_images'])) {
                 $previewUrls = [];
                 foreach ($file->metadata['preview_images'] as $previewPath) {
                     $resolved = is_string($previewPath) ? $this->resolvePreviewPath($previewPath) : null;
@@ -532,7 +585,7 @@ class ShootMediaReadService
                         $previewUrls[] = $resolved;
                     }
                 }
-                if (!empty($previewUrls)) {
+                if (! empty($previewUrls)) {
                     $fileData['preview_images'] = $previewUrls;
                     $fileData['previewImages'] = $previewUrls;
                 }
@@ -549,7 +602,7 @@ class ShootMediaReadService
         }
 
         $metadata = is_array($file->metadata) ? $file->metadata : [];
-        $hasPreviewImages = !empty($metadata['preview_images']) && is_array($metadata['preview_images']);
+        $hasPreviewImages = ! empty($metadata['preview_images']) && is_array($metadata['preview_images']);
         if ($file->web_path || $file->thumbnail_path || $hasPreviewImages) {
             return $file;
         }
@@ -569,13 +622,13 @@ class ShootMediaReadService
 
     protected function ensureWatermarkedPreviewAvailable(ShootFile $file): ShootFile
     {
-        if ($this->hasWatermarkedPreview($file) || !$file->shouldBeWatermarked() || !$this->canGenerateWatermarkedPreview($file)) {
+        if ($this->hasWatermarkedPreview($file) || ! $file->shouldBeWatermarked() || ! $this->canGenerateWatermarkedPreview($file)) {
             return $file;
         }
 
         try {
             $freshFile = $file->fresh();
-            if (!$freshFile) {
+            if (! $freshFile) {
                 return $file;
             }
 
@@ -639,7 +692,7 @@ class ShootMediaReadService
     {
         $metadata = is_array($file->metadata) ? $file->metadata : [];
         $comments = $metadata['comments'] ?? [];
-        if (!is_array($comments)) {
+        if (! is_array($comments)) {
             return [];
         }
 
@@ -656,7 +709,7 @@ class ShootMediaReadService
 
     protected function resolvePreviewPath(?string $path): ?string
     {
-        if (!$path) {
+        if (! $path) {
             return null;
         }
         if (preg_match('/^https?:\/\//i', $path)) {
@@ -696,7 +749,7 @@ class ShootMediaReadService
 
     protected function buildPreviewResponseFromPath(?string $path)
     {
-        if (!$path) {
+        if (! $path) {
             return null;
         }
 
@@ -742,7 +795,7 @@ class ShootMediaReadService
 
     protected function shouldGenerateOptimizedPreview(ShootFile $file): bool
     {
-        if (!$this->canGenerateOptimizedPreview($file)) {
+        if (! $this->canGenerateOptimizedPreview($file)) {
             return false;
         }
 
@@ -760,7 +813,7 @@ class ShootMediaReadService
         }
 
         $mimeType = strtolower((string) ($file->file_type ?? $file->mime_type ?? ''));
-        if ($mimeType !== '' && !Str::startsWith($mimeType, 'image/')) {
+        if ($mimeType !== '' && ! Str::startsWith($mimeType, 'image/')) {
             return false;
         }
 
@@ -774,7 +827,7 @@ class ShootMediaReadService
 
     protected function shouldQueueRawPreviewRefresh(ShootFile $file): bool
     {
-        if (!$this->authorizationSupport->isRawCameraFile($file)) {
+        if (! $this->authorizationSupport->isRawCameraFile($file)) {
             return false;
         }
 
@@ -787,9 +840,9 @@ class ShootMediaReadService
 
     protected function queueRawPreviewRefresh(ShootFile $file): void
     {
-        $cacheKey = 'raw_preview_refresh_' . $file->id;
+        $cacheKey = 'raw_preview_refresh_'.$file->id;
 
-        if (!Cache::add($cacheKey, true, now()->addMinutes(5))) {
+        if (! Cache::add($cacheKey, true, now()->addMinutes(5))) {
             return;
         }
 

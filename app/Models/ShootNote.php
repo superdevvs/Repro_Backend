@@ -15,6 +15,8 @@ class ShootNote extends Model
         'type',
         'visibility',
         'content',
+        'source',
+        'source_hash',
     ];
 
     protected $casts = [

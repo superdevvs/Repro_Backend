@@ -610,6 +610,15 @@ class AutomationWorkflowExecutor
                 }
                 break;
 
+            case 'SHOOT_REQUEST_MODIFIED':
+                if ($shoot && $client && in_array('client', $recipientTypes, true)) {
+                    $changesSummary = (string) ($context['shoot_changes'] ?? $context['changes_summary'] ?? '');
+                    if ($this->mailService->sendShootRequestModifiedEmail($client, $shoot, $changesSummary)) {
+                        $sentTo[] = $client->email;
+                    }
+                }
+                break;
+
             case 'SHOOT_REQUESTED':
                 if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendShootRequestedEmail($client, $shoot)) {
                     $sentTo[] = $client->email;
@@ -658,7 +667,7 @@ class AutomationWorkflowExecutor
                 break;
 
             case 'PAYMENT_COMPLETED':
-                if ($shoot && $client && $payment && in_array('client', $recipientTypes, true) && $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $payment)) {
+                if ($shoot && $client && in_array('client', $recipientTypes, true) && $this->mailService->sendPaymentCompletedEmail($client, $shoot)) {
                     $sentTo[] = $client->email;
                 }
                 break;

@@ -161,6 +161,11 @@ class User extends Authenticatable
         }
     }
 
+    public function legalAcceptances()
+    {
+        return $this->hasMany(LegalAcceptance::class);
+    }
+
     protected function usersTableHasColumn(string $column): bool
     {
         if (array_key_exists($column, self::$usersTableColumnCache)) {

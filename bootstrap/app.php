@@ -1,21 +1,19 @@
 <?php
 
-use Illuminate\Foundation\Application;
-use Illuminate\Foundation\Configuration\Broadcasting;
-use Illuminate\Foundation\Configuration\Exceptions;
-use Illuminate\Foundation\Configuration\Middleware;
-use Illuminate\Console\Scheduling\Schedule;
-use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\EnsureAuthenticatedUserIsActive;
 use App\Http\Middleware\ImpersonationMiddleware;
 use App\Http\Middleware\PermissionMiddleware;
+use App\Http\Middleware\RoleMiddleware;
 use App\Http\Middleware\SystemOverviewTelemetryMiddleware;
 use App\Http\Middleware\TelnyxToolBridgeAuth;
 use App\Http\Middleware\ValidateExternalApiKey;
 use App\Jobs\DispatchScheduledMessages;
 use App\Services\SystemOverviewTelemetryService;
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
 use Symfony\Component\HttpFoundation\Request;
-
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -28,7 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withSchedule(function (Schedule $schedule) {
         // Laravel 11 in this project boots schedules from the application builder.
         $schedule->command('automations:run-system')->everyFifteenMinutes();
-        $schedule->job(new DispatchScheduledMessages())->everyMinute();
+        $schedule->job(new DispatchScheduledMessages)->everyMinute();
         $schedule->command('messaging:shoot-reminders')->everyFiveMinutes();
         $schedule->command('messaging:property-contact-reminders')->dailyAt('09:00');
         $schedule->command('messaging:invoice-reminders')->dailyAt('09:30');
@@ -48,6 +46,16 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('messaging:audit-transactional-email --hours=168 --limit=50')
             ->dailyAt('08:00')
             ->onOneServer();
+        $schedule->command('system-emails:recover --limit=100')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->onOneServer();
+        $schedule->command('shoot-uploads:audit-pending --minutes=5')
+            ->everyFiveMinutes()
+            ->withoutOverlapping()
+            ->onOneServer();
+        // Completed/failed upload replays expire after 30 days; pending attempts are never pruned.
+        $schedule->command('model:prune')->dailyAt('03:45')->withoutOverlapping()->onOneServer();
     })
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
@@ -66,7 +74,7 @@ return Application::configure(basePath: dirname(__DIR__))
             EnsureAuthenticatedUserIsActive::class,
             SystemOverviewTelemetryMiddleware::class,
         ]);
-        
+
         $middleware->alias([
             'role' => RoleMiddleware::class,
             'impersonate' => ImpersonationMiddleware::class,
@@ -90,12 +98,12 @@ return Application::configure(basePath: dirname(__DIR__))
 
                 if ($originHeader && in_array($originHeader, $allowedOrigins, true)) {
                     $origin = $originHeader;
-                } elseif (!empty($allowedOrigins)) {
+                } elseif (! empty($allowedOrigins)) {
                     $origin = $allowedOrigins[0];
                 } elseif (config('app.frontend_url')) {
                     $origin = config('app.frontend_url');
                 }
-                
+
                 $status = method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500;
                 if ($e instanceof \Illuminate\Auth\Access\AuthorizationException) {
                     $status = 403;
@@ -116,7 +124,7 @@ return Application::configure(basePath: dirname(__DIR__))
                         // Never let telemetry capture break the error response.
                     }
                 }
-                
+
                 $payload = [
                     'message' => $e->getMessage() ?: 'An error occurred',
                     'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
@@ -134,10 +142,10 @@ return Application::configure(basePath: dirname(__DIR__))
                 }
 
                 return response()->json($payload, $status)
-                ->header('Access-Control-Allow-Origin', $origin)
-                ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-                ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route')
-                ->header('Access-Control-Allow-Credentials', 'true');
+                    ->header('Access-Control-Allow-Origin', $origin)
+                    ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+                    ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route')
+                    ->header('Access-Control-Allow-Credentials', 'true');
             }
         });
     })->create();

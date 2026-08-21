@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\Shoot;
+use App\Models\ClientDeliveryNotification;
 use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
@@ -16,6 +17,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Fast-path finalize.
@@ -49,8 +51,10 @@ class FinalizeShootJob implements ShouldQueue
         public int $userId,
         public ?string $finalStatus = null,
         public ?int $shootServiceId = null,
-        public bool $allowNoMediaDelivery = false
+        public bool $allowNoMediaDelivery = false,
+        public ?string $deliveryEventKey = null
     ) {
+        $this->deliveryEventKey ??= (string) Str::uuid();
         $this->onQueue('default');
     }
 
@@ -370,6 +374,19 @@ class FinalizeShootJob implements ShouldQueue
 
             if ($isFullOrderDelivery) {
                 $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
+
+                if ($shoot->client_id) {
+                    ClientDeliveryNotification::query()->firstOrCreate(
+                        [
+                            'user_id' => $shoot->client_id,
+                            'delivery_event_key' => $this->deliveryEventKey,
+                        ],
+                        [
+                            'shoot_id' => $shoot->id,
+                            'delivered_at' => now(),
+                        ]
+                    );
+                }
             }
 
             // Freeze the delivery order while we still hold the shoot row lock.

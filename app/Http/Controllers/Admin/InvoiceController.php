@@ -226,7 +226,7 @@ class InvoiceController extends Controller
         }
 
         $invoice->save();
-        $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
+        $clientPayment = $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
         if ($isPaid) {
             $this->markPayoutShootsPaid($invoice, $paidAt);
             $invoice->recordAuditEvent('paid', $request->user(), 'Invoice payment marked as sent.', [
@@ -251,13 +251,14 @@ class InvoiceController extends Controller
         }
         app(AutomationService::class)->handleEvent('INVOICE_PAID', $context);
 
-        // Send shoot paid email to the client for shoot-linked invoices (parity with ShootPaymentsController::markAsPaid)
-        if ($paymentAmount > 0) {
-            $shootForEmail = $invoice->shoot;
+        // Use the exact durable transaction row. Amount-based lookup can select
+        // the wrong receipt when two equal partial payments exist.
+        if ($clientPayment) {
+            $shootForEmail = $clientPayment->shoot ?? $invoice->shoot;
             $clientForEmail = $shootForEmail?->client ?? $invoice->client;
             if ($shootForEmail && $clientForEmail) {
                 try {
-                    app(MailService::class)->sendShootPaidEmail($clientForEmail, $shootForEmail, $paymentAmount);
+                    app(MailService::class)->sendPaymentConfirmationEmail($clientForEmail, $shootForEmail, $clientPayment);
                 } catch (\Throwable $emailError) {
                     Log::warning('Failed to send shoot paid email from admin invoice mark-paid', [
                         'invoice_id' => $invoice->id,
@@ -280,14 +281,14 @@ class InvoiceController extends Controller
         ?string $paymentMethod,
         mixed $paymentDetails,
         Carbon $paidAt
-    ): void {
+    ): ?Payment {
         if ($paymentAmount <= 0 || $invoice->role !== Invoice::ROLE_CLIENT) {
-            return;
+            return null;
         }
 
         $relatedShoots = $this->invoiceAdjustments->relatedShoots($invoice);
         if ($relatedShoots->count() !== 1) {
-            return;
+            return null;
         }
         $shoot = $relatedShoots->first();
 
@@ -310,6 +311,8 @@ class InvoiceController extends Controller
             $paymentMethod,
             $paymentDetails
         );
+
+        return $payment->loadMissing('shoot.client');
     }
 
     private function markPayoutShootsPaid(Invoice $invoice, Carbon $paidAt): void

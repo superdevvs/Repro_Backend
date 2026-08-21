@@ -346,6 +346,8 @@ class ShootPresenter
                 $clientData = [
                     'id' => $shoot->client->id,
                     'name' => $shoot->client->name,
+                    'email_verified' => $shoot->client->email_verified_at !== null,
+                    'emailVerified' => $shoot->client->email_verified_at !== null,
                     'phone' => $clientPhone,
                     'phonenumber' => $clientPhone,
                 ];
@@ -355,6 +357,8 @@ class ShootPresenter
                     'id' => $shoot->client->id,
                     'name' => $shoot->client->name,
                     'email' => $shoot->client->email,
+                    'email_verified' => $shoot->client->email_verified_at !== null,
+                    'emailVerified' => $shoot->client->email_verified_at !== null,
                     'company_name' => $shoot->client->company_name ?? $shoot->client->company ?? null,
                     'phone' => $clientPhone,
                     'phonenumber' => $clientPhone,
@@ -484,10 +488,18 @@ class ShootPresenter
             auth()->user()->role ?? 'client'
         );
 
-        $shoot->shoot_notes = $isEditorRole ? null : $shoot->shoot_notes;
-        $shoot->company_notes = $isEditorRole ? null : $shoot->company_notes;
-        $shoot->photographer_notes = $isEditorRole ? null : $shoot->photographer_notes;
-        $shoot->editor_notes = $shoot->editor_notes;
+        $shoot->shoot_notes = ($isEditorRole || $isGhostVisibleForUser) ? null : $shoot->shoot_notes;
+        $shoot->company_notes = ($isEditorRole || $isClientRole) ? null : $shoot->company_notes;
+        $shoot->photographer_notes = ($isEditorRole || $isClientRole) ? null : $shoot->photographer_notes;
+        $shoot->editor_notes = $isClientRole ? null : $shoot->editor_notes;
+
+        if ($isClientRole) {
+            $shoot->makeHidden([
+                'company_notes',
+                'photographer_notes',
+                'editor_notes',
+            ]);
+        }
 
         $shoot->mls_id = $shoot->mls_id;
         $shoot->mls_image_width = $shoot->mls_image_width;
@@ -781,6 +793,18 @@ class ShootPresenter
         $shoot->setAttribute('order_total', (float) ($shoot->total_quote ?? 0));
         $shoot->setAttribute('orderTotal', (float) ($shoot->total_quote ?? 0));
 
+        // Shared workflow capability block. Keep additive snake/camel aliases here;
+        // additional server-owned capabilities (for example invoice access) belong
+        // beside this block so list/detail payloads remain easy to audit.
+        $canSubmitRaw = app(ShootSubmissionCapabilityService::class)
+            ->canSubmitRaw($shoot, $requestingUser);
+        $shoot->setAttribute('can_submit_raw', $canSubmitRaw);
+        $shoot->setAttribute('canSubmitRaw', $canSubmitRaw);
+        $canViewInvoice = app(\App\Services\Invoices\InvoiceAuthorizationService::class)
+            ->canViewShootInvoice($shoot, $requestingUser);
+        $shoot->setAttribute('can_view_invoice', $canViewInvoice);
+        $shoot->setAttribute('canViewInvoice', $canViewInvoice);
+
         $servicesArray = collect($shoot->getAttribute('services') ?? $shoot->services)->pluck('name')->filter()->values()->all();
         $miscItems = ($isEditorRole || $isPhotographerRole)
             ? []
@@ -820,6 +844,17 @@ class ShootPresenter
             } elseif (count($editorAssignments) === 1) {
                 $shoot->editor_id = $editorAssignments[0]['editor_id'] ?? $shoot->editor_id;
                 $shoot->setAttribute('editor', $editorAssignments[0]['editor'] ?? $shoot->editor);
+            }
+        }
+
+        // Ordinary client/contractor shoot payloads must never serialize full
+        // User models from eager-loaded audit relationships. Those models carry
+        // email-health, verification timestamps, account metadata, and other
+        // admin-only diagnostics. The safe client/photographer/editor summaries
+        // above remain authoritative for the UI.
+        if (! in_array($requestingRole, ['admin', 'superadmin', 'editing_manager'], true)) {
+            foreach (['rep', 'createdByUser', 'verifiedBy', 'workflowLogs'] as $sensitiveRelation) {
+                $shoot->unsetRelation($sensitiveRelation);
             }
         }
 

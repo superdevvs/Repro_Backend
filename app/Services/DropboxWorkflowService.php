@@ -2,21 +2,20 @@
 
 namespace App\Services;
 
-use App\Models\Shoot;
-use App\Models\ShootFile;
-use App\Models\DropboxFolder;
-use App\Models\OauthToken;
+use App\Exceptions\Scanning\ClamAvUnavailable;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Jobs\SyncShootFileToR2Job;
-use App\Exceptions\Scanning\ClamAvUnavailable;
-use App\Services\Messaging\AutomationService;
+use App\Models\DropboxFolder;
+use App\Models\OauthToken;
+use App\Models\Shoot;
+use App\Models\ShootFile;
 use App\Services\Scanning\ClamAvClient;
 use App\Services\Scanning\FileScanService;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
@@ -24,16 +23,20 @@ use Illuminate\Validation\ValidationException;
 class DropboxWorkflowService
 {
     protected $tokenService;
+
     protected $rawThumbnailService;
+
     protected $dropboxApiUrl = 'https://api.dropboxapi.com/2';
+
     protected $dropboxContentUrl = 'https://content.dropboxapi.com/2';
+
     protected $httpOptions;
 
-    public function __construct(DropboxTokenService $tokenService = null, RawThumbnailService $rawThumbnailService = null)
+    public function __construct(?DropboxTokenService $tokenService = null, ?RawThumbnailService $rawThumbnailService = null)
     {
-        $this->tokenService = $tokenService ?: new DropboxTokenService();
-        $this->rawThumbnailService = $rawThumbnailService ?: new RawThumbnailService();
-        
+        $this->tokenService = $tokenService ?: new DropboxTokenService;
+        $this->rawThumbnailService = $rawThumbnailService ?: new RawThumbnailService;
+
         // Configure HTTP options for development environment
         $this->httpOptions = [
             'verify' => config('app.env') === 'production' ? true : false,
@@ -48,7 +51,7 @@ class DropboxWorkflowService
     {
         $metadata = [];
         $tempPath = $file->getRealPath();
-        
+
         // Try to get image dimensions
         try {
             $imageInfo = @getimagesize($tempPath);
@@ -60,7 +63,7 @@ class DropboxWorkflowService
         } catch (\Exception $e) {
             Log::debug('Could not get image size', ['error' => $e->getMessage()]);
         }
-        
+
         // Try to get EXIF data for capture date
         try {
             if (function_exists('exif_read_data') && in_array(strtolower($file->getClientOriginalExtension()), ['jpg', 'jpeg', 'tiff', 'tif'])) {
@@ -69,16 +72,16 @@ class DropboxWorkflowService
                     // Try different EXIF date fields
                     $dateFields = ['DateTimeOriginal', 'DateTimeDigitized', 'DateTime'];
                     foreach ($dateFields as $field) {
-                        if (!empty($exif[$field])) {
+                        if (! empty($exif[$field])) {
                             $metadata['captured_at'] = $exif[$field];
                             break;
                         }
                     }
                     // Store camera info if available
-                    if (!empty($exif['Make'])) {
+                    if (! empty($exif['Make'])) {
                         $metadata['camera_make'] = $exif['Make'];
                     }
-                    if (!empty($exif['Model'])) {
+                    if (! empty($exif['Model'])) {
                         $metadata['camera_model'] = $exif['Model'];
                     }
                 }
@@ -96,18 +99,18 @@ class DropboxWorkflowService
         ) {
             $exifToolMetadata = $this->extractMetadataWithExifTool($tempPath);
             foreach ($exifToolMetadata as $key => $value) {
-                if (!array_key_exists($key, $metadata) || empty($metadata[$key])) {
+                if (! array_key_exists($key, $metadata) || empty($metadata[$key])) {
                     $metadata[$key] = $value;
                 }
             }
         }
-        
+
         return $metadata;
     }
 
     protected function extractMetadataWithExifTool(?string $path): array
     {
-        if (!$path || !file_exists($path) || !$this->commandExists('exiftool')) {
+        if (! $path || ! file_exists($path) || ! $this->commandExists('exiftool')) {
             return [];
         }
 
@@ -123,7 +126,7 @@ class DropboxWorkflowService
         }
 
         $rows = json_decode(implode("\n", $output), true);
-        if (!is_array($rows) || !isset($rows[0]) || !is_array($rows[0])) {
+        if (! is_array($rows) || ! isset($rows[0]) || ! is_array($rows[0])) {
             return [];
         }
 
@@ -142,11 +145,11 @@ class DropboxWorkflowService
             $metadata['height'] = (int) $row['ImageHeight'];
         }
 
-        if (!empty($row['Make']) && is_string($row['Make'])) {
+        if (! empty($row['Make']) && is_string($row['Make'])) {
             $metadata['camera_make'] = $row['Make'];
         }
 
-        if (!empty($row['Model']) && is_string($row['Model'])) {
+        if (! empty($row['Model']) && is_string($row['Model'])) {
             $metadata['camera_model'] = $row['Model'];
         }
 
@@ -248,35 +251,35 @@ class DropboxWorkflowService
     public function createShootFolders(Shoot $shoot)
     {
         // Generate property slug if not already set
-        if (!$shoot->property_slug) {
+        if (! $shoot->property_slug) {
             $shoot->property_slug = $shoot->generatePropertySlug();
             $shoot->save();
         }
 
         $propertySlug = $shoot->property_slug;
-        $basePath = "/Photo Editing";
-        
+        $basePath = '/Photo Editing';
+
         // Create base Photo Editing folder
         $this->createFolderIfNotExists($basePath);
-        
+
         // Create To-Do and Completed base folders
         $todoBasePath = "{$basePath}/To-Do";
         $completedBasePath = "{$basePath}/Completed";
         $archivedBasePath = "{$basePath}/Archived Shoots";
-        
+
         $this->createFolderIfNotExists($todoBasePath);
         $this->createFolderIfNotExists($completedBasePath);
         $this->createFolderIfNotExists($archivedBasePath);
-        
+
         // Create property folder structure: /To-Do/{propertySlug}/raw and /extra
         $todoPropertyPath = "{$todoBasePath}/{$propertySlug}";
         $rawPath = "{$todoPropertyPath}/raw";
         $extraPath = "{$todoPropertyPath}/extra";
-        
+
         $this->createFolderIfNotExists($todoPropertyPath);
         $this->createFolderIfNotExists($rawPath);
         $this->createFolderIfNotExists($extraPath);
-        
+
         // Create Completed folder: /Completed/{propertySlug}-edited
         $completedPath = "{$completedBasePath}/{$propertySlug}-edited";
         $this->createFolderIfNotExists($completedPath);
@@ -298,7 +301,7 @@ class DropboxWorkflowService
             ['dropbox_path' => $completedPath, 'dropbox_folder_id' => null]
         );
 
-        Log::info("Created Dropbox folders for shoot", [
+        Log::info('Created Dropbox folders for shoot', [
             'shoot_id' => $shoot->id,
             'property_slug' => $propertySlug,
             'raw_folder' => $rawPath,
@@ -328,11 +331,11 @@ class DropboxWorkflowService
      *                    quarantine+scan path (the file is withheld until clean).
      *
      * @throws \Illuminate\Validation\ValidationException (HTTP 422) when the file
-     *         is found to be infected — the upload is rejected and never stored.
+     *                                                    is found to be infected — the upload is rejected and never stored.
      */
     private function scanUploadSynchronously(UploadedFile $file): string
     {
-        if (!config('clamav.scan_on_upload', true)) {
+        if (! config('clamav.scan_on_upload', true)) {
             return 'unavailable';
         }
 
@@ -343,7 +346,7 @@ class DropboxWorkflowService
         }
 
         $path = $file->getRealPath();
-        if (!is_string($path) || $path === '' || !is_readable($path)) {
+        if (! is_string($path) || $path === '' || ! is_readable($path)) {
             return 'unavailable';
         }
 
@@ -365,7 +368,7 @@ class DropboxWorkflowService
             return 'unavailable';
         }
 
-        if (!$result->isClean()) {
+        if (! $result->isClean()) {
             Log::warning('Infected upload rejected at pre-store scan.', [
                 'shoot_file' => $file->getClientOriginalName(),
                 'signature' => $result->signature(),
@@ -388,8 +391,7 @@ class DropboxWorkflowService
         $userId,
         string $stage,
         ?string $mediaTypeOverride = null
-    ): ShootFile
-    {
+    ): ShootFile {
         $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)
             ? $mediaTypeOverride
             : null;
@@ -402,7 +404,7 @@ class DropboxWorkflowService
             'drone' => 'DRONE_',
             default => $stage === ShootFile::STAGE_COMPLETED ? 'COMPLETED_' : 'TODO_',
         };
-        $filename = $prefix . str_replace('.', '_', uniqid('', true)) . '_' . $file->getClientOriginalName();
+        $filename = $prefix.str_replace('.', '_', uniqid('', true)).'_'.$file->getClientOriginalName();
         $dir = match ($storageMediaType) {
             'extra' => "shoots/{$shoot->id}/extra",
             'floorplan' => "shoots/{$shoot->id}/floorplan",
@@ -410,9 +412,9 @@ class DropboxWorkflowService
             'green_grass' => "shoots/{$shoot->id}/green_grass",
             'twilight' => "shoots/{$shoot->id}/twilight",
             'drone' => "shoots/{$shoot->id}/drone",
-            default => "shoots/{$shoot->id}/" . ($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
+            default => "shoots/{$shoot->id}/".($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
         };
-        $serverPath = $dir . '/' . $filename;
+        $serverPath = $dir.'/'.$filename;
         $defaultMediaType = $storageMediaType
             ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
@@ -478,7 +480,7 @@ class DropboxWorkflowService
             'processed_at' => $processedAt,
             'processing_failed_at' => null,
             'processing_error' => null,
-            'metadata' => !empty($metadata) ? $metadata : null,
+            'metadata' => ! empty($metadata) ? $metadata : null,
         ];
 
         if (Schema::hasColumn('shoot_files', 'is_extra')) {
@@ -505,10 +507,10 @@ class DropboxWorkflowService
         $requiresImageProcessing = $this->shouldProcessImage($file)
             && (
                 $isReplacement
-                || !$shootFile->processed_at
-                || !$shootFile->thumbnail_path
-                || !$shootFile->web_path
-                || !$shootFile->placeholder_path
+                || ! $shootFile->processed_at
+                || ! $shootFile->thumbnail_path
+                || ! $shootFile->web_path
+                || ! $shootFile->placeholder_path
             );
 
         if ($requiresImageProcessing && app()->runningUnitTests()) {
@@ -522,7 +524,7 @@ class DropboxWorkflowService
                 Storage::disk('public')->path($serverPath)
             );
 
-            if (!empty($generatedPaths)) {
+            if (! empty($generatedPaths)) {
                 $shootFile->update([
                     'thumbnail_path' => $generatedPaths['thumbnail'] ?? $shootFile->thumbnail_path,
                     'web_path' => $generatedPaths['web'] ?? $shootFile->web_path,
@@ -550,7 +552,7 @@ class DropboxWorkflowService
         // When the synchronous pre-store scan already cleared the file, release it
         // straight to downstream processing; otherwise enqueue the async scan which
         // releases (or flags) the file once clamd becomes reachable.
-        if ($syncScanVerdict === 'clean' && !app()->runningUnitTests()) {
+        if ($syncScanVerdict === 'clean' && ! app()->runningUnitTests()) {
             try {
                 app(FileScanService::class)->release($shootFile);
             } catch (\Throwable $e) {
@@ -562,7 +564,12 @@ class DropboxWorkflowService
             }
         } else {
             try {
-                ScanShootFileJob::dispatch($shootFile->id)->afterResponse();
+                // Dispatch while the controller can still contain a sync-driver
+                // failure. `afterResponse()` runs outside this try/catch and can
+                // append an exception payload to an already-sent JSON response.
+                // Real queue drivers enqueue immediately; the sync driver runs
+                // here and leaves the file quarantined if clamd is unavailable.
+                ScanShootFileJob::dispatch($shootFile->id);
             } catch (\Throwable $e) {
                 Log::warning('Scan job dispatch failed after local upload', [
                     'shoot_id' => $shoot->id,
@@ -635,13 +642,13 @@ class DropboxWorkflowService
     public function moveToCompleted(ShootFile $shootFile, $userId)
     {
         $shoot = $shootFile->shoot;
-        
+
         // Locate the Completed folder for this shoot
         $completedFolder = $shoot->dropboxFolders()
             ->where('folder_type', DropboxFolder::TYPE_COMPLETED)
             ->first();
-        
-        if (!$completedFolder) {
+
+        if (! $completedFolder) {
             // Fallback: mark as completed without Dropbox move, and keep current path
             Log::warning('Completed Dropbox folder not found, marking file as completed locally', [
                 'shoot_id' => $shoot->id,
@@ -654,16 +661,16 @@ class DropboxWorkflowService
             return true;
         }
 
-        $newPath = $completedFolder->dropbox_path . '/' . $shootFile->stored_filename;
+        $newPath = $completedFolder->dropbox_path.'/'.$shootFile->stored_filename;
 
         try {
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/files/move_v2', [
+                ->post($this->dropboxApiUrl.'/files/move_v2', [
                     'from_path' => $shootFile->dropbox_path,
                     'to_path' => $newPath,
                     'allow_shared_folder' => false,
-                    'autorename' => true
+                    'autorename' => true,
                 ]);
 
             if ($response->successful()) {
@@ -673,19 +680,19 @@ class DropboxWorkflowService
 
                 // Files moved to completed - status stays as 'uploaded' until admin sends to editing
 
-                Log::info("File moved to Completed folder", [
+                Log::info('File moved to Completed folder', [
                     'shoot_id' => $shoot->id,
                     'filename' => $shootFile->filename,
-                    'new_path' => $newPath
+                    'new_path' => $newPath,
                 ]);
 
                 return true;
             } else {
-                Log::error("Failed to move file in Dropbox", $response->json() ?: []);
+                Log::error('Failed to move file in Dropbox', $response->json() ?: []);
                 throw new \Exception('Failed to move file in Dropbox');
             }
         } catch (\Exception $e) {
-            Log::error("Exception moving file in Dropbox", ['error' => $e->getMessage()]);
+            Log::error('Exception moving file in Dropbox', ['error' => $e->getMessage()]);
             throw $e;
         }
     }
@@ -708,7 +715,7 @@ class DropboxWorkflowService
         $shoot = $shootFile->shoot;
 
         try {
-            if (!empty($shootFile->dropbox_path)) {
+            if (! empty($shootFile->dropbox_path)) {
                 $this->downloadAndStoreOnServer($shootFile, $shootFile->dropbox_path);
             } else {
                 $this->copyLocalCompletedToFinal($shootFile);
@@ -762,23 +769,24 @@ class DropboxWorkflowService
     protected function copyLocalCompletedToFinal(ShootFile $shootFile): void
     {
         $shoot = $shootFile->shoot;
-        if (!$shoot) {
+        if (! $shoot) {
             return;
         }
 
         $currentPath = $shootFile->path;
-        if (!$currentPath) {
+        if (! $currentPath) {
             return;
         }
 
         $disk = Storage::disk('public');
-        if (!$disk->exists($currentPath)) {
+        if (! $disk->exists($currentPath)) {
             // Source missing locally; nothing to copy. Read path will resolve
             // via existing path / dropbox_path / preview pipelines.
             Log::info('Skipping local-final copy: source missing on disk', [
                 'shoot_file_id' => $shootFile->id,
                 'path' => $currentPath,
             ]);
+
             return;
         }
 
@@ -831,21 +839,21 @@ class DropboxWorkflowService
                 $response = Http::withToken($this->getAccessToken())
                     ->withOptions(array_merge($this->httpOptions, ['timeout' => 300, 'sink' => $tmp]))
                     ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                    ->get($this->dropboxContentUrl . '/files/download');
+                    ->get($this->dropboxContentUrl.'/files/download');
 
                 if ($response->successful()) {
                     break;
                 }
 
                 $shouldRetry = $attempt < $maxAttempts && in_array($response->status(), [429, 500, 502, 503, 504], true);
-                if (!$shouldRetry) {
+                if (! $shouldRetry) {
                     $bodyPreview = is_file($tmp) ? @file_get_contents($tmp, false, null, 0, 500) : '';
                     Log::error('Failed to download file from Dropbox', [
                         'shoot_file_id' => $shootFile->id,
                         'status' => $response->status(),
                         'body_preview' => $bodyPreview,
                     ]);
-                    throw new \Exception('Failed to download file from Dropbox (HTTP ' . $response->status() . ')');
+                    throw new \Exception('Failed to download file from Dropbox (HTTP '.$response->status().')');
                 }
 
                 $retryAfter = (int) $response->header('Retry-After');
@@ -885,14 +893,14 @@ class DropboxWorkflowService
 
     public function getTemporaryLink(?string $dropboxPath): ?string
     {
-        if (!$dropboxPath) {
+        if (! $dropboxPath) {
             return null;
         }
 
         try {
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/files/get_temporary_link', [
+                ->post($this->dropboxApiUrl.'/files/get_temporary_link', [
                     'path' => $dropboxPath,
                 ]);
 
@@ -917,13 +925,13 @@ class DropboxWorkflowService
     /**
      * Download a file from Dropbox to a temporary local path
      * Used for watermark generation and other processing
-     * 
-     * @param string|null $dropboxPath The Dropbox path to download
+     *
+     * @param  string|null  $dropboxPath  The Dropbox path to download
      * @return string|null Local file path or null on failure
      */
     public function downloadToTemp(?string $dropboxPath): ?string
     {
-        if (!$dropboxPath) {
+        if (! $dropboxPath) {
             return null;
         }
 
@@ -933,20 +941,20 @@ class DropboxWorkflowService
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
                 ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                ->get($this->dropboxContentUrl . '/files/download');
+                ->get($this->dropboxContentUrl.'/files/download');
 
             if ($response->successful()) {
                 // Create temp directory if it doesn't exist
                 $tempDir = storage_path('app/temp/dropbox_downloads');
-                if (!is_dir($tempDir)) {
+                if (! is_dir($tempDir)) {
                     mkdir($tempDir, 0755, true);
                 }
 
                 // Generate unique filename preserving extension
                 $originalFilename = basename($dropboxPath);
                 $extension = pathinfo($originalFilename, PATHINFO_EXTENSION) ?: 'jpg';
-                $filename = 'dropbox_' . time() . '_' . uniqid() . '.' . $extension;
-                $localPath = $tempDir . '/' . $filename;
+                $filename = 'dropbox_'.time().'_'.uniqid().'.'.$extension;
+                $localPath = $tempDir.'/'.$filename;
 
                 // Write file content
                 file_put_contents($localPath, $response->body());
@@ -965,12 +973,14 @@ class DropboxWorkflowService
                 'status' => $response->status(),
                 'error' => $response->json() ?: $response->body(),
             ]);
+
             return null;
         } catch (\Exception $e) {
             Log::error('Exception downloading file from Dropbox to temp', [
                 'path' => $dropboxPath,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -978,21 +988,22 @@ class DropboxWorkflowService
     /**
      * Upload a local file to a specific Dropbox path
      * Used for uploading watermarked images
-     * 
-     * @param string $localPath Local file path
-     * @param string $dropboxPath Target Dropbox path
+     *
+     * @param  string  $localPath  Local file path
+     * @param  string  $dropboxPath  Target Dropbox path
      * @return string|null The Dropbox path on success, null on failure
      */
     public function uploadFromPath(string $localPath, string $dropboxPath): ?string
     {
-        if (!file_exists($localPath)) {
+        if (! file_exists($localPath)) {
             Log::error('Cannot upload file - local path does not exist', ['path' => $localPath]);
+
             return null;
         }
 
         try {
             $fileContent = file_get_contents($localPath);
-            
+
             $apiArgs = json_encode([
                 'path' => $dropboxPath,
                 'mode' => 'overwrite',
@@ -1007,7 +1018,7 @@ class DropboxWorkflowService
                     'Content-Type' => 'application/octet-stream',
                 ])
                 ->withBody($fileContent, 'application/octet-stream')
-                ->post($this->dropboxContentUrl . '/files/upload');
+                ->post($this->dropboxContentUrl.'/files/upload');
 
             if ($response->successful()) {
                 $result = $response->json();
@@ -1016,6 +1027,7 @@ class DropboxWorkflowService
                     'dropbox_path' => $result['path_display'] ?? $dropboxPath,
                     'size' => $result['size'] ?? filesize($localPath),
                 ]);
+
                 return $result['path_display'] ?? $dropboxPath;
             }
 
@@ -1025,6 +1037,7 @@ class DropboxWorkflowService
                 'status' => $response->status(),
                 'error' => $response->json() ?: $response->body(),
             ]);
+
             return null;
         } catch (\Exception $e) {
             Log::error('Exception uploading file to Dropbox', [
@@ -1032,6 +1045,7 @@ class DropboxWorkflowService
                 'dropbox_path' => $dropboxPath,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -1044,7 +1058,7 @@ class DropboxWorkflowService
         try {
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/files/list_folder', [
+                ->post($this->dropboxApiUrl.'/files/list_folder', [
                     'path' => $folderPath,
                     'recursive' => false,
                     'include_media_info' => true,
@@ -1053,11 +1067,13 @@ class DropboxWorkflowService
             if ($response->successful()) {
                 return $response->json();
             } else {
-                Log::error("Failed to list Dropbox folder files", $response->json() ?: []);
+                Log::error('Failed to list Dropbox folder files', $response->json() ?: []);
+
                 return null;
             }
         } catch (\Exception $e) {
-            Log::error("Exception listing Dropbox folder files", ['error' => $e->getMessage()]);
+            Log::error('Exception listing Dropbox folder files', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -1071,24 +1087,24 @@ class DropboxWorkflowService
         $address = $shoot->address;
         $city = $shoot->city;
         $state = $shoot->state;
-        
+
         // Remove special characters and replace spaces with hyphens
         $cleanAddress = preg_replace('/[^a-zA-Z0-9\s\-]/', '', $address);
         $cleanCity = preg_replace('/[^a-zA-Z0-9\s\-]/', '', $city);
         $cleanState = preg_replace('/[^a-zA-Z0-9\s\-]/', '', $state);
-        
+
         // Replace spaces with hyphens and remove multiple hyphens
         $addressPart = preg_replace('/\s+/', '-', trim($cleanAddress));
         $cityPart = preg_replace('/\s+/', '-', trim($cleanCity));
         $statePart = preg_replace('/\s+/', '-', trim($cleanState));
-        
+
         // Combine parts
         $folderName = "{$addressPart}-{$cityPart}-{$statePart}";
-        
+
         // Clean up multiple hyphens and ensure it's not too long
         $folderName = preg_replace('/-+/', '-', $folderName);
         $folderName = substr($folderName, 0, 100); // Limit length
-        
+
         return trim($folderName, '-');
     }
 
@@ -1101,10 +1117,10 @@ class DropboxWorkflowService
         if ($shoot->service_category) {
             return [$shoot->service_category];
         }
-        
+
         // Otherwise, determine from service name
         $serviceName = strtolower($shoot->service->name ?? '');
-        
+
         if (strpos($serviceName, 'iguide') !== false) {
             return ['iGuide'];
         } elseif (strpos($serviceName, 'video') !== false) {
@@ -1142,25 +1158,29 @@ class DropboxWorkflowService
                 ->withOptions($this->httpOptions)
                 ->withHeaders(['Content-Type' => 'application/json'])
                 ->withBody(json_encode(['path' => $path, 'autorename' => false]))
-                ->post($this->dropboxApiUrl . '/files/create_folder_v2');
+                ->post($this->dropboxApiUrl.'/files/create_folder_v2');
 
             if ($response->successful()) {
                 Log::info("Created Dropbox folder: {$path}");
+
                 return true;
             } else {
                 $error = $response->json();
                 // Check if folder already exists
-                if (isset($error['error']['.tag']) && $error['error']['.tag'] === 'path' && 
+                if (isset($error['error']['.tag']) && $error['error']['.tag'] === 'path' &&
                     isset($error['error']['path']['.tag']) && $error['error']['path']['.tag'] === 'conflict') {
                     Log::info("Dropbox folder already exists: {$path}");
+
                     return true;
                 } else {
                     Log::error("Failed to create Dropbox folder: {$path}", $error ?: []);
+
                     return false;
                 }
             }
         } catch (\Exception $e) {
             Log::error("Exception creating Dropbox folder: {$path}", ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1178,7 +1198,7 @@ class DropboxWorkflowService
         } elseif (strpos($path, '/Video-') !== false) {
             return 'Video';
         }
-        
+
         // Fallback to shoot's service category or default
         return $shoot->service_category ?? 'P';
     }
@@ -1203,20 +1223,20 @@ class DropboxWorkflowService
         $todoFolder = $shoot->dropboxFolders()
             ->where('folder_type', DropboxFolder::TYPE_TODO)
             ->first();
-        
-        if (!$todoFolder) {
+
+        if (! $todoFolder) {
             $this->createShootFolders($shoot);
             $todoFolder = $shoot->dropboxFolders()
                 ->where('folder_type', DropboxFolder::TYPE_TODO)
                 ->first();
         }
 
-        if (!$todoFolder) {
+        if (! $todoFolder) {
             throw new \Exception("ToDo folder not found for category: {$serviceCategory}");
         }
 
-        $newFilename = 'COPIED_TODO_' . str_replace('.', '_', uniqid('', true)) . '_' . $filename;
-        $destinationPath = $todoFolder->dropbox_path . '/' . $newFilename;
+        $newFilename = 'COPIED_TODO_'.str_replace('.', '_', uniqid('', true)).'_'.$filename;
+        $destinationPath = $todoFolder->dropbox_path.'/'.$newFilename;
 
         try {
             // Copy file within Dropbox
@@ -1227,23 +1247,23 @@ class DropboxWorkflowService
                     'from_path' => $sourcePath,
                     'to_path' => $destinationPath,
                     'allow_shared_folder' => false,
-                    'autorename' => true
+                    'autorename' => true,
                 ]))
-                ->post($this->dropboxApiUrl . '/files/copy_v2');
+                ->post($this->dropboxApiUrl.'/files/copy_v2');
 
             if ($response->successful()) {
                 $fileData = $response->json();
-                
+
                 // Get file metadata to determine size and type
                 $metadataResponse = Http::withToken($this->getAccessToken())
                     ->withOptions($this->httpOptions)
                     ->withHeaders(['Content-Type' => 'application/json'])
                     ->withBody(json_encode(['path' => $destinationPath]))
-                    ->post($this->dropboxApiUrl . '/files/get_metadata');
+                    ->post($this->dropboxApiUrl.'/files/get_metadata');
 
                 $fileSize = 0;
                 $mimeType = 'application/octet-stream';
-                
+
                 if ($metadataResponse->successful()) {
                     $metadata = $metadataResponse->json();
                     $fileSize = $metadata['size'] ?? 0;
@@ -1251,7 +1271,7 @@ class DropboxWorkflowService
                 }
 
                 $mediaType = $this->resolveMediaType($filename, $mimeType, 'raw', $serviceCategory);
-                
+
                 // Store file record in database
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,
@@ -1264,7 +1284,7 @@ class DropboxWorkflowService
                     'uploaded_by' => $userId,
                     'workflow_stage' => ShootFile::STAGE_TODO,
                     'dropbox_path' => $destinationPath,
-                    'dropbox_file_id' => $fileData['id'] ?? null
+                    'dropbox_file_id' => $fileData['id'] ?? null,
                 ]);
 
                 // Quarantine + scan (Req 14.1/14.2): every newly created
@@ -1277,20 +1297,20 @@ class DropboxWorkflowService
                 // Workflow status transition is owned by FinalizeRawUploadAction;
                 // copying a file into ToDo no longer auto-advances shoot status.
 
-                Log::info("File copied from Dropbox to ToDo folder", [
+                Log::info('File copied from Dropbox to ToDo folder', [
                     'shoot_id' => $shoot->id,
                     'source_path' => $sourcePath,
                     'destination_path' => $destinationPath,
-                    'filename' => $filename
+                    'filename' => $filename,
                 ]);
 
                 return $shootFile;
             } else {
-                Log::error("Failed to copy file in Dropbox", $response->json() ?: []);
+                Log::error('Failed to copy file in Dropbox', $response->json() ?: []);
                 throw new \Exception('Failed to copy file in Dropbox');
             }
         } catch (\Exception $e) {
-            Log::error("Exception copying file in Dropbox", ['error' => $e->getMessage()]);
+            Log::error('Exception copying file in Dropbox', ['error' => $e->getMessage()]);
             throw $e;
         }
     }
@@ -1301,7 +1321,7 @@ class DropboxWorkflowService
     private function getMimeTypeFromExtension($filename)
     {
         $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-        
+
         $mimeTypes = [
             'jpg' => 'image/jpeg',
             'jpeg' => 'image/jpeg',
@@ -1316,7 +1336,7 @@ class DropboxWorkflowService
             'arw' => 'image/x-sony-arw',
             'mp4' => 'video/mp4',
             'mov' => 'video/quicktime',
-            'avi' => 'video/x-msvideo'
+            'avi' => 'video/x-msvideo',
         ];
 
         return $mimeTypes[$extension] ?? 'application/octet-stream';
@@ -1332,17 +1352,20 @@ class DropboxWorkflowService
                 ->withOptions($this->httpOptions)
                 ->withHeaders(['Content-Type' => 'application/json'])
                 ->withBody(json_encode(['path' => $path]))
-                ->post($this->dropboxApiUrl . '/files/delete_v2');
+                ->post($this->dropboxApiUrl.'/files/delete_v2');
 
             if ($response->successful()) {
                 Log::info("Deleted file from Dropbox: {$path}");
+
                 return true;
             } else {
                 Log::error("Failed to delete file from Dropbox: {$path}", $response->json() ?: []);
+
                 return false;
             }
         } catch (\Exception $e) {
             Log::error("Exception deleting file from Dropbox: {$path}", ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1360,8 +1383,9 @@ class DropboxWorkflowService
      */
     public function archiveShoot(Shoot $shoot, $userId = null)
     {
-        if (!$shoot->dropbox_edited_folder) {
+        if (! $shoot->dropbox_edited_folder) {
             Log::warning('No edited folder to archive', ['shoot_id' => $shoot->id]);
+
             return false;
         }
 
@@ -1371,7 +1395,7 @@ class DropboxWorkflowService
         $clientSlug = preg_replace('/-+/', '-', trim($clientSlug, '-'));
 
         // Create archive path: /Photo Editing/Archived Shoots/{clientSlug}/{propertySlug}-{shootId}
-        $basePath = "/Photo Editing/Archived Shoots";
+        $basePath = '/Photo Editing/Archived Shoots';
         $clientPath = "{$basePath}/{$clientSlug}";
         $archivePath = "{$clientPath}/{$shoot->property_slug}-{$shoot->id}";
 
@@ -1383,11 +1407,11 @@ class DropboxWorkflowService
             // Copy the entire completed folder to archive
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/files/copy_v2', [
+                ->post($this->dropboxApiUrl.'/files/copy_v2', [
                     'from_path' => $shoot->dropbox_edited_folder,
                     'to_path' => $archivePath,
                     'allow_shared_folder' => false,
-                    'autorename' => true
+                    'autorename' => true,
                 ]);
 
             if ($response->successful()) {
@@ -1395,19 +1419,21 @@ class DropboxWorkflowService
                 $shoot->dropbox_archive_folder = $archivePath;
                 $shoot->save();
 
-                Log::info("Shoot archived successfully", [
+                Log::info('Shoot archived successfully', [
                     'shoot_id' => $shoot->id,
                     'from_path' => $shoot->dropbox_edited_folder,
-                    'to_path' => $archivePath
+                    'to_path' => $archivePath,
                 ]);
 
                 return true;
             } else {
-                Log::error("Failed to archive shoot in Dropbox", $response->json() ?: []);
+                Log::error('Failed to archive shoot in Dropbox', $response->json() ?: []);
+
                 return false;
             }
         } catch (\Exception $e) {
-            Log::error("Exception archiving shoot", ['error' => $e->getMessage(), 'shoot_id' => $shoot->id]);
+            Log::error('Exception archiving shoot', ['error' => $e->getMessage(), 'shoot_id' => $shoot->id]);
+
             return false;
         }
     }
@@ -1418,16 +1444,17 @@ class DropboxWorkflowService
     public function listShootFiles(Shoot $shoot, string $type)
     {
         $folderPath = $shoot->getDropboxFolderForType($type);
-        
-        if (!$folderPath) {
+
+        if (! $folderPath) {
             Log::warning("No Dropbox folder found for type: {$type}", ['shoot_id' => $shoot->id]);
+
             return [];
         }
 
         try {
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/files/list_folder', [
+                ->post($this->dropboxApiUrl.'/files/list_folder', [
                     'path' => $folderPath,
                     'recursive' => false,
                     'include_media_info' => true,
@@ -1442,7 +1469,7 @@ class DropboxWorkflowService
                     ->filter(function ($entry) {
                         return $entry['.tag'] === 'file';
                     })
-                    ->map(function ($entry) use ($shoot) {
+                    ->map(function ($entry) {
                         return [
                             'id' => $entry['id'] ?? null,
                             'name' => $entry['name'] ?? '',
@@ -1456,11 +1483,13 @@ class DropboxWorkflowService
                     ->values()
                     ->toArray();
             } else {
-                Log::error("Failed to list Dropbox folder files", $response->json() ?: []);
+                Log::error('Failed to list Dropbox folder files', $response->json() ?: []);
+
                 return [];
             }
         } catch (\Exception $e) {
-            Log::error("Exception listing Dropbox folder files", ['error' => $e->getMessage()]);
+            Log::error('Exception listing Dropbox folder files', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -1474,23 +1503,24 @@ class DropboxWorkflowService
             // Try to create a shared link for the folder
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/sharing/create_shared_link_with_settings', [
+                ->post($this->dropboxApiUrl.'/sharing/create_shared_link_with_settings', [
                     'path' => $folderPath,
                     'settings' => [
                         'requested_visibility' => 'public',
                         'audience' => 'public',
-                        'access' => 'viewer'
-                    ]
+                        'access' => 'viewer',
+                    ],
                 ]);
 
             if ($response->successful()) {
                 $data = $response->json();
                 $url = $data['url'] ?? null;
-                
+
                 // Convert to direct download link by replacing dl=0 with dl=1
                 if ($url) {
                     $url = str_replace('dl=0', 'dl=1', $url);
-                    Log::info("Created Dropbox shared link", ['path' => $folderPath, 'url' => $url]);
+                    Log::info('Created Dropbox shared link', ['path' => $folderPath, 'url' => $url]);
+
                     return $url;
                 }
             } else {
@@ -1499,10 +1529,10 @@ class DropboxWorkflowService
                 if (isset($error['error']['.tag']) && $error['error']['.tag'] === 'shared_link_already_exists') {
                     return $this->getExistingSharedLink($folderPath);
                 }
-                Log::warning("Failed to create Dropbox shared link", $error ?: []);
+                Log::warning('Failed to create Dropbox shared link', $error ?: []);
             }
         } catch (\Exception $e) {
-            Log::error("Exception creating Dropbox shared link", ['error' => $e->getMessage()]);
+            Log::error('Exception creating Dropbox shared link', ['error' => $e->getMessage()]);
         }
 
         return null;
@@ -1516,15 +1546,15 @@ class DropboxWorkflowService
         try {
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
-                ->post($this->dropboxApiUrl . '/sharing/list_shared_links', [
+                ->post($this->dropboxApiUrl.'/sharing/list_shared_links', [
                     'path' => $folderPath,
-                    'direct_only' => true
+                    'direct_only' => true,
                 ]);
 
             if ($response->successful()) {
                 $data = $response->json();
                 $links = $data['links'] ?? [];
-                
+
                 if (count($links) > 0) {
                     $url = $links[0]['url'] ?? null;
                     if ($url) {
@@ -1533,7 +1563,7 @@ class DropboxWorkflowService
                 }
             }
         } catch (\Exception $e) {
-            Log::error("Exception getting existing shared link", ['error' => $e->getMessage()]);
+            Log::error('Exception getting existing shared link', ['error' => $e->getMessage()]);
         }
 
         return null;
@@ -1557,25 +1587,25 @@ class DropboxWorkflowService
             $response = Http::withToken($this->getAccessToken())
                 ->withOptions($this->httpOptions)
                 ->withHeaders([
-                    'Dropbox-API-Arg' => json_encode(['path' => $dropboxPath])
+                    'Dropbox-API-Arg' => json_encode(['path' => $dropboxPath]),
                 ])
                 ->post('https://content.dropboxapi.com/2/files/download', '');
 
             if ($response->successful()) {
                 return $response->body();
             }
-            
+
             Log::warning('Failed to download file from Dropbox', [
                 'path' => $dropboxPath,
-                'status' => $response->status()
+                'status' => $response->status(),
             ]);
         } catch (\Exception $e) {
             Log::error('Exception downloading file from Dropbox', [
                 'path' => $dropboxPath,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
         }
-        
+
         return null;
     }
 
@@ -1585,22 +1615,22 @@ class DropboxWorkflowService
     public function generateZipOnFly(Shoot $shoot, string $type)
     {
         $files = $this->listShootFiles($shoot, $type);
-        
+
         if (empty($files)) {
             throw new \Exception("No files found for type: {$type}");
         }
 
         // Create a temporary ZIP file
-        $zipPath = storage_path("app/temp/shoot-{$shoot->id}-{$type}-" . time() . ".zip");
-        
+        $zipPath = storage_path("app/temp/shoot-{$shoot->id}-{$type}-".time().'.zip');
+
         // Ensure temp directory exists
-        if (!file_exists(dirname($zipPath))) {
+        if (! file_exists(dirname($zipPath))) {
             mkdir(dirname($zipPath), 0755, true);
         }
 
-        $zip = new \ZipArchive();
+        $zip = new \ZipArchive;
         if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
-            throw new \Exception("Failed to create ZIP file");
+            throw new \Exception('Failed to create ZIP file');
         }
 
         foreach ($files as $file) {
@@ -1610,26 +1640,26 @@ class DropboxWorkflowService
                 $response = Http::withToken($this->getAccessToken())
                     ->withOptions($this->httpOptions)
                     ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                    ->get($this->dropboxContentUrl . '/files/download');
+                    ->get($this->dropboxContentUrl.'/files/download');
 
                 if ($response->successful()) {
                     $zip->addFromString($file['name'], $response->body());
                 }
             } catch (\Exception $e) {
-                Log::error("Failed to download file for ZIP", [
+                Log::error('Failed to download file for ZIP', [
                     'file' => $file['path'],
-                    'error' => $e->getMessage()
+                    'error' => $e->getMessage(),
                 ]);
             }
         }
 
         $zip->close();
 
-        Log::info("Generated ZIP file on-the-fly", [
+        Log::info('Generated ZIP file on-the-fly', [
             'shoot_id' => $shoot->id,
             'type' => $type,
             'file_count' => count($files),
-            'zip_path' => $zipPath
+            'zip_path' => $zipPath,
         ]);
 
         return $zipPath;
@@ -1642,7 +1672,7 @@ class DropboxWorkflowService
     {
         try {
             // Check if Dropbox is enabled
-            if (!config('services.dropbox.enabled', false)) {
+            if (! config('services.dropbox.enabled', false)) {
                 return [
                     'success' => false,
                     'message' => 'Dropbox integration is disabled. Enable it in settings to test.',
@@ -1663,13 +1693,14 @@ class DropboxWorkflowService
                 ->withOptions($this->httpOptions)
                 ->withHeaders(['Content-Type' => 'application/json'])
                 ->withBody('null')
-                ->post($this->dropboxApiUrl . '/users/get_current_account');
+                ->post($this->dropboxApiUrl.'/users/get_current_account');
 
             if ($response->successful()) {
                 $accountInfo = $response->json();
+
                 return [
                     'success' => true,
-                    'message' => 'Connected to Dropbox as ' . ($accountInfo['name']['display_name'] ?? 'Unknown User'),
+                    'message' => 'Connected to Dropbox as '.($accountInfo['name']['display_name'] ?? 'Unknown User'),
                     'account' => [
                         'name' => $accountInfo['name']['display_name'] ?? null,
                         'email' => $accountInfo['email'] ?? null,
@@ -1679,14 +1710,15 @@ class DropboxWorkflowService
 
             return [
                 'success' => false,
-                'message' => 'Failed to connect to Dropbox: ' . ($response->json()['error_summary'] ?? 'Unknown error'),
+                'message' => 'Failed to connect to Dropbox: '.($response->json()['error_summary'] ?? 'Unknown error'),
             ];
 
         } catch (\Exception $e) {
             Log::error('Dropbox connection test failed', ['error' => $e->getMessage()]);
+
             return [
                 'success' => false,
-                'message' => 'Connection failed: ' . $e->getMessage(),
+                'message' => 'Connection failed: '.$e->getMessage(),
             ];
         }
     }
@@ -1697,11 +1729,11 @@ class DropboxWorkflowService
      */
     public function isEnabled(): bool
     {
-        if (!config('services.dropbox.enabled', false)) {
+        if (! config('services.dropbox.enabled', false)) {
             return false;
         }
 
-        if (!empty(config('services.dropbox.access_token'))) {
+        if (! empty(config('services.dropbox.access_token'))) {
             return true;
         }
 
@@ -1711,6 +1743,7 @@ class DropboxWorkflowService
                 ->whereNotNull('access_token')
                 ->where('access_token', '!=', '')
                 ->exists();
+
             return $hasDbToken;
         } catch (\Throwable $e) {
             return false;
@@ -1736,12 +1769,13 @@ class DropboxWorkflowService
             'steps' => [],
         ];
 
-        if (!$report['enabled']) {
+        if (! $report['enabled']) {
             $report['steps'][] = [
                 'name' => 'enabled_check',
                 'success' => false,
                 'message' => 'Dropbox integration is disabled or access_token is empty.',
             ];
+
             return $report;
         }
 
@@ -1753,9 +1787,9 @@ class DropboxWorkflowService
                 'name' => 'resolve_access_token',
                 'success' => (bool) $accessToken,
                 'duration_ms' => (int) round((microtime(true) - $tokenStart) * 1000),
-                'token_preview' => $accessToken ? substr($accessToken, 0, 6) . '…' : null,
+                'token_preview' => $accessToken ? substr($accessToken, 0, 6).'…' : null,
             ];
-            if (!$accessToken) {
+            if (! $accessToken) {
                 return $report;
             }
         } catch (\Throwable $e) {
@@ -1765,6 +1799,7 @@ class DropboxWorkflowService
                 'duration_ms' => (int) round((microtime(true) - $tokenStart) * 1000),
                 'error' => $e->getMessage(),
             ];
+
             return $report;
         }
 
@@ -1775,7 +1810,7 @@ class DropboxWorkflowService
                 ->withOptions($this->httpOptions)
                 ->withHeaders(['Content-Type' => 'application/json'])
                 ->withBody('null')
-                ->post($this->dropboxApiUrl . '/users/get_current_account');
+                ->post($this->dropboxApiUrl.'/users/get_current_account');
 
             $step = [
                 'name' => 'account_info',
@@ -1787,13 +1822,13 @@ class DropboxWorkflowService
                 $data = $response->json() ?: [];
                 $step['account_email'] = $data['email'] ?? null;
                 $step['account_name'] = $data['name']['display_name'] ?? null;
-                $step['team_member'] = !empty($data['team']);
+                $step['team_member'] = ! empty($data['team']);
             } else {
                 $step['error'] = ($response->json()['error_summary'] ?? null) ?: $response->body();
             }
             $report['steps'][] = $step;
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 return $report;
             }
         } catch (\Throwable $e) {
@@ -1803,6 +1838,7 @@ class DropboxWorkflowService
                 'duration_ms' => (int) round((microtime(true) - $accountStart) * 1000),
                 'error' => $e->getMessage(),
             ];
+
             return $report;
         }
 
@@ -1812,7 +1848,7 @@ class DropboxWorkflowService
             try {
                 $response = Http::withToken($accessToken)
                     ->withOptions($this->httpOptions)
-                    ->post($this->dropboxApiUrl . '/files/list_folder', [
+                    ->post($this->dropboxApiUrl.'/files/list_folder', [
                         'path' => $probeFolder,
                         'recursive' => false,
                         'limit' => 10,
@@ -1851,7 +1887,7 @@ class DropboxWorkflowService
             try {
                 $response = Http::withToken($accessToken)
                     ->withOptions($this->httpOptions)
-                    ->post($this->dropboxApiUrl . '/files/get_temporary_link', [
+                    ->post($this->dropboxApiUrl.'/files/get_temporary_link', [
                         'path' => $probePath,
                     ]);
                 $step = [
@@ -1885,7 +1921,7 @@ class DropboxWorkflowService
                 $response = Http::withToken($accessToken)
                     ->withOptions(array_merge($this->httpOptions, ['timeout' => 120]))
                     ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-                    ->get($this->dropboxContentUrl . '/files/download');
+                    ->get($this->dropboxContentUrl.'/files/download');
 
                 $step = [
                     'name' => 'download_probe',
@@ -1916,6 +1952,7 @@ class DropboxWorkflowService
         }
 
         $report['overall_success'] = collect($report['steps'])->every(fn ($s) => $s['success'] ?? false);
+
         return $report;
     }
 }

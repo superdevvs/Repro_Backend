@@ -1,7 +1,7 @@
 @php
-    $showFinancials = $showFinancials ?? true;
-    $showNotes = $showNotes ?? true;
     $isPhotographer = $isPhotographer ?? false;
+    $showFinancials = $showFinancials ?? !$isPhotographer;
+    $showNotes = $showNotes ?? true;
     $summaryNotice = $summaryNotice ?? null;
     $recipientType = strtolower((string) (($meta->recipient_type ?? null) ?? ($isPhotographer ? 'photographer' : '')));
     $isClientRecipient = $recipientType === 'client';
@@ -129,7 +129,9 @@
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
                 <tr>
                     <td class="line-th dark-muted" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:left; vertical-align:top; font-size:11px; line-height:1.4; letter-spacing:1.4px; text-transform:uppercase; color:#7b91ac; font-weight:800;">Service</td>
-                    <td class="line-th amount-td dark-muted" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; font-size:11px; line-height:1.4; letter-spacing:1.4px; text-transform:uppercase; color:#7b91ac; font-weight:800;">Total</td>
+                    @if(!$isPhotographer)
+                        <td class="line-th amount-td dark-muted" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; font-size:11px; line-height:1.4; letter-spacing:1.4px; text-transform:uppercase; color:#7b91ac; font-weight:800;">Total</td>
+                    @endif
                 </tr>
                 @foreach($shoot->services as $service)
                 <tr>
@@ -142,7 +144,9 @@
                             <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">Assigned photographer: {{ $service['photographer_name'] }}</span>
                         @endif
                     </td>
-                    <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $service['formatted_total'] }}</td>
+                    @if(!$isPhotographer)
+                        <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $service['formatted_total'] }}</td>
+                    @endif
                 </tr>
                 @endforeach
                 @if($showFinancials)

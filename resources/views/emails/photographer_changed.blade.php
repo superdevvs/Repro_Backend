@@ -32,9 +32,6 @@
                         You have been removed from the current photographer roster for this shoot.
                     @endif
                 </p>
-                @if(!empty($previousPhotographer?->name))
-                    <p class="dark-body" style="margin:12px 0 0; font-size:14px; line-height:1.7; color:#47627f;">Previous lead: {{ $previousPhotographer->name }}</p>
-                @endif
             </td>
         </tr>
     </table>

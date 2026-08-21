@@ -67,6 +67,7 @@
             "npx concurrently -k -c \"#93c5fd,#a7f3d0,#a7f3d0,#a7f3d0,#a7f3d0,#fdba74\" \"node scripts/dev-proxy.mjs 8000 8001 8002 8003 8004\" \"php artisan serve --port=8001\" \"php artisan serve --port=8002\" \"php artisan serve --port=8003\" \"php artisan serve --port=8004\" \"npm run dev\" --names='proxy,web1,web2,web3,web4,vite'"
         ],
         "test": [
+            "Composer\\Config::disableProcessTimeout",
             "@php artisan config:clear --ansi",
             "@php -d memory_limit=2G artisan test --fail-on-warning --fail-on-risky --fail-on-skipped --fail-on-phpunit-deprecation"
         ],

@@ -8,29 +8,106 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
-use App\Services\Shoots\ShootAuthorizationSupport;
+use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
+use App\Services\Shoots\ShootMediaReadService;
+use App\Services\Shoots\ShootNotesCompatibilityService;
+use App\Services\Shoots\ShootUploadIdempotencyService;
 use App\Services\UploadValidationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class UploadShootFilesAction
 {
     public function __construct(
         protected DropboxWorkflowService $dropboxService,
         protected ShootMediaMutationSupportService $support,
-        protected ShootAuthorizationSupport $authorizationSupport,
         protected ShootActivityLogger $activityLogger,
         protected AutoStackRawFilesAction $autoStackRawFilesAction,
-        protected UploadValidationService $uploadValidation
-    ) {
-    }
+        protected UploadValidationService $uploadValidation,
+        protected ShootUploadIdempotencyService $uploadIdempotency,
+        protected ShootMediaReadService $mediaReadService,
+        protected ShootEditingAssignmentService $editingAssignmentService,
+        protected ShootNotesCompatibilityService $notesCompatibilityService
+    ) {}
 
     public function execute(Request $request, Shoot $shoot, ?User $user): array
+    {
+        $files = $request->file('files');
+        $normalizedFiles = $files ? (is_array($files) ? $files : [$files]) : [];
+        $claim = $this->uploadIdempotency->claim($request, $shoot, $user, $normalizedFiles);
+        if ($claim['replay']) {
+            return $claim['replay'];
+        }
+
+        $attempt = $claim['attempt'];
+        try {
+            $result = $this->executeUpload($request, $shoot, $user);
+            if ($attempt) {
+                $this->uploadIdempotency->finish($attempt, $result);
+            }
+
+            return $result;
+        } catch (ValidationException $exception) {
+            // Preserve Laravel's established field-keyed validation response for
+            // legacy callers. Idempotent callers receive (and subsequently replay)
+            // the same typed terminal validation result as other upload failures.
+            if (! $attempt) {
+                throw $exception;
+            }
+
+            $validationErrors = $exception->errors();
+            $payload = [
+                'error_type' => 'invalid_file',
+                'message' => 'One or more files could not be accepted.',
+                'uploaded_files' => [],
+                'errors' => $validationErrors,
+                'validation_errors' => $validationErrors,
+                'success_count' => 0,
+                'error_count' => max(1, count($validationErrors)),
+                'partial_success' => false,
+            ];
+            $this->uploadIdempotency->fail($attempt, $payload, 422);
+
+            return ['status' => 422, 'payload' => $payload];
+        } catch (\Throwable $exception) {
+            $correlationId = $attempt?->correlation_id ?? (string) Str::uuid();
+            $payload = [
+                'error_type' => 'server_error',
+                'message' => 'Failed to upload files.',
+                'uploaded_files' => [],
+                'errors' => [[
+                    'error_type' => 'server_error',
+                    'message' => 'The server could not finish this upload.',
+                    'retryable' => true,
+                ]],
+                'success_count' => 0,
+                'error_count' => 1,
+                'partial_success' => false,
+                'correlation_id' => $correlationId,
+            ];
+
+            Log::error('Shoot upload attempt failed unexpectedly.', [
+                'shoot_id' => $shoot->id,
+                'actor_id' => $user?->id,
+                'correlation_id' => $correlationId,
+                'exception' => $exception::class,
+            ]);
+
+            if ($attempt) {
+                $this->uploadIdempotency->fail($attempt, $payload);
+            }
+
+            return ['status' => 500, 'payload' => $payload];
+        }
+    }
+
+    private function executeUpload(Request $request, Shoot $shoot, ?User $user): array
     {
         Log::info('Upload request received', [
             'shoot_id' => $shoot->id,
@@ -45,7 +122,7 @@ class UploadShootFilesAction
 
         $files = $request->file('files');
         $uploadLimits = $this->buildUploadLimits();
-        if (!$files) {
+        if (! $files) {
             $contentLength = (int) $request->header('Content-Length', 0);
             $postMaxSize = $this->parseSize(ini_get('post_max_size'));
 
@@ -54,8 +131,8 @@ class UploadShootFilesAction
                     'status' => 413,
                     'payload' => [
                         'error_type' => 'oversize',
-                        'message' => 'Upload too large. Maximum allowed: ' . ini_get('post_max_size'),
-                        'errors' => ['files' => ['The uploaded file exceeds the server limit of ' . ini_get('post_max_size')]],
+                        'message' => 'Upload too large. Maximum allowed: '.ini_get('post_max_size'),
+                        'errors' => ['files' => ['The uploaded file exceeds the server limit of '.ini_get('post_max_size')]],
                         'upload_limits' => $uploadLimits,
                     ],
                 ];
@@ -66,23 +143,23 @@ class UploadShootFilesAction
                 'payload' => [
                     'error_type' => 'invalid_file',
                     'message' => 'No files received. The file may have been too large or the upload was interrupted.',
-                        'errors' => ['files' => ['No valid files were received by the server.']],
-                        'upload_limits' => $uploadLimits,
-                        'debug' => [
-                            'post_max_size' => ini_get('post_max_size'),
-                            'upload_max_filesize' => ini_get('upload_max_filesize'),
+                    'errors' => ['files' => ['No valid files were received by the server.']],
+                    'upload_limits' => $uploadLimits,
+                    'debug' => [
+                        'post_max_size' => ini_get('post_max_size'),
+                        'upload_max_filesize' => ini_get('upload_max_filesize'),
                         'content_length' => $contentLength,
                     ],
                 ],
             ];
         }
 
-        if (!is_array($files)) {
+        if (! is_array($files)) {
             $files = [$files];
         }
 
         foreach ($files as $file) {
-            if (!$file->isValid()) {
+            if (! $file->isValid()) {
                 return [
                     'status' => 422,
                     'payload' => [
@@ -99,7 +176,7 @@ class UploadShootFilesAction
                     'status' => 422,
                     'payload' => [
                         'error_type' => 'oversize',
-                        'message' => 'File too large: ' . $file->getClientOriginalName(),
+                        'message' => 'File too large: '.$file->getClientOriginalName(),
                         'errors' => [
                             $this->buildUploadError(
                                 $file->getClientOriginalName(),
@@ -130,7 +207,99 @@ class UploadShootFilesAction
         $shootServiceId = $request->input('shoot_service_id');
         $shootServiceId = $shootServiceId !== null && $shootServiceId !== '' ? (int) $shootServiceId : null;
 
-        if ($shootServiceId && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
+        $allServiceItems = $shoot->serviceItems()->with('service')->get();
+        if ($user?->role === 'photographer' && $allServiceItems->isNotEmpty()) {
+            $eligibleItems = $allServiceItems
+                ->filter(fn (ShootService $item) => (string) $item->photographer_id === (string) $user->id
+                    || (
+                        ! $item->photographer_id
+                        && (string) $shoot->photographer_id === (string) $user->id
+                    )
+                )
+                ->values();
+
+            if ($shootServiceId && ! $eligibleItems->contains(fn (ShootService $item) => (int) $item->id === $shootServiceId)) {
+                return [
+                    'status' => 403,
+                    'payload' => $this->typedUploadError(
+                        'forbidden',
+                        'You can only upload media for service items assigned directly to you.',
+                        $uploadLimits
+                    ),
+                ];
+            }
+
+            if (! $shootServiceId && $eligibleItems->count() === 1) {
+                $shootServiceId = (int) $eligibleItems->first()->id;
+            } elseif (! $shootServiceId && $eligibleItems->count() > 1) {
+                return [
+                    'status' => 422,
+                    'payload' => $this->typedUploadError(
+                        'missing_service_item',
+                        'Select one assigned service item for this upload batch.',
+                        $uploadLimits
+                    ),
+                ];
+            } elseif (! $shootServiceId && $eligibleItems->isEmpty()) {
+                return [
+                    'status' => 403,
+                    'payload' => $this->typedUploadError(
+                        'forbidden',
+                        'No uploadable service item is assigned to you.',
+                        $uploadLimits
+                    ),
+                ];
+            }
+        }
+
+        if ($user?->role === 'editor' && $uploadType === 'edited' && $allServiceItems->isNotEmpty()) {
+            $eligibleItems = $allServiceItems
+                ->filter(fn (ShootService $item) => $item->service?->requiresEditing() ?? true)
+                ->filter(function (ShootService $item) use ($shoot, $user) {
+                    if ((string) $shoot->editor_id === (string) $user->id) {
+                        // The legacy top-level editor owns every editing-required item.
+                        return true;
+                    }
+
+                    return (string) $item->editor_id === (string) $user->id;
+                })
+                ->values();
+
+            if ($shootServiceId && ! $eligibleItems->contains(fn (ShootService $item) => (int) $item->id === $shootServiceId)) {
+                return [
+                    'status' => 403,
+                    'payload' => $this->typedUploadError(
+                        'forbidden',
+                        'You can only upload edits for service items assigned to you.',
+                        $uploadLimits
+                    ),
+                ];
+            }
+
+            if (! $shootServiceId && $eligibleItems->count() === 1) {
+                $shootServiceId = (int) $eligibleItems->first()->id;
+            } elseif (! $shootServiceId && $eligibleItems->count() > 1) {
+                return [
+                    'status' => 422,
+                    'payload' => $this->typedUploadError(
+                        'missing_service_item',
+                        'Select one editing service item for this upload batch.',
+                        $uploadLimits
+                    ),
+                ];
+            } elseif (! $shootServiceId && $eligibleItems->isEmpty()) {
+                return [
+                    'status' => 403,
+                    'payload' => $this->typedUploadError(
+                        'forbidden',
+                        'No editing-required service item is assigned to you.',
+                        $uploadLimits
+                    ),
+                ];
+            }
+        }
+
+        if ($shootServiceId && ! $shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
             return [
                 'status' => 422,
                 'payload' => [
@@ -145,7 +314,15 @@ class UploadShootFilesAction
             $user
             && $user->role === 'photographer'
             && $shootServiceId
-            && !$this->authorizationSupport->canPhotographerAccessServiceItem($shoot, $shootServiceId, $user)
+            && ! $allServiceItems->contains(fn (ShootService $item) => (int) $item->id === $shootServiceId
+                && (
+                    (string) $item->photographer_id === (string) $user->id
+                    || (
+                        ! $item->photographer_id
+                        && (string) $shoot->photographer_id === (string) $user->id
+                    )
+                )
+            )
         ) {
             return [
                 'status' => 403,
@@ -159,7 +336,7 @@ class UploadShootFilesAction
         if (
             $user
             && $user->role === 'photographer'
-            && !$shootServiceId
+            && ! $shootServiceId
             && (string) $shoot->photographer_id !== (string) $user->id
         ) {
             return [
@@ -181,8 +358,16 @@ class UploadShootFilesAction
         }
 
         if ($request->has('photographer_notes')) {
+            $previousPhotographerNotes = $shoot->photographer_notes;
             $shoot->photographer_notes = $request->input('photographer_notes');
             $shoot->save();
+            $this->notesCompatibilityService->syncScalarField(
+                $shoot,
+                'photographer_notes',
+                $shoot->photographer_notes,
+                $user,
+                $previousPhotographerNotes,
+            );
         }
 
         $isAdmin = $user && in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
@@ -193,14 +378,14 @@ class UploadShootFilesAction
         // already used for photographers above and for media access in
         // ShootAuthorizationSupport.
         $editorHasEditingAssignment = $isEditor
-            && app(\App\Services\Shoots\ShootEditingAssignmentService::class)->editorHasAssignment($shoot, $user);
+            && $this->editingAssignmentService->editorHasAssignment($shoot, $user);
         $isEditedUploadManager = $isAdmin || $editorHasEditingAssignment;
         // Photographers may upload raw revisions even after delivery (client revision
         // requests). Service-item / assignment scoping is already enforced above, so a
         // photographer reaching this point is assigned to the shoot/service item.
         $canBypassRawStage = $isAdmin || ($user && $user->role === 'photographer');
 
-        if ($uploadType === 'raw' && !$canBypassRawStage && !$shoot->canUploadPhotos()) {
+        if ($uploadType === 'raw' && ! $canBypassRawStage && ! $shoot->canUploadPhotos()) {
             return [
                 'status' => 400,
                 'payload' => [
@@ -212,7 +397,7 @@ class UploadShootFilesAction
             ];
         }
 
-        if ($uploadType === 'edited' && !$isEditedUploadManager) {
+        if ($uploadType === 'edited' && ! $isEditedUploadManager) {
             return [
                 'status' => 403,
                 'payload' => [
@@ -234,7 +419,7 @@ class UploadShootFilesAction
 
         // Editors (and admin tiers) may upload edited revisions at any stage, including
         // after delivery, so client-requested revisions can be delivered post-handoff.
-        if ($uploadType === 'edited' && !$isEditedUploadManager && !in_array($shoot->workflow_status, $allowedEditedUploadStatuses, true)) {
+        if ($uploadType === 'edited' && ! $isEditedUploadManager && ! in_array($shoot->workflow_status, $allowedEditedUploadStatuses, true)) {
             return [
                 'status' => 400,
                 'payload' => [
@@ -249,7 +434,6 @@ class UploadShootFilesAction
         $uploadedFiles = [];
         $errors = [];
 
-        DB::beginTransaction();
         try {
             $isExtra = $request->boolean('is_extra', false);
             $requiredForEditing = $request->has('required_for_editing')
@@ -291,7 +475,9 @@ class UploadShootFilesAction
                 : 0;
 
             foreach ($files as $file) {
+                $shootFile = null;
                 try {
+                    DB::beginTransaction();
                     $resolvedMediaType = null;
                     if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)) {
                         $resolvedMediaType = $mediaTypeOverride;
@@ -303,7 +489,7 @@ class UploadShootFilesAction
                         ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType)
                         : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
 
-                    if ($shootServiceId && !$shootFile->shoot_service_id) {
+                    if ($shootServiceId && ! $shootFile->shoot_service_id) {
                         $shootFile->shoot_service_id = $shootServiceId;
                         $shootFile->save();
                     }
@@ -324,7 +510,7 @@ class UploadShootFilesAction
                     if ($shootServiceId) {
                         $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
                         if ($serviceItem) {
-                            if ($uploadType === 'raw' && !in_array($serviceItem->workflow_status, [
+                            if ($uploadType === 'raw' && ! in_array($serviceItem->workflow_status, [
                                 ShootService::WORKFLOW_READY,
                                 ShootService::WORKFLOW_DELIVERED,
                                 ShootService::WORKFLOW_CANCELLED,
@@ -375,31 +561,29 @@ class UploadShootFilesAction
                         }
                     }
 
-                    $thumbUrl = $shootFile->thumbnail_path ? Storage::disk('public')->url($shootFile->thumbnail_path) : null;
-                    $webUrl = $shootFile->web_path ? Storage::disk('public')->url($shootFile->web_path) : null;
-                    $uploadedFiles[] = [
-                        'id' => $shootFile->id,
-                        'filename' => $shootFile->filename,
-                        'workflow_stage' => $shootFile->workflow_stage,
-                        'dropbox_path' => $shootFile->dropbox_path,
-                        'file_size' => $shootFile->file_size,
-                        'shoot_service_id' => $shootFile->shoot_service_id,
-                        'uploaded_at' => $shootFile->created_at,
-                        'is_extra' => $shootFile->isExtra(),
-                        'required_for_editing' => $shootFile->isRequiredForEditing(),
-                        'requiredForEditing' => $shootFile->isRequiredForEditing(),
-                        'bracket_group' => $shootFile->bracket_group,
-                        'sequence' => $shootFile->sequence,
-                        'thumbnail_path' => $shootFile->thumbnail_path,
-                        'web_path' => $shootFile->web_path,
-                        'placeholder_path' => $shootFile->placeholder_path,
-                        'thumb' => $thumbUrl,
-                        'thumb_url' => $thumbUrl,
-                        'thumbnail_url' => $thumbUrl,
-                        'medium' => $webUrl,
-                        'web_url' => $webUrl,
-                    ];
-                } catch (\Exception $e) {
+                    // A file becomes accepted only after its own database work commits.
+                    // Other files in the same batch are not rolled back with it.
+                    DB::commit();
+                    $uploadedFiles[] = $this->mediaReadService->formatUploadedFile($shootFile);
+                } catch (\Throwable $e) {
+                    if (DB::transactionLevel() > 0) {
+                        DB::rollBack();
+                    }
+
+                    // Remove only assets created by this failed attempt. Existing-file
+                    // replacements are intentionally left alone for legacy safety.
+                    if ($shootFile?->wasRecentlyCreated) {
+                        try {
+                            $this->support->deleteStoredAssets($shootFile);
+                        } catch (\Throwable $cleanupException) {
+                            Log::warning('Failed to compensate upload storage after DB failure.', [
+                                'shoot_id' => $shoot->id,
+                                'shoot_file_id' => $shootFile->id,
+                                'exception' => $cleanupException::class,
+                            ]);
+                        }
+                    }
+
                     $classifiedError = $this->classifyUploadException($file->getClientOriginalName(), $e);
                     $errors[] = $classifiedError;
 
@@ -408,22 +592,30 @@ class UploadShootFilesAction
                         'file_name' => $file->getClientOriginalName(),
                         'error_type' => $classifiedError['error_type'],
                         'retryable' => $classifiedError['retryable'],
-                        'message' => $classifiedError['message'],
+                        'exception' => $e::class,
                     ]);
                 }
             }
 
-            $shoot = $this->support->refreshMediaCounters($shoot->fresh());
-            if ($shootServiceId) {
-                $shoot->syncServiceItemRollups();
+            // Counters, rollups, and cache invalidation are secondary refreshes. A
+            // failure here cannot relabel already committed files as failed uploads.
+            try {
+                $shoot = $this->support->refreshMediaCounters($shoot->fresh());
+                if ($shootServiceId) {
+                    $shoot->syncServiceItemRollups();
+                }
+                $this->support->clearShootFilesCache($shoot);
+            } catch (\Throwable $refreshException) {
+                $shoot = $shoot->fresh() ?? $shoot;
+                Log::warning('Media refresh failed after accepted uploads.', [
+                    'shoot_id' => $shoot->id,
+                    'exception' => $refreshException::class,
+                ]);
             }
-            $this->support->clearShootFilesCache($shoot);
 
             // Note: Auto-transition to STATUS_READY on edited uploads has been removed.
             // Status changes are now owned exclusively by FinalizeEditedUploadAction
             // which is triggered by the user pressing "Submit Edits".
-
-            DB::commit();
 
             // Auto-detect bracket groups from EXIF captured_at clustering. This runs
             // after each raw upload so the gallery reflects accurate stacks even mid-batch.
@@ -501,15 +693,34 @@ class UploadShootFilesAction
                     'missing_final' => $shoot->missing_final,
                 ],
             ];
-        } catch (\Exception $e) {
-            DB::rollBack();
+        } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            $correlationId = (string) Str::uuid();
+            Log::error('Shoot upload orchestration failed.', [
+                'shoot_id' => $shoot->id,
+                'actor_id' => $user?->id,
+                'correlation_id' => $correlationId,
+                'exception' => $e::class,
+            ]);
 
             return [
                 'status' => 500,
                 'payload' => [
                     'error_type' => 'server_error',
                     'message' => 'Failed to upload files',
-                    'error' => $e->getMessage(),
+                    'uploaded_files' => $uploadedFiles,
+                    'errors' => [[
+                        'error_type' => 'server_error',
+                        'message' => 'The server could not finish refreshing this upload.',
+                        'retryable' => true,
+                    ]],
+                    'success_count' => count($uploadedFiles),
+                    'error_count' => 1,
+                    'partial_success' => count($uploadedFiles) > 0,
+                    'correlation_id' => $correlationId,
                     'upload_limits' => $uploadLimits,
                 ],
             ];
@@ -563,6 +774,28 @@ class UploadShootFilesAction
         ];
     }
 
+    protected function typedUploadError(string $errorType, string $message, array $uploadLimits): array
+    {
+        return [
+            'error_type' => $errorType,
+            'message' => $message,
+            'uploaded_files' => [],
+            'errors' => [
+                $this->buildUploadError(
+                    '',
+                    $errorType,
+                    $message,
+                    false,
+                    $errorType === 'missing_service_item' ? 'Choose a service before uploading.' : null
+                ),
+            ],
+            'success_count' => 0,
+            'error_count' => 1,
+            'partial_success' => false,
+            'upload_limits' => $uploadLimits,
+        ];
+    }
+
     /**
      * @return array{
      *   file_name:string,
@@ -579,6 +812,16 @@ class UploadShootFilesAction
         $lowerMessage = strtolower($message);
         $extension = strtolower((string) pathinfo($fileName, PATHINFO_EXTENSION));
         $isRawFile = in_array($extension, ['nef', 'cr2', 'cr3', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw'], true);
+
+        if ($exception instanceof \Illuminate\Database\QueryException) {
+            return $this->buildUploadError(
+                $fileName,
+                'storage_failure',
+                'The file reached the server but its media record could not be saved.',
+                true,
+                'Retry this file. If it fails again, support should review the upload correlation logs.',
+            );
+        }
 
         if (str_contains($lowerMessage, 'permission') || str_contains($lowerMessage, 'forbidden')) {
             return $this->buildUploadError(

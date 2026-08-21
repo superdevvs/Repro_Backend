@@ -9,6 +9,7 @@ use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\Invoices\InvoiceAdjustmentService;
+use App\Services\Invoices\InvoiceAuthorizationService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
@@ -38,6 +39,7 @@ class ShootPaymentsController extends Controller
         protected StripePaymentMetadataService $stripePaymentMetadataService,
         protected ShootServiceItemSupport $serviceItemSupport,
         protected InvoiceAdjustmentService $invoiceAdjustments,
+        protected InvoiceAuthorizationService $invoiceAuthorization,
         protected ShootAuthorizationSupport $authorizationSupport,
         protected FinalizeProgressTracker $finalizeProgress
     ) {}
@@ -161,11 +163,7 @@ class ShootPaymentsController extends Controller
     public function getOrCreateInvoice(Shoot $shoot)
     {
         $user = auth()->user();
-        if (
-            ! $user
-            || $user->role === 'editor'
-            || ! $this->authorizationSupport->canAccessShootMedia($shoot, $user)
-        ) {
+        if (! $this->invoiceAuthorization->canViewShootInvoice($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -425,12 +423,27 @@ class ShootPaymentsController extends Controller
         }
 
         try {
-            if ($shoot->client) {
-                $this->mailService->sendShootPaidEmail($shoot->client, $shoot, (float) $payment->amount);
+            $receiptShoot = $shoot->fresh(['client', 'payments', 'services.category']) ?? $shoot;
+            $receiptPayment = $payment->fresh() ?? $payment;
+
+            if ($receiptShoot->client) {
+                $queued = $this->mailService->sendPaymentConfirmationEmail(
+                    $receiptShoot->client,
+                    $receiptShoot,
+                    $receiptPayment
+                );
+
+                if (! $queued) {
+                    Log::warning('Payment confirmation email was not queued', [
+                        'shoot_id' => $shoot->id,
+                        'payment_id' => $payment->id,
+                    ]);
+                }
             }
         } catch (\Throwable $emailError) {
-            Log::warning('Failed to send shoot paid email', [
+            Log::warning('Failed to queue payment confirmation email', [
                 'shoot_id' => $shoot->id,
+                'payment_id' => $payment->id,
                 'error' => $emailError->getMessage(),
             ]);
         }

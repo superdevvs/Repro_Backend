@@ -52,8 +52,11 @@ class WeatherCachingPropertyTest extends TestCase
         // request volume this property generates, so disable only the limiter.
         $this->withoutMiddleware(ThrottleRequests::class);
 
-        $this->spy = new class extends WeatherLookupService {
+        $this->spy = new class extends WeatherLookupService
+        {
             public int $calls = 0;
+
+            public bool $available = true;
 
             public function __construct()
             {
@@ -64,6 +67,10 @@ class WeatherCachingPropertyTest extends TestCase
             public function lookup(array $params): ?array
             {
                 $this->calls++;
+
+                if (! $this->available) {
+                    return null;
+                }
 
                 return [
                     'temperature' => '21°',
@@ -80,6 +87,16 @@ class WeatherCachingPropertyTest extends TestCase
         };
 
         $this->app->instance(WeatherLookupService::class, $this->spy);
+    }
+
+    public function test_unavailable_weather_is_an_empty_successful_result(): void
+    {
+        $this->spy->available = false;
+
+        $this->getJson('/api/weather?location=Unknown%20Location')
+            ->assertOk()
+            ->assertJsonPath('success', false)
+            ->assertJsonPath('data', null);
     }
 
     protected function tearDown(): void
@@ -109,11 +126,11 @@ class WeatherCachingPropertyTest extends TestCase
 
             $params = $this->randomWeatherParams($i);
             $query = http_build_query($params);
-            $context = 'Params: ' . json_encode($params);
+            $context = 'Params: '.json_encode($params);
 
             // (1) First request for the param-set invokes the upstream lookup
             //     exactly once and stores the result. (Req 5.1, 5.3)
-            $this->getJson('/api/weather?' . $query)
+            $this->getJson('/api/weather?'.$query)
                 ->assertOk()
                 ->assertJsonPath('success', true);
 
@@ -130,7 +147,7 @@ class WeatherCachingPropertyTest extends TestCase
                 // Move forward but stay strictly inside the TTL window.
                 Carbon::setTestNow($base->copy()->addMinutes(random_int(0, self::TTL_MINUTES - 1)));
 
-                $this->getJson('/api/weather?' . $query)
+                $this->getJson('/api/weather?'.$query)
                     ->assertOk()
                     ->assertJsonPath('success', true);
             }
@@ -145,7 +162,7 @@ class WeatherCachingPropertyTest extends TestCase
             //     lookup. (Req 5.4)
             Carbon::setTestNow($base->copy()->addMinutes(self::TTL_MINUTES + 1));
 
-            $this->getJson('/api/weather?' . $query)
+            $this->getJson('/api/weather?'.$query)
                 ->assertOk()
                 ->assertJsonPath('success', true);
 
@@ -171,7 +188,7 @@ class WeatherCachingPropertyTest extends TestCase
         switch (random_int(0, 2)) {
             case 0:
                 // Location string only.
-                $params['location'] = 'City ' . random_int(1, 1_000_000) . '-' . $seed;
+                $params['location'] = 'City '.random_int(1, 1_000_000).'-'.$seed;
                 break;
             case 1:
                 // Coordinates only (within valid lat/long ranges).
@@ -180,7 +197,7 @@ class WeatherCachingPropertyTest extends TestCase
                 break;
             default:
                 // Both a location string and coordinates.
-                $params['location'] = 'City ' . random_int(1, 1_000_000) . '-' . $seed;
+                $params['location'] = 'City '.random_int(1, 1_000_000).'-'.$seed;
                 $params['latitude'] = (string) round(random_int(-9000, 9000) / 100, 4);
                 $params['longitude'] = (string) round(random_int(-18000, 18000) / 100, 4);
                 break;

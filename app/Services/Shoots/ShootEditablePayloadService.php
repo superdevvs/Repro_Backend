@@ -17,7 +17,8 @@ class ShootEditablePayloadService
     public function __construct(
         protected ShootMutationSupportService $support,
         protected InvoiceService $invoiceService,
-        protected InvoiceAdjustmentService $invoiceAdjustments
+        protected InvoiceAdjustmentService $invoiceAdjustments,
+        protected ShootNotesCompatibilityService $notesCompatibility
     ) {}
 
     public function validationRules(): array
@@ -117,9 +118,17 @@ class ShootEditablePayloadService
         ];
     }
 
-    public function apply(Shoot $shoot, array $validated): void
+    public function apply(Shoot $shoot, array $validated, ?User $actor = null): void
     {
         $shoot->loadMissing('services');
+
+        $noteFields = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
+        $previousNotes = [];
+        foreach ($noteFields as $field) {
+            if (array_key_exists($field, $validated)) {
+                $previousNotes[$field] = $shoot->{$field};
+            }
+        }
 
         $invoiceNeedsRefresh = false;
         $paymentFieldsProvided = array_key_exists('base_quote', $validated)
@@ -380,8 +389,18 @@ class ShootEditablePayloadService
             $shoot->editor_notes = $validated['editor_notes'];
         }
 
-        DB::transaction(function () use ($shoot, $validated) {
+        DB::transaction(function () use ($shoot, $validated, $actor, $previousNotes) {
             $shoot->save();
+
+            foreach ($previousNotes as $field => $previousContent) {
+                $this->notesCompatibility->syncScalarField(
+                    $shoot,
+                    $field,
+                    $shoot->{$field},
+                    $actor,
+                    $previousContent
+                );
+            }
 
             if (array_key_exists('featured_homepage_images', $validated)) {
                 $this->syncFeaturedHomepageImages($shoot, $validated['featured_homepage_images'] ?? []);
