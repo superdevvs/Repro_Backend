@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ShootFile;
+use App\Services\Media\ImageResampler;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Intervention\Image\ImageManager;
@@ -13,6 +14,7 @@ class ImageProcessingService
 {
     protected ImageManager $manager;
     protected RawThumbnailService $rawThumbnailService;
+    protected ImageResampler $resampler;
     
     // Supported RAW formats
     protected const RAW_FORMATS = [
@@ -24,22 +26,42 @@ class ImageProcessingService
     
     // Image sizes configuration
     //
-    // `grid` sits between thumbnail and web for desktop media-grid tiles. Tiles
-    // render well above 300px, so serving the thumbnail meant the browser
-    // upscaled it and the result looked soft (meeting 26 Jul 2026 [00:23:08]).
-    // Phones keep getting the 300px file via srcset, so this costs nothing on
-    // mobile while making the desktop grid sharp.
+    // `grid` is the rendition every card and tile in the product displays: the
+    // media grid, the shoot-history grid and list, and the dashboard
+    // completed/delivered slideshows. It is the "600px tuned" preset — a 600px
+    // long edge, which is exactly 600x400 for the 3:2 frame a listing camera
+    // produces, at quality 85, resampled with Lanczos and finished with an
+    // unsharp mask.
+    //
+    // Two problems drove the tuning. It used to be 1000px, so a retina desktop
+    // tile pulled ~400KB of image into a ~320px slot. And the surfaces that were
+    // *not* on it (history cards, dashboard slideshows) were showing the 300px
+    // thumbnail stretched over a 256px-tall card, which is the blur people
+    // reported. 600px covers a 2x tile without waste, and one rendition now
+    // serves every grid.
+    //
+    // `width`/`height` bound a box rather than force a crop: `calculateDimensions`
+    // fits inside it and never upscales, so a portrait frame comes out 400x600
+    // instead of being cut down to 400px on its long edge.
+    //
+    // `sharpen` feeds ImageResampler's unsharp mask (0 disables it). Only the two
+    // small renditions get the filtered treatment; `web` stays on GD's native
+    // resample because a filtered 1500px pass costs seconds per image and it is
+    // large enough not to look soft.
     protected const SIZES = [
-        'thumbnail' => ['width' => 300, 'height' => 300, 'quality' => 80],
-        'grid' => ['width' => 1000, 'height' => 1000, 'quality' => 85],
+        'thumbnail' => ['width' => 300, 'height' => 300, 'quality' => 80, 'resample' => 'lanczos', 'sharpen' => 0.12],
+        'grid' => ['width' => 600, 'height' => 600, 'quality' => 85, 'resample' => 'lanczos', 'sharpen' => 0.10],
         'web' => ['width' => 1500, 'height' => 1500, 'quality' => 85],
         'placeholder' => ['width' => 20, 'height' => 20, 'quality' => 30]
     ];
     
-    public function __construct(?RawThumbnailService $rawThumbnailService = null)
-    {
+    public function __construct(
+        ?RawThumbnailService $rawThumbnailService = null,
+        ?ImageResampler $resampler = null
+    ) {
         $this->manager = new ImageManager(new Driver());
         $this->rawThumbnailService = $rawThumbnailService ?: new RawThumbnailService();
+        $this->resampler = $resampler ?: new ImageResampler();
     }
     
     /**
@@ -522,20 +544,44 @@ class ImageProcessingService
                 $config['width'],
                 $config['height']
             );
-            
-            // Create new image
-            $newImage = imagecreatetruecolor($newWidth, $newHeight);
-            
-            // Preserve transparency for PNG
-            if (strtolower(pathinfo($fileName, PATHINFO_EXTENSION)) === 'png') {
-                imagealphablending($newImage, false);
-                imagesavealpha($newImage, true);
-                $transparent = imagecolorallocatealpha($newImage, 255, 255, 255, 127);
-                imagefilledrectangle($newImage, 0, 0, $newWidth, $newHeight, $transparent);
+
+            $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+            $isTransparencyCapable = in_array($extension, ['png', 'gif', 'webp'], true);
+
+            if (($config['resample'] ?? null) === 'lanczos' && $image instanceof \GdImage) {
+                // Lanczos + unsharp for the renditions the grids display. Output
+                // is JPEG, which has no alpha, so a transparent source is
+                // composited onto white first — sampling the raw RGB under the
+                // alpha channel would drag black into the edges instead.
+                $sourceImage = $isTransparencyCapable
+                    ? $this->resampler->flattenOntoWhite($image)
+                    : $image;
+
+                $newImage = $this->resampler->resize(
+                    $sourceImage,
+                    $newWidth,
+                    $newHeight,
+                    (float) ($config['sharpen'] ?? 0.0)
+                );
+
+                if ($sourceImage !== $image) {
+                    imagedestroy($sourceImage);
+                }
+            } else {
+                // Create new image
+                $newImage = imagecreatetruecolor($newWidth, $newHeight);
+
+                // Preserve transparency for PNG
+                if ($extension === 'png') {
+                    imagealphablending($newImage, false);
+                    imagesavealpha($newImage, true);
+                    $transparent = imagecolorallocatealpha($newImage, 255, 255, 255, 127);
+                    imagefilledrectangle($newImage, 0, 0, $newWidth, $newHeight, $transparent);
+                }
+
+                // Resize image
+                imagecopyresampled($newImage, $image, 0, 0, 0, 0, $newWidth, $newHeight, $originalWidth, $originalHeight);
             }
-            
-            // Resize image
-            imagecopyresampled($newImage, $image, 0, 0, 0, 0, $newWidth, $newHeight, $originalWidth, $originalHeight);
             
             // Generate filename
             $baseName = pathinfo($fileName, PATHINFO_FILENAME);

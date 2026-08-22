@@ -12,8 +12,9 @@ use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
 
 /**
- * Regression: the `grid` derivative (1000px desktop tile, added 26 Jul 2026)
- * must be backfilled for files that predate it. Such files already carry a
+ * Regression: the `grid` derivative (the tuned 600px rendition every card and
+ * tile displays) must be backfilled for files that predate it. Such files
+ * already carry a
  * thumbnail and web rendition and a `processed_at` timestamp, so the
  * "already processed" short-circuit in ProcessImageJob used to skip them and
  * the grid rendition was never generated — leaving `grid_path` null forever

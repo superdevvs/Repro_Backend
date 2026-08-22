@@ -253,6 +253,11 @@ class DashboardController extends Controller
                     'path',
                     'dropbox_path',
                     'thumbnail_path',
+                    // resolveFilePreviewUrl() prefers the 600px grid rendition
+                    // for these cards; without the column it is always null and
+                    // the cards fall back to the 300px thumbnail, which is what
+                    // made the completed/delivered slideshows look blurry.
+                    'grid_path',
                     'web_path',
                     'placeholder_path',
                     'file_type',
@@ -376,6 +381,15 @@ class DashboardController extends Controller
 
     protected function resolveFilePreviewUrl(ShootFile $file): ?string
     {
+        // The completed/delivered cards render these previews full-width at
+        // 192-224px tall, so they need the 600px grid rendition. Preferring it
+        // over `url` matters twice: the 300px thumbnail this used to reach for
+        // was being upscaled (the blur reported on those cards), and `url` can be
+        // a full-size original, which is megabytes per slideshow frame.
+        if ($file->grid_path) {
+            return $this->resolveMediaUrl($file->grid_path);
+        }
+
         if ($file->url) {
             return $this->resolveMediaUrl($file->url);
         }

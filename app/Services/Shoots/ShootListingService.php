@@ -110,6 +110,12 @@ class ShootListingService
                         'mime_type',
                         'media_type',
                         'thumbnail_path',
+                        // The 600px grid rendition every card and grid tile
+                        // displays. Omitting it here silently downgraded those
+                        // surfaces: the presenter's grid_url fell back to the
+                        // 1500px web file, so a 256px-tall history card pulled
+                        // ~180KB per thumbnail.
+                        'grid_path',
                         'web_path',
                         'placeholder_path',
                         'watermarked_storage_path',

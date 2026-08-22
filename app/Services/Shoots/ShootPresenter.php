@@ -78,6 +78,9 @@ class ShootPresenter
                     $file['thumbnail_url'] = $thumbUrl;
                     $file['thumb_url'] = $thumbUrl;
                     $file['thumb'] = $thumbUrl;
+                    // Watermarked media has no separate grid rendition; the
+                    // watermarked web image is the sharpest thing we may serve.
+                    $file['grid_url'] = $webUrl;
                     $file['web_url'] = $webUrl;
                     $file['medium_url'] = $webUrl;
                     $file['medium'] = $webUrl;
@@ -99,10 +102,15 @@ class ShootPresenter
                     $thumbUrl = $resolveUrl($file['thumbnail_path'] ?? null);
                     $webUrl = $resolveUrl($file['web_path'] ?? null);
                     $placeholderUrl = $resolveUrl($file['placeholder_path'] ?? null);
+                    // The 600px grid rendition is what shoot cards and grids
+                    // display. Without it on this payload they fell back to the
+                    // 300px thumbnail and upscaled it into a 256px-tall cover.
+                    $gridUrl = $resolveUrl($file['grid_path'] ?? null) ?: $webUrl;
 
                     $file['thumbnail_url'] = $thumbUrl;
                     $file['thumb_url'] = $thumbUrl;
                     $file['thumb'] = $thumbUrl;
+                    $file['grid_url'] = $gridUrl;
                     $file['web_url'] = $webUrl;
                     $file['medium_url'] = $webUrl;
                     $file['medium'] = $webUrl;
@@ -260,6 +268,8 @@ class ShootPresenter
                     'mime_type',
                     'media_type',
                     'thumbnail_path',
+                    // Needed for grid_url; see the note in ShootListingService.
+                    'grid_path',
                     'web_path',
                     'placeholder_path',
                     'watermarked_storage_path',

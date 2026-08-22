@@ -78,10 +78,9 @@ class ImageProcessingServiceTest extends TestCase
     }
 
     /**
-     * The `grid` rendition (1000px) exists so desktop media tiles stop upscaling
-     * the 300px thumbnail. It is only useful if the browser can actually fetch
-     * it, which means it must land on the PUBLIC disk alongside the other
-     * web-facing renditions.
+     * The `grid` rendition (600px) is what every card and tile displays. It is
+     * only useful if the browser can actually fetch it, which means it must land
+     * on the PUBLIC disk alongside the other web-facing renditions.
      *
      * It previously fell through to the `local` disk, whose root is
      * storage/app/private — outside the web-accessible tree. Generation
@@ -108,10 +107,16 @@ class ImageProcessingServiceTest extends TestCase
     }
 
     /**
-     * A grid tile is only sharper than the thumbnail if it is actually bigger.
+     * The tuned grid preset: a 600px long edge, which lands on exactly 600x400
+     * for the 3:2 frame a listing camera produces.
+     *
+     * 600px covers a 2x desktop tile (~320px slot) without the waste of the
+     * 1000px rendition this replaced, and it is double the 300px thumbnail that
+     * history cards and dashboard slideshows used to stretch over a 256px-tall
+     * card.
      */
     #[Test]
-    public function the_grid_rendition_is_larger_than_the_thumbnail(): void
+    public function the_grid_rendition_is_tuned_to_600px_and_larger_than_the_thumbnail(): void
     {
         Storage::fake('public');
 
@@ -128,7 +133,32 @@ class ImageProcessingServiceTest extends TestCase
         $thumb = getimagesize(Storage::disk('public')->path($generated['thumbnail']));
 
         $this->assertNotFalse($grid);
-        $this->assertGreaterThan(600, $grid[0], 'grid must be big enough for a 2x desktop tile');
+        $this->assertSame([600, 400], [$grid[0], $grid[1]], 'a 3:2 source must produce exactly 600x400');
         $this->assertGreaterThan($thumb[0], $grid[0]);
+    }
+
+    /**
+     * A portrait frame keeps its 600px long edge rather than being squeezed to
+     * the 400px short side of the box — the box bounds the rendition, it does not
+     * crop it.
+     */
+    #[Test]
+    public function the_grid_rendition_keeps_a_600px_long_edge_for_portrait_sources(): void
+    {
+        Storage::fake('public');
+
+        $uploadedImage = UploadedFile::fake()->image('grid-portrait.jpg', 1600, 2400);
+
+        $service = app(ImageProcessingService::class);
+        $generated = $service->processImageFromPath(
+            791,
+            $uploadedImage->getClientOriginalName(),
+            $uploadedImage->getRealPath()
+        );
+
+        $grid = getimagesize(Storage::disk('public')->path($generated['grid']));
+
+        $this->assertNotFalse($grid);
+        $this->assertSame([400, 600], [$grid[0], $grid[1]]);
     }
 }

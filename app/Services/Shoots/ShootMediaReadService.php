@@ -455,8 +455,9 @@ class ShootMediaReadService
             }
             $thumbUrl = $this->resolvePreviewPath($file->thumbnail_path ?? $file->placeholder_path);
             $webUrl = $this->resolvePreviewPath($file->web_path);
-            // The grid rendition (~1000px) is what desktop tiles should load;
-            // it falls back to `web` for files processed before it existed.
+            // The grid rendition (600px, Lanczos + unsharp) is what every card
+            // and tile loads; it falls back to `web` for files processed before
+            // it existed, which is heavier but never soft.
             $gridUrl = $this->resolvePreviewPath($file->grid_path ?? null) ?? $webUrl;
             $mediumUrl = $webUrl;
             $largeUrl = $webUrl;

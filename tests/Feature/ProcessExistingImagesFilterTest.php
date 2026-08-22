@@ -139,4 +139,32 @@ class ProcessExistingImagesFilterTest extends TestCase
             'Fully processed files must not be reprocessed.'
         );
     }
+
+    /**
+     * --force is the only way to roll a retuned preset over media that is
+     * already complete. When the grid rendition moved to the tuned 600px
+     * Lanczos version, every existing file still had a non-null grid_path
+     * pointing at the old 1000px file, so the default selection skipped all of
+     * them and the new preset could never reach existing shoots.
+     */
+    #[Test]
+    public function force_reprocesses_files_that_already_have_every_rendition(): void
+    {
+        Queue::fake();
+
+        $complete = $this->file('edited', 'shoots/1/grids/asset-edited.jpg');
+
+        $this->artisan('images:process-existing', ['--limit' => 50, '--force' => true])->assertExitCode(0);
+
+        $this->assertContains(
+            $complete->id,
+            $this->dispatchedIds(),
+            'Force mode must re-render renditions regardless of what is already on disk.'
+        );
+
+        $this->assertNull(
+            $complete->fresh()->processed_at,
+            'Force mode must clear processed_at so ProcessImageJob does not short-circuit.'
+        );
+    }
 }

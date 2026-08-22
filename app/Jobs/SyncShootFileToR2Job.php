@@ -38,6 +38,10 @@ class SyncShootFileToR2Job implements ShouldQueue
         'path',
         'storage_path',
         'thumbnail_path',
+        // The 600px grid rendition. Every card and tile resolves this key, and
+        // once reads are flipped to R2 they resolve it against the CDN — so a
+        // rendition that is never mirrored is a 404 on every grid surface.
+        'grid_path',
         'web_path',
         'placeholder_path',
         'watermarked_storage_path',

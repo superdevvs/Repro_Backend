@@ -175,6 +175,14 @@ class ShootFileAccessService
             if (!empty($generated['thumbnail'])) {
                 $updates['thumbnail_path'] = $generated['thumbnail'];
             }
+            // The `grid` rendition (600px) is what every card and tile displays.
+            // processImageFromPath() has always produced it, but this repair path
+            // dropped it on the floor, so a file rescued here kept serving the
+            // 300px thumbnail to a 600px slot — the blur this pipeline exists to
+            // avoid.
+            if (!empty($generated['grid'])) {
+                $updates['grid_path'] = $generated['grid'];
+            }
             if (!empty($generated['web'])) {
                 $updates['web_path'] = $generated['web'];
             }
