@@ -450,17 +450,35 @@ class UploadShootFilesAction
             // bracket_group/sequence pairs. We claim a stable batch_offset on the first
             // request of a batch via Cache::add (atomic), then derive bracket_group and
             // sequence from (batch_offset + upload_batch_index).
+            //
+            // Both counts are scoped to the service item this upload belongs to. A shoot
+            // can book several photo services, and counting the whole shoot let one
+            // service continue another's incomplete stack: an Exterior set of 7 frames at
+            // 5x leaves stack 2 holding frames 1-2, and the next service's first file was
+            // then numbered stack 2 frame 3 — a stack straddling two services. Scoping the
+            // count keeps each service's stacks its own while still letting a later upload
+            // to the SAME service legitimately continue its own trailing partial stack.
+            // Unassigned uploads are counted against each other via whereNull rather than
+            // being lumped in with every assigned service.
+            $rawBracketScope = function ($query) use ($shootServiceId) {
+                $query->where('workflow_stage', ShootFile::STAGE_TODO)
+                    ->where('media_type', 'raw');
+
+                return $shootServiceId
+                    ? $query->where('shoot_service_id', $shootServiceId)
+                    : $query->whereNull('shoot_service_id');
+            };
+
             $rawBatchId = $uploadType === 'raw' ? trim((string) $request->input('upload_batch_id', '')) : '';
             $rawBatchIndex = $request->has('upload_batch_index') && is_numeric($request->input('upload_batch_index'))
                 ? (int) $request->input('upload_batch_index')
                 : null;
             $rawBatchOffset = null;
             if ($rawBracketMode > 1 && $rawBatchId !== '' && $rawBatchIndex !== null) {
+                // The batch id is unique per upload group, so the cached offset is already
+                // per service; the service scoping below is what makes its value correct.
                 $batchOffsetCacheKey = "shoot:{$shoot->id}:raw_upload_batch:{$rawBatchId}:offset";
-                $preBatchCount = $shoot->files()
-                    ->where('workflow_stage', ShootFile::STAGE_TODO)
-                    ->where('media_type', 'raw')
-                    ->count();
+                $preBatchCount = $rawBracketScope($shoot->files())->count();
                 // Cache::add is atomic: only the first concurrent request wins,
                 // subsequent requests read the value the winner stored.
                 Cache::add($batchOffsetCacheKey, $preBatchCount, now()->addHours(2));
@@ -468,10 +486,7 @@ class UploadShootFilesAction
             }
 
             $rawSequenceIndex = $rawBracketMode > 1
-                ? $shoot->files()
-                    ->where('workflow_stage', ShootFile::STAGE_TODO)
-                    ->where('media_type', 'raw')
-                    ->count()
+                ? $rawBracketScope($shoot->files())->count()
                 : 0;
 
             foreach ($files as $file) {

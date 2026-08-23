@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\DB;
  * Auto-detect bracket groups for pending raw files using EXIF captured_at clustering.
  *
  * Strategy:
+ *   - Partition pending raw files by shoot_service_id, then run the clustering below
+ *     independently inside each partition, restarting bracket_group at 1 each time.
  *   - Sort pending raw files by captured_at (fallback to created_at, then natural filename).
  *   - Walk the list, grouping consecutive files whose captured_at delta is within
  *     {@see self::INTRA_BRACKET_GAP_SECONDS}. Each group becomes one bracket_group with
@@ -19,6 +21,12 @@ use Illuminate\Support\Facades\DB;
  *   - Files with no captured_at fall to the end and are grouped by filename only.
  *   - Optionally update Shoot.bracket_mode to the modal group size when the shoot
  *     currently has no bracket_mode (or 1).
+ *
+ * Partitioning matters because a shoot can book several photo services. Clustering the
+ * whole shoot at once let one service absorb another's frames: a photographer moving
+ * from Exterior to Interior without a five second pause produced a single stack holding
+ * both services' files, so Interior's first frame appeared as Exterior's stack 2 frame 3.
+ * Time proximity across a service boundary is not evidence of one bracket.
  */
 class AutoStackRawFilesAction
 {
@@ -51,33 +59,51 @@ class AutoStackRawFilesAction
                 ];
             }
 
-            $ordered = $files->sortBy([
-                fn (ShootFile $a, ShootFile $b) => $this->compareCapturedAt($a, $b),
-                fn (ShootFile $a, ShootFile $b) => strnatcmp((string) $a->filename, (string) $b->filename),
-                fn (ShootFile $a, ShootFile $b) => (int) $a->id - (int) $b->id,
-            ])->values();
+            // Each service item is stacked on its own. Unassigned files (null) form their
+            // own partition rather than being folded into any service.
+            $partitions = $files->groupBy(fn (ShootFile $file) => (int) ($file->shoot_service_id ?? 0))
+                ->sortKeys();
 
-            $groups = $this->clusterFiles($ordered);
-            $detectedMode = $this->detectBracketMode($groups);
-
+            $allGroups = [];
             $updates = 0;
-            foreach ($groups as $groupIndex => $groupFiles) {
-                $bracketGroup = $groupIndex + 1;
-                foreach ($groupFiles as $sequenceIndex => $file) {
-                    $sequence = $sequenceIndex + 1;
-                    $existingGroup = (int) ($file->bracket_group ?? 0);
-                    $existingSequence = (int) ($file->sequence ?? 0);
-                    if ($existingGroup === $bracketGroup && $existingSequence === $sequence) {
-                        continue;
-                    }
 
-                    $file->forceFill([
-                        'bracket_group' => $bracketGroup,
-                        'sequence' => $sequence,
-                    ])->save();
-                    $updates++;
+            foreach ($partitions as $partitionFiles) {
+                $ordered = $partitionFiles->sortBy([
+                    fn (ShootFile $a, ShootFile $b) => $this->compareCapturedAt($a, $b),
+                    fn (ShootFile $a, ShootFile $b) => strnatcmp((string) $a->filename, (string) $b->filename),
+                    fn (ShootFile $a, ShootFile $b) => (int) $a->id - (int) $b->id,
+                ])->values();
+
+                $groups = $this->clusterFiles($ordered);
+
+                foreach ($groups as $groupIndex => $groupFiles) {
+                    // bracket_group restarts at 1 for every service, so stacks are read
+                    // relative to their own service section in the gallery.
+                    $bracketGroup = $groupIndex + 1;
+                    foreach ($groupFiles as $sequenceIndex => $file) {
+                        $sequence = $sequenceIndex + 1;
+                        $existingGroup = (int) ($file->bracket_group ?? 0);
+                        $existingSequence = (int) ($file->sequence ?? 0);
+                        if ($existingGroup === $bracketGroup && $existingSequence === $sequence) {
+                            continue;
+                        }
+
+                        $file->forceFill([
+                            'bracket_group' => $bracketGroup,
+                            'sequence' => $sequence,
+                        ])->save();
+                        $updates++;
+                    }
+                }
+
+                foreach ($groups as $groupFiles) {
+                    $allGroups[] = $groupFiles;
                 }
             }
+
+            // Legacy shoot-wide bracket_mode inference still looks at every stack on the
+            // shoot; it is only a fallback hint, not per-service capture state.
+            $detectedMode = $this->detectBracketMode($allGroups);
 
             if ($updateShootBracketMode && $detectedMode !== null) {
                 $current = (int) ($shoot->bracket_mode ?? 0);
@@ -88,7 +114,7 @@ class AutoStackRawFilesAction
             }
 
             return [
-                'groups' => count($groups),
+                'groups' => count($allGroups),
                 'files' => $files->count(),
                 'detected_bracket_mode' => $detectedMode,
                 'updated_files' => $updates,
