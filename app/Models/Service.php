@@ -28,6 +28,7 @@ class Service extends Model
         'photographer_pay_percent',
         'exclude_from_sales_commission',
         'photo_count',
+        'uses_hdr_brackets',
         'quantity',
     ];
     
@@ -41,6 +42,7 @@ class Service extends Model
         'photographer_pay_percent' => 'decimal:2',
         'exclude_from_sales_commission' => 'boolean',
         'photo_count' => 'integer',
+        'uses_hdr_brackets' => 'boolean',
         'allow_multiple' => 'boolean',
         'quantity' => 'integer',
     ];

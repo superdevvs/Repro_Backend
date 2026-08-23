@@ -872,10 +872,13 @@ class ShootMediaController extends Controller
             'raw_photo_count' => $shoot->raw_photo_count,
             'edited_photo_count' => $shoot->edited_photo_count,
             'extra_photo_count' => $shoot->extra_photo_count,
-            'expected_raw_count' => $shoot->expected_raw_count,
+            // Derived per service item; see BracketModeResolver. The stored column
+            // is legacy and was always 0 in practice.
+            'expected_raw_count' => app(\App\Services\Shoots\BracketModeResolver::class)->expectedRawForShoot($shoot),
             'expected_final_count' => $shoot->expected_final_count,
             'raw_missing_count' => $shoot->raw_missing_count,
             'edited_missing_count' => $shoot->edited_missing_count,
+            // Legacy shoot-wide value; per-service bracket state is on the items.
             'bracket_mode' => $shoot->bracket_mode,
         ];
     }

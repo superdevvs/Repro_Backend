@@ -72,6 +72,9 @@ class User extends Authenticatable
         'sms_opt_out',
         'sms_opt_out_at',
         'sms_ai_enabled',
+        // Photographer preference for bracket size. Seeds a shoot-service's
+        // execution value at assignment; never read after that.
+        'default_bracket_mode',
     ];
 
     /**
@@ -126,6 +129,7 @@ class User extends Authenticatable
             'sms_opt_out' => 'boolean',
             'sms_opt_out_at' => 'datetime',
             'sms_ai_enabled' => 'boolean',
+            'default_bracket_mode' => 'integer',
         ];
     }
 

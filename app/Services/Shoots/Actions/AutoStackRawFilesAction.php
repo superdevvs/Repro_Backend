@@ -4,9 +4,11 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Services\Shoots\BracketModeResolver;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Auto-detect bracket groups for pending raw files using EXIF captured_at clustering.
@@ -19,8 +21,10 @@ use Illuminate\Support\Facades\DB;
  *     {@see self::INTRA_BRACKET_GAP_SECONDS}. Each group becomes one bracket_group with
  *     sequence 1..N.
  *   - Files with no captured_at fall to the end and are grouped by filename only.
- *   - Optionally update Shoot.bracket_mode to the modal group size when the shoot
- *     currently has no bracket_mode (or 1).
+ *   - Optionally fill in a service item's own bracket size from the modal group
+ *     size detected within that item's partition, and only when the item has no
+ *     size recorded. Detection is a guess and never overwrites a decision, and it
+ *     is never applied across service boundaries.
  *
  * Partitioning matters because a shoot can book several photo services. Clustering the
  * whole shoot at once let one service absorb another's frames: a photographer moving
@@ -33,21 +37,28 @@ class AutoStackRawFilesAction
     /** Gap (seconds) above which two raw shots are considered in different brackets. */
     public const INTRA_BRACKET_GAP_SECONDS = 5;
 
-    /** Allowed bracket sizes used when inferring shoot.bracket_mode from group sizes. */
+    /** Allowed bracket sizes used when inferring a size from observed group sizes. */
     public const BRACKET_SIZE_CANDIDATES = [3, 5, 7];
 
     /**
-     * Re-bracket all pending raw files for a shoot.
+     * Re-bracket pending raw files for a shoot, or for one service item of it.
      *
+     * `$shootServiceId` narrows the work to a single service so that changing one
+     * service's bracket size never touches another photographer's stacks on the
+     * same shoot. Passing null processes every partition, which is what a normal
+     * upload does.
+     *
+     * @param  int|null  $shootServiceId  restrict to this service item only
      * @return array{groups: int, files: int, detected_bracket_mode: ?int, updated_files: int}
      */
-    public function execute(Shoot $shoot, bool $updateShootBracketMode = true): array
+    public function execute(Shoot $shoot, bool $updateShootBracketMode = true, ?int $shootServiceId = null): array
     {
-        return DB::transaction(function () use ($shoot, $updateShootBracketMode) {
+        return DB::transaction(function () use ($shoot, $updateShootBracketMode, $shootServiceId) {
             /** @var Collection<int, ShootFile> $files */
             $files = $shoot->files()
                 ->where('workflow_stage', ShootFile::STAGE_TODO)
                 ->where('media_type', 'raw')
+                ->when($shootServiceId !== null, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
                 ->get();
 
             if ($files->isEmpty()) {
@@ -66,8 +77,10 @@ class AutoStackRawFilesAction
 
             $allGroups = [];
             $updates = 0;
+            /** @var array<int, int|null> $detectedModesByService */
+            $detectedModesByService = [];
 
-            foreach ($partitions as $partitionFiles) {
+            foreach ($partitions as $partitionKey => $partitionFiles) {
                 $ordered = $partitionFiles->sortBy([
                     fn (ShootFile $a, ShootFile $b) => $this->compareCapturedAt($a, $b),
                     fn (ShootFile $a, ShootFile $b) => strnatcmp((string) $a->filename, (string) $b->filename),
@@ -99,18 +112,24 @@ class AutoStackRawFilesAction
                 foreach ($groups as $groupFiles) {
                     $allGroups[] = $groupFiles;
                 }
+
+                // Detect within the partition. A size inferred from Exterior's
+                // stacks says nothing about how Interior was shot.
+                if ((int) $partitionKey > 0) {
+                    $detectedModesByService[(int) $partitionKey] = $this->detectBracketMode($groups);
+                }
             }
 
-            // Legacy shoot-wide bracket_mode inference still looks at every stack on the
-            // shoot; it is only a fallback hint, not per-service capture state.
             $detectedMode = $this->detectBracketMode($allGroups);
 
-            if ($updateShootBracketMode && $detectedMode !== null) {
-                $current = (int) ($shoot->bracket_mode ?? 0);
-                if ($current <= 1 && $detectedMode > 1) {
-                    $shoot->bracket_mode = $detectedMode;
-                    $shoot->save();
-                }
+            // Detection no longer writes shoots.bracket_mode. One photographer's
+            // capture pattern must not redefine a shoot-wide divisor that another
+            // photographer's service would then be stacked by. Instead each
+            // partition's own pattern can fill in that service item's size, and
+            // only when it has none: an explicit size is a decision, and detection
+            // is a guess, so a guess never overwrites a decision.
+            if ($updateShootBracketMode) {
+                $this->populateUnsetServiceBracketModes($shoot, $detectedModesByService);
             }
 
             return [
@@ -120,6 +139,43 @@ class AutoStackRawFilesAction
                 'updated_files' => $updates,
             ];
         });
+    }
+
+    /**
+     * Fill in a service item's bracket size from its own detected stack pattern,
+     * but only where the item has no size recorded yet.
+     *
+     * @param  array<int, int|null>  $detectedModesByService
+     */
+    private function populateUnsetServiceBracketModes(Shoot $shoot, array $detectedModesByService): void
+    {
+        if (empty($detectedModesByService) || ! Schema::hasColumn('shoot_service', 'bracket_mode')) {
+            return;
+        }
+
+        $resolver = app(BracketModeResolver::class);
+
+        $items = $shoot->serviceItems()
+            ->with('service')
+            ->whereIn('id', array_keys($detectedModesByService))
+            ->get();
+
+        foreach ($items as $item) {
+            $detected = $resolver->normalize($detectedModesByService[$item->id] ?? null);
+
+            if ($detected === null) {
+                continue;
+            }
+
+            // Never override a recorded decision, and never give a size to work
+            // that does not bracket.
+            if ($item->bracket_mode !== null || ! $resolver->serviceUsesBrackets($item)) {
+                continue;
+            }
+
+            $item->bracket_mode = $detected;
+            $item->save();
+        }
     }
 
     /**

@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class ShootListingService
 {
@@ -57,11 +58,17 @@ class ShootListingService
 
             $cacheKey = 'shoots_index_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage;
 
+            // Every param that changes the result set has to be in the cache key.
+            // `bracket`, `missing` and `limit` were applied to the query but absent
+            // here, so two different filters shared one cache entry for its 30
+            // second life: asking for bracket=3 straight after bracket=5 returned
+            // the 5x list.
             $filterParams = $request->only([
                 'client_id', 'photographer_id', 'services', 'search', 'address',
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
+                'bracket', 'missing', 'limit',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -380,12 +387,7 @@ class ShootListingService
             });
         }
 
-        $bracket = $request->query('bracket');
-        if ($bracket === 'none') {
-            $query->whereNull('bracket_mode');
-        } elseif (in_array($bracket, ['3', '5'], true)) {
-            $query->where('bracket_mode', (int) $bracket);
-        }
+        $this->applyBracketFilter($query, $request->query('bracket'));
 
         $missing = $request->query('missing');
         if ($missing === 'raw') {
@@ -519,6 +521,121 @@ class ShootListingService
         $parts = array_map('trim', explode(',', (string) $value));
 
         return array_values(array_filter($parts, static fn ($entry) => $entry !== ''));
+    }
+
+    /**
+     * Filter shoots by the bracket sizes their services were shot at.
+     *
+     * Bracket size lives on each shoot-service, so a shoot can legitimately hold
+     * more than one at once: Exterior at 5x by one photographer and Interior at 3x
+     * by another. The filter therefore asks whether the shoot has *any*
+     * bracket-enabled service resolving to the requested size, which means a mixed
+     * shoot correctly matches both `bracket=5` and `bracket=3`.
+     *
+     * Resolution is inlined as SQL rather than delegated to BracketModeResolver
+     * because this runs as part of a paginated list query. It mirrors the resolver's
+     * chain: the item's own size, then the photographer's preference, then the
+     * legacy shoot value, then 5.
+     *
+     * `none` means no bracket-enabled services at all, which is the honest reading
+     * of "this shoot has no bracketed work" now that a null shoot column no longer
+     * implies it.
+     */
+    protected function applyBracketFilter(Builder $query, mixed $bracket): void
+    {
+        if ($bracket !== 'none' && ! in_array($bracket, ['3', '5'], true)) {
+            return;
+        }
+
+        $hasPerServiceBrackets = Schema::hasColumn('shoot_service', 'bracket_mode')
+            && Schema::hasColumn('services', 'uses_hdr_brackets');
+
+        if (! $hasPerServiceBrackets) {
+            // Pre-migration fallback: the legacy shoot-wide column is all there is.
+            if ($bracket === 'none') {
+                $query->whereNull('bracket_mode');
+            } else {
+                $query->where('bracket_mode', (int) $bracket);
+            }
+
+            return;
+        }
+
+        // These closures receive a query builder from whereExists, not an Eloquent
+        // builder, so they stay untyped.
+        $bracketedServices = function ($scope) {
+            $scope->select(DB::raw(1))
+                ->from('shoot_service')
+                ->join('services', 'services.id', '=', 'shoot_service.service_id')
+                ->whereColumn('shoot_service.shoot_id', 'shoots.id')
+                ->where('services.uses_hdr_brackets', true);
+        };
+
+        if ($bracket === 'none') {
+            $query->whereNotExists($bracketedServices);
+
+            return;
+        }
+
+        $wanted = (int) $bracket;
+        $hasDefaultBracketMode = Schema::hasColumn('users', 'default_bracket_mode');
+
+        $query->whereExists(function ($scope) use ($bracketedServices, $wanted, $hasDefaultBracketMode) {
+            $bracketedServices($scope);
+
+            $scope->where(function ($modeScope) use ($wanted, $hasDefaultBracketMode) {
+                // Explicitly recorded size.
+                $modeScope->where('shoot_service.bracket_mode', $wanted);
+
+                // Not recorded: fall through the same chain the resolver uses.
+                $modeScope->orWhere(function ($fallback) use ($wanted, $hasDefaultBracketMode) {
+                    $fallback->whereNull('shoot_service.bracket_mode');
+
+                    if ($hasDefaultBracketMode) {
+                        $fallback->where(function ($preference) use ($wanted) {
+                            $preference
+                                // The photographer states this size.
+                                ->whereExists(fn ($user) => $user->select(DB::raw(1))
+                                    ->from('users')
+                                    ->whereColumn('users.id', 'shoot_service.photographer_id')
+                                    ->where('users.default_bracket_mode', $wanted))
+                                // Or states nothing, so the legacy value or the
+                                // default of 5 decides.
+                                ->orWhere(function ($noPreference) use ($wanted) {
+                                    $noPreference->where(fn ($absent) => $absent
+                                        ->whereNull('shoot_service.photographer_id')
+                                        ->orWhereExists(fn ($user) => $user->select(DB::raw(1))
+                                            ->from('users')
+                                            ->whereColumn('users.id', 'shoot_service.photographer_id')
+                                            ->whereNull('users.default_bracket_mode')));
+
+                                    $this->whereLegacyOrDefaultBracket($noPreference, $wanted);
+                                });
+                        });
+
+                        return;
+                    }
+
+                    $this->whereLegacyOrDefaultBracket($fallback, $wanted);
+                });
+            });
+        });
+    }
+
+    /**
+     * The tail of the resolution chain: the legacy shoot value if it states a size,
+     * otherwise the default of 5.
+     */
+    protected function whereLegacyOrDefaultBracket($query, int $wanted): void
+    {
+        $query->where(function ($scope) use ($wanted) {
+            $scope->where('shoots.bracket_mode', $wanted);
+
+            if ($wanted === BracketModeResolver::DEFAULT_BRACKET_MODE) {
+                $scope->orWhereNull('shoots.bracket_mode')
+                    ->orWhereNotIn('shoots.bracket_mode', BracketModeResolver::ALLOWED_BRACKET_MODES);
+            }
+        });
     }
 
     protected function applyDateRangeFilter(Builder $query, string $column, ?string $start, ?string $end): void
