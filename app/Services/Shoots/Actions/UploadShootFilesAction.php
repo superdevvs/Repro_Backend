@@ -8,7 +8,6 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
-use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use App\Services\Shoots\ShootMediaReadService;
@@ -34,8 +33,7 @@ class UploadShootFilesAction
         protected ShootUploadIdempotencyService $uploadIdempotency,
         protected ShootMediaReadService $mediaReadService,
         protected ShootEditingAssignmentService $editingAssignmentService,
-        protected ShootNotesCompatibilityService $notesCompatibilityService,
-        protected BracketModeResolver $bracketModes
+        protected ShootNotesCompatibilityService $notesCompatibilityService
     ) {}
 
     public function execute(Request $request, Shoot $shoot, ?User $user): array
@@ -351,19 +349,13 @@ class UploadShootFilesAction
             ];
         }
 
-        // Uploading no longer defines bracket state.
-        //
-        // This used to write `shoots.bracket_mode` and recompute
-        // `shoots.expected_raw_count` from any raw request that carried a
-        // bracket_mode, which meant one photographer's upload silently redefined
-        // the divisor for every service on the shoot — including another
-        // photographer's work. Bracket size is now an execution property of the
-        // shoot-service assignment, snapshotted when the photographer is assigned
-        // and changed only through a deliberate Change & Restack. Upload reads it.
-        //
-        // The expected raw count is likewise no longer stored: it is the sum over
-        // service items of photo_count x that item's own bracket size, which a
-        // single shoot-wide multiplication cannot express once two services differ.
+        if ($uploadType === 'raw' && $request->has('bracket_mode')) {
+            $bracketMode = (int) $request->input('bracket_mode');
+            $shoot->bracket_mode = $bracketMode;
+            $expectedFinalCount = $shoot->expected_final_count ?? $shoot->package?->expectedDeliveredCount ?? 0;
+            $shoot->expected_raw_count = $expectedFinalCount * $bracketMode;
+            $shoot->save();
+        }
 
         if ($request->has('photographer_notes')) {
             $previousPhotographerNotes = $shoot->photographer_notes;
@@ -449,27 +441,7 @@ class UploadShootFilesAction
                 : $request->boolean('requiredForEditing', false);
             $mediaTypeOverride = $request->input('media_type');
             $serviceCategory = $request->input('service_category');
-
-            // The divisor comes from the service item being uploaded to, never from
-            // the request. An incoming bracket_mode is not authoritative: it is the
-            // client's view of the service's configured size, and trusting it would
-            // let any upload redefine how a service's stacks are cut. A service that
-            // does not bracket resolves to 0 here no matter what was sent, so a
-            // floor-plan or drone upload can never take stack numbers.
-            $rawBracketMode = 0;
-            if ($uploadType === 'raw' && $shootServiceId) {
-                $serviceItem = $shoot->serviceItems()
-                    ->with(['service', 'shoot'])
-                    ->whereKey($shootServiceId)
-                    ->first();
-                $rawBracketMode = $serviceItem
-                    ? (int) ($this->bracketModes->effectiveBracketMode($serviceItem) ?? 0)
-                    : 0;
-            } elseif ($uploadType === 'raw') {
-                // Unassigned uploads have no service item to read, so they fall back
-                // to the legacy shoot-wide value for compatibility.
-                $rawBracketMode = (int) ($this->bracketModes->normalize($shoot->bracket_mode) ?? 0);
-            }
+            $rawBracketMode = $uploadType === 'raw' ? (int) ($request->input('bracket_mode') ?? $shoot->bracket_mode ?? 0) : 0;
 
             // Deterministic batch ordering for raw bracket grouping.
             // Each frontend upload sends one file per XHR but all files in a batch share

@@ -182,7 +182,16 @@ class ShootMediaReadService
 
             return [
                 'data' => $filesPayload,
-                'counts' => $this->mediaCounts($shoot),
+                'counts' => [
+                    'raw_photo_count' => $shoot->raw_photo_count,
+                    'edited_photo_count' => $shoot->edited_photo_count,
+                    'extra_photo_count' => $shoot->extra_photo_count,
+                    'expected_raw_count' => $shoot->expected_raw_count,
+                    'expected_final_count' => $shoot->expected_final_count,
+                    'raw_missing_count' => $shoot->raw_missing_count,
+                    'edited_missing_count' => $shoot->edited_missing_count,
+                    'bracket_mode' => $shoot->bracket_mode,
+                ],
             ];
         }
 
@@ -191,41 +200,31 @@ class ShootMediaReadService
 
             return [
                 'data' => $filesPayload,
-                'counts' => $this->mediaCounts($shoot),
+                'counts' => [
+                    'raw_photo_count' => $shoot->raw_photo_count,
+                    'edited_photo_count' => $shoot->edited_photo_count,
+                    'extra_photo_count' => $shoot->extra_photo_count,
+                    'expected_raw_count' => $shoot->expected_raw_count,
+                    'expected_final_count' => $shoot->expected_final_count,
+                    'raw_missing_count' => $shoot->raw_missing_count,
+                    'edited_missing_count' => $shoot->edited_missing_count,
+                    'bracket_mode' => $shoot->bracket_mode,
+                ],
             ];
         }
 
         return [
             'data' => $this->dropboxService->listShootFiles($shoot, $type),
-            'counts' => $this->mediaCounts($shoot),
-        ];
-    }
-
-    /**
-     * Media counters for a shoot.
-     *
-     * `expected_raw_count` is derived from the service items on every read rather
-     * than read from the shoot column. The stored copy was computed as
-     * expected_final_count x bracket_mode and, because expected_final_count is
-     * never populated, sat at 0 on every shoot in production. Deriving also handles
-     * a shoot whose services were captured at different bracket sizes, which a
-     * single shoot-wide multiplication cannot represent.
-     *
-     * The key name is kept so existing clients need no contract change.
-     */
-    private function mediaCounts(Shoot $shoot): array
-    {
-        return [
-            'raw_photo_count' => $shoot->raw_photo_count,
-            'edited_photo_count' => $shoot->edited_photo_count,
-            'extra_photo_count' => $shoot->extra_photo_count,
-            'expected_raw_count' => app(BracketModeResolver::class)->expectedRawForShoot($shoot),
-            'expected_final_count' => $shoot->expected_final_count,
-            'raw_missing_count' => $shoot->raw_missing_count,
-            'edited_missing_count' => $shoot->edited_missing_count,
-            // Legacy shoot-wide value, retained for compatibility. Per-service
-            // bracket state is on each service item.
-            'bracket_mode' => $shoot->bracket_mode,
+            'counts' => [
+                'raw_photo_count' => $shoot->raw_photo_count,
+                'edited_photo_count' => $shoot->edited_photo_count,
+                'extra_photo_count' => $shoot->extra_photo_count,
+                'expected_raw_count' => $shoot->expected_raw_count,
+                'expected_final_count' => $shoot->expected_final_count,
+                'raw_missing_count' => $shoot->raw_missing_count,
+                'edited_missing_count' => $shoot->edited_missing_count,
+                'bracket_mode' => $shoot->bracket_mode,
+            ],
         ];
     }
 

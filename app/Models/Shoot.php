@@ -576,28 +576,10 @@ class Shoot extends Model
      */
     public function assignPhotographerToService(int $serviceId, ?int $photographerId): bool
     {
-        $updated = DB::table('shoot_service')
+        return DB::table('shoot_service')
             ->where('shoot_id', $this->id)
             ->where('service_id', $serviceId)
             ->update(['photographer_id' => $photographerId]) > 0;
-
-        if ($updated) {
-            // Bracket size is an execution property of this assignment, so it is
-            // snapshotted from the incoming photographer's preference here rather
-            // than resolved live later: if that photographer later changes their
-            // preference, shoots already assigned to them must not silently
-            // re-divide. The resolver refuses to move the value once raw files
-            // exist, which keeps an existing stack's divisor intact — changing it
-            // then is a deliberate Change & Restack, not a side effect of
-            // reassignment.
-            $item = $this->serviceItems()->where('service_id', $serviceId)->first();
-            if ($item) {
-                app(\App\Services\Shoots\BracketModeResolver::class)
-                    ->snapshotOnAssignment($item, $photographerId);
-            }
-        }
-
-        return $updated;
     }
 
     public function assignEditorToService(int $serviceId, ?int $editorId, ?string $editingCompletedAt = null): bool
@@ -1251,18 +1233,9 @@ class Shoot extends Model
             )
             ->count();
 
-        // Calculate missing counts.
-        //
-        // The raw expectation is derived from the service items rather than read
-        // from `expected_raw_count`. That column was computed as
-        // expected_final_count x bracket_mode, and since expected_final_count is
-        // never populated it was 0 on every shoot, which meant this block never ran
-        // and raw_missing_count was permanently 0. Summing the service items also
-        // handles services captured at different bracket sizes, which no single
-        // shoot-wide multiplication can.
-        $expectedRaw = app(\App\Services\Shoots\BracketModeResolver::class)->expectedRawForShoot($this);
-        if ($expectedRaw > 0) {
-            $this->raw_missing_count = max(0, $expectedRaw - $this->raw_photo_count);
+        // Calculate missing counts
+        if ($this->expected_raw_count > 0) {
+            $this->raw_missing_count = max(0, $this->expected_raw_count - $this->raw_photo_count);
             $this->missing_raw = $this->raw_missing_count > 0;
         }
 

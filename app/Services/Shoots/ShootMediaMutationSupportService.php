@@ -58,12 +58,7 @@ class ShootMediaMutationSupportService
         $shoot->edited_photo_count = $editedCount;
         $shoot->extra_photo_count = $extraCount;
 
-        // Derived from the service items: each contributes photo_count x its own
-        // bracket size, so a shoot mixing 5x and 3x services is counted correctly.
-        // The stored expected_raw_count was expected_final_count x a shoot-wide
-        // bracket_mode and sat at 0 on every shoot, which made this shortfall
-        // permanently 0.
-        $expectedRaw = app(BracketModeResolver::class)->expectedRawForShoot($shoot);
+        $expectedRaw = $shoot->expected_raw_count ?? 0;
         $expectedFinal = $shoot->expected_final_count ?? 0;
 
         $shoot->raw_missing_count = max(0, $expectedRaw - $rawCount);

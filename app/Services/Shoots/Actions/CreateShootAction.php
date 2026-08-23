@@ -209,18 +209,11 @@ class CreateShootAction
                 'updated_by' => $user->name,
                 'package_name' => $validated['package_name'] ?? null,
                 'expected_final_count' => $validated['expected_final_count'] ?? null,
-                // Legacy shoot-wide bracket value. Still accepted so existing API
-                // clients keep working, and read as the last fallback when a service
-                // item has no bracket size of its own, but it is no longer the
-                // source of truth: `attachServices` below snapshots the real value
-                // onto each bracketed service item.
                 'bracket_mode' => $validated['bracket_mode'] ?? null,
-                // `expected_raw_count` is not stored. It is the sum over service
-                // items of photo_count x that item's own bracket size, which one
-                // shoot-wide multiplication cannot express once two services are
-                // shot at different sizes, and a stored copy silently went stale
-                // (it was 0 on every shoot in production because it was derived
-                // from an expected_final_count that is never populated).
+                'expected_raw_count' => $this->support->calculateExpectedRawCount(
+                    $validated['expected_final_count'] ?? null,
+                    $validated['bracket_mode'] ?? null
+                ),
                 'shoot_notes' => $validated['shoot_notes'] ?? null,
                 'company_notes' => $validated['company_notes'] ?? null,
                 'photographer_notes' => $validated['photographer_notes'] ?? null,

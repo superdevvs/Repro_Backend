@@ -31,7 +31,6 @@ class ShootService extends Model
         'shoot_id',
         'service_id',
         'photographer_id',
-        'bracket_mode',
         'editor_id',
         'price',
         'quantity',
@@ -52,7 +51,6 @@ class ShootService extends Model
     protected $casts = [
         'price' => 'decimal:2',
         'quantity' => 'integer',
-        'bracket_mode' => 'integer',
         'photographer_pay' => 'decimal:2',
         'editing_completed_at' => 'datetime',
         'scheduled_at' => 'datetime',

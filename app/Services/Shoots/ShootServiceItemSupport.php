@@ -32,9 +32,7 @@ class ShootServiceItemSupport
             ->whereIn('shoot_service_id', $items->pluck('id'))
             ->exists();
 
-        $brackets = app(BracketModeResolver::class);
-
-        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets) {
+        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations) {
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
@@ -67,20 +65,6 @@ class ShootServiceItemSupport
                 'photographer_id' => $item->photographer_id,
                 'photographerId' => $item->photographer_id,
                 'photographer' => $this->compactUser($item->photographer),
-                // Bracket state is per service item because two services on one
-                // shoot can be captured by different photographers at different
-                // sizes. `uses_hdr_brackets` says whether this deliverable stacks
-                // exposures at all; `bracket_mode` is the recorded execution value;
-                // `effective_bracket_mode` is what stacking will actually use, and
-                // is null when the service does not bracket.
-                'uses_hdr_brackets' => $brackets->serviceUsesBrackets($item),
-                'usesHdrBrackets' => $brackets->serviceUsesBrackets($item),
-                'bracket_mode' => $item->bracket_mode,
-                'bracketMode' => $item->bracket_mode,
-                'effective_bracket_mode' => $brackets->effectiveBracketMode($item),
-                'effectiveBracketMode' => $brackets->effectiveBracketMode($item),
-                'expected_raw_count' => $brackets->expectedRawForService($item),
-                'expectedRawCount' => $brackets->expectedRawForService($item),
                 'resolved_photographer_id' => $item->photographer_id ?? $shoot->photographer_id,
                 'resolvedPhotographerId' => $item->photographer_id ?? $shoot->photographer_id,
                 'resolved_photographer' => $this->compactUser($item->photographer ?: $shoot->photographer),
