@@ -147,6 +147,7 @@ class ShootResource extends JsonResource
             $resolvedTopLevelEditor = $editorAssignments[0]['editor'] ?? null;
         }
         $serviceItemSummaries = app(\App\Services\Shoots\ShootServiceItemSupport::class)->summaries($this->resource);
+        $servicePresentation = app(\App\Services\Shoots\ShootServiceItemSupport::class)->presentation($this->resource);
         if ($isEditor && $requestingUser) {
             $visibleServiceIds = $serviceCollection->pluck('id')->map(fn ($id) => (int) $id)->all();
             $serviceItemSummaries = collect($serviceItemSummaries)
@@ -368,6 +369,10 @@ class ShootResource extends JsonResource
             'service_items' => $serviceItemSummaries,
             'orderItems' => $serviceItemSummaries,
             'order_items' => $serviceItemSummaries,
+            // Names for every booked service, deliberately not role-filtered.
+            // See ShootServiceItemSupport::presentation().
+            'servicePresentation' => $servicePresentation,
+            'service_presentation' => $servicePresentation,
             'invoiceAdjustmentsTotal' => $isEditor ? 0.0 : round($invoiceAdjustmentTotal, 2),
             'invoice_adjustments_total' => $isEditor ? 0.0 : round($invoiceAdjustmentTotal, 2),
             'orderTotal' => $isEditor ? 0.0 : (float) $this->total_quote,

@@ -13,6 +13,44 @@ use Illuminate\Validation\ValidationException;
 
 class ShootServiceItemSupport
 {
+    /**
+     * Display-only identity for every booked execution row on the shoot.
+     *
+     * Separate from `summaries()` on purpose. `summaries()` is the operational
+     * payload and is legitimately narrowed per role — editors only receive the
+     * services they may work, photographers only the ones assigned to them. That
+     * narrowing is a workflow-eligibility decision, and reusing it as a naming
+     * source meant a file whose service the viewer may see but may not edit had
+     * no resolvable name and rendered as "Service #<id>".
+     *
+     * Naming is not a permission. A viewer who is already allowed to see a file
+     * is allowed to know which booked service produced it, so this projection is
+     * never filtered. It carries no pricing, no assignments and no workflow
+     * state — only the pivot id, the catalogue id and the name — so widening it
+     * cannot widen access to anything else.
+     *
+     * @return list<array{shoot_service_id:int,shootServiceId:int,service_id:int|null,serviceId:int|null,name:string|null,serviceName:string|null}>
+     */
+    public function presentation(Shoot $shoot): array
+    {
+        return $shoot->serviceItems()
+            ->with('service:id,name')
+            ->orderByRaw('scheduled_at is null')
+            ->orderBy('scheduled_at')
+            ->orderBy('id')
+            ->get()
+            ->map(fn (ShootService $item) => [
+                'shoot_service_id' => $item->id,
+                'shootServiceId' => $item->id,
+                'service_id' => $item->service_id,
+                'serviceId' => $item->service_id,
+                'name' => $item->service?->name,
+                'serviceName' => $item->service?->name,
+            ])
+            ->values()
+            ->all();
+    }
+
     public function summaries(Shoot $shoot): array
     {
         $shoot->loadMissing('photographer');

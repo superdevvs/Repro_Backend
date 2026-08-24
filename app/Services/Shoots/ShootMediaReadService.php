@@ -522,6 +522,31 @@ class ShootMediaReadService
             // twilight), independent of media_type so a treated frame still reads as
             // a raw of its booked service. Null when none was asked for.
             'treatment' => $file->treatment ?? null,
+            // Which provider ingested this file ('iguide' / 'cubicasa'), or null
+            // for anything a person uploaded. Provider deliverables carry no
+            // shoot_service_id because they are not captured against a booked
+            // execution row, so this is the only attribution the gallery has for
+            // grouping them. Only this one key is lifted out of `metadata`;
+            // the rest of that column is internal.
+            'media_source' => is_array($file->metadata) && isset($file->metadata['source'])
+                ? (string) $file->metadata['source']
+                : null,
+            'mediaSource' => is_array($file->metadata) && isset($file->metadata['source'])
+                ? (string) $file->metadata['source']
+                : null,
+            // Provider-side identity for an ingested deliverable. The gallery also
+            // receives the provider's raw floorplan list off the shoot, and needs
+            // these to recognise that a list entry has already been ingested as a
+            // file so the same floorplan is not shown twice. Named distinctly from
+            // the `original_url` above, which is this system's resolved file URL.
+            'provider_asset_key' => $this->providerAssetKey($file),
+            'providerAssetKey' => $this->providerAssetKey($file),
+            'provider_source_url' => is_array($file->metadata) && isset($file->metadata['original_url'])
+                ? (string) $file->metadata['original_url']
+                : null,
+            'providerSourceUrl' => is_array($file->metadata) && isset($file->metadata['original_url'])
+                ? (string) $file->metadata['original_url']
+                : null,
             // AI editing provenance so the Media tabs can tag results produced by
             // the AI Editing workspace (fal.ai / Autoenhance) with an "AI" badge.
             'is_ai_edited' => (bool) $file->is_ai_edited,
@@ -599,6 +624,27 @@ class ShootMediaReadService
         }
 
         return $fileData;
+    }
+
+    /**
+     * The provider's own identifier for an ingested deliverable.
+     *
+     * Each ingestion job records its key under its own metadata name, so both are
+     * checked rather than assuming one shape.
+     */
+    protected function providerAssetKey(ShootFile $file): ?string
+    {
+        if (! is_array($file->metadata)) {
+            return null;
+        }
+
+        foreach (['iguide_asset_key', 'cubicasa_asset_key'] as $key) {
+            if (! empty($file->metadata[$key])) {
+                return (string) $file->metadata[$key];
+            }
+        }
+
+        return null;
     }
 
     protected function ensureFloorplanPreviewForRead(ShootFile $file): ShootFile

@@ -825,6 +825,13 @@ class ShootPresenter
         $shoot->setAttribute('service_items', $serviceItemSummaries);
         $shoot->setAttribute('orderItems', $serviceItemSummaries);
         $shoot->setAttribute('order_items', $serviceItemSummaries);
+        // Names for every booked service, deliberately not role-filtered. The
+        // summaries above are narrowed by workflow eligibility, which left a
+        // viewer who may see a file but not edit its service without a name for
+        // it. Display-only: pivot id, catalogue id, name.
+        $servicePresentation = app(ShootServiceItemSupport::class)->presentation($shoot);
+        $shoot->setAttribute('servicePresentation', $servicePresentation);
+        $shoot->setAttribute('service_presentation', $servicePresentation);
         $invoiceAdjustmentTotal = collect($serviceItemSummaries)
             ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
             ->sum(fn ($item) => (float) ($item['total_amount'] ?? $item['subtotal'] ?? 0));
