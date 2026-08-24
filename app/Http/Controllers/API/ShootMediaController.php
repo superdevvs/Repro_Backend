@@ -5,8 +5,11 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
 use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\Actions\AssignHeroMediaAction;
+use App\Services\Shoots\Actions\ChangeServiceBracketModeAction;
+use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\Actions\DeleteShootMediaAction;
 use App\Services\Shoots\Actions\DownloadSelectedShootFilesAction;
 use App\Services\Shoots\Actions\DownloadShootMediaAction;
@@ -29,6 +32,7 @@ use App\Services\Shoots\ShootMediaReadService;
 use App\Services\Shoots\ShootShareLinkReadService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
 class ShootMediaController extends Controller
@@ -851,6 +855,90 @@ class ShootMediaController extends Controller
         ));
     }
 
+    /**
+     * Record the bracket size one service on this shoot was captured at.
+     *
+     * Bracket size is execution state on the shoot-service row, not a shoot-wide
+     * setting: the same shoot can be Exterior at 5x by one photographer and Twilight at
+     * 3x by another. Until now the picker only held local React state, so a size the
+     * user chose was never durable and was lost on reload.
+     *
+     * Changing the size after raws exist re-cuts that service's stacks, so it cannot be
+     * a silent side effect. The client has to opt in with `restack=true`, which is the
+     * deliberate "Change & Restack this service" action; without it a request that would
+     * disturb existing frames is refused and the caller is told why. Restacking is always
+     * scoped to the one service, so another photographer's work is never touched.
+     */
+    public function updateServiceBracketMode(Request $request, Shoot $shoot, ShootService $shootService)
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'bracket_mode' => 'present|nullable|integer|in:3,5',
+            'restack' => 'sometimes|boolean',
+        ]);
+
+        if (
+            ! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer'])
+            || ! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)
+        ) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        // The row must belong to this shoot. Route-model binding resolves it globally,
+        // so without this a caller could address another shoot's execution row.
+        if ((int) $shootService->shoot_id !== (int) $shoot->id) {
+            return response()->json([
+                'error_type' => 'invalid_service_item',
+                'message' => 'Selected service item does not belong to this shoot.',
+            ], 422);
+        }
+
+        // A photographer may only set the size for work assigned to them.
+        if ($this->shootAuthorizationSupport->hasRole($user, ['photographer'])) {
+            $assignedToActor = (string) $shootService->photographer_id === (string) $user->id
+                || (! $shootService->photographer_id && (string) $shoot->photographer_id === (string) $user->id);
+
+            if (! $assignedToActor) {
+                return response()->json([
+                    'error_type' => 'forbidden',
+                    'message' => 'You can only change the bracket size for services assigned to you.',
+                ], 403);
+            }
+        }
+
+        $shootService->loadMissing(['service', 'shoot']);
+        $brackets = app(BracketModeResolver::class);
+        $restackRequested = (bool) ($validated['restack'] ?? false);
+
+        if ($brackets->hasRawFiles($shootService) && ! $restackRequested) {
+            return response()->json([
+                'error_type' => 'restack_required',
+                'message' => 'This service already has raw files. Changing its bracket size has to re-cut those stacks, so confirm "Change & Restack this service".',
+                'shoot_service_id' => (int) $shootService->id,
+                'bracket_mode' => $shootService->bracket_mode !== null ? (int) $shootService->bracket_mode : null,
+                'effective_bracket_mode' => $brackets->effectiveBracketMode($shootService),
+                'had_raw_files' => true,
+            ], 409);
+        }
+
+        try {
+            $result = app(ChangeServiceBracketModeAction::class)->execute(
+                $shootService,
+                $validated['bracket_mode'] !== null ? (int) $validated['bracket_mode'] : null,
+                $restackRequested
+            );
+        } catch (ValidationException $exception) {
+            return response()->json([
+                'error_type' => 'invalid_bracket_mode',
+                'message' => collect($exception->errors())->flatten()->first() ?? 'Bracket size could not be changed.',
+                'errors' => $exception->errors(),
+            ], 422);
+        }
+
+        return response()->json($result);
+    }
+
     private function canEditorDeleteEditedMediaBeforeSubmit(Shoot $shoot, iterable $files): bool
     {
         if ($this->isShootSubmittedForReview($shoot)) {
@@ -872,10 +960,13 @@ class ShootMediaController extends Controller
             'raw_photo_count' => $shoot->raw_photo_count,
             'edited_photo_count' => $shoot->edited_photo_count,
             'extra_photo_count' => $shoot->extra_photo_count,
-            'expected_raw_count' => $shoot->expected_raw_count,
+            // Derived per service item; see BracketModeResolver. The stored column
+            // is legacy and was always 0 in practice.
+            'expected_raw_count' => app(\App\Services\Shoots\BracketModeResolver::class)->expectedRawForShoot($shoot),
             'expected_final_count' => $shoot->expected_final_count,
             'raw_missing_count' => $shoot->raw_missing_count,
             'edited_missing_count' => $shoot->edited_missing_count,
+            // Legacy shoot-wide value; per-service bracket state is on the items.
             'bracket_mode' => $shoot->bracket_mode,
         ];
     }

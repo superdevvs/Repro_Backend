@@ -654,6 +654,9 @@ class UserController extends Controller
             'insuranceFileName' => 'nullable|string|max:255',
             'specialties' => 'nullable|string',
             'editing_capabilities' => 'nullable|string',
+            // Photographer default HDR bracket size. Seeds new bracket-capable
+            // shoot-service assignments only; existing assignments keep their own value.
+            'default_bracket_mode' => 'nullable|integer|in:3,5',
         ];
 
         if ($this->serviceGroupsFeatureAvailable()) {

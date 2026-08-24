@@ -8,11 +8,13 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use App\Services\Shoots\ShootMediaReadService;
 use App\Services\Shoots\ShootNotesCompatibilityService;
 use App\Services\Shoots\ShootUploadIdempotencyService;
+use App\Services\Shoots\UploadIntakeResolver;
 use App\Services\UploadValidationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -33,13 +35,26 @@ class UploadShootFilesAction
         protected ShootUploadIdempotencyService $uploadIdempotency,
         protected ShootMediaReadService $mediaReadService,
         protected ShootEditingAssignmentService $editingAssignmentService,
-        protected ShootNotesCompatibilityService $notesCompatibilityService
+        protected ShootNotesCompatibilityService $notesCompatibilityService,
+        protected BracketModeResolver $bracketModes,
+        protected UploadIntakeResolver $uploadIntake
     ) {}
 
     public function execute(Request $request, Shoot $shoot, ?User $user): array
     {
         $files = $request->file('files');
         $normalizedFiles = $files ? (is_array($files) ? $files : [$files]) : [];
+
+        // Ownership is checked before anything is recorded. The idempotency attempt
+        // stores shoot_service_id as a foreign key, so an id that is not an execution
+        // row on this shoot — a catalogue service id sent by mistake, or a row from
+        // another shoot — used to fail as a constraint violation and surface as a 500.
+        // The caller needs to be told plainly that the reference is wrong.
+        $ownershipError = $this->rejectUnownedServiceItem($request, $shoot);
+        if ($ownershipError !== null) {
+            return $ownershipError;
+        }
+
         $claim = $this->uploadIdempotency->claim($request, $shoot, $user, $normalizedFiles);
         if ($claim['replay']) {
             return $claim['replay'];
@@ -208,6 +223,27 @@ class UploadShootFilesAction
         $shootServiceId = $shootServiceId !== null && $shootServiceId !== '' ? (int) $shootServiceId : null;
 
         $allServiceItems = $shoot->serviceItems()->with('service')->get();
+
+        // Which raw lane(s) this batch actually needs. Derived from the files' mime
+        // types, unioned with any lane the client declared, so a video file in a batch
+        // still has to satisfy the video lane even if the caller said "photo".
+        // Only raw capture is lane-gated here: edited uploads are already constrained
+        // by the separate requires-editing capability.
+        $requiredLanes = $uploadType === 'raw'
+            ? $this->uploadIntake->requiredLanes($request->input('upload_lane'), is_array($files) ? $files : [$files])
+            : [];
+
+        // Eligibility for raw capture means the service actually declares the lane.
+        // Without this, a shoot whose only booked service is a Matterport tour would
+        // auto-select that tour and silently attach camera files to it.
+        $laneEligible = function (ShootService $item) use ($requiredLanes): bool {
+            if ($requiredLanes === []) {
+                return true;
+            }
+
+            return $this->uploadIntake->unsupportedLanes($item, $requiredLanes) === [];
+        };
+
         if ($user?->role === 'photographer' && $allServiceItems->isNotEmpty()) {
             $eligibleItems = $allServiceItems
                 ->filter(fn (ShootService $item) => (string) $item->photographer_id === (string) $user->id
@@ -216,6 +252,7 @@ class UploadShootFilesAction
                         && (string) $shoot->photographer_id === (string) $user->id
                     )
                 )
+                ->filter($laneEligible)
                 ->values();
 
             if ($shootServiceId && ! $eligibleItems->contains(fn (ShootService $item) => (int) $item->id === $shootServiceId)) {
@@ -310,6 +347,43 @@ class UploadShootFilesAction
             ];
         }
 
+        // The authoritative eligibility gate. Client-side filtering is presentation
+        // only: this endpoint is reachable directly, so an ineligible service must be
+        // refused here regardless of what any UI offered. It also catches a caller
+        // that sent a catalogue service id where an execution row id was required —
+        // such an id either does not resolve to a row on this shoot at all, or
+        // resolves to one whose capability is checked here like any other.
+        if ($shootServiceId && $requiredLanes !== []) {
+            $selectedItem = $shoot->serviceItems()->with('service')->whereKey($shootServiceId)->first();
+
+            if ($selectedItem) {
+                $unsupported = $this->uploadIntake->unsupportedLanes($selectedItem, $requiredLanes);
+
+                if ($unsupported !== []) {
+                    Log::info('Rejected upload for a service item that does not accept the requested lane.', [
+                        'shoot_id' => $shoot->id,
+                        'shoot_service_id' => $shootServiceId,
+                        'service_id' => $selectedItem->service_id,
+                        'actor_id' => $user?->id,
+                        'requested_lanes' => $requiredLanes,
+                        'unsupported_lanes' => $unsupported,
+                        'upload_intake_type' => $this->uploadIntake->intakeTypeFor($selectedItem),
+                    ]);
+
+                    return [
+                        'status' => 422,
+                        'payload' => $this->typedUploadError(
+                            'service_item_not_uploadable',
+                            'This service does not accept '
+                                .implode(' or ', $unsupported)
+                                .' uploads. Choose a service that covers this media.',
+                            $uploadLimits
+                        ),
+                    ];
+                }
+            }
+        }
+
         if (
             $user
             && $user->role === 'photographer'
@@ -349,13 +423,19 @@ class UploadShootFilesAction
             ];
         }
 
-        if ($uploadType === 'raw' && $request->has('bracket_mode')) {
-            $bracketMode = (int) $request->input('bracket_mode');
-            $shoot->bracket_mode = $bracketMode;
-            $expectedFinalCount = $shoot->expected_final_count ?? $shoot->package?->expectedDeliveredCount ?? 0;
-            $shoot->expected_raw_count = $expectedFinalCount * $bracketMode;
-            $shoot->save();
-        }
+        // Uploading no longer defines bracket state.
+        //
+        // This used to write `shoots.bracket_mode` and recompute
+        // `shoots.expected_raw_count` from any raw request that carried a
+        // bracket_mode, which meant one photographer's upload silently redefined
+        // the divisor for every service on the shoot — including another
+        // photographer's work. Bracket size is now an execution property of the
+        // shoot-service assignment, snapshotted when the photographer is assigned
+        // and changed only through a deliberate Change & Restack. Upload reads it.
+        //
+        // The expected raw count is likewise no longer stored: it is the sum over
+        // service items of photo_count x that item's own bracket size, which a
+        // single shoot-wide multiplication cannot express once two services differ.
 
         if ($request->has('photographer_notes')) {
             $previousPhotographerNotes = $shoot->photographer_notes;
@@ -441,7 +521,32 @@ class UploadShootFilesAction
                 : $request->boolean('requiredForEditing', false);
             $mediaTypeOverride = $request->input('media_type');
             $serviceCategory = $request->input('service_category');
-            $rawBracketMode = $uploadType === 'raw' ? (int) ($request->input('bracket_mode') ?? $shoot->bracket_mode ?? 0) : 0;
+
+            // The divisor comes from the service item being uploaded to, never from
+            // the request. An incoming bracket_mode is not authoritative: it is the
+            // client's view of the service's configured size, and trusting it would
+            // let any upload redefine how a service's stacks are cut. A service that
+            // does not bracket resolves to 0 here no matter what was sent, so a
+            // floor-plan or drone upload can never take stack numbers.
+            $rawBracketMode = 0;
+            if ($uploadType === 'raw' && $shootServiceId) {
+                $serviceItem = $shoot->serviceItems()
+                    ->with(['service', 'shoot'])
+                    ->whereKey($shootServiceId)
+                    ->first();
+                // Bracketing is a property of the photo lane only. A bundled service
+                // that serves both lanes still must not stack its video raws, so the
+                // batch has to be photo-only before any stack size is applied.
+                $bracketableBatch = $serviceItem
+                    && $requiredLanes === [\App\Models\Service::LANE_PHOTO];
+                $rawBracketMode = $bracketableBatch
+                    ? (int) ($this->bracketModes->effectiveBracketMode($serviceItem) ?? 0)
+                    : 0;
+            } elseif ($uploadType === 'raw') {
+                // Unassigned uploads have no service item to read, so they fall back
+                // to the legacy shoot-wide value for compatibility.
+                $rawBracketMode = (int) ($this->bracketModes->normalize($shoot->bracket_mode) ?? 0);
+            }
 
             // Deterministic batch ordering for raw bracket grouping.
             // Each frontend upload sends one file per XHR but all files in a batch share
@@ -500,9 +605,12 @@ class UploadShootFilesAction
                         $resolvedMediaType = 'extra';
                     }
 
+                    // The execution row is passed into storage so its replace-in-place
+                    // duplicate check is scoped to that row. Without it, two services on
+                    // one shoot receiving the same filename collapsed into one file.
                     $shootFile = $uploadType === 'raw'
-                        ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType)
-                        : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType);
+                        ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId)
+                        : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId);
 
                     if ($shootServiceId && ! $shootFile->shoot_service_id) {
                         $shootFile->shoot_service_id = $shootServiceId;
@@ -786,6 +894,48 @@ class UploadShootFilesAction
             'message' => $message,
             'retryable' => $retryable,
             'next_step' => $nextStep,
+        ];
+    }
+
+    /**
+     * Refuse a `shoot_service_id` that is not an execution row on this shoot.
+     *
+     * Returns null when there is nothing to object to, so the caller can carry on.
+     *
+     * @return array{status: int, payload: array<string, mixed>}|null
+     */
+    private function rejectUnownedServiceItem(Request $request, Shoot $shoot): ?array
+    {
+        $raw = $request->input('shoot_service_id');
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        if ($shoot->serviceItems()->whereKey((int) $raw)->exists()) {
+            return null;
+        }
+
+        Log::info('Rejected upload for a service item that does not belong to this shoot.', [
+            'shoot_id' => $shoot->id,
+            'supplied_shoot_service_id' => $raw,
+        ]);
+
+        return [
+            'status' => 422,
+            'payload' => [
+                'error_type' => 'invalid_service_item',
+                'message' => 'Selected service item does not belong to this shoot',
+                'uploaded_files' => [],
+                'errors' => [[
+                    'error_type' => 'invalid_service_item',
+                    'message' => 'Selected service item does not belong to this shoot.',
+                    'retryable' => false,
+                ]],
+                'success_count' => 0,
+                'error_count' => 1,
+                'partial_success' => false,
+                'upload_limits' => $this->buildUploadLimits(),
+            ],
         ];
     }
 

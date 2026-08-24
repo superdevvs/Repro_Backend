@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Models\Service;
 use App\Models\Shoot;
 use App\Services\Shoots\Actions\UploadShootFilesAction;
 use App\Services\Shoots\ShootAuthorizationSupport;
+use App\Services\Shoots\UploadIntakeResolver;
 use App\Services\UploadSourceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -16,7 +18,8 @@ class UploadSourceController extends Controller
     public function __construct(
         protected UploadSourceService $uploadSources,
         protected UploadShootFilesAction $uploadShootFiles,
-        protected ShootAuthorizationSupport $shootAuthorizationSupport
+        protected ShootAuthorizationSupport $shootAuthorizationSupport,
+        protected UploadIntakeResolver $uploadIntake
     ) {}
 
     public function index(Request $request)
@@ -152,10 +155,35 @@ class UploadSourceController extends Controller
             'is_extra' => 'nullable|boolean',
             'service_category' => 'nullable|string',
             'shoot_service_id' => 'nullable|integer',
+            'upload_lane' => 'nullable|string|in:photo,video',
             'idempotency_key' => 'nullable|string|max:191',
             'photographer_notes' => 'nullable|string',
             'editor_notes' => 'nullable|string',
         ]);
+
+        // Fail before fetching anything when the chosen service cannot receive uploads
+        // at all. The shared upload action re-checks the specific lane once the real
+        // mime types are known; this only avoids downloading source files for a
+        // service that was never a valid target, such as a dedicated tour product.
+        if ($shootServiceId && ($validated['upload_type'] ?? 'raw') === 'raw') {
+            $selectedItem = $shoot->serviceItems()->with('service')->whereKey($shootServiceId)->first();
+
+            if ($selectedItem && $this->uploadIntake->intakeTypeFor($selectedItem) === Service::INTAKE_NONE) {
+                return response()->json([
+                    'error_type' => 'service_item_not_uploadable',
+                    'message' => 'This service does not accept media uploads. Choose a service that covers this media.',
+                    'uploaded_files' => [],
+                    'errors' => [[
+                        'error_type' => 'service_item_not_uploadable',
+                        'message' => 'This service does not accept media uploads.',
+                        'retryable' => false,
+                    ]],
+                    'success_count' => 0,
+                    'error_count' => 1,
+                    'partial_success' => false,
+                ], 422);
+            }
+        }
 
         $entries = $validated['source_type'] === 'url'
             ? collect($validated['urls'] ?? [])->map(fn ($url) => ['url' => $url])->values()->all()
@@ -254,6 +282,9 @@ class UploadSourceController extends Controller
                 'is_extra',
                 'service_category',
                 'shoot_service_id',
+                // Forwarded so the shared upload action applies the same lane
+                // eligibility here as it does for direct uploads.
+                'upload_lane',
                 'photographer_notes',
                 'editor_notes',
             ])

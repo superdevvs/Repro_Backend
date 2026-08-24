@@ -724,6 +724,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootMediaController::class, 'reclassifyFiles']);
     Route::patch('/shoots/{shoot}/files/reorder', [ShootMediaController::class, 'reorderFiles']);
     Route::patch('/shoots/{shoot}/files/toggle-hidden', [ShootMediaController::class, 'toggleFileHidden']);
+    // Bracket size is per shoot-service execution row, so it is addressed by that row.
+    Route::patch(
+        '/shoots/{shoot}/service-items/{shootService}/bracket-mode',
+        [ShootMediaController::class, 'updateServiceBracketMode']
+    );
     Route::get('/shoots/{shoot}/workflow-status', [ShootWorkflowController::class, 'getWorkflowStatus']);
     Route::prefix('/shoots/{shoot}/media')->group(function () {
         Route::post('{file}/favorite', [ShootMediaController::class, 'favoriteMedia']);

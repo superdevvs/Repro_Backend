@@ -100,8 +100,21 @@ class ShootUploadBracketStackScopeTest extends TestCase
         app()->instance(DropboxWorkflowService::class, $dropbox);
     }
 
-    private function serviceItem(string $name, int $photoCount = 10): ShootService
-    {
+    /**
+     * Book a service onto the shoot.
+     *
+     * `$usesHdrBrackets` is the catalogue flag and `$bracketMode` the execution
+     * value recorded on the assignment. Both are explicit: whether a deliverable
+     * stacks exposures is catalogue data, and how many exposures is per assignment,
+     * so a test that wants bracketed behaviour has to say so.
+     */
+    private function serviceItem(
+        string $name,
+        int $photoCount = 10,
+        bool $usesHdrBrackets = true,
+        ?int $bracketMode = 5,
+        ?int $photographerId = null,
+    ): ShootService {
         $category = Category::query()->firstOrCreate(['name' => 'Photography']);
         $service = Service::query()->create([
             'name' => $name,
@@ -110,6 +123,10 @@ class ShootUploadBracketStackScopeTest extends TestCase
             'delivery_time' => 24,
             'category_id' => $category->id,
             'photo_count' => $photoCount,
+            'uses_hdr_brackets' => $usesHdrBrackets,
+            // These fixtures all model photo capture; capability is declared rather
+            // than inferred, and the column default is deliberately "not selectable".
+            'upload_intake_type' => Service::INTAKE_PHOTO,
             'pricing_type' => 'fixed',
         ]);
 
@@ -118,6 +135,8 @@ class ShootUploadBracketStackScopeTest extends TestCase
             'service_id' => $service->id,
             'price' => 100,
             'quantity' => 1,
+            'photographer_id' => $photographerId,
+            'bracket_mode' => $usesHdrBrackets ? $bracketMode : null,
         ]);
     }
 
@@ -149,8 +168,9 @@ class ShootUploadBracketStackScopeTest extends TestCase
             if ($shootServiceId !== null) {
                 $payload['shoot_service_id'] = $shootServiceId;
             }
-            // Omitted entirely for non-bracket groups, mirroring the frontend, so the
-            // legacy shoot-wide bracket state is not rewritten by them.
+            // Sent to mirror the frontend and to take part in the idempotency
+            // fingerprint. The server does not trust it: the divisor comes from the
+            // service item. Non-bracket groups omit the field entirely.
             if ($bracketMode !== null) {
                 $payload['bracket_mode'] = $bracketMode;
             }
@@ -275,11 +295,10 @@ class ShootUploadBracketStackScopeTest extends TestCase
 
     public function test_services_captured_at_different_bracket_sizes_keep_independent_stacks(): void
     {
-        // Per-request bracket_mode already exists, so a 5x service followed by a 3x
-        // service can be exercised with no schema change. This is the shape a
-        // multi-photographer shoot produces once bracket mode lives on the service item.
-        $exterior = $this->serviceItem('Exterior HDR');
-        $interior = $this->serviceItem('Interior HDR');
+        // The real multi-photographer shape: each service carries its own recorded
+        // size, 5x on Exterior and 3x on Interior.
+        $exterior = $this->serviceItem('Exterior HDR', 10, true, 5);
+        $interior = $this->serviceItem('Interior HDR', 10, true, 3);
 
         $this->uploadGroup($this->exteriorSevenFrames(), $exterior->id, 5, 'batch-exterior');
         $this->uploadGroup([
@@ -302,7 +321,7 @@ class ShootUploadBracketStackScopeTest extends TestCase
     public function test_a_non_bracket_group_neither_takes_stack_numbers_nor_rewrites_the_shoot_bracket_mode(): void
     {
         $exterior = $this->serviceItem('Exterior HDR');
-        $floorPlan = $this->serviceItem('2D Floor Plan', 0);
+        $floorPlan = $this->serviceItem('2D Floor Plan', 0, false, null);
 
         $this->uploadGroup(['ext-1.jpg' => 0, 'ext-2.jpg' => 1], $exterior->id, 5, 'batch-exterior');
         // Non-bracket group: no bracket_mode field at all, and its own media type.

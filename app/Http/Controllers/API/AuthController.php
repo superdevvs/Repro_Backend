@@ -285,6 +285,10 @@ class AuthController extends Controller
             'termsAccepted' => 'sometimes|boolean',
             'travel_range' => 'nullable|integer|min:0|max:500',
             'travel_range_unit' => 'nullable|string|in:miles,km',
+            // A photographer's own default HDR bracket size. This only seeds a new
+            // bracket-capable shoot-service assignment; changing it later never rewrites
+            // an assignment that already recorded its own size.
+            'default_bracket_mode' => 'nullable|integer|in:3,5',
             'current_password' => 'nullable|string',
             'new_password' => 'nullable|string|min:8|confirmed',
             'new_password_confirmation' => 'nullable|string',

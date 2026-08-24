@@ -313,12 +313,18 @@ class DropboxWorkflowService
     /**
      * Upload file to ToDo folder
      */
-    public function uploadToTodo(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null)
-    {
+    public function uploadToTodo(
+        Shoot $shoot,
+        UploadedFile $file,
+        $userId,
+        $serviceCategory = null,
+        ?string $mediaTypeOverride = null,
+        ?int $shootServiceId = null
+    ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
 
-        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType);
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType, $shootServiceId);
     }
 
     /**
@@ -390,7 +396,8 @@ class DropboxWorkflowService
         UploadedFile $file,
         $userId,
         string $stage,
-        ?string $mediaTypeOverride = null
+        ?string $mediaTypeOverride = null,
+        ?int $shootServiceId = null
     ): ShootFile {
         $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)
             ? $mediaTypeOverride
@@ -419,9 +426,22 @@ class DropboxWorkflowService
             ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
 
+        // Re-uploading a filename replaces that file in place, which is how a corrected
+        // frame is handed in. The match has to be scoped to the execution row, though,
+        // because a filename is only unique per camera, not per shoot: two photographers
+        // working one shoot both hand in DSC_0001.jpg. Matching on (shoot, filename,
+        // stage) alone meant the second service's frame overwrote the first service's
+        // file, leaving one row with the wrong attribution and one service silently a
+        // frame short. Unassigned uploads form their own bucket, mirroring how bracket
+        // stacking already partitions them.
         $existingFile = ShootFile::where('shoot_id', $shoot->id)
             ->where('filename', $file->getClientOriginalName())
             ->where('workflow_stage', $stage)
+            ->when(
+                $shootServiceId !== null,
+                fn ($query) => $query->where('shoot_service_id', $shootServiceId),
+                fn ($query) => $query->whereNull('shoot_service_id')
+            )
             ->first();
         $isReplacement = $existingFile !== null;
 
@@ -457,11 +477,15 @@ class DropboxWorkflowService
         // Now store the file (this may move the temp file)
         Storage::disk('public')->putFileAs($dir, $file, $filename);
 
-        $shootFile = $existingFile ?: new ShootFile([
+        // Attribute the row to its execution row at creation. The caller also sets this,
+        // but doing it here means the row is never briefly unattributed, which is what
+        // the duplicate lookup above has to match against on a subsequent upload.
+        $shootFile = $existingFile ?: new ShootFile(array_filter([
             'shoot_id' => $shoot->id,
             'filename' => $file->getClientOriginalName(),
             'workflow_stage' => $stage,
-        ]);
+            'shoot_service_id' => $shootServiceId,
+        ], fn ($value) => $value !== null));
 
         $attributes = [
             'filename' => $file->getClientOriginalName(),
@@ -1206,12 +1230,18 @@ class DropboxWorkflowService
     /**
      * Upload file directly to Completed folder (for edited files)
      */
-    public function uploadToCompleted(Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null)
-    {
+    public function uploadToCompleted(
+        Shoot $shoot,
+        UploadedFile $file,
+        $userId,
+        $serviceCategory = null,
+        ?string $mediaTypeOverride = null,
+        ?int $shootServiceId = null
+    ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
 
-        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType);
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType, $shootServiceId);
     }
 
     /**

@@ -28,6 +28,8 @@ class Service extends Model
         'photographer_pay_percent',
         'exclude_from_sales_commission',
         'photo_count',
+        'uses_hdr_brackets',
+        'upload_intake_type',
         'quantity',
     ];
     
@@ -41,9 +43,105 @@ class Service extends Model
         'photographer_pay_percent' => 'decimal:2',
         'exclude_from_sales_commission' => 'boolean',
         'photo_count' => 'integer',
+        'uses_hdr_brackets' => 'boolean',
         'allow_multiple' => 'boolean',
         'quantity' => 'integer',
     ];
+
+    /** Capture arrives through the photo raw lane. */
+    public const INTAKE_PHOTO = 'photo';
+
+    /** Capture arrives through the video raw lane. */
+    public const INTAKE_VIDEO = 'video';
+
+    /** One execution row legitimately receives both raw lanes. */
+    public const INTAKE_PHOTO_VIDEO = 'photo_video';
+
+    /** Never selectable as an upload target. */
+    public const INTAKE_NONE = 'none';
+
+    public const UPLOAD_INTAKE_TYPES = [
+        self::INTAKE_PHOTO,
+        self::INTAKE_VIDEO,
+        self::INTAKE_PHOTO_VIDEO,
+        self::INTAKE_NONE,
+    ];
+
+    /** The photo raw lane. */
+    public const LANE_PHOTO = 'photo';
+
+    /** The video raw lane. */
+    public const LANE_VIDEO = 'video';
+
+    public const UPLOAD_LANES = [self::LANE_PHOTO, self::LANE_VIDEO];
+
+    /**
+     * The declared intake capability, falling back to "not selectable".
+     *
+     * An unrecognised or missing value resolves to `none` on purpose. Unknown
+     * capability must mean "not selectable" rather than "probably photo": the old
+     * resolver assumed anything not obviously video was photo-like, which is exactly
+     * how fees, floor plans and tour products reached the raw upload selector.
+     */
+    public function uploadIntakeType(): string
+    {
+        $value = $this->getAttribute('upload_intake_type');
+
+        if (! is_string($value)) {
+            return self::INTAKE_NONE;
+        }
+
+        $value = trim($value);
+
+        return in_array($value, self::UPLOAD_INTAKE_TYPES, true) ? $value : self::INTAKE_NONE;
+    }
+
+    public function supportsPhotoIntake(): bool
+    {
+        return in_array($this->uploadIntakeType(), [self::INTAKE_PHOTO, self::INTAKE_PHOTO_VIDEO], true);
+    }
+
+    public function supportsVideoIntake(): bool
+    {
+        return in_array($this->uploadIntakeType(), [self::INTAKE_VIDEO, self::INTAKE_PHOTO_VIDEO], true);
+    }
+
+    /** Whether this service may receive files through the given raw lane. */
+    public function supportsIntakeLane(string $lane): bool
+    {
+        return match ($lane) {
+            self::LANE_PHOTO => $this->supportsPhotoIntake(),
+            self::LANE_VIDEO => $this->supportsVideoIntake(),
+            default => false,
+        };
+    }
+
+    /** Whether any upload lane can select this service at all. */
+    public function supportsAnyIntake(): bool
+    {
+        return $this->uploadIntakeType() !== self::INTAKE_NONE;
+    }
+
+    /**
+     * Final photos this service is contracted to deliver, or null when unspecified.
+     *
+     * Booking `quantity` is deliberately not consulted. It is 1 on effectively every
+     * booked row, so treating it as a count fabricated a raw expectation for services
+     * that deliver no photos at all. A variable or unconfigured product returns null
+     * so callers can report "not set" instead of inventing a denominator.
+     */
+    public function contractedPhotoCount(): ?int
+    {
+        $value = $this->getAttribute('photo_count');
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $count = (int) $value;
+
+        return $count > 0 ? $count : null;
+    }
 
     /**
      * Whether this service is worked by the in-house photo/video editing lanes.

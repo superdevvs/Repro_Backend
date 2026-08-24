@@ -140,8 +140,16 @@ class ShootUploadIdempotencyService
             ];
         }, $files);
 
+        // Every field that changes what this upload *is* has to participate. The shoot
+        // and actor are already part of the attempt's unique key
+        // (shoot_id, actor_id, idempotency_key), so the fingerprint covers the rest:
+        // which execution row the files belong to, which lane they arrive through, and
+        // the file bytes themselves. `upload_lane` matters because it decides whether
+        // bracket stacking applies, so the same bytes submitted as photo and as video are
+        // genuinely different uploads.
         $settings = collect($request->only([
             'upload_type',
+            'upload_lane',
             'shoot_service_id',
             'bracket_mode',
             'upload_batch_id',

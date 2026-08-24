@@ -696,7 +696,37 @@ class ShootPresenter
                         'price' => $isEditorRole ? null : (float) ($service->pivot?->price ?? $service->price ?? 0),
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
                         'pricing_type' => $service->pricing_type,
-                        'photo_count' => $service->photo_count !== null ? (int) $service->photo_count : null,
+                        // Canonical contracted photo count. Null means unspecified, and
+                        // booking quantity is never substituted for it.
+                        'photo_count' => $serviceItemSummary['photo_count']
+                            ?? ($service->photo_count !== null && (int) $service->photo_count > 0
+                                ? (int) $service->photo_count
+                                : null),
+                        // Upload capability, carried through from the service item so
+                        // the resolver runs once per item. The client builds its photo
+                        // and video selectors from these instead of guessing from the
+                        // service name, which is how fees, floor plans and tour
+                        // products previously became upload targets.
+                        'upload_intake_type' => $serviceItemSummary['upload_intake_type'] ?? \App\Models\Service::INTAKE_NONE,
+                        'uploadIntakeType' => $serviceItemSummary['uploadIntakeType'] ?? \App\Models\Service::INTAKE_NONE,
+                        'supports_photo_intake' => $serviceItemSummary['supports_photo_intake'] ?? false,
+                        'supportsPhotoIntake' => $serviceItemSummary['supportsPhotoIntake'] ?? false,
+                        'supports_video_intake' => $serviceItemSummary['supports_video_intake'] ?? false,
+                        'supportsVideoIntake' => $serviceItemSummary['supportsVideoIntake'] ?? false,
+                        // Per-service bracket state. The upload UI needs all three:
+                        // whether to show a bracket control at all, what it is
+                        // currently set to, and what stacking will actually use if
+                        // nothing was pinned.
+                        'uses_hdr_brackets' => $serviceItemSummary['uses_hdr_brackets'] ?? (bool) ($service->uses_hdr_brackets ?? false),
+                        'usesHdrBrackets' => $serviceItemSummary['usesHdrBrackets'] ?? (bool) ($service->uses_hdr_brackets ?? false),
+                        'bracket_mode' => $serviceItemSummary['bracket_mode'] ?? ($service->pivot?->bracket_mode ?? null),
+                        'bracketMode' => $serviceItemSummary['bracketMode'] ?? ($service->pivot?->bracket_mode ?? null),
+                        'effective_bracket_mode' => $serviceItemSummary['effective_bracket_mode'] ?? null,
+                        'effectiveBracketMode' => $serviceItemSummary['effectiveBracketMode'] ?? null,
+                        'expected_raw_count' => $serviceItemSummary['expected_raw_count'] ?? null,
+                        'expectedRawCount' => $serviceItemSummary['expectedRawCount'] ?? null,
+                        'expected_raw_unspecified' => $serviceItemSummary['expected_raw_unspecified'] ?? false,
+                        'expectedRawUnspecified' => $serviceItemSummary['expectedRawUnspecified'] ?? false,
                         'sqft_ranges' => $sqftRanges->map(fn ($range) => [
                             'id' => $range->id,
                             'sqft_from' => (int) $range->sqft_from,
@@ -837,7 +867,19 @@ class ShootPresenter
         $shoot->setAttribute('edited_photo_count', $shoot->edited_photo_count ?? 0);
         $shoot->setAttribute('raw_missing_count', $shoot->raw_missing_count ?? 0);
         $shoot->setAttribute('edited_missing_count', $shoot->edited_missing_count ?? 0);
-        $shoot->setAttribute('expected_raw_count', $shoot->expected_raw_count ?? 0);
+        // Derived from the service items rather than the stored column, which was
+        // expected_final_count x bracket_mode and therefore 0 on every shoot. The
+        // sum also covers services captured at different bracket sizes.
+        $shoot->setAttribute(
+            'expected_raw_count',
+            app(BracketModeResolver::class)->expectedRawForShoot($shoot)
+        );
+        // The sum only covers items whose contracted count is configured. When some
+        // booked item owes photos with no count, the total is a floor and has to be
+        // labelled as such rather than presented as exact.
+        $expectedRawIsExact = app(BracketModeResolver::class)->expectedRawIsExactForShoot($shoot);
+        $shoot->setAttribute('expected_raw_count_is_exact', $expectedRawIsExact);
+        $shoot->setAttribute('expectedRawCountIsExact', $expectedRawIsExact);
         $shoot->setAttribute('missing_raw', (bool) $shoot->missing_raw);
         $shoot->setAttribute('missing_final', (bool) $shoot->missing_final);
 

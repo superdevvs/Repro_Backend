@@ -32,7 +32,10 @@ class ShootServiceItemSupport
             ->whereIn('shoot_service_id', $items->pluck('id'))
             ->exists();
 
-        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations) {
+        $brackets = app(BracketModeResolver::class);
+        $intake = app(UploadIntakeResolver::class);
+
+        $serviceSummaries = $items->map(function (ShootService $item) use ($shoot, $paidByItem, $hasAllocations, $brackets, $intake) {
             $subtotal = $this->subtotal($item);
             $paidAmount = (float) ($paidByItem[$item->id] ?? 0);
 
@@ -65,6 +68,37 @@ class ShootServiceItemSupport
                 'photographer_id' => $item->photographer_id,
                 'photographerId' => $item->photographer_id,
                 'photographer' => $this->compactUser($item->photographer),
+                // Bracket state is per service item because two services on one
+                // shoot can be captured by different photographers at different
+                // sizes. `uses_hdr_brackets` says whether this deliverable stacks
+                // exposures at all; `bracket_mode` is the recorded execution value;
+                // `effective_bracket_mode` is what stacking will actually use, and
+                // is null when the service does not bracket.
+                // Upload capability is catalogue data, never inferred from the name or
+                // category. The client uses these to build lane-specific selectors:
+                // a service is offered to the photo lane or the video lane only if it
+                // explicitly declares that lane.
+                'upload_intake_type' => $intake->intakeTypeFor($item),
+                'uploadIntakeType' => $intake->intakeTypeFor($item),
+                'supports_photo_intake' => $intake->supportsPhotoIntake($item),
+                'supportsPhotoIntake' => $intake->supportsPhotoIntake($item),
+                'supports_video_intake' => $intake->supportsVideoIntake($item),
+                'supportsVideoIntake' => $intake->supportsVideoIntake($item),
+                'uses_hdr_brackets' => $brackets->serviceUsesBrackets($item),
+                'usesHdrBrackets' => $brackets->serviceUsesBrackets($item),
+                'bracket_mode' => $item->bracket_mode,
+                'bracketMode' => $item->bracket_mode,
+                'effective_bracket_mode' => $brackets->effectiveBracketMode($item),
+                'effectiveBracketMode' => $brackets->effectiveBracketMode($item),
+                // Null means "this item owes photos but no count is configured", which
+                // is different from 0 ("owes no photos"). The client must render the
+                // former as unset rather than fabricating a denominator.
+                'expected_raw_count' => $brackets->expectedRawForService($item),
+                'expectedRawCount' => $brackets->expectedRawForService($item),
+                'expected_raw_unspecified' => $brackets->expectedRawUnspecified($item),
+                'expectedRawUnspecified' => $brackets->expectedRawUnspecified($item),
+                'photo_count' => $intake->contractedPhotoCount($item),
+                'photoCount' => $intake->contractedPhotoCount($item),
                 'resolved_photographer_id' => $item->photographer_id ?? $shoot->photographer_id,
                 'resolvedPhotographerId' => $item->photographer_id ?? $shoot->photographer_id,
                 'resolved_photographer' => $this->compactUser($item->photographer ?: $shoot->photographer),

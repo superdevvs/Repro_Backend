@@ -6,11 +6,13 @@ use App\Models\Coupon;
 use App\Models\Service;
 use App\Models\ServiceGroup;
 use App\Models\Shoot;
+use App\Models\ShootService;
 use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\ShootTaxService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class ShootMutationSupportService
@@ -290,7 +292,28 @@ class ShootMutationSupportService
 
         $shoot->services()->sync($pivotData);
         $shoot->load(['services', 'serviceItems']);
+        $this->snapshotBracketModes($shoot);
         $shoot->syncServiceItemRollups();
+    }
+
+    /**
+     * Record each bracketed service item's execution bracket size.
+     *
+     * Runs after any service/photographer sync so a newly booked or newly assigned
+     * item carries the size it will actually be shot at. The resolver leaves items
+     * alone once they hold raw files, so re-syncing an in-progress shoot can never
+     * re-divide stacks that already exist.
+     */
+    public function snapshotBracketModes(Shoot $shoot): void
+    {
+        if (! Schema::hasColumn('shoot_service', 'bracket_mode')) {
+            return;
+        }
+
+        $resolver = app(BracketModeResolver::class);
+
+        $shoot->serviceItems()->with(['service', 'shoot'])->get()
+            ->each(fn (ShootService $item) => $resolver->snapshotOnAssignment($item));
     }
 
     public function mergeServiceItemPayload(
@@ -349,6 +372,8 @@ class ShootMutationSupportService
                     ? $assignment['photographer_id']
                     : null;
 
+                // assignPhotographerToService snapshots the bracket size for the
+                // incoming photographer as part of the assignment.
                 $shoot->assignPhotographerToService(
                     (int) $serviceId,
                     $assignedPhotographerId !== null && $assignedPhotographerId !== ''
@@ -488,6 +513,12 @@ class ShootMutationSupportService
         }
     }
 
+    /**
+     * @deprecated Bracket size is per service item, so a shoot's raw expectation is
+     * the sum over its items of photo_count x that item's own size. Use
+     * BracketModeResolver::expectedRawForShoot(). Retained only so any external
+     * caller keeps compiling; nothing in the app calls it.
+     */
     public function calculateExpectedRawCount(?int $expectedFinal, ?int $bracketMode): int
     {
         if ($expectedFinal && $bracketMode) {
