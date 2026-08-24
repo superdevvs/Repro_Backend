@@ -28,6 +28,7 @@ class ShootFile extends Model
         'file_type',
         'mime_type',
         'media_type',
+        'treatment',
         'file_size',
         'uploaded_by',
         'uploaded_at',
@@ -85,6 +86,37 @@ class ShootFile extends Model
     const STAGE_VERIFIED = 'verified';
     const STAGE_ARCHIVED = 'archived';
     const STAGE_FLAGGED = 'flagged';
+
+    /**
+     * Post-capture treatments requested on one individual frame.
+     *
+     * Held in `treatment`, never in `media_type`. A treated frame keeps its capture
+     * identity (`raw`) and its booked-service ownership (`shoot_service_id`), so
+     * bracket stacking, the Photos tab and delivery all continue to see it.
+     */
+    const TREATMENT_VIRTUAL_STAGING = 'virtual_staging';
+    const TREATMENT_GREEN_GRASS = 'green_grass';
+    const TREATMENT_TWILIGHT = 'twilight';
+
+    /** The only treatments an upload may request. */
+    const TREATMENTS = [
+        self::TREATMENT_VIRTUAL_STAGING,
+        self::TREATMENT_GREEN_GRASS,
+        self::TREATMENT_TWILIGHT,
+    ];
+
+    /**
+     * Normalise an incoming treatment request, or null when it is not one we accept.
+     *
+     * Floor plan and drone are deliberately absent: those are capture/service
+     * classifications owned by the booked service group, not per-file treatments.
+     */
+    public static function normalizeTreatment(mixed $value): ?string
+    {
+        $candidate = strtolower(trim((string) ($value ?? '')));
+
+        return in_array($candidate, self::TREATMENTS, true) ? $candidate : null;
+    }
 
     // Virus-scan state machine (Req 14/15). Files quarantine on upload and are only
     // released to downstream processing once scanned clean.

@@ -520,6 +520,11 @@ class UploadShootFilesAction
                 ? $request->boolean('required_for_editing')
                 : $request->boolean('requiredForEditing', false);
             $mediaTypeOverride = $request->input('media_type');
+            // A per-file treatment request (virtual staging / green grass / twilight).
+            // Kept strictly apart from $mediaTypeOverride: a treated frame must stay
+            // media_type='raw' so it remains in its service's bracket stacks, in the
+            // Photos tab and in delivery. Anything unrecognised normalises to null.
+            $treatment = ShootFile::normalizeTreatment($request->input('treatment'));
             $serviceCategory = $request->input('service_category');
 
             // The divisor comes from the service item being uploaded to, never from
@@ -618,6 +623,12 @@ class UploadShootFilesAction
                     }
 
                     $flagUpdates = [];
+                    // Recorded alongside the capture identity, not instead of it. Only
+                    // written when asked for, so an untreated frame keeps a null column
+                    // rather than an empty string.
+                    if ($treatment !== null && Schema::hasColumn('shoot_files', 'treatment')) {
+                        $flagUpdates['treatment'] = $treatment;
+                    }
                     if (Schema::hasColumn('shoot_files', 'is_extra')) {
                         $flagUpdates['is_extra'] = $isExtra || $shootFile->media_type === 'extra';
                     }

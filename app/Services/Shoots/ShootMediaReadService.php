@@ -518,6 +518,10 @@ class ShootMediaReadService
             'sequence' => $file->sequence,
             'is_hidden' => $file->is_hidden ?? false,
             'media_type' => $file->media_type,
+            // Requested post-capture treatment (virtual staging / green grass /
+            // twilight), independent of media_type so a treated frame still reads as
+            // a raw of its booked service. Null when none was asked for.
+            'treatment' => $file->treatment ?? null,
             // AI editing provenance so the Media tabs can tag results produced by
             // the AI Editing workspace (fal.ai / Autoenhance) with an "AI" badge.
             'is_ai_edited' => (bool) $file->is_ai_edited,
