@@ -4,6 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\ProcessCreatedShootSideEffectsJob;
+use App\Jobs\SyncShootIguideJob;
 use App\Http\Requests\StoreShootRequest;
 use App\Models\Shoot;
 use App\Models\User;
@@ -288,6 +289,29 @@ class CreateShootAction
                 unset($pending);
             } catch (\Throwable $e) {
                 Log::warning('CubiCasa auto-create failed during booking; booking completed regardless.', [
+                    'shoot_id' => $result->shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // iGUIDE discovery is dispatched at booking time so a floor-plan shoot
+        // does not sit idle until the next half-hourly reconciliation run. It
+        // normally finds nothing on a brand-new address (the photographer has
+        // not produced the iGuide yet) and the webhook delivers later; the value
+        // here is the repeat-property case, where an iGuide for this address
+        // already exists and can be attached immediately.
+        //
+        // This does NOT gate CubiCasa: we cannot prove at booking time that no
+        // iGuide exists (the provider API cannot be searched by address), so
+        // suppressing the CubiCasa order on a negative result could leave the
+        // booking with no floor plan at all.
+        if (!$result->treatAsClientRequest && $result->shoot->hasIguideEligibleService()) {
+            try {
+                $pending = SyncShootIguideJob::dispatch($result->shoot->id)->afterCommit();
+                unset($pending);
+            } catch (\Throwable $e) {
+                Log::warning('iGUIDE discovery dispatch failed during booking; booking completed regardless.', [
                     'shoot_id' => $result->shoot->id,
                     'error' => $e->getMessage(),
                 ]);

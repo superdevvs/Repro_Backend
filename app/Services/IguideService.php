@@ -132,7 +132,7 @@ class IguideService
 
         try {
             if ($this->hasPortalCredentials()) {
-                $match = $this->searchPortalByAddress($address, $normalizedAddress);
+                $match = $this->searchPortalByAddress($address);
                 if ($match) {
                     return $match;
                 }
@@ -310,28 +310,53 @@ class IguideService
         ], static fn ($value) => $value !== null && $value !== '' && $value !== []);
     }
 
+    /**
+     * Resolve the shoot a provider address belongs to.
+     *
+     * This is the path a delayed iGuide takes: the photographer produces the
+     * iGuide hours or days after booking, and the webhook arrives carrying an
+     * address but no identifier we have seen before. Matching is component
+     * based (see addressesMatch) so a provider abbreviation still resolves
+     * while a neighbouring house number cannot.
+     */
     public function findShootByAddress(string $address): ?Shoot
     {
-        $normalizedAddress = $this->normalizeAddress($address);
-        if ($normalizedAddress === '') {
+        $components = $this->parseAddressComponents($address);
+        if ($components['house'] === '' || $components['street'] === '') {
             return null;
         }
 
-        return Shoot::query()
-            ->whereNotNull('address')
-            ->get()
-            ->first(function (Shoot $shoot) use ($normalizedAddress) {
-                $shootAddress = $this->buildFullAddress($shoot);
-                if ($shootAddress === null) {
-                    return false;
-                }
+        $query = Shoot::query()->whereNotNull('address');
 
-                $normalizedShootAddress = $this->normalizeAddress($shootAddress);
-
-                return $normalizedShootAddress === $normalizedAddress
-                    || str_contains($normalizedShootAddress, $normalizedAddress)
-                    || str_contains($normalizedAddress, $normalizedShootAddress);
+        // Narrow on ZIP when the provider gave one so the common case does not
+        // load every shoot into memory. Falls back to a full scan otherwise.
+        if ($components['zip'] !== '') {
+            $zip = $components['zip'];
+            $query->where(function ($q) use ($zip) {
+                // LIKE covers a ZIP+4 stored on our side. Rows without a ZIP
+                // must stay in scope because buildFullAddress() can still carry
+                // one inside the address line.
+                $q->where('zip', 'like', $zip . '%')
+                    ->orWhereNull('zip')
+                    ->orWhere('zip', '');
             });
+        }
+
+        // Newest first: if a property was genuinely shot more than once, the
+        // latest booking is the one the new iGuide belongs to. cursor() streams
+        // rather than materialising the whole table.
+        foreach ($query->orderByDesc('id')->cursor() as $shoot) {
+            $shootAddress = $this->buildFullAddress($shoot);
+            if ($shootAddress === null) {
+                continue;
+            }
+
+            if ($this->addressesMatch($address, $shootAddress)) {
+                return $shoot;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -411,7 +436,7 @@ class IguideService
         }
     }
 
-    private function searchPortalByAddress(string $address, string $normalizedAddress): ?array
+    private function searchPortalByAddress(string $address): ?array
     {
         $queries = [
             ['search' => $address],
@@ -426,7 +451,7 @@ class IguideService
                 $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
                 return null;
             }
-            $match = $this->findAddressMatchInPayload($response, $normalizedAddress);
+            $match = $this->findAddressMatchInPayload($response, $address);
             if ($match) {
                 return $match;
             }
@@ -438,10 +463,10 @@ class IguideService
             return null;
         }
 
-        return $this->findAddressMatchInPayload($fallbackResponse, $normalizedAddress);
+        return $this->findAddressMatchInPayload($fallbackResponse, $address);
     }
 
-    private function findAddressMatchInPayload(?Response $response, string $normalizedAddress): ?array
+    private function findAddressMatchInPayload(?Response $response, string $targetAddress): ?array
     {
         if (!$response?->successful()) {
             if ($response) {
@@ -456,16 +481,7 @@ class IguideService
 
         foreach ($this->extractRecords($response->json()) as $record) {
             foreach ($this->extractCandidateAddresses($record) as $candidate) {
-                $normalizedCandidate = $this->normalizeAddress($candidate);
-                if ($normalizedCandidate === '') {
-                    continue;
-                }
-
-                if (
-                    $normalizedCandidate === $normalizedAddress
-                    || str_contains($normalizedCandidate, $normalizedAddress)
-                    || str_contains($normalizedAddress, $normalizedCandidate)
-                ) {
+                if ($this->addressesMatch($candidate, $targetAddress)) {
                     return $this->parsePropertyData($record);
                 }
             }
@@ -494,6 +510,18 @@ class IguideService
         return [$payload];
     }
 
+    /**
+     * Pull every usable address spelling out of a provider record.
+     *
+     * The provider exposes the same property in three different shapes and
+     * only the webhook one carries a pre-joined fullAddress:
+     *   list    address{streetNumber, streetName, city, provinceState, postalCode}
+     *   detail  property{house, street, city, province, code}
+     *   webhook property.fullAddress
+     * Composing the component shapes is what lets a list/detail record be
+     * compared at all; previously the list shape lost the street and state and
+     * the detail shape produced nothing.
+     */
     private function extractCandidateAddresses(array $data): array
     {
         $candidates = [
@@ -503,21 +531,80 @@ class IguideService
             Arr::get($data, 'location.fullAddress'),
         ];
 
-        $flatAddress = Arr::get($data, 'address');
-        if (is_string($flatAddress)) {
-            $candidates[] = $flatAddress;
-        } elseif (is_array($flatAddress)) {
-            $candidates[] = implode(', ', array_filter([
-                $flatAddress['street1'] ?? $flatAddress['street'] ?? null,
-                $flatAddress['city'] ?? null,
-                $flatAddress['state'] ?? null,
-                $flatAddress['postalCode'] ?? $flatAddress['zip'] ?? null,
-            ]));
+        foreach (['address', 'property', 'location'] as $key) {
+            $node = Arr::get($data, $key);
+            if (is_string($node)) {
+                $candidates[] = $node;
+            } elseif (is_array($node)) {
+                $candidates[] = $this->composeAddressFromComponents($node);
+            }
         }
 
-        return array_values(array_filter(array_map(function ($value) {
-            return is_string($value) ? trim($value) : null;
-        }, $candidates)));
+        // Some payloads put the components at the root of the record.
+        $candidates[] = $this->composeAddressFromComponents($data);
+
+        $seen = [];
+        $out = [];
+        foreach ($candidates as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+            $value = trim($value);
+            if ($value === '' || isset($seen[$value])) {
+                continue;
+            }
+            $seen[$value] = true;
+            $out[] = $value;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Join provider address components into "house street, city, state zip",
+     * tolerating the differing key names across payload shapes.
+     */
+    private function composeAddressFromComponents(array $c): ?string
+    {
+        $pick = function (array $keys) use ($c): string {
+            foreach ($keys as $k) {
+                $v = $c[$k] ?? null;
+                if (is_string($v) && trim($v) !== '') {
+                    return trim($v);
+                }
+                if (is_int($v) || is_float($v)) {
+                    return (string) $v;
+                }
+            }
+            return '';
+        };
+
+        $house = $pick(['streetNumber', 'house', 'houseNumber', 'street_number', 'number']);
+        $street = $pick(['streetName', 'street', 'street1', 'street_name', 'streetAddress']);
+        $unit = $pick(['unitNumber', 'unit', 'unit_number', 'apt', 'apartment', 'suite']);
+        $city = $pick(['city', 'town', 'locality']);
+        $state = $pick(['provinceState', 'province', 'state', 'province_state', 'region']);
+        $zip = $pick(['postalCode', 'zip', 'code', 'postal_code', 'postalcode']);
+
+        // Without a house number and street this cannot identify a property, and
+        // a partial string here would only invite a wrong match.
+        if ($house === '' || $street === '') {
+            return null;
+        }
+
+        $streetLine = $house . ' ' . $street;
+        if ($unit !== '') {
+            $streetLine .= ' Unit ' . $unit;
+        }
+
+        $tail = trim($state . ' ' . $zip);
+
+        $parts = array_filter([$streetLine, $city, $tail], fn ($p) => is_string($p) && trim($p) !== '');
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        return implode(', ', $parts);
     }
 
     private function syncLegacyProperty(string $propertyId): ?array
@@ -1071,6 +1158,108 @@ class IguideService
         return trim(implode(', ', array_slice($parts, 0, 2)) . (count($parts) > 2 ? ', ' . implode(' ', array_slice($parts, 2)) : ''));
     }
 
+    /**
+     * Canonical token forms so that a provider spelling and our stored
+     * spelling of the same street reduce to an identical string.
+     *
+     * Canonical form is the USPS-style abbreviation. "SAINT" is deliberately
+     * absent: mapping it onto ST would conflate "Saint" with "Street".
+     */
+    private const STREET_TYPES = [
+        'STREET' => 'ST', 'ST' => 'ST', 'STR' => 'ST',
+        'ROAD' => 'RD', 'RD' => 'RD',
+        'DRIVE' => 'DR', 'DR' => 'DR', 'DRV' => 'DR',
+        'COURT' => 'CT', 'CT' => 'CT', 'CRT' => 'CT',
+        'AVENUE' => 'AVE', 'AVE' => 'AVE', 'AV' => 'AVE', 'AVEN' => 'AVE',
+        'BOULEVARD' => 'BLVD', 'BLVD' => 'BLVD', 'BLVD.' => 'BLVD',
+        'LANE' => 'LN', 'LN' => 'LN',
+        'PLACE' => 'PL', 'PL' => 'PL',
+        'TERRACE' => 'TER', 'TERR' => 'TER', 'TER' => 'TER',
+        'CIRCLE' => 'CIR', 'CIR' => 'CIR', 'CRCL' => 'CIR',
+        'PARKWAY' => 'PKWY', 'PKWY' => 'PKWY', 'PKY' => 'PKWY',
+        'TRAIL' => 'TRL', 'TRL' => 'TRL',
+        'SQUARE' => 'SQ', 'SQ' => 'SQ',
+        'HIGHWAY' => 'HWY', 'HWY' => 'HWY',
+        'CRESCENT' => 'CRES', 'CRES' => 'CRES',
+        'WAY' => 'WAY', 'WY' => 'WAY',
+        'POINT' => 'PT', 'PT' => 'PT',
+        'RIDGE' => 'RDG', 'RDG' => 'RDG',
+        'HEIGHTS' => 'HTS', 'HTS' => 'HTS',
+        'TURNPIKE' => 'TPKE', 'TPKE' => 'TPKE',
+        'CROSSING' => 'XING', 'XING' => 'XING',
+        'GARDENS' => 'GDNS', 'GDNS' => 'GDNS',
+        'MANOR' => 'MNR', 'MNR' => 'MNR',
+        'PLAZA' => 'PLZ', 'PLZ' => 'PLZ',
+        'EXTENSION' => 'EXT', 'EXT' => 'EXT',
+        'HOLLOW' => 'HOLW', 'HOLW' => 'HOLW',
+        'LANDING' => 'LNDG', 'LNDG' => 'LNDG',
+        'MEADOWS' => 'MDWS', 'MDWS' => 'MDWS',
+        'JUNCTION' => 'JCT', 'JCT' => 'JCT',
+        'STATION' => 'STA', 'STA' => 'STA',
+        'VALLEY' => 'VLY', 'VLY' => 'VLY',
+        'VILLAGE' => 'VLG', 'VLG' => 'VLG',
+        'HARBOR' => 'HBR', 'HBR' => 'HBR',
+        'SUMMIT' => 'SMT', 'SMT' => 'SMT',
+        'MOUNTAIN' => 'MTN', 'MTN' => 'MTN',
+        'CREEK' => 'CRK', 'CRK' => 'CRK',
+        'HILLS' => 'HLS', 'HLS' => 'HLS',
+        'HILL' => 'HL', 'HL' => 'HL',
+        'LAKE' => 'LK', 'LK' => 'LK',
+        'COVE' => 'CV', 'CV' => 'CV',
+        'GLEN' => 'GLN', 'GLN' => 'GLN',
+        'GROVE' => 'GRV', 'GRV' => 'GRV',
+        'FOREST' => 'FRST', 'FRST' => 'FRST',
+        'WOODS' => 'WDS', 'WDS' => 'WDS',
+        'FIELD' => 'FLD', 'FLD' => 'FLD',
+        'FALLS' => 'FLS', 'FLS' => 'FLS',
+        'KNOLL' => 'KNL', 'KNL' => 'KNL',
+        'BEND' => 'BND', 'BND' => 'BND',
+        'SHORE' => 'SHR', 'SHR' => 'SHR',
+        'SPRING' => 'SPG', 'SPG' => 'SPG',
+        'ORCHARD' => 'ORCH', 'ORCH' => 'ORCH',
+    ];
+
+    private const DIRECTIONALS = [
+        'NORTH' => 'N', 'N' => 'N',
+        'SOUTH' => 'S', 'S' => 'S',
+        'EAST' => 'E', 'E' => 'E',
+        'WEST' => 'W', 'W' => 'W',
+        'NORTHEAST' => 'NE', 'NE' => 'NE',
+        'NORTHWEST' => 'NW', 'NW' => 'NW',
+        'SOUTHEAST' => 'SE', 'SE' => 'SE',
+        'SOUTHWEST' => 'SW', 'SW' => 'SW',
+    ];
+
+    private const UNIT_MARKERS = [
+        'UNIT' => 'UNIT', 'APT' => 'UNIT', 'APARTMENT' => 'UNIT',
+        'STE' => 'UNIT', 'SUITE' => 'UNIT', 'NO' => 'UNIT',
+    ];
+
+    /**
+     * US states/territories plus Canadian provinces, since the provider is
+     * Canadian. Used to reject a trailing 2-letter token that is not a region.
+     */
+    private const REGION_CODES = [
+        'AL' => 1, 'AK' => 1, 'AZ' => 1, 'AR' => 1, 'CA' => 1, 'CO' => 1, 'CT' => 1,
+        'DE' => 1, 'DC' => 1, 'FL' => 1, 'GA' => 1, 'HI' => 1, 'ID' => 1, 'IL' => 1,
+        'IN' => 1, 'IA' => 1, 'KS' => 1, 'KY' => 1, 'LA' => 1, 'ME' => 1, 'MD' => 1,
+        'MA' => 1, 'MI' => 1, 'MN' => 1, 'MS' => 1, 'MO' => 1, 'MT' => 1, 'NE' => 1,
+        'NV' => 1, 'NH' => 1, 'NJ' => 1, 'NM' => 1, 'NY' => 1, 'NC' => 1, 'ND' => 1,
+        'OH' => 1, 'OK' => 1, 'OR' => 1, 'PA' => 1, 'RI' => 1, 'SC' => 1, 'SD' => 1,
+        'TN' => 1, 'TX' => 1, 'UT' => 1, 'VT' => 1, 'VA' => 1, 'WA' => 1, 'WV' => 1,
+        'WI' => 1, 'WY' => 1, 'PR' => 1, 'VI' => 1, 'GU' => 1, 'AS' => 1, 'MP' => 1,
+        'AB' => 1, 'BC' => 1, 'MB' => 1, 'NB' => 1, 'NL' => 1, 'NS' => 1, 'NT' => 1,
+        'NU' => 1, 'ON' => 1, 'PE' => 1, 'QC' => 1, 'SK' => 1, 'YT' => 1,
+    ];
+
+    /**
+     * Flatten an address to a comparable token string.
+     *
+     * Beyond casing/punctuation/whitespace this now canonicalizes street
+     * types and directionals, and reduces ZIP+4 to its 5-digit base, so that
+     * "7509 Amesbury Court, Alexandria, VA 22315-1234" and
+     * "7509 Amesbury Ct, Alexandria, VA 22315" reduce to the same string.
+     */
     private function normalizeAddress(?string $address): string
     {
         if (!is_string($address)) {
@@ -1082,9 +1271,192 @@ class IguideService
             return '';
         }
 
+        // Collapse ZIP+4 to the 5-digit base before punctuation is stripped,
+        // otherwise the +4 survives as a separate token.
+        $address = preg_replace('/\b(\d{5})-\d{4}\b/', '$1', $address) ?? $address;
+
         $address = preg_replace('/[^A-Z0-9]+/', ' ', $address) ?? '';
         $address = preg_replace('/\s+/', ' ', $address) ?? '';
+        $address = trim($address);
 
-        return trim($address);
+        if ($address === '') {
+            return '';
+        }
+
+        $tokens = explode(' ', $address);
+        foreach ($tokens as $i => $token) {
+            if (isset(self::UNIT_MARKERS[$token])) {
+                $tokens[$i] = self::UNIT_MARKERS[$token];
+                continue;
+            }
+            if (isset(self::DIRECTIONALS[$token])) {
+                $tokens[$i] = self::DIRECTIONALS[$token];
+                continue;
+            }
+            if (isset(self::STREET_TYPES[$token])) {
+                $tokens[$i] = self::STREET_TYPES[$token];
+            }
+        }
+
+        return implode(' ', $tokens);
+    }
+
+    /**
+     * Split an address into the components we can compare safely.
+     *
+     * Commas are honoured first because "street, city, state zip" is the
+     * shape both our own records and the provider payloads use. When there
+     * are no commas we fall back to positional parsing (trailing 5-digit ZIP,
+     * preceding 2-letter state) and leave street+city fused.
+     */
+    public function parseAddressComponents(?string $address): array
+    {
+        $empty = [
+            'house' => '', 'street' => '', 'unit' => '',
+            'city' => '', 'state' => '', 'zip' => '', 'fused' => false,
+        ];
+
+        if (!is_string($address) || trim($address) === '') {
+            return $empty;
+        }
+
+        $segments = array_values(array_filter(array_map('trim', explode(',', $address)), fn ($s) => $s !== ''));
+
+        $streetLine = '';
+        $city = '';
+        $state = '';
+        $zip = '';
+        $fused = false;
+
+        if (count($segments) >= 3) {
+            $streetLine = $segments[0];
+            $city = $segments[1];
+            $tail = $this->normalizeAddress($segments[count($segments) - 1]);
+            [$state, $zip] = $this->splitStateZip($tail);
+        } elseif (count($segments) === 2) {
+            $streetLine = $segments[0];
+            $tail = $this->normalizeAddress($segments[1]);
+            [$state, $zip] = $this->splitStateZip($tail);
+            $remainder = trim(preg_replace('/\s*' . preg_quote(trim($state . ' ' . $zip), '/') . '\s*$/', '', $tail) ?? '');
+            $city = $remainder;
+        } else {
+            $normalized = $this->normalizeAddress($address);
+            [$state, $zip] = $this->splitStateZip($normalized);
+            $streetLine = trim(preg_replace('/\s*' . preg_quote(trim($state . ' ' . $zip), '/') . '\s*$/', '', $normalized) ?? '');
+            $fused = true;
+        }
+
+        $normalizedStreetLine = $this->normalizeAddress($streetLine);
+
+        // Leading house number, e.g. "7509" or "123A".
+        $house = '';
+        if (preg_match('/^(\d+[A-Z]?)\s+/', $normalizedStreetLine . ' ', $m)) {
+            $house = $m[1];
+            $normalizedStreetLine = trim(substr($normalizedStreetLine, strlen($house)));
+        }
+
+        // Explicit unit marker, e.g. "UNIT 4B".
+        $unit = '';
+        if (preg_match('/\bUNIT\s+([A-Z0-9]+)\b/', $normalizedStreetLine, $m)) {
+            $unit = $m[1];
+            $normalizedStreetLine = trim(preg_replace('/\bUNIT\s+' . preg_quote($unit, '/') . '\b/', ' ', $normalizedStreetLine) ?? $normalizedStreetLine);
+            $normalizedStreetLine = trim(preg_replace('/\s+/', ' ', $normalizedStreetLine) ?? $normalizedStreetLine);
+        }
+
+        return [
+            'house' => $house,
+            'street' => $normalizedStreetLine,
+            'unit' => $unit,
+            'city' => $this->normalizeAddress($city),
+            'state' => $state,
+            'zip' => $zip,
+            'fused' => $fused,
+        ];
+    }
+
+    /**
+     * Split a trailing "STATE ZIP" off a normalized address tail.
+     *
+     * The 2-letter token is only accepted as a state when it really is one, and
+     * when it could also be a street type or directional it is only accepted if
+     * a ZIP was found alongside it. Without that guard "7509 Amesbury Ct" parses
+     * as a Connecticut address and loses its street type.
+     */
+    private function splitStateZip(string $normalizedTail): array
+    {
+        $state = '';
+        $zip = '';
+
+        if (preg_match('/\b(\d{5})\b\s*$/', $normalizedTail, $m)) {
+            $zip = $m[1];
+            $position = strrpos($normalizedTail, $zip);
+            $normalizedTail = $position === false ? '' : trim(substr($normalizedTail, 0, $position));
+        }
+
+        if (preg_match('/\b([A-Z]{2})\s*$/', $normalizedTail, $m)) {
+            $candidate = $m[1];
+            $ambiguous = isset(self::STREET_TYPES[$candidate]) || isset(self::DIRECTIONALS[$candidate]);
+
+            if (isset(self::REGION_CODES[$candidate]) && (!$ambiguous || $zip !== '')) {
+                $state = $candidate;
+            }
+        }
+
+        return [$state, $zip];
+    }
+
+    /**
+     * Decide whether two addresses denote the same property.
+     *
+     * Deliberately strict: the house number must match exactly and at least
+     * one locality component (ZIP, else city, else state) must corroborate.
+     * This is what stops "509 Amesbury Ct" attaching to "7509 Amesbury Ct"
+     * and stops a bare street name matching anything on that street.
+     */
+    public function addressesMatch(?string $left, ?string $right): bool
+    {
+        $a = $this->parseAddressComponents($left);
+        $b = $this->parseAddressComponents($right);
+
+        // A house number is mandatory on both sides. Without it the candidate
+        // is a street, not a property.
+        if ($a['house'] === '' || $b['house'] === '') {
+            return false;
+        }
+        if ($a['house'] !== $b['house']) {
+            return false;
+        }
+
+        // Distinct declared units are distinct properties.
+        if ($a['unit'] !== '' && $b['unit'] !== '' && $a['unit'] !== $b['unit']) {
+            return false;
+        }
+
+        // When either side left street and city fused (no commas), compare the
+        // street prefix instead of demanding equality with a fused string.
+        if ($a['fused'] || $b['fused']) {
+            $short = strlen($a['street']) <= strlen($b['street']) ? $a['street'] : $b['street'];
+            $long = strlen($a['street']) <= strlen($b['street']) ? $b['street'] : $a['street'];
+            if ($short === '' || !str_starts_with($long, $short)) {
+                return false;
+            }
+        } elseif ($a['street'] === '' || $a['street'] !== $b['street']) {
+            return false;
+        }
+
+        // Locality corroboration, strongest available wins.
+        if ($a['zip'] !== '' && $b['zip'] !== '') {
+            return $a['zip'] === $b['zip'];
+        }
+        if ($a['city'] !== '' && $b['city'] !== '') {
+            return $a['city'] === $b['city'];
+        }
+        if ($a['state'] !== '' && $b['state'] !== '') {
+            return $a['state'] === $b['state'];
+        }
+
+        // House + street alone is not enough: the same street number exists in
+        // many towns.
+        return false;
     }
 }

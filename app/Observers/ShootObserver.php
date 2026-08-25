@@ -4,6 +4,7 @@ namespace App\Observers;
 
 use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\GenerateShootMediaArchiveJob;
+use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -13,6 +14,7 @@ class ShootObserver
     public function updated(Shoot $shoot): void
     {
         $this->ensureCubiCasaOrder($shoot);
+        $this->ensureIguideDiscovery($shoot);
 
         if (!$shoot->wasChanged('workflow_status') && !$shoot->wasChanged('status')) {
             return;
@@ -106,6 +108,70 @@ class ShootObserver
 
         // Defer past the surrounding transaction so the job never reads a row
         // that has not been committed yet.
+        if (DB::transactionLevel() > 0) {
+            DB::afterCommit($dispatch);
+
+            return;
+        }
+
+        $dispatch();
+    }
+
+    /**
+     * Attempt iGUIDE discovery whenever a shoot arrives at "scheduled with a
+     * floor-plan / iGuide service" by ANY route.
+     *
+     * Mirrors ensureCubiCasaOrder so that rescheduling, a plain status PATCH,
+     * an alternate date or the AI-chat booking flow all get a discovery attempt
+     * without waiting on the half-hourly reconciliation command. Unlike
+     * CubiCasa this orders nothing and costs nothing: it is a provider lookup,
+     * and SyncShootIguideJob re-checks eligibility, no-ops when no match is
+     * found, and de-duplicates ingested assets by asset key.
+     */
+    private function ensureIguideDiscovery(Shoot $shoot): void
+    {
+        if (!$shoot->wasChanged('scheduled_at')
+            && !$shoot->wasChanged('workflow_status')
+            && !$shoot->wasChanged('status')
+        ) {
+            return;
+        }
+
+        if ($shoot->scheduled_at === null) {
+            return;
+        }
+
+        // Already resolved: the tour URL is the done-marker the reconciliation
+        // command uses, so honour it here too.
+        if (!empty($shoot->iguide_tour_url)) {
+            return;
+        }
+
+        $blocked = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_REQUESTED];
+        if (in_array($shoot->status, $blocked, true)
+            || in_array($shoot->workflow_status, $blocked, true)
+        ) {
+            return;
+        }
+
+        if (!$shoot->hasIguideEligibleService()) {
+            return;
+        }
+
+        // Same containment rule as CubiCasa: the catch must be inside the
+        // deferred callback, because on a sync queue the job runs at commit,
+        // after this method has already returned.
+        $dispatch = static function () use ($shoot): void {
+            try {
+                SyncShootIguideJob::dispatch($shoot->id);
+            } catch (\Throwable $e) {
+                Log::error('iGUIDE lifecycle discovery failed; shoot update completed regardless.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        };
+
         if (DB::transactionLevel() > 0) {
             DB::afterCommit($dispatch);
 
