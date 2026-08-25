@@ -49,6 +49,20 @@ class Kernel extends ConsoleKernel
 
     /**
      * Define the application's command schedule.
+     *
+     * WARNING: THIS METHOD IS INERT. bootstrap/app.php calls withSchedule(),
+     * and when the application builder registers a schedule this Kernel's
+     * schedule() is never invoked. `php artisan schedule:list` reflects
+     * bootstrap/app.php only.
+     *
+     * Anything registered here and NOT in bootstrap/app.php does not run.
+     * iguide:resync-pending was in exactly that position and silently never
+     * ran; it now lives in bootstrap/app.php. Still only registered here, and
+     * therefore still not running: invoices:generate --weekly --no-email and
+     * reports:sales:weekly. Both were left alone deliberately rather than
+     * switched on as a side effect of an unrelated fix.
+     *
+     * Add new schedules to bootstrap/app.php, not here.
      */
     protected function schedule(Schedule $schedule): void
     {

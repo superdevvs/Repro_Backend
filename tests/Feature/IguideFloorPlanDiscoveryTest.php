@@ -508,6 +508,17 @@ class IguideFloorPlanDiscoveryTest extends TestCase
         Queue::assertPushed(SyncShootIguideJob::class, fn ($job) => $job->shootId === $shoot->id);
     }
 
+    public function test_the_reconciliation_command_is_actually_registered_in_the_live_schedule(): void
+    {
+        // It was registered only in app/Console/Kernel.php, which withSchedule()
+        // in bootstrap/app.php makes inert, so the safety net never ran in
+        // production while schedule:list looked fine for CubiCasa next to it.
+        // schedule:list is the same view the production scheduler acts on.
+        $this->artisan('schedule:list')
+            ->expectsOutputToContain('iguide:resync-pending')
+            ->assertSuccessful();
+    }
+
     public function test_the_reconciliation_command_skips_a_shoot_that_already_has_its_tour(): void
     {
         Queue::fake();

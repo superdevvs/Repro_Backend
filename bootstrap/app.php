@@ -33,6 +33,11 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('messaging:invoice-summaries')->weeklyOn(1, '03:00');
         $schedule->command('payouts:send')->weeklyOn(0, '05:00');
         $schedule->command('cubicasa:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
+        // Reconciliation safety net for an iGuide the photographer produces
+        // hours or days after the booking, when no webhook reached us. This was
+        // only ever registered in app/Console/Kernel.php, which withSchedule()
+        // makes inert, so it never actually ran.
+        $schedule->command('iguide:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
         $schedule->command('system-overview:prune')->hourly();
         $schedule->command('telnyx:prune-webhook-events')->dailyAt('02:30');
         $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')
