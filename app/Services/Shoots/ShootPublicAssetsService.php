@@ -55,9 +55,9 @@ class ShootPublicAssetsService
             ->first();
     }
 
-    public function buildTypedPublicAssets(Shoot $shoot, string $type): array
+    public function buildTypedPublicAssets(Shoot $shoot, string $type, bool $reconcilePayments = true): array
     {
-        $assets = $this->buildPublicAssets($shoot);
+        $assets = $this->buildPublicAssets($shoot, $reconcilePayments);
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
         $propertyDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
         $videoUrl = $this->resolveTypedVideoUrl($tourLinks, $type);
@@ -492,9 +492,17 @@ class ShootPublicAssetsService
         return $frontendUrl . '/tour/' . $type . '?shootId=' . urlencode((string) $shootId);
     }
 
-    protected function buildPublicAssets(Shoot $shoot): array
+    /**
+     * @param  bool  $reconcilePayments  Pass false for read-only consumers that
+     *   never look at payment state. Reconciliation calls the Stripe API, which
+     *   measured at ~5.5s on a shoot with an open balance - far too slow for the
+     *   link-preview endpoint the edge hits on every page view.
+     */
+    protected function buildPublicAssets(Shoot $shoot, bool $reconcilePayments = true): array
     {
-        $shoot = $this->paymentStatusSupport->reconcileStripePaymentState($shoot, ['files', 'client', 'payments']);
+        $shoot = $reconcilePayments
+            ? $this->paymentStatusSupport->reconcileStripePaymentState($shoot, ['files', 'client', 'payments'])
+            : $shoot->loadMissing(['files', 'client', 'payments']);
         $files = $shoot->files;
         $chosen = $files->where('workflow_stage', ShootFile::STAGE_VERIFIED);
         if ($chosen->isEmpty()) {

@@ -57,7 +57,14 @@ class LinkPreviewService
         $provider = $this->normalizeProvider($provider);
         // The MLS/generic pages are driven by the same three payload shapes the
         // tour API exposes, so a video link resolves against its parent page.
-        $assets = $this->assets->buildTypedPublicAssets($shoot, $this->assetTypeFor($type));
+        // Previews never read payment state, and reconciling it calls Stripe
+        // (~5.5s on a shoot with an open balance). That latency made crawlers
+        // time out and cache the generic fallback card instead of the property.
+        $assets = $this->assets->buildTypedPublicAssets(
+            $shoot,
+            $this->assetTypeFor($type),
+            reconcilePayments: false
+        );
 
         $branded = !in_array($type, (array) config('link_preview.unbranded_types', []), true);
 
