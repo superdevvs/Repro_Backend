@@ -201,17 +201,26 @@ class IguideService
         $brandedCandidate = $iguideData['tour_url']
             ?? $iguideData['unbranded_url']
             ?? null;
-        $mlsCandidate = $iguideData['unbranded_url']
-            ?? $iguideData['tour_url']
-            ?? null;
+        // Never label the branded/public tour as MLS. If iGUIDE did not send a
+        // dedicated unbranded URL, the compliant slot must remain empty.
+        $mlsCandidate = $iguideData['unbranded_url'] ?? null;
 
         $isBlank = static fn ($value): bool => !is_string($value) || trim($value) === '';
 
         if ($isBlank($tourLinks['iguide_branded'] ?? null) && is_string($brandedCandidate) && $brandedCandidate !== '') {
             $tourLinks['iguide_branded'] = $brandedCandidate;
         }
-        if ($isBlank($tourLinks['iguide_mls'] ?? null) && is_string($mlsCandidate) && $mlsCandidate !== '') {
-            $tourLinks['iguide_mls'] = $mlsCandidate;
+        if (is_string($mlsCandidate) && $mlsCandidate !== '') {
+            if ($isBlank($tourLinks['iguide_mls'] ?? null)) {
+                $tourLinks['iguide_mls'] = $mlsCandidate;
+            }
+            if (($tourLinks['iguide_mls'] ?? null) === $mlsCandidate) {
+                $tourLinks['iguide_mls_source'] = 'unbranded_url';
+            }
+        } elseif (($tourLinks['iguide_mls'] ?? null) === $brandedCandidate) {
+            // Repair the historical auto-fill on the next sync. A manual,
+            // distinct MLS URL is retained.
+            unset($tourLinks['iguide_mls'], $tourLinks['iguide_mls_source']);
         }
         if ($isBlank($tourLinks['iGuide'] ?? null) && is_string($brandedCandidate) && $brandedCandidate !== '') {
             // Legacy fallback key kept in sync for older readers.

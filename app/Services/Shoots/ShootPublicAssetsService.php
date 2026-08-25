@@ -63,18 +63,62 @@ class ShootPublicAssetsService
         $videoUrl = $this->resolveTypedVideoUrl($tourLinks, $type);
         $videoThumbnailUrl = $this->resolveVideoThumbnailUrl($videoUrl);
 
-        $iguideUrl = match ($type) {
-            'branded' => $shoot->iguide_tour_url
-                ?? $tourLinks['iguide_branded']
-                ?? $tourLinks['iGuide']
-                ?? $tourLinks['iguide_mls']
-                ?? null,
-            default => $shoot->iguide_tour_url
-                ?? $tourLinks['iguide_mls']
-                ?? $tourLinks['iguide_branded']
-                ?? $tourLinks['iGuide']
-                ?? null,
-        };
+        $brandedIguideUrl = $this->firstFilled(
+            $shoot->iguide_tour_url,
+            $tourLinks['iguide_branded'] ?? null,
+            $tourLinks['iGuide'] ?? null
+        );
+        $iguideMlsUrl = $this->firstFilled($tourLinks['iguide_mls'] ?? null);
+        if ($iguideMlsUrl !== null && in_array($iguideMlsUrl, array_filter([
+            $shoot->iguide_tour_url,
+            $tourLinks['iguide_branded'] ?? null,
+            $tourLinks['iGuide'] ?? null,
+        ]), true)) {
+            // Historical iGUIDE syncs copied the branded URL into iguide_mls.
+            // Treat an identical value as unverified and fail closed.
+            $iguideMlsUrl = null;
+        }
+        $iguideMlsSource = $tourLinks['iguide_mls_source'] ?? null;
+        if ($iguideMlsUrl !== null && is_string($iguideMlsSource) && $iguideMlsSource !== 'unbranded_url') {
+            // A provenance marker exists but does not attest an unbranded source.
+            $iguideMlsUrl = null;
+        }
+
+        $matterportBrandedUrl = $this->firstFilled(
+            $tourLinks['matterport_branded'] ?? null,
+            $tourLinks['matterport'] ?? null
+        );
+        $matterportMlsUrl = $this->firstFilled($tourLinks['matterport_mls'] ?? null);
+        if ($matterportMlsUrl !== null && in_array($matterportMlsUrl, array_filter([
+            $tourLinks['matterport_branded'] ?? null,
+            $tourLinks['matterport'] ?? null,
+        ]), true)) {
+            $matterportMlsUrl = null;
+        }
+
+        $isBranded = $type === 'branded';
+        $iguideUrl = $isBranded ? ($brandedIguideUrl ?? $iguideMlsUrl) : $iguideMlsUrl;
+
+        // Do not return branded 3D destinations inside MLS/generic payloads.
+        // zillow_3d has no unbranded equivalent and neither the MLS tour pages
+        // nor the MLS 3D wrapper will open it, so leaving it here would make a
+        // preview advertise a walkthrough the page cannot show - and disclose to
+        // an MLS audience that a branded Zillow tour exists.
+        if (! $isBranded) {
+            unset(
+                $tourLinks['iguide_branded'],
+                $tourLinks['iGuide'],
+                $tourLinks['iguide'],
+                $tourLinks['matterport_branded'],
+                $tourLinks['matterport'],
+                $tourLinks['zillow_3d']
+            );
+            if ($iguideMlsUrl === null) {
+                unset($tourLinks['iguide_mls'], $tourLinks['iguide_mls_source']);
+            } else {
+                $tourLinks['iguide_mls'] = $iguideMlsUrl;
+            }
+        }
 
         $assets['type'] = $type;
         $assets['property_details'] = $propertyDetails;
@@ -86,9 +130,7 @@ class ShootPublicAssetsService
         // floorplan files exist; the frontend renders a clean fallback for those.
         $localFloorplans = $this->buildFloorplanAssets($shoot);
         $assets['floorplans'] = !empty($localFloorplans) ? $localFloorplans : $shoot->iguide_floorplans;
-        $assets['matterport_url'] = $type === 'branded'
-            ? ($tourLinks['matterport_branded'] ?? $tourLinks['matterport'] ?? null)
-            : ($tourLinks['matterport_mls'] ?? $tourLinks['matterport'] ?? null);
+        $assets['matterport_url'] = $isBranded ? $matterportBrandedUrl : $matterportMlsUrl;
         $assets['video_link'] = $videoUrl;
         $assets['video_thumbnail_url'] = $videoThumbnailUrl;
         $assets['video_poster_url'] = $videoThumbnailUrl;

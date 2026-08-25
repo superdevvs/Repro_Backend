@@ -79,6 +79,7 @@ use App\Http\Controllers\API\EditorRatesController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\FeaturedShootController;
+use App\Http\Controllers\API\LinkPreviewController;
 use App\Http\Controllers\API\IpLocationController;
 use App\Http\Controllers\API\WeatherController;
 use App\Http\Controllers\API\SystemTelemetryController;
@@ -104,6 +105,23 @@ Route::middleware('auth:sanctum')->get('/me/permissions', [PermissionController:
 Route::get('/ping', function () {
     return response()->json(['message' => 'pong']);
 });
+
+Route::middleware('throttle:120,1')
+    ->prefix('public/link-previews')
+    ->group(function () {
+        $previewTypes = array_merge(
+            \App\Services\LinkPreview\LinkPreviewService::TOUR_TYPES,
+            \App\Services\LinkPreview\LinkPreviewService::STATIC_TYPES,
+        );
+
+        Route::get('{type}', [LinkPreviewController::class, 'metadata'])
+            ->whereIn('type', $previewTypes)
+            ->name('api.public.link-previews.metadata');
+        Route::get('{type}/image/{fingerprint}.jpg', [LinkPreviewController::class, 'image'])
+            ->whereIn('type', $previewTypes)
+            ->where('fingerprint', '[a-f0-9]{16}')
+            ->name('api.public.link-previews.image');
+    });
 
 Route::get('/v1/featured-shoot', FeaturedShootController::class)
     ->middleware('throttle:120,1')
