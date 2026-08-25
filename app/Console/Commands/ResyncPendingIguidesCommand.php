@@ -25,20 +25,25 @@ class ResyncPendingIguidesCommand extends Command
         $limit = (int) $this->option('limit');
         $cutoff = Carbon::now()->subDays(max(1, $days));
 
-        $query = Shoot::query()
-            ->with('services.category')
+        // Read the ids first and let the query finish before dispatching.
+        // Dispatching is a write to the `jobs` table, and holding a SQLite read
+        // snapshot open across a write is what made cubicasa:resync-pending fail
+        // with "database is locked" on roughly one run in five.
+        $shootIds = Shoot::query()
             ->whereNull('iguide_tour_url')
             ->where(function ($q) use ($cutoff) {
                 $q->where('updated_at', '>=', $cutoff)
                     ->orWhere('scheduled_date', '>=', $cutoff->copy()->toDateString());
             })
             ->orderByDesc('id')
-            ->limit($limit);
+            ->limit($limit)
+            ->pluck('id');
 
         $count = 0;
-        foreach ($query->cursor() as $shoot) {
+        foreach ($shootIds as $shootId) {
+            $shoot = Shoot::with('services.category')->find($shootId);
             // Skip shoots that didn't book a floorplan / iGuide service.
-            if (!$shoot->hasIguideEligibleService()) {
+            if (!$shoot || !$shoot->hasIguideEligibleService()) {
                 continue;
             }
             SyncShootIguideJob::dispatch($shoot->id);

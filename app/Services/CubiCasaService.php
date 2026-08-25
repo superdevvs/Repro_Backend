@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Support\LockedWrite;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
@@ -678,7 +679,21 @@ class CubiCasaService
             }
         }
 
-        $shoot->save();
+        return $this->persist($shoot, 'cubicasa.applyShootData');
+    }
+
+    /**
+     * Save the shoot, tolerating a lost race with another SQLite writer.
+     *
+     * Every write in this service goes through here. Reconciliation runs on a
+     * schedule beside a database queue worker that is committing to the same
+     * SQLite file, and the loser of that race gets "database is locked" with no
+     * help from busy_timeout (see LockedWrite for why). Retrying briefly here is
+     * what stops one contended write aborting a whole resync run.
+     */
+    private function persist(Shoot $shoot, string $context): Shoot
+    {
+        LockedWrite::run(static fn () => $shoot->save(), $context);
 
         return $shoot;
     }
@@ -694,9 +709,7 @@ class CubiCasaService
             'cubicasa_last_sync_error' => null,
         ]);
 
-        $shoot->save();
-
-        return $shoot;
+        return $this->persist($shoot, 'cubicasa.markSyncQueued');
     }
 
     public function markSyncRunning(Shoot $shoot, ?string $jobId = null): Shoot
@@ -710,9 +723,7 @@ class CubiCasaService
             'cubicasa_last_sync_error' => null,
         ]);
 
-        $shoot->save();
-
-        return $shoot;
+        return $this->persist($shoot, 'cubicasa.markSyncRunning');
     }
 
     public function markSyncFailed(Shoot $shoot, string $status, string $error): Shoot
@@ -722,9 +733,7 @@ class CubiCasaService
             'cubicasa_last_sync_error' => $error,
         ]);
 
-        $shoot->save();
-
-        return $shoot;
+        return $this->persist($shoot, 'cubicasa.markSyncFailed');
     }
 
     public function isSyncInProgress(Shoot $shoot): bool
