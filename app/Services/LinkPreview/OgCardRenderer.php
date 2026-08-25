@@ -559,18 +559,46 @@ class OgCardRenderer
         $blockH = $addrH + ($cityH ? 12 + $cityH : 0) + ($statsH ? $statsGap + $statsH : 0);
         $top = $bottom - $blockH;
 
+        // A scrim alone cannot guarantee contrast: on a sunlit interior the
+        // gradient is only part-way in by the time it reaches the headline, and
+        // white type on pale hardwood stops reading. A soft drop shadow fixes it
+        // regardless of what the photograph is doing underneath, and costs
+        // nothing on the dark exteriors where the scrim was already enough.
         if ($address !== '') {
-            $canvas->text($address, $left, $top, $addrFont, $addrSize, '#ffffff', 1.0, 'left', 'top');
+            $this->drawTextWithShadow($canvas, $address, $left, $top, $addrFont, $addrSize, 1.0);
         }
 
         if ($cityH) {
             $cityText = $this->fonts->truncateToWidth($cityText, $cityFont, $citySize, $maxW);
-            $canvas->text($cityText, $left, $top + $addrH + 12, $cityFont, $citySize, '#ffffff', 0.86, 'left', 'top');
+            $this->drawTextWithShadow($canvas, $cityText, $left, $top + $addrH + 12, $cityFont, $citySize, 0.86);
         }
 
         if ($statsH) {
             $this->drawStatChips($canvas, $p, $left, $top + $addrH + ($cityH ? 12 + $cityH : 0) + $statsGap, $maxW);
         }
+    }
+
+    /**
+     * White text over an unknown photograph, made legible by stacking a few
+     * offset dark copies underneath instead of a single hard shadow, which would
+     * read as an outline at this weight.
+     */
+    private function drawTextWithShadow(
+        CardCanvas $canvas,
+        string $text,
+        int $x,
+        int $y,
+        string $font,
+        float $size,
+        float $alpha
+    ): void {
+        $spread = max(2, (int) round($size * 0.055));
+
+        foreach ([[0, $spread], [$spread, $spread], [0, (int) round($spread / 2)]] as [$dx, $dy]) {
+            $canvas->text($text, $x + $dx, $y + $dy, $font, $size, self::INK, 0.34 * $alpha, 'left', 'top');
+        }
+
+        $canvas->text($text, $x, $y, $font, $size, '#ffffff', $alpha, 'left', 'top');
     }
 
     private function drawStatChips(CardCanvas $canvas, PreviewPayload $p, int $x, int $y, int $maxW): void
