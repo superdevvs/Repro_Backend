@@ -563,6 +563,13 @@ class LinkPreviewService
                 continue;
             }
 
+            // A stored zero means "not recorded", not "this home has no
+            // bedrooms". Printing "0 bd" on a listing card reads as a defect.
+            $numeric = str_replace([',', ' '], '', $value);
+            if (is_numeric($numeric) && (float) $numeric === 0.0) {
+                continue;
+            }
+
             if ($label === 'SQ FT' && is_numeric(str_replace(',', '', $value))) {
                 $value = number_format((float) str_replace(',', '', $value));
             }

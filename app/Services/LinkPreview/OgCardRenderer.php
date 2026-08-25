@@ -244,10 +244,15 @@ class OgCardRenderer
         $canvas->ring($cx, $cy, 60, 3, '#ffffff', 0.85);
         $this->drawCubeGlyph($canvas, $cx, $cy, 30);
 
-        // Floorplan inset, when the shoot has one.
+        // Floorplan inset, when the shoot has one that can actually be drawn.
+        // The white backing plate used to be painted before the image was
+        // attempted, so a floorplan that failed to load left a blank white box
+        // on the card. Loads are memoised, so this pre-check costs nothing.
         $insetRight = $w - 34;
         $textRight = $w - 36;
-        if ($p->floorplan) {
+        $floorplanBytes = $p->floorplan ? $this->images->load($p->floorplan) : null;
+        $floorplanUsable = $floorplanBytes !== null && is_array(@getimagesizefromstring($floorplanBytes));
+        if ($floorplanUsable) {
             $iw = 214;
             $ih = 150;
             $ix = $insetRight - $iw;
