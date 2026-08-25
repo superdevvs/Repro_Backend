@@ -204,6 +204,43 @@ class LinkPreviewComplianceTest extends TestCase
         );
     }
 
+    #[Test]
+    public function a_stale_card_url_serves_the_current_card_instead_of_a_broken_image(): void
+    {
+        // A crawler keeps an og:image URL long after the shoot changes, and an
+        // edge-cached metadata response can publish a fingerprint that was never
+        // rendered. Returning 404 there shows a broken preview to everyone who
+        // already shared the link.
+        $stale = str_repeat('a', 16);
+
+        $response = $this->get("/api/public/link-previews/dashboard/image/{$stale}.jpg");
+
+        $response->assertOk();
+        $response->assertHeader('Content-Type', 'image/jpeg');
+        $this->assertStringNotContainsString(
+            'immutable',
+            (string) $response->headers->get('Cache-Control'),
+            'Bytes that do not match the requested fingerprint must not be cached forever.'
+        );
+
+        $info = @getimagesizefromstring((string) $response->getContent());
+        $this->assertIsArray($info);
+        $this->assertSame([1200, 630], [$info[0], $info[1]]);
+    }
+
+    #[Test]
+    public function a_matching_card_url_is_cached_immutably(): void
+    {
+        $metadata = $this->getJson('/api/public/link-previews/dashboard')->assertOk()->json();
+        $fingerprint = $metadata['fingerprint'];
+
+        $response = $this->get("/api/public/link-previews/dashboard/image/{$fingerprint}.jpg");
+
+        $response->assertOk();
+        $this->assertStringContainsString('immutable', (string) $response->headers->get('Cache-Control'));
+        $this->assertSame('"' . $fingerprint . '"', $response->headers->get('ETag'));
+    }
+
     private function makePreviews(): LinkPreviewService
     {
         return new LinkPreviewService($this->makeAssets());

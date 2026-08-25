@@ -63,17 +63,28 @@ class LinkPreviewController extends Controller
         // Fingerprinted cards are immutable. If the shoot has changed, continue
         // serving the old object to crawlers that still hold its old URL.
         $image = $this->images->existing($type, $shootId, $fingerprint);
-        if ($image === null) {
+        $exact = $image !== null;
+
+        if (! $exact) {
+            // The requested fingerprint is not in storage. It may simply not be
+            // rendered yet, or it may be genuinely stale: a crawler can hold a
+            // URL from before the shoot was edited, and an edge-cached metadata
+            // response can outlive a renderer change. Serving the current card
+            // is always better than a broken image, so only the caching promise
+            // is downgraded, never the response.
             $payload = $this->resolvePayload($request, $type);
-            abort_unless(hash_equals($payload->fingerprint(), $fingerprint), 404);
             $image = $this->images->ensure($payload);
+            $exact = hash_equals($payload->fingerprint(), $fingerprint);
         }
 
-        $etag = '"' . $fingerprint . '"';
+        $etag = '"' . $image['fingerprint'] . '"';
         $headers = [
             'Content-Type' => 'image/jpeg',
             'Content-Length' => (string) $image['size'],
-            'Cache-Control' => OgImageService::immutableCacheControl(),
+            // Only a fingerprint that matches its bytes may be cached forever.
+            'Cache-Control' => $exact
+                ? OgImageService::immutableCacheControl()
+                : 'public, max-age=300, must-revalidate',
             'ETag' => $etag,
             'X-Content-Type-Options' => 'nosniff',
         ];
