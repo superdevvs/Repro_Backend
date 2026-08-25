@@ -204,6 +204,70 @@ class IguideFloorPlanDiscoveryTest extends TestCase
         $this->assertSame($target->id, $found->id, 'must be the exact property, not a neighbour');
     }
 
+    public function test_a_cancelled_booking_never_wins_the_address_match(): void
+    {
+        // Repeat-shot properties are common: 6275 Kerrydale Drive has seven
+        // shoots in production. Recency alone would hand the iGuide to whichever
+        // booking happens to be newest, including a cancelled one.
+        $live = $this->shootWithFloorPlan([
+            'address' => '6275 Kerrydale Drive',
+            'city' => 'Springfield',
+            'state' => 'VA',
+            'zip' => '22152',
+        ]);
+
+        $cancelled = $this->shootWithFloorPlan([
+            'address' => '6275 Kerrydale Drive',
+            'city' => 'Springfield',
+            'state' => 'VA',
+            'zip' => '22152',
+            'status' => Shoot::STATUS_CANCELLED,
+            'workflow_status' => Shoot::STATUS_CANCELLED,
+        ]);
+
+        $this->assertGreaterThan($live->id, $cancelled->id, 'the cancelled shoot must be the newer row');
+
+        $found = app(IguideService::class)
+            ->findShootByAddress('6275 Kerrydale Dr, Springfield, VA 22152');
+
+        $this->assertNotNull($found);
+        $this->assertSame($live->id, $found->id, 'the live booking must win over a newer cancelled one');
+    }
+
+    public function test_a_floor_plan_booking_is_preferred_over_one_without(): void
+    {
+        $floorPlan = $this->shootWithFloorPlan([
+            'address' => '6275 Kerrydale Drive',
+            'city' => 'Springfield',
+            'state' => 'VA',
+            'zip' => '22152',
+        ]);
+
+        // Newer, live, but owns no floor-plan work, so the iGuide is not its own.
+        $photoOnly = $this->shoot([
+            'address' => '6275 Kerrydale Drive',
+            'city' => 'Springfield',
+            'state' => 'VA',
+            'zip' => '22152',
+        ]);
+        $this->attach($photoOnly, $this->service([
+            'name' => '25 HDR Photos',
+            'category_id' => $this->category('Photos')->id,
+            'upload_intake_type' => Service::INTAKE_PHOTO,
+            'uses_hdr_brackets' => true,
+            'photo_count' => 25,
+            'requires_editing' => true,
+        ]), 5);
+
+        $this->assertGreaterThan($floorPlan->id, $photoOnly->id);
+
+        $found = app(IguideService::class)
+            ->findShootByAddress('6275 Kerrydale Dr, Springfield, VA 22152');
+
+        $this->assertNotNull($found);
+        $this->assertSame($floorPlan->id, $found->id);
+    }
+
     public function test_find_shoot_by_address_returns_nothing_for_an_unknown_property(): void
     {
         $this->shootWithFloorPlan([

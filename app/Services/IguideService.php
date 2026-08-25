@@ -342,21 +342,54 @@ class IguideService
             });
         }
 
-        // Newest first: if a property was genuinely shot more than once, the
-        // latest booking is the one the new iGuide belongs to. cursor() streams
+        // A property can be shot many times: 6275 Kerrydale Drive has seven
+        // shoots. Newest-first is the right default, but a cancelled booking
+        // must never win, and a shoot that actually booked a floor plan is a
+        // better home for an iGuide than one that did not. cursor() streams
         // rather than materialising the whole table.
+        $best = null;
+        $bestRank = -1;
+
         foreach ($query->orderByDesc('id')->cursor() as $shoot) {
             $shootAddress = $this->buildFullAddress($shoot);
             if ($shootAddress === null) {
                 continue;
             }
 
-            if ($this->addressesMatch($address, $shootAddress)) {
-                return $shoot;
+            if (!$this->addressesMatch($address, $shootAddress)) {
+                continue;
+            }
+
+            $rank = $this->addressMatchRank($shoot);
+
+            // Strictly greater keeps the newest among equals, because the
+            // cursor already walks newest first.
+            if ($rank > $bestRank) {
+                $best = $shoot;
+                $bestRank = $rank;
+            }
+
+            // Live booking that owns floor-plan work: nothing can beat it.
+            if ($bestRank === 2) {
+                break;
             }
         }
 
-        return null;
+        return $best;
+    }
+
+    /**
+     * Preference among several shoots at one address: a live booking that owns
+     * floor-plan work, then any live booking, then a dead one as a last resort.
+     */
+    private function addressMatchRank(Shoot $shoot): int
+    {
+        $dead = [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED];
+        if (in_array($shoot->status, $dead, true) || in_array($shoot->workflow_status, $dead, true)) {
+            return 0;
+        }
+
+        return $shoot->hasIguideEligibleService() ? 2 : 1;
     }
 
     /**
