@@ -418,7 +418,10 @@ class LinkPreviewService
             return $label;
         }
 
-        return in_array($type, ['mls', 'g-mls'], true) ? 'PROPERTY TOUR' : 'VIRTUAL TOUR';
+        // Every unbranded type, not just mls/g-mls. video-mls, video-generic and
+        // 3d-mls all land here when their media is missing, and they were being
+        // labelled "VIRTUAL TOUR" while the plain MLS card said "PROPERTY TOUR".
+        return $this->isUnbrandedType($type) ? 'PROPERTY TOUR' : 'VIRTUAL TOUR';
     }
 
     private function chipColorFor(string $design): ?string

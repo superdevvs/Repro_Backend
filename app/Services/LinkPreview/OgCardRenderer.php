@@ -68,9 +68,11 @@ class OgCardRenderer
         }
 
         // Scrim across the lower two thirds so the type always has contrast,
-        // whatever the photo is doing underneath.
-        $scrimH = (int) round($h * 0.64);
-        $canvas->verticalGradient(0, $h - $scrimH, $w, $scrimH, self::INK, 0.0, 0.94, 'down', 1.5);
+        // whatever the photo is doing underneath. The ramp is close to linear on
+        // purpose: an eased ramp left only ~29% darkening at the headline
+        // baseline, which disappeared over a sunlit floor.
+        $scrimH = (int) round($h * 0.68);
+        $canvas->verticalGradient(0, $h - $scrimH, $w, $scrimH, self::INK, 0.0, 0.96, 'down', 1.15);
 
         $this->drawChip($canvas, $p, 36, 32);
         $this->drawWordmark($canvas, $p, $w);
@@ -134,9 +136,13 @@ class OgCardRenderer
             $canvas->textTracked('MORE PHOTOS', $cx, $ty + (int) round($th / 2) + 30, $this->fonts->bold(), 12, '#ffffff', 1.6, 0.70, 'center', 'middle');
         }
 
-        $canvas->verticalGradient(0, (int) round($h * 0.45), $heroW, (int) round($h * 0.55), self::INK, 0.0, 0.92, 'down', 1.5);
+        $canvas->verticalGradient(0, (int) round($h * 0.42), $heroW, (int) round($h * 0.58), self::INK, 0.0, 0.94, 'down', 1.2);
 
         $this->drawChip($canvas, $p, 36, 32);
+        // Scoped to the hero panel, not the full canvas, so the mark sits clear
+        // of the tile rail. Without this a branded photo tour - the most shared
+        // link of all - carried no REPRO identity, unlike d2, d5 and d6.
+        $this->drawWordmark($canvas, $p, $heroW);
 
         $this->drawAddressBlock($canvas, $p, 36, $heroW - 36, $h - 38, [
             'address' => 52,
