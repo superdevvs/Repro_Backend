@@ -37,7 +37,12 @@ return Application::configure(basePath: dirname(__DIR__))
         // hours or days after the booking, when no webhook reached us. This was
         // only ever registered in app/Console/Kernel.php, which withSchedule()
         // makes inert, so it never actually ran.
-        $schedule->command('iguide:resync-pending')->everyThirtyMinutes()->withoutOverlapping();
+        //
+        // Offset to :15/:45 rather than sharing CubiCasa's :00/:30 slot. Both
+        // resync commands write shoot rows, the database is SQLite, and
+        // cubicasa:resync-pending is already failing on "database is locked".
+        // Running a second writer in the same minute would only add to that.
+        $schedule->command('iguide:resync-pending')->cron('15,45 * * * *')->withoutOverlapping();
         $schedule->command('system-overview:prune')->hourly();
         $schedule->command('telnyx:prune-webhook-events')->dailyAt('02:30');
         $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')

@@ -107,6 +107,12 @@ class IguideService
                     // reading iGuides on demand. Caller must rely on webhook delivery.
                     $this->lastFailureReason = self::FAILURE_WEBHOOK_ONLY;
                 }
+
+                // Portal is the live integration. api.iguide.com no longer serves
+                // TLS for its own hostname (cURL 35, unrecognized name), so
+                // falling through to it cannot succeed and only logs an error on
+                // every reconciliation run.
+                return null;
             }
 
             return $this->syncLegacyProperty($propertyId);
@@ -136,6 +142,10 @@ class IguideService
                 if ($match) {
                     return $match;
                 }
+
+                // Same reason as syncProperty(): the legacy host is unreachable,
+                // so attempting it per shoot per run only produces noise.
+                return null;
             }
 
             return $this->searchLegacyByAddress($address);
