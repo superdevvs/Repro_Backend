@@ -325,11 +325,14 @@ class InvoiceApprovalController extends Controller
         }
 
         if (!empty($filters['start'])) {
-            $query->whereDate('billing_period_start', '>=', $filters['start']);
+            // Include a weekly invoice when any part of its billing period is in
+            // the selected range. A week that crosses a month/quarter boundary
+            // should not disappear from both periods.
+            $query->whereDate('billing_period_end', '>=', $filters['start']);
         }
 
         if (!empty($filters['end'])) {
-            $query->whereDate('billing_period_end', '<=', $filters['end']);
+            $query->whereDate('billing_period_start', '<=', $filters['end']);
         }
 
         return $query

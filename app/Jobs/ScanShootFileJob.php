@@ -6,6 +6,7 @@ use App\Exceptions\Scanning\ClamAvUnavailable;
 use App\Models\ShootFile;
 use App\Services\DropboxWorkflowService;
 use App\Services\Scanning\ClamAvClient;
+use App\Services\Scanning\ClamAvScanResult;
 use App\Services\Scanning\FileScanService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -15,6 +16,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Throwable;
+use ZipArchive;
 
 /**
  * Submits a quarantined {@see ShootFile} to the self-hosted ClamAV engine and
@@ -52,8 +54,6 @@ class ScanShootFileJob implements ShouldQueue
     /**
      * Total attempts including the first. After exhausting these, {@see failed()}
      * runs and the file is transitioned to `failed`.
-     *
-     * @var int
      */
     public int $tries = 8;
 
@@ -68,10 +68,8 @@ class ScanShootFileJob implements ShouldQueue
     /**
      * Per-attempt timeout. Scanning a large file should never tie up a worker
      * indefinitely.
-     *
-     * @var int
      */
-    public int $timeout = 300;
+    public int $timeout = 1800;
 
     public function __construct(public readonly int $shootFileId)
     {
@@ -139,7 +137,9 @@ class ScanShootFileJob implements ShouldQueue
         }
 
         try {
-            $result = $clamAv->scan($sourcePath);
+            $result = $file->isIguideOfflinePackage()
+                ? $this->scanIguidePackageMembers($sourcePath, $clamAv)
+                : $clamAv->scan($sourcePath);
         } catch (ClamAvUnavailable $e) {
             // Req 15.2: keep the file quarantined and let the queue retry with
             // backoff. The terminal `failed` transition only happens once
@@ -194,9 +194,9 @@ class ScanShootFileJob implements ShouldQueue
             }
 
             $reason = $e instanceof ClamAvUnavailable
-                ? 'scan_unavailable: ' . $e->getMessage()
+                ? 'scan_unavailable: '.$e->getMessage()
                 : ($e !== null
-                    ? 'scan_failed: ' . $e->getMessage()
+                    ? 'scan_failed: '.$e->getMessage()
                     : 'scan_unavailable');
 
             app(FileScanService::class)->flagFailed($file, $reason);
@@ -265,6 +265,54 @@ class ScanShootFileJob implements ShouldQueue
         }
 
         return null;
+    }
+
+    /**
+     * Scan every uncompressed archive member without extracting it. This keeps
+     * each ClamAV INSTREAM request below the structural validator's 256 MiB
+     * per-entry bound and avoids clamd's commonly-smaller whole-stream limit.
+     */
+    private function scanIguidePackageMembers(string $sourcePath, ClamAvClient $clamAv): ClamAvScanResult
+    {
+        $zip = new ZipArchive;
+        $opened = $zip->open($sourcePath, ZipArchive::CHECKCONS);
+        if ($opened !== true) {
+            throw new ClamAvUnavailable('The quarantined iGUIDE ZIP could not be opened for member scanning.');
+        }
+
+        $scanned = 0;
+        try {
+            for ($index = 0; $index < $zip->numFiles; $index++) {
+                $stat = $zip->statIndex($index, ZipArchive::FL_UNCHANGED);
+                if (! is_array($stat) || ! isset($stat['name']) || str_ends_with((string) $stat['name'], '/')) {
+                    continue;
+                }
+
+                $stream = $zip->getStreamIndex($index, ZipArchive::FL_UNCHANGED);
+                if (! is_resource($stream)) {
+                    throw new ClamAvUnavailable('An iGUIDE ZIP member could not be opened for malware scanning.');
+                }
+
+                try {
+                    $result = $clamAv->scan($stream);
+                } finally {
+                    fclose($stream);
+                }
+
+                $scanned++;
+                if ($result->isInfected()) {
+                    return $result;
+                }
+            }
+        } finally {
+            $zip->close();
+        }
+
+        if ($scanned === 0) {
+            throw new ClamAvUnavailable('The quarantined iGUIDE ZIP contained no scannable files.');
+        }
+
+        return ClamAvScanResult::clean("{$scanned} iGUIDE package members scanned clean");
     }
 
     /**

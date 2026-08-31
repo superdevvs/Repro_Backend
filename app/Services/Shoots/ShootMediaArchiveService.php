@@ -386,6 +386,7 @@ class ShootMediaArchiveService
         // existing delivery is not broken; only a positive infected verdict blocks.
         $files = $files
             ->reject(fn (ShootFile $file) => $file->isBlockedFromDelivery())
+            ->reject(fn (ShootFile $file) => $file->isIguideOfflinePackage())
             ->values();
 
         if ($this->normalizeType($type) === 'raw') {

@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\Scanning;
 
+use App\Jobs\FinalizeIguideOfflinePackageJob;
 use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
 use App\Services\Scanning\ClamAvScanResult;
@@ -17,7 +18,7 @@ class FileScanServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->service = new FileScanService();
+        $this->service = new FileScanService;
     }
 
     /**
@@ -26,7 +27,8 @@ class FileScanServiceTest extends TestCase
      */
     private function file(string $scanStatus = ShootFile::SCAN_STATUS_QUARANTINED): ShootFile
     {
-        $file = new class extends ShootFile {
+        $file = new class extends ShootFile
+        {
             public bool $persisted = false;
 
             public function save(array $options = []): bool
@@ -115,6 +117,21 @@ class FileScanServiceTest extends TestCase
         }
 
         Queue::assertNothingPushed();
+    }
+
+    #[Test]
+    public function release_routes_a_clean_offline_iguide_package_away_from_image_processing(): void
+    {
+        Queue::fake();
+
+        $file = $this->file(ShootFile::SCAN_STATUS_CLEAN);
+        $file->media_type = ShootFile::MEDIA_TYPE_IGUIDE;
+        $file->metadata = ['kind' => ShootFile::IGUIDE_OFFLINE_PACKAGE_KIND, 'upload_id' => 'upload-1'];
+
+        $this->assertTrue($this->service->release($file));
+
+        Queue::assertPushed(FinalizeIguideOfflinePackageJob::class, 1);
+        Queue::assertNotPushed(ProcessImageJob::class);
     }
 
     #[Test]

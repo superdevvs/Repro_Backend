@@ -3,6 +3,7 @@
 namespace Tests\Unit\Scanning;
 
 use App\Exceptions\Scanning\ClamAvUnavailable;
+use App\Jobs\FinalizeIguideOfflinePackageJob;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Models\Shoot;
@@ -17,6 +18,7 @@ use Mockery;
 use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
 use PHPUnit\Framework\Attributes\Test;
 use Tests\TestCase;
+use ZipArchive;
 
 /**
  * Verifies the scan + verdict flow owned by {@see ScanShootFileJob} (Req 14.4,
@@ -30,8 +32,8 @@ use Tests\TestCase;
  */
 class ScanShootFileJobTest extends TestCase
 {
-    use RefreshDatabase;
     use MockeryPHPUnitIntegration;
+    use RefreshDatabase;
 
     /**
      * Persist a {@see ShootFile} with a real local source file under the public
@@ -44,10 +46,10 @@ class ScanShootFileJobTest extends TestCase
         $shoot = Shoot::factory()->create();
         $uploader = \App\Models\User::factory()->create([
             'role' => 'photographer',
-            'email' => 'scan-test-uploader-' . uniqid() . '@test.com',
+            'email' => 'scan-test-uploader-'.uniqid().'@test.com',
         ]);
 
-        $relativePath = "shoots/{$shoot->id}/scan-test-" . uniqid() . '.jpg';
+        $relativePath = "shoots/{$shoot->id}/scan-test-".uniqid().'.jpg';
         Storage::disk('public')->put($relativePath, $contents);
 
         return ShootFile::create([
@@ -63,6 +65,51 @@ class ScanShootFileJobTest extends TestCase
             'uploaded_by' => $uploader->id,
             'workflow_stage' => ShootFile::STAGE_TODO,
             'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED,
+        ]);
+    }
+
+    private function makeQuarantinedIguidePackage(): ShootFile
+    {
+        $shoot = Shoot::factory()->create();
+        $uploader = \App\Models\User::factory()->admin()->create();
+        $uploadId = 'iguide-scan-'.uniqid();
+        $relativePath = "secure/iguide-packages/{$shoot->id}/package.zip";
+
+        Storage::disk('local')->makeDirectory(dirname($relativePath));
+        $absolutePath = Storage::disk('local')->path($relativePath);
+        $archive = new ZipArchive;
+        $this->assertTrue($archive->open($absolutePath, ZipArchive::CREATE | ZipArchive::OVERWRITE) === true);
+        $archive->addFromString('tour/index.html', '<html>tour</html>');
+        $archive->addFromString('tour/assets/app.js', 'console.log("tour")');
+        $archive->close();
+
+        $shoot->iguide_data = [
+            'manual_offline_package' => [
+                'id' => $uploadId,
+                'upload_id' => $uploadId,
+                'status' => 'scanning',
+                'original_filename' => 'package.zip',
+            ],
+        ];
+        $shoot->save();
+
+        return ShootFile::create([
+            'shoot_id' => $shoot->id,
+            'filename' => 'package.zip',
+            'stored_filename' => 'package.zip',
+            'path' => $relativePath,
+            'storage_path' => $relativePath,
+            'file_type' => 'application/zip',
+            'mime_type' => 'application/zip',
+            'file_size' => filesize($absolutePath),
+            'media_type' => ShootFile::MEDIA_TYPE_IGUIDE,
+            'uploaded_by' => $uploader->id,
+            'workflow_stage' => ShootFile::STAGE_ARCHIVED,
+            'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED,
+            'metadata' => [
+                'kind' => ShootFile::IGUIDE_OFFLINE_PACKAGE_KIND,
+                'upload_id' => $uploadId,
+            ],
         ]);
     }
 
@@ -88,6 +135,29 @@ class ScanShootFileJobTest extends TestCase
         // release() is the single dispatch point that lets a clean file
         // proceed to ProcessImageJob (Req 14.4).
         Queue::assertPushed(ProcessImageJob::class, 1);
+    }
+
+    #[Test]
+    public function iguide_package_members_are_scanned_individually_and_never_sent_to_image_processing(): void
+    {
+        Storage::fake('local');
+        Storage::fake('public');
+        Queue::fake();
+
+        $file = $this->makeQuarantinedIguidePackage();
+
+        $clamAv = Mockery::mock(ClamAvClient::class);
+        $clamAv->shouldReceive('scan')
+            ->twice()
+            ->with(Mockery::on(static fn ($stream): bool => is_resource($stream)))
+            ->andReturn(ClamAvScanResult::clean());
+
+        (new ScanShootFileJob($file->id))->handle($clamAv, app(FileScanService::class));
+
+        $file->refresh();
+        $this->assertSame(ShootFile::SCAN_STATUS_CLEAN, $file->scan_status);
+        Queue::assertPushed(FinalizeIguideOfflinePackageJob::class, 1);
+        Queue::assertNotPushed(ProcessImageJob::class);
     }
 
     #[Test]

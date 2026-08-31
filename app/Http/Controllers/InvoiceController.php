@@ -4,13 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Models\Invoice;
 use App\Models\Payment;
-use App\Models\Shoot;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class InvoiceController extends Controller
@@ -19,6 +21,13 @@ class InvoiceController extends Controller
 
     private const SALES_REP_ROLES = ['salesRep', 'sales_rep', 'salesrep'];
 
+    private const PAYOUT_INVOICE_ROLES = [
+        Invoice::ROLE_PHOTOGRAPHER,
+        Invoice::ROLE_SALES_REP,
+        'sales_rep',
+        'salesrep',
+    ];
+
     public function index(Request $request)
     {
         $user = $request->user();
@@ -26,6 +35,17 @@ class InvoiceController extends Controller
         if (! $user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
+
+        $filters = $request->validate([
+            'start' => ['nullable', 'date'],
+            'end' => [
+                'nullable',
+                'date',
+                ...($request->filled('start') ? ['after_or_equal:start'] : []),
+            ],
+            'page' => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
+        ]);
 
         $query = Invoice::with([
             'photographer',
@@ -108,19 +128,14 @@ class InvoiceController extends Controller
             $query->where('is_paid', filter_var($request->input('paid'), FILTER_VALIDATE_BOOLEAN));
         }
 
-        if ($request->filled('start')) {
-            $start = Carbon::parse($request->input('start'))->startOfDay();
-            $query->whereDate('billing_period_start', '>=', $start);
-        }
-
-        if ($request->filled('end')) {
-            $end = Carbon::parse($request->input('end'))->endOfDay();
-            $query->whereDate('billing_period_end', '<=', $end);
-        }
+        $start = isset($filters['start']) ? Carbon::parse($filters['start'])->startOfDay() : null;
+        $end = isset($filters['end']) ? Carbon::parse($filters['end'])->endOfDay() : null;
+        $this->applyInvoiceDateRange($query, $start, $end);
 
         $invoices = $query
-            ->orderByDesc('billing_period_start')
-            ->paginate($request->integer('per_page', 15));
+            ->orderByDesc(DB::raw('COALESCE(billing_period_start, issue_date, period_start, created_at)'))
+            ->orderByDesc('id')
+            ->paginate($filters['per_page'] ?? 15);
 
         $invoices->getCollection()->transform(
             fn (Invoice $invoice) => $invoice->applyResolvedPaymentMetadata()
@@ -135,30 +150,114 @@ class InvoiceController extends Controller
             abort(403, 'Forbidden');
         }
 
-        $invoice->loadMissing(['photographer', 'salesRep', 'shoots.client', 'shoots.payments']);
+        $invoice->loadMissing([
+            'client',
+            'photographer',
+            'salesRep',
+            'items',
+            'payments.refunds',
+            'shoot.client',
+            'shoot.payments.refunds',
+            'shoots.client',
+            'shoots.payments.refunds',
+        ]);
+
+        $periodStart = $invoice->billing_period_start
+            ?? $invoice->period_start
+            ?? $invoice->issue_date
+            ?? $invoice->created_at;
+        $periodEnd = $invoice->billing_period_end
+            ?? $invoice->period_end
+            ?? $invoice->due_date
+            ?? $periodStart;
+        $periodStartLabel = $periodStart?->toDateString() ?? 'Not available';
+        $periodEndLabel = $periodEnd?->toDateString() ?? $periodStartLabel;
+        $periodLabel = $periodStartLabel === $periodEndLabel
+            ? $periodStartLabel
+            : $periodStartLabel.' - '.$periodEndLabel;
+
+        [$partyLabel, $partyName] = match ($invoice->role) {
+            Invoice::ROLE_CLIENT => ['Client', $invoice->client?->name],
+            Invoice::ROLE_SALES_REP => ['Sales Rep', $invoice->salesRep?->name],
+            default => ['Photographer', $invoice->photographer?->name],
+        };
+        $partyName = $partyName ?: 'Not assigned';
+
+        $reference = $invoice->invoice_number ?: (string) $invoice->id;
+        $safeReference = Str::slug((string) $reference) ?: (string) $invoice->id;
+        $startStamp = $periodStart?->format('Ymd') ?? 'undated';
+        $endStamp = $periodEnd?->format('Ymd') ?? $startStamp;
 
         $filename = sprintf(
-            'invoice-%s-%s-%s.csv',
-            $invoice->photographer?->username ?? 'photographer',
-            $invoice->billing_period_start->format('Ymd'),
-            $invoice->billing_period_end->format('Ymd')
+            'invoice-%s-%s-to-%s.csv',
+            $safeReference,
+            $startStamp,
+            $endStamp
         );
 
-        return response()->streamDownload(function () use ($invoice) {
+        $shoots = $invoice->shoots;
+        if ($invoice->shoot && ! $shoots->contains('id', $invoice->shoot->id)) {
+            $shoots = $shoots->prepend($invoice->shoot);
+        }
+
+        $total = round((float) ($invoice->total ?? $invoice->total_amount ?? $invoice->charges_total ?? 0), 2);
+        // Canonical Payment rows represent money received from a client. They
+        // must not be treated as settlement of a photographer/sales-rep payout
+        // merely because those invoices reference the same shoots.
+        $usesClientPaymentLedger = $invoice->role === Invoice::ROLE_CLIENT;
+        $hasCanonicalPayments = $usesClientPaymentLedger && $invoice->hasRelatedPaymentRecords();
+        $storedPaidFlag = filter_var($invoice->getRawOriginal('is_paid'), FILTER_VALIDATE_BOOLEAN);
+
+        if ($usesClientPaymentLedger) {
+            $amountPaid = $hasCanonicalPayments
+                ? round($invoice->totalPaid(), 2)
+                : round(max(
+                    (float) ($invoice->getAttribute('amount_paid') ?? 0),
+                    (float) ($invoice->getAttribute('payments_total') ?? 0)
+                ), 2);
+            $balance = $hasCanonicalPayments
+                ? round($invoice->balanceDue(), 2)
+                : round(max($total - $amountPaid, 0), 2);
+            $isPaidFromBalance = $total <= 0.01
+                || ($amountPaid > 0 && $balance <= 0.01);
+            $isPaid = $hasCanonicalPayments
+                ? $isPaidFromBalance
+                : ($invoice->status === Invoice::STATUS_PAID
+                    || $storedPaidFlag
+                    || $isPaidFromBalance);
+        } else {
+            // Payout generation historically copied client receipts into
+            // amount_paid/is_paid. The payout lifecycle, unlike those legacy
+            // aggregates, changes status/paid_at only when the payee is paid.
+            $isPaid = $invoice->status === Invoice::STATUS_PAID || $invoice->paid_at !== null;
+            $amountPaid = $isPaid ? $total : 0.0;
+            $balance = $isPaid ? 0.0 : round(max($total, 0), 2);
+        }
+
+        return response()->streamDownload(function () use (
+            $invoice,
+            $partyLabel,
+            $partyName,
+            $periodLabel,
+            $shoots,
+            $total,
+            $amountPaid,
+            $balance,
+            $isPaid
+        ) {
             $handle = fopen('php://output', 'w');
 
-            fputcsv($handle, ['Invoice ID', $invoice->id]);
-            fputcsv($handle, ['Photographer', optional($invoice->photographer)->name]);
-            fputcsv($handle, ['Billing Period', $invoice->billing_period_start->toDateString().' - '.$invoice->billing_period_end->toDateString()]);
-            fputcsv($handle, []);
-            fputcsv($handle, ['Shoot ID', 'Scheduled Date', 'Client', 'Total Quote', 'Payments Received']);
+            $this->writeCsvRow($handle, ['Invoice ID', $invoice->id]);
+            $this->writeCsvRow($handle, ['Invoice Number', $invoice->invoice_number ?: $invoice->id]);
+            $this->writeCsvRow($handle, [$partyLabel, $partyName]);
+            $this->writeCsvRow($handle, ['Billing Period', $periodLabel]);
+            $this->writeCsvRow($handle, []);
+            $this->writeCsvRow($handle, ['Shoot ID', 'Scheduled Date', 'Client', 'Total Quote', 'Payments Received']);
 
-            foreach ($invoice->shoots as $shoot) {
-                $paymentsReceived = $shoot->payments
-                    ->where('status', Payment::STATUS_COMPLETED)
-                    ->sum('amount');
+            foreach ($shoots as $shoot) {
+                $paymentsReceived = $shoot->calculateCanonicalTotalPaid();
 
-                fputcsv($handle, [
+                $this->writeCsvRow($handle, [
                     $shoot->id,
                     optional($shoot->scheduled_date)->toDateString(),
                     optional($shoot->client)->name,
@@ -167,10 +266,35 @@ class InvoiceController extends Controller
                 ]);
             }
 
-            fputcsv($handle, []);
-            fputcsv($handle, ['Total', number_format((float) $invoice->total_amount, 2, '.', '')]);
-            fputcsv($handle, ['Amount Paid', number_format((float) $invoice->amount_paid, 2, '.', '')]);
-            fputcsv($handle, ['Paid', $invoice->is_paid ? 'Yes' : 'No']);
+            if ($invoice->items->isNotEmpty()) {
+                $this->writeCsvRow($handle, []);
+                $this->writeCsvRow($handle, ['Invoice Line Items']);
+                $this->writeCsvRow($handle, [
+                    'Type',
+                    'Description',
+                    'Quantity',
+                    'Unit Amount',
+                    'Line Total',
+                    'Shoot ID',
+                ]);
+
+                foreach ($invoice->items as $item) {
+                    $this->writeCsvRow($handle, [
+                        $item->type,
+                        $item->description,
+                        $item->quantity,
+                        number_format((float) $item->unit_amount, 2, '.', ''),
+                        number_format((float) $item->total_amount, 2, '.', ''),
+                        $item->shoot_id,
+                    ]);
+                }
+            }
+
+            $this->writeCsvRow($handle, []);
+            $this->writeCsvRow($handle, ['Total', number_format($total, 2, '.', '')]);
+            $this->writeCsvRow($handle, ['Amount Paid', number_format($amountPaid, 2, '.', '')]);
+            $this->writeCsvRow($handle, ['Balance', number_format($balance, 2, '.', '')]);
+            $this->writeCsvRow($handle, ['Paid', $isPaid ? 'Yes' : 'No']);
 
             fclose($handle);
         }, $filename, [
@@ -447,6 +571,87 @@ class InvoiceController extends Controller
                 $shoot->update($updateData);
             }
         }
+    }
+
+    /**
+     * Apply the date semantics used by the accounting UI.
+     *
+     * Weekly photographer and sales-rep invoices cover a period, so they match
+     * when any part of that period overlaps the requested range. Client invoices
+     * are point-in-time documents and match by issue date, with fallbacks for the
+     * legacy invoice shapes that pre-date the issue_date column.
+     */
+    private function applyInvoiceDateRange(Builder $query, ?Carbon $start, ?Carbon $end): void
+    {
+        if (! $start && ! $end) {
+            return;
+        }
+
+        $payoutPeriodStart = DB::raw(
+            'COALESCE(billing_period_start, period_start, issue_date, created_at)'
+        );
+        $payoutPeriodEnd = DB::raw(
+            'COALESCE(billing_period_end, period_end, due_date, billing_period_start, period_start, issue_date, created_at)'
+        );
+        $clientIssueDate = DB::raw(
+            'COALESCE(issue_date, period_start, billing_period_start, due_date, period_end, billing_period_end, created_at)'
+        );
+
+        $query->where(function (Builder $dateQuery) use (
+            $start,
+            $end,
+            $payoutPeriodStart,
+            $payoutPeriodEnd,
+            $clientIssueDate
+        ) {
+            $dateQuery
+                ->where(function (Builder $payoutQuery) use ($start, $end, $payoutPeriodStart, $payoutPeriodEnd) {
+                    $payoutQuery->whereIn('role', self::PAYOUT_INVOICE_ROLES);
+
+                    if ($start) {
+                        $payoutQuery->whereDate($payoutPeriodEnd, '>=', $start->toDateString());
+                    }
+                    if ($end) {
+                        $payoutQuery->whereDate($payoutPeriodStart, '<=', $end->toDateString());
+                    }
+                })
+                ->orWhere(function (Builder $clientQuery) use ($start, $end, $clientIssueDate) {
+                    $clientQuery->where(function (Builder $roleQuery) {
+                        $roleQuery
+                            ->whereNull('role')
+                            ->orWhereNotIn('role', self::PAYOUT_INVOICE_ROLES);
+                    });
+
+                    if ($start) {
+                        $clientQuery->whereDate($clientIssueDate, '>=', $start->toDateString());
+                    }
+                    if ($end) {
+                        $clientQuery->whereDate($clientIssueDate, '<=', $end->toDateString());
+                    }
+                });
+        });
+    }
+
+    /**
+     * @param  resource  $handle
+     */
+    private function writeCsvRow($handle, array $row): void
+    {
+        fputcsv($handle, array_map(
+            fn ($value) => $this->neutralizeSpreadsheetFormula($value),
+            $row
+        ));
+    }
+
+    private function neutralizeSpreadsheetFormula(mixed $value): mixed
+    {
+        if (! is_string($value)) {
+            return $value;
+        }
+
+        return preg_match('/^[\s\x{200B}\x{FEFF}]*[=+\-@]/u', $value) === 1
+            ? "'".$value
+            : $value;
     }
 
     private function hasRole($user, array $allowedRoles): bool

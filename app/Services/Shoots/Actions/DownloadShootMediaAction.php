@@ -61,6 +61,10 @@ class DownloadShootMediaAction
      */
     protected function deliveryDownloadName(ShootFile $file): string
     {
+        if ($file->isIguideOfflinePackage()) {
+            return basename((string) ($file->filename ?: 'iguide-offline-package.zip'));
+        }
+
         $fallback = basename((string) ($file->path ?: $file->storage_path ?: $file->dropbox_path ?: 'download'));
 
         try {

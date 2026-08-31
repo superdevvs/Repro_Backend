@@ -25,11 +25,10 @@ return [
 
     'allowed_headers' => ['*', 'X-Impersonate-User-Id'],
 
-    'exposed_headers' => ['X-Impersonate-User-Id'],
+    'exposed_headers' => ['X-Impersonate-User-Id', 'Content-Disposition'],
 
     'max_age' => 0,
 
     'supports_credentials' => true,
 
 ];
-

@@ -9,7 +9,6 @@ use App\Models\ShootService;
 use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\Actions\AssignHeroMediaAction;
 use App\Services\Shoots\Actions\ChangeServiceBracketModeAction;
-use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\Actions\DeleteShootMediaAction;
 use App\Services\Shoots\Actions\DownloadSelectedShootFilesAction;
 use App\Services\Shoots\Actions\DownloadShootMediaAction;
@@ -23,6 +22,7 @@ use App\Services\Shoots\Actions\ToggleShootFileExtraAction;
 use App\Services\Shoots\Actions\UploadAlbumMediaAction;
 use App\Services\Shoots\Actions\UploadShootFilesAction;
 use App\Services\Shoots\Actions\VerifyShootFileAction;
+use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\ShootAlbumService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootClientReleaseAccessService;
@@ -376,6 +376,13 @@ class ShootMediaController extends Controller
         }
         if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user)) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
+        // Offline iGUIDE packages live on the private local disk. Always stream
+        // them through this authenticated endpoint; never exchange the request
+        // for a public-storage or third-party temporary URL.
+        if ($file->isIguideOfflinePackage()) {
+            return $this->downloadShootMediaAction->downloadResponse($file);
         }
 
         $acceptHeader = $request->headers->get('Accept', '');

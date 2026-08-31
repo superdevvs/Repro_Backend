@@ -40,6 +40,12 @@ class ShootFileObserver
 
     public function saved(ShootFile $shootFile): void
     {
+        // The offline iGUIDE ZIP is an integration attachment, not an edited
+        // photo. It must not invalidate or regenerate the shoot delivery ZIP.
+        if ($shootFile->isIguideOfflinePackage()) {
+            return;
+        }
+
         if (
             !$shootFile->wasRecentlyCreated
             && !$shootFile->wasChanged([
@@ -71,6 +77,10 @@ class ShootFileObserver
 
     public function deleted(ShootFile $shootFile): void
     {
+        if ($shootFile->isIguideOfflinePackage()) {
+            return;
+        }
+
         $this->dispatchRelevantArchives(
             $shootFile->shoot,
             $this->mapStageToArchiveType($shootFile->workflow_stage),

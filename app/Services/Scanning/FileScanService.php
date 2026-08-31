@@ -2,9 +2,11 @@
 
 namespace App\Services\Scanning;
 
+use App\Jobs\FinalizeIguideOfflinePackageJob;
 use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\IguideOfflinePackageService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
@@ -31,7 +33,7 @@ class FileScanService
      * Accepts either a {@see ClamAvScanResult} or a plain verdict string
      * (`clean` / `infected`).
      *
-     * @param ClamAvScanResult|string $verdict
+     * @param  ClamAvScanResult|string  $verdict
      */
     public function recordResult(ShootFile $file, $verdict): ShootFile
     {
@@ -64,9 +66,15 @@ class FileScanService
             return false;
         }
 
-        // Single dispatch point for downstream per-file processing now that the
-        // file has cleared Quarantine.
-        ProcessImageJob::dispatch($file);
+        // An offline iGUIDE ZIP remains opaque. Its downstream action updates the
+        // lifecycle pointer only; it must never enter image processing.
+        if ($file->isIguideOfflinePackage()) {
+            FinalizeIguideOfflinePackageJob::dispatch((int) $file->getKey());
+        } else {
+            // Single dispatch point for ordinary per-file processing now that
+            // the file has cleared Quarantine.
+            ProcessImageJob::dispatch($file);
+        }
 
         return true;
     }
@@ -75,9 +83,9 @@ class FileScanService
      * Flag a file as infected: persist the infected status and the scan result,
      * withholding it from all downstream processing and delivery (Req 15.1, 15.3).
      *
-     * @param ClamAvScanResult|string|null $verdict Optional verdict carrying the
-     *        signature/reason to record. When omitted, an existing scan_result is
-     *        preserved (or a generic reason is recorded).
+     * @param  ClamAvScanResult|string|null  $verdict  Optional verdict carrying the
+     *                                                 signature/reason to record. When omitted, an existing scan_result is
+     *                                                 preserved (or a generic reason is recorded).
      */
     public function flagInfected(ShootFile $file, $verdict = null): ShootFile
     {
@@ -91,6 +99,7 @@ class FileScanService
         $file->scan_result = $scanResult ?: 'infected';
         $file->scanned_at = $file->scanned_at ?: now();
         $file->save();
+        $this->markIguideFailed($file, $file->scan_result);
 
         return $file;
     }
@@ -125,6 +134,7 @@ class FileScanService
             : 'scan_unavailable';
         $file->scanned_at = now();
         $file->save();
+        $this->markIguideFailed($file, $file->scan_result);
 
         return $file;
     }
@@ -176,7 +186,7 @@ class FileScanService
                 ]);
             }
         } catch (\Throwable $e) {
-            Log::warning('Failed to notify admins of infected file: ' . $e->getMessage(), [
+            Log::warning('Failed to notify admins of infected file: '.$e->getMessage(), [
                 'file_id' => $file->id,
             ]);
         }
@@ -185,7 +195,7 @@ class FileScanService
     /**
      * Reduce a verdict to a [isClean, scanResult] pair.
      *
-     * @param ClamAvScanResult|string $verdict
+     * @param  ClamAvScanResult|string  $verdict
      * @return array{0: bool, 1: string}
      */
     private function normalizeVerdict($verdict): array
@@ -202,5 +212,23 @@ class FileScanService
         $isClean = $normalized === ShootFile::SCAN_STATUS_CLEAN;
 
         return [$isClean, $normalized !== '' ? (string) $verdict : ($isClean ? 'clean' : 'infected')];
+    }
+
+    private function markIguideFailed(ShootFile $file, ?string $reason): void
+    {
+        if (! $file->isIguideOfflinePackage()) {
+            return;
+        }
+
+        try {
+            app(IguideOfflinePackageService::class)->markFailed($file, $reason);
+        } catch (\Throwable $exception) {
+            // Scan state is the security boundary. A lifecycle-display write must
+            // never prevent the infected/failed verdict from being persisted.
+            Log::warning('Unable to update iGUIDE package failure lifecycle.', [
+                'file_id' => $file->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 }

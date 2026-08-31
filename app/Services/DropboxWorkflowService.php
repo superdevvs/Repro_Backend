@@ -319,12 +319,13 @@ class DropboxWorkflowService
         $userId,
         $serviceCategory = null,
         ?string $mediaTypeOverride = null,
-        ?int $shootServiceId = null
+        ?int $shootServiceId = null,
+        ?array $metadataOverride = null
     ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'raw', $serviceCategory);
 
-        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType, $shootServiceId);
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaType, $shootServiceId, $metadataOverride);
     }
 
     /**
@@ -397,9 +398,12 @@ class DropboxWorkflowService
         $userId,
         string $stage,
         ?string $mediaTypeOverride = null,
-        ?int $shootServiceId = null
+        ?int $shootServiceId = null,
+        ?array $metadataOverride = null
     ): ShootFile {
-        $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)
+        $isOpaqueIguidePackage = $mediaTypeOverride === ShootFile::MEDIA_TYPE_IGUIDE
+            && data_get($metadataOverride, 'kind') === ShootFile::IGUIDE_OFFLINE_PACKAGE_KIND;
+        $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging', 'green_grass', 'twilight', 'drone', ShootFile::MEDIA_TYPE_IGUIDE], true)
             ? $mediaTypeOverride
             : null;
         $prefix = match ($storageMediaType) {
@@ -409,6 +413,7 @@ class DropboxWorkflowService
             'green_grass' => 'GREEN_GRASS_',
             'twilight' => 'TWILIGHT_',
             'drone' => 'DRONE_',
+            ShootFile::MEDIA_TYPE_IGUIDE => 'IGUIDE_',
             default => $stage === ShootFile::STAGE_COMPLETED ? 'COMPLETED_' : 'TODO_',
         };
         $filename = $prefix.str_replace('.', '_', uniqid('', true)).'_'.$file->getClientOriginalName();
@@ -419,8 +424,10 @@ class DropboxWorkflowService
             'green_grass' => "shoots/{$shoot->id}/green_grass",
             'twilight' => "shoots/{$shoot->id}/twilight",
             'drone' => "shoots/{$shoot->id}/drone",
+            ShootFile::MEDIA_TYPE_IGUIDE => "secure/iguide-packages/{$shoot->id}",
             default => "shoots/{$shoot->id}/".($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
         };
+        $storageDisk = $isOpaqueIguidePackage ? 'local' : 'public';
         $serverPath = $dir.'/'.$filename;
         $defaultMediaType = $storageMediaType
             ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
@@ -434,15 +441,20 @@ class DropboxWorkflowService
         // file, leaving one row with the wrong attribution and one service silently a
         // frame short. Unassigned uploads form their own bucket, mirroring how bracket
         // stacking already partitions them.
-        $existingFile = ShootFile::where('shoot_id', $shoot->id)
-            ->where('filename', $file->getClientOriginalName())
-            ->where('workflow_stage', $stage)
-            ->when(
-                $shootServiceId !== null,
-                fn ($query) => $query->where('shoot_service_id', $shootServiceId),
-                fn ($query) => $query->whereNull('shoot_service_id')
-            )
-            ->first();
+        // A replacement iGUIDE must not overwrite the currently-ready ZIP before
+        // the new package clears quarantine. Every attempt therefore receives a
+        // new row; the lifecycle pointer changes only after a clean verdict.
+        $existingFile = $isOpaqueIguidePackage
+            ? null
+            : ShootFile::where('shoot_id', $shoot->id)
+                ->where('filename', $file->getClientOriginalName())
+                ->where('workflow_stage', $stage)
+                ->when(
+                    $shootServiceId !== null,
+                    fn ($query) => $query->where('shoot_service_id', $shootServiceId),
+                    fn ($query) => $query->whereNull('shoot_service_id')
+                )
+                ->first();
         $isReplacement = $existingFile !== null;
 
         if ($existingFile) {
@@ -457,7 +469,10 @@ class DropboxWorkflowService
         }
 
         // Extract image metadata (dimensions, EXIF)
-        $metadata = $this->extractImageMetadata($file);
+        $metadata = array_replace(
+            $isOpaqueIguidePackage ? [] : $this->extractImageMetadata($file),
+            $metadataOverride ?? []
+        );
 
         // Heavy image processing during upload can exhaust PHP memory for large files.
         // Store first, then process after the response/through the queue.
@@ -472,10 +487,19 @@ class DropboxWorkflowService
         // unavailable this returns 'unavailable' and we fall back to the async
         // quarantine+scan path below (the file stays withheld from delivery until a
         // clean verdict is recorded by ScanShootFileJob).
-        $syncScanVerdict = $this->scanUploadSynchronously($file);
+        // Large offline packages are scanned member-by-member by ScanShootFileJob.
+        // Whole-ZIP INSTREAM scanning commonly exceeds clamd's default stream
+        // limit and would keep a legitimate package retrying forever.
+        $syncScanVerdict = $isOpaqueIguidePackage
+            ? 'unavailable'
+            : $this->scanUploadSynchronously($file);
 
         // Now store the file (this may move the temp file)
-        Storage::disk('public')->putFileAs($dir, $file, $filename);
+        $storedPath = Storage::disk($storageDisk)->putFileAs($dir, $file, $filename);
+        if ($storedPath === false || $storedPath === '') {
+            throw new \RuntimeException('The uploaded file could not be written to quarantine storage.');
+        }
+        $serverPath = $storedPath;
 
         // Attribute the row to its execution row at creation. The caller also sets this,
         // but doing it here means the row is never briefly unattributed, which is what
@@ -603,7 +627,9 @@ class DropboxWorkflowService
             }
         }
 
-        if ($this->isEnabled()) {
+        // The opaque package is mirrored only by its finalizer after a clean
+        // verdict. Quarantined ZIPs never leave private local storage.
+        if (! $isOpaqueIguidePackage && $this->isEnabled()) {
             try {
                 SyncShootFileToDropboxJob::dispatch($shootFile->id);
             } catch (\Throwable $e) {
@@ -618,7 +644,7 @@ class DropboxWorkflowService
         // Mirror the upload to Cloudflare R2 when the dual-write/R2-only cutover
         // is enabled (config/media.php). The job is idempotent and re-dispatched
         // after image processing/watermarking so derived assets sync too.
-        if (config('media.dual_write') || config('media.r2_only')) {
+        if (! $isOpaqueIguidePackage && (config('media.dual_write') || config('media.r2_only'))) {
             try {
                 SyncShootFileToR2Job::dispatch($shootFile->id);
             } catch (\Throwable $e) {
@@ -656,6 +682,8 @@ class DropboxWorkflowService
             $storedPath = $shootFile->{$attribute};
             if ($storedPath && Storage::disk('public')->exists($storedPath)) {
                 Storage::disk('public')->delete($storedPath);
+            } elseif ($storedPath && Storage::disk('local')->exists($storedPath)) {
+                Storage::disk('local')->delete($storedPath);
             }
         }
     }
@@ -1236,12 +1264,38 @@ class DropboxWorkflowService
         $userId,
         $serviceCategory = null,
         ?string $mediaTypeOverride = null,
-        ?int $shootServiceId = null
+        ?int $shootServiceId = null,
+        ?array $metadataOverride = null
     ) {
         $mediaType = $mediaTypeOverride
             ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), 'edited', $serviceCategory);
 
-        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType, $shootServiceId);
+        return $this->storeLocally($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaType, $shootServiceId, $metadataOverride);
+    }
+
+    /**
+     * Store a manual iGUIDE package outside the photo workflow while reusing the
+     * same quarantine, scan, Dropbox and audit-capable ShootFile pipeline.
+     */
+    public function uploadIguideOfflinePackage(
+        Shoot $shoot,
+        UploadedFile $file,
+        $userId,
+        array $metadata
+    ): ShootFile {
+        if (data_get($metadata, 'kind') !== ShootFile::IGUIDE_OFFLINE_PACKAGE_KIND) {
+            throw new \InvalidArgumentException('Missing iGUIDE offline package metadata marker.');
+        }
+
+        return $this->storeLocally(
+            $shoot,
+            $file,
+            $userId,
+            ShootFile::STAGE_ARCHIVED,
+            ShootFile::MEDIA_TYPE_IGUIDE,
+            null,
+            $metadata
+        );
     }
 
     /**

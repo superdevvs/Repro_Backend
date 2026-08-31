@@ -63,9 +63,11 @@ class SyncShootFileToDropboxJob implements ShouldQueue
             return;
         }
 
-        $folderType = $shootFile->media_type === 'extra'
+        $folderType = $shootFile->isIguideOfflinePackage()
+            ? 'edited'
+            : ($shootFile->media_type === 'extra'
             ? 'extra'
-            : ($shootFile->workflow_stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
+            : ($shootFile->workflow_stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw'));
 
         $folderPath = $shoot->getDropboxFolderForType($folderType);
         if (!$folderPath) {

@@ -87,6 +87,10 @@ class ShootFile extends Model
     const STAGE_ARCHIVED = 'archived';
     const STAGE_FLAGGED = 'flagged';
 
+    /** Dedicated identity for a manually uploaded, unextracted iGUIDE package. */
+    const MEDIA_TYPE_IGUIDE = 'iguide';
+    const IGUIDE_OFFLINE_PACKAGE_KIND = 'iguide_offline_package';
+
     /**
      * Post-capture treatments requested on one individual frame.
      *
@@ -159,6 +163,17 @@ class ShootFile extends Model
         }
 
         return $this->scan_status !== self::SCAN_STATUS_CLEAN;
+    }
+
+    /**
+     * Whether this row is the opaque iGUIDE ZIP accepted by the dedicated
+     * integration endpoint. Both markers are required so a legacy upload that
+     * merely used media_type=iguide cannot bypass the normal image pipeline.
+     */
+    public function isIguideOfflinePackage(): bool
+    {
+        return strtolower((string) $this->media_type) === self::MEDIA_TYPE_IGUIDE
+            && data_get($this->metadata, 'kind') === self::IGUIDE_OFFLINE_PACKAGE_KIND;
     }
 
     public function isExtra(): bool

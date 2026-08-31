@@ -5,8 +5,9 @@ namespace Tests\Feature;
 use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Payment;
-use App\Models\Shoot;
+use App\Models\PaymentRefund;
 use App\Models\Service;
+use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
 use Carbon\Carbon;
@@ -300,10 +301,338 @@ class InvoiceFeatureTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        $response = $this->get('/api/admin/invoices/' . $invoice->id . '/download');
+        $response = $this->get('/api/admin/invoices/'.$invoice->id.'/download');
         $response->assertOk();
         $this->assertStringContainsString('text/csv', $response->headers->get('content-type'));
         $this->assertNotNull($response->headers->get('content-disposition'));
+    }
+
+    public function test_client_can_download_invoice_csv_without_photographer_or_billing_period_columns(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $invoice = Invoice::factory()->create([
+            'user_id' => $client->id,
+            'client_id' => $client->id,
+            'shoot_id' => null,
+            'photographer_id' => null,
+            'invoice_number' => 'CLIENT 00042',
+            'period_start' => '2026-08-01',
+            'period_end' => '2026-08-15',
+            'billing_period_start' => null,
+            'billing_period_end' => null,
+            'issue_date' => '2026-08-01',
+            'due_date' => '2026-08-15',
+            'total' => 125,
+            'total_amount' => null,
+            'amount_paid' => 0,
+            'is_paid' => false,
+        ]);
+
+        Sanctum::actingAs($client);
+
+        $response = $this->get('/api/invoices/'.$invoice->id.'/download');
+
+        $response->assertOk();
+        $this->assertStringContainsString('text/csv', (string) $response->headers->get('content-type'));
+        $this->assertStringContainsString(
+            'invoice-client-00042-20260801-to-20260815.csv',
+            (string) $response->headers->get('content-disposition')
+        );
+
+        $csv = $response->streamedContent();
+        $this->assertStringContainsString('"Invoice Number","CLIENT 00042"', $csv);
+        $this->assertStringContainsString($client->name, $csv);
+        $this->assertStringContainsString('"Billing Period","2026-08-01 - 2026-08-15"', $csv);
+        $this->assertStringContainsString('Total,125.00', $csv);
+    }
+
+    public function test_invoice_index_uses_period_overlap_for_payouts_and_issue_date_for_clients(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->photographer()->create();
+        $salesRep = User::factory()->create(['role' => Invoice::ROLE_SALES_REP]);
+        $client = User::factory()->create(['role' => 'client']);
+
+        $overlappingPayout = Invoice::factory()->create([
+            'user_id' => $photographer->id,
+            'role' => Invoice::ROLE_PHOTOGRAPHER,
+            'shoot_id' => null,
+            'client_id' => null,
+            'photographer_id' => $photographer->id,
+            'period_start' => '2026-08-25',
+            'period_end' => '2026-09-02',
+            'billing_period_start' => '2026-08-25',
+            'billing_period_end' => '2026-09-02',
+            'issue_date' => '2026-08-25',
+            'due_date' => '2026-09-02',
+        ]);
+        $outsidePayout = Invoice::factory()->create([
+            'user_id' => $photographer->id,
+            'role' => Invoice::ROLE_PHOTOGRAPHER,
+            'shoot_id' => null,
+            'client_id' => null,
+            'photographer_id' => $photographer->id,
+            'period_start' => '2026-08-01',
+            'period_end' => '2026-08-07',
+            'billing_period_start' => '2026-08-01',
+            'billing_period_end' => '2026-08-07',
+            'issue_date' => '2026-08-01',
+            'due_date' => '2026-08-07',
+        ]);
+        $overlappingSalesRepPayout = Invoice::factory()->create([
+            'user_id' => $salesRep->id,
+            'role' => Invoice::ROLE_SALES_REP,
+            'shoot_id' => null,
+            'client_id' => null,
+            'photographer_id' => null,
+            'sales_rep_id' => $salesRep->id,
+            'period_start' => '2026-08-31',
+            'period_end' => '2026-09-06',
+            'billing_period_start' => '2026-08-31',
+            'billing_period_end' => '2026-09-06',
+            'issue_date' => null,
+            'due_date' => null,
+        ]);
+        $issuedClientInvoice = Invoice::factory()->create([
+            'user_id' => $client->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'shoot_id' => null,
+            'client_id' => $client->id,
+            'period_start' => '2026-07-01',
+            'period_end' => '2026-07-15',
+            'billing_period_start' => null,
+            'billing_period_end' => null,
+            'issue_date' => '2026-08-31',
+            'due_date' => '2026-09-15',
+        ]);
+        $legacyClientInvoice = Invoice::factory()->create([
+            'user_id' => $client->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'shoot_id' => null,
+            'client_id' => $client->id,
+            'period_start' => '2026-08-31',
+            'period_end' => '2026-09-15',
+            'billing_period_start' => null,
+            'billing_period_end' => null,
+            'issue_date' => null,
+            'due_date' => '2026-09-15',
+        ]);
+        $dueOnlyClientInvoice = Invoice::factory()->create([
+            'user_id' => $client->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'shoot_id' => null,
+            'client_id' => $client->id,
+            'period_start' => '2026-08-01',
+            'period_end' => '2026-08-31',
+            'billing_period_start' => null,
+            'billing_period_end' => null,
+            'issue_date' => '2026-08-01',
+            'due_date' => '2026-08-31',
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->getJson(
+            '/api/admin/invoices?start=2026-08-31&end=2026-08-31&per_page=100'
+        );
+
+        $response->assertOk();
+        $returnedIds = collect($response->json('data'))->pluck('id')->all();
+        $this->assertEqualsCanonicalizing([
+            $overlappingPayout->id,
+            $overlappingSalesRepPayout->id,
+            $issuedClientInvoice->id,
+            $legacyClientInvoice->id,
+        ], $returnedIds);
+        $this->assertNotContains($outsidePayout->id, $returnedIds);
+        $this->assertNotContains($dueOnlyClientInvoice->id, $returnedIds);
+    }
+
+    public function test_invoice_index_rejects_invalid_date_ranges_and_page_sizes(): void
+    {
+        Sanctum::actingAs(User::factory()->admin()->create());
+
+        $this->getJson('/api/admin/invoices?start=not-a-date')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('start');
+
+        $this->getJson('/api/admin/invoices?start=2026-09-01&end=2026-08-31')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('end');
+
+        $this->getJson('/api/admin/invoices?per_page=101')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('per_page');
+    }
+
+    public function test_invoice_csv_exports_items_refund_aware_totals_and_neutralized_formula_fields(): void
+    {
+        $client = User::factory()->create([
+            'role' => 'client',
+            'name' => '+SUM(1,1)',
+        ]);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id]);
+        $invoice = Invoice::factory()->create([
+            'user_id' => $client->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'shoot_id' => $shoot->id,
+            'client_id' => $client->id,
+            'invoice_number' => 'REFUND-CSV-1',
+            'period_start' => '2026-08-01',
+            'period_end' => '2026-08-31',
+            'billing_period_start' => null,
+            'billing_period_end' => null,
+            'issue_date' => '2026-08-01',
+            'due_date' => '2026-08-31',
+            'subtotal' => 125,
+            'tax' => 0,
+            'total' => 125,
+            'total_amount' => 125,
+            'amount_paid' => 125,
+            'payments_total' => 125,
+            'balance_due' => 0,
+            'status' => Invoice::STATUS_PAID,
+            'is_paid' => true,
+        ]);
+        $invoice->items()->create([
+            'type' => InvoiceItem::TYPE_CHARGE,
+            'description' => '=2+2',
+            'quantity' => 1,
+            'unit_amount' => 125,
+            'total_amount' => 125,
+        ]);
+        $payment = Payment::create([
+            'shoot_id' => $shoot->id,
+            'invoice_id' => $invoice->id,
+            'amount' => 125,
+            'currency' => 'USD',
+            'square_payment_id' => (string) Str::uuid(),
+            'square_order_id' => (string) Str::uuid(),
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+        PaymentRefund::create([
+            'payment_id' => $payment->id,
+            'shoot_id' => $shoot->id,
+            'amount' => 25,
+            'provider' => 'stripe',
+            'provider_refund_id' => 'refund-csv-test',
+        ]);
+
+        Sanctum::actingAs($client);
+
+        $response = $this->get('/api/invoices/'.$invoice->id.'/download');
+
+        $response->assertOk();
+        $csvStream = fopen('php://temp', 'w+');
+        fwrite($csvStream, $response->streamedContent());
+        rewind($csvStream);
+        $rows = collect();
+        while (($row = fgetcsv($csvStream)) !== false) {
+            $rows->push($row);
+        }
+        fclose($csvStream);
+
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Client', "'+SUM(1,1)"]));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === [
+            InvoiceItem::TYPE_CHARGE,
+            "'=2+2",
+            '1',
+            '125.00',
+            '125.00',
+            '',
+        ]));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Amount Paid', '100.00']));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Balance', '25.00']));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Paid', 'No']));
+    }
+
+    public function test_payout_invoice_csv_does_not_treat_client_shoot_payments_as_payout_settlement(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->photographer()->create();
+        $client = User::factory()->create(['role' => 'client']);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'photographer_id' => $photographer->id,
+            'total_quote' => 500,
+        ]);
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 500,
+            'currency' => 'USD',
+            'square_payment_id' => (string) Str::uuid(),
+            'square_order_id' => (string) Str::uuid(),
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+        $invoice = Invoice::factory()->create([
+            'user_id' => $photographer->id,
+            'role' => Invoice::ROLE_PHOTOGRAPHER,
+            'shoot_id' => null,
+            'client_id' => null,
+            'photographer_id' => $photographer->id,
+            'period_start' => '2026-08-24',
+            'period_end' => '2026-08-30',
+            'billing_period_start' => '2026-08-24',
+            'billing_period_end' => '2026-08-30',
+            'issue_date' => null,
+            'due_date' => null,
+            'total' => 100,
+            'total_amount' => 100,
+            'amount_paid' => 500,
+            // Payout generation may retain client receipts in this legacy
+            // aggregate; it is not the amount paid to the photographer.
+            'payments_total' => 500,
+            'balance_due' => 100,
+            'status' => Invoice::STATUS_DRAFT,
+            'is_paid' => true,
+        ]);
+        $invoice->shoots()->attach($shoot->id);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->get('/api/admin/invoices/'.$invoice->id.'/download');
+
+        $response->assertOk();
+        $csvStream = fopen('php://temp', 'w+');
+        fwrite($csvStream, $response->streamedContent());
+        rewind($csvStream);
+        $rows = collect();
+        while (($row = fgetcsv($csvStream)) !== false) {
+            $rows->push($row);
+        }
+        fclose($csvStream);
+
+        $this->assertTrue($rows->contains(fn (array $row) => ($row[0] ?? null) === (string) $shoot->id
+            && ($row[4] ?? null) === '500.00'));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Amount Paid', '0.00']));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Balance', '100.00']));
+        $this->assertTrue($rows->contains(fn (array $row) => $row === ['Paid', 'No']));
+    }
+
+    public function test_cors_exposes_invoice_download_filenames_to_browser_code(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $invoice = Invoice::factory()->create([
+            'user_id' => $client->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'shoot_id' => null,
+            'client_id' => $client->id,
+        ]);
+        Sanctum::actingAs($client);
+
+        $response = $this
+            ->withHeader('Origin', 'https://reprodashboard.com')
+            ->get('/api/invoices/'.$invoice->id.'/download');
+
+        $response->assertOk();
+        $exposedHeaders = collect(explode(
+            ',',
+            strtolower((string) $response->headers->get('Access-Control-Expose-Headers'))
+        ))->map(fn (string $header) => trim($header));
+
+        $this->assertContains('content-disposition', $exposedHeaders->all());
     }
 
     public function test_sales_rep_weekly_commission_generation_uses_sunday_to_saturday_scheduled_shoots_and_service_exclusions(): void

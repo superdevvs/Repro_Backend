@@ -90,6 +90,35 @@ class InvoiceApprovalControllerTest extends TestCase
         $response->assertJsonPath('summary.returned_count', 0);
     }
 
+    public function test_admin_review_queue_includes_weekly_invoice_that_overlaps_selected_date(): void
+    {
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->photographer()->create();
+
+        $overlapping = $this->createWeeklyInvoice($photographer, [
+            'billing_period_start' => '2026-03-29',
+            'billing_period_end' => '2026-04-04',
+            'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+        ]);
+        $outside = $this->createWeeklyInvoice($photographer, [
+            'billing_period_start' => '2026-03-22',
+            'billing_period_end' => '2026-03-28',
+            'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+        ]);
+
+        Sanctum::actingAs($admin);
+
+        $response = $this->getJson(
+            '/api/admin/invoices/review-queue?role=photographer'
+            .'&approval_status=pending_approval&start=2026-04-01&end=2026-04-01'
+        );
+
+        $response->assertOk();
+        $ids = collect($response->json('data'))->pluck('id');
+        $this->assertTrue($ids->contains($overlapping->id));
+        $this->assertFalse($ids->contains($outside->id));
+    }
+
     public function test_admin_review_queue_filters_sales_rep_invoices_by_status_search_and_date(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-04-09 10:00:00'));
