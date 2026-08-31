@@ -43,6 +43,10 @@ return Application::configure(basePath: dirname(__DIR__))
         // cubicasa:resync-pending is already failing on "database is locked".
         // Running a second writer in the same minute would only add to that.
         $schedule->command('iguide:resync-pending')->cron('15,45 * * * *')->withoutOverlapping();
+        $schedule->command('iguide-uploads:prune')
+            ->cron('7,37 * * * *')
+            ->withoutOverlapping()
+            ->onOneServer();
         $schedule->command('system-overview:prune')->hourly();
         $schedule->command('telnyx:prune-webhook-events')->dailyAt('02:30');
         $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')
@@ -154,7 +158,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 return response()->json($payload, $status)
                     ->header('Access-Control-Allow-Origin', $origin)
                     ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-                    ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route')
+                    ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route, Idempotency-Key, Content-Range, X-Chunk-SHA256')
                     ->header('Access-Control-Allow-Credentials', 'true');
             }
         });

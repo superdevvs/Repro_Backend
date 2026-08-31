@@ -84,12 +84,16 @@ class IguideOfflinePackageControllerTest extends TestCase
         $this->assertSame('IG-123', data_get($shoot->iguide_data, 'provider_payload.work_order'));
         $this->assertSame('scanning', data_get($shoot->iguide_data, 'manual_offline_package.status'));
 
-        // A fast scanner can finish before the upload request returns. The
-        // controller's late markScanning call must not revive a terminal failure.
+        // A failed replacement promotes the prior clean package, and a late
+        // markScanning callback cannot hide that restored download.
         $packages = app(IguideOfflinePackageService::class);
         $packages->markFailed($file, 'infected');
         $packages->markScanning($file);
-        $this->assertSame('failed', data_get($shoot->fresh()->iguide_data, 'manual_offline_package.status'));
+        $restored = data_get($shoot->fresh()->iguide_data, 'manual_offline_package');
+        $this->assertSame('ready', $restored['status']);
+        $this->assertSame(77, $restored['file_id']);
+        $this->assertSame('infected', $restored['last_replacement_failure']['error']);
+        $this->assertSame($file->id, $restored['last_replacement_failure']['file_id']);
     }
 
     #[Test]

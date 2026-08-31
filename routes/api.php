@@ -90,6 +90,7 @@ use App\Http\Controllers\API\Admin\SystemOverviewController;
 use App\Http\Controllers\API\UploadSourceController;
 use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
+use App\Http\Controllers\API\IguideOfflineChunkUploadController;
 use App\Http\Controllers\API\IguideOfflinePackageController;
 use App\Http\Controllers\StripePaymentController;
 
@@ -952,6 +953,20 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide']);
             Route::post('/iguide/offline-package', [IguideOfflinePackageController::class, 'store'])
                 ->middleware('role:admin,superadmin,editing_manager');
+            Route::middleware('role:admin,superadmin,editing_manager')
+                ->prefix('/iguide/offline-package/uploads')
+                ->group(function () {
+                    Route::post('/', [IguideOfflineChunkUploadController::class, 'store']);
+                    Route::get('/{upload}', [IguideOfflineChunkUploadController::class, 'show'])
+                        ->whereUuid('upload');
+                    Route::put('/{upload}/chunks/{index}', [IguideOfflineChunkUploadController::class, 'storeChunk'])
+                        ->whereUuid('upload')
+                        ->whereNumber('index');
+                    Route::post('/{upload}/complete', [IguideOfflineChunkUploadController::class, 'complete'])
+                        ->whereUuid('upload');
+                    Route::delete('/{upload}', [IguideOfflineChunkUploadController::class, 'destroy'])
+                        ->whereUuid('upload');
+                });
             Route::post('/cubicasa/sync', [IntegrationController::class, 'syncCubicasa']);
             Route::post('/cubicasa/order', [IntegrationController::class, 'createCubicasa']);
             Route::post('/cubicasa/identifiers', [IntegrationController::class, 'saveCubicasaIdentifiers']);
