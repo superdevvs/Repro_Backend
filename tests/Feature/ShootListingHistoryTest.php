@@ -16,8 +16,11 @@ class ShootListingHistoryTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+
     protected User $client;
+
     protected User $photographer;
+
     protected Service $service;
 
     protected function setUp(): void
@@ -140,6 +143,10 @@ class ShootListingHistoryTest extends TestCase
             'total_quote' => 212,
             'payment_type' => 'card',
             'created_by' => (string) $this->admin->id,
+            'property_details' => [
+                'latitude' => '38.9072',
+                'longitude' => '-77.0369',
+            ],
         ]);
         $shoot->services()->attach($this->service->id, [
             'price' => 200,
@@ -169,6 +176,8 @@ class ShootListingHistoryTest extends TestCase
             ->assertJsonPath('meta.total', 1)
             ->assertJsonPath('data.0.id', $shoot->id)
             ->assertJsonPath('data.0.client.name', 'Client User')
+            ->assertJsonPath('data.0.address.latitude', 38.9072)
+            ->assertJsonPath('data.0.address.longitude', -77.0369)
             ->assertJsonPath('data.0.services.0', 'HDR Photos');
 
         $historyPayload = $historyResponse->json();
@@ -181,5 +190,17 @@ class ShootListingHistoryTest extends TestCase
         $this->assertStringContainsString('text/csv', (string) $exportResponse->headers->get('content-type'));
         $this->assertStringContainsString('HDR Photos', $csv);
         $this->assertStringContainsString('Client User', $csv);
+
+        $shoot->update([
+            'property_details' => [
+                'latitude' => 'not-a-coordinate',
+                'longitude' => '181',
+            ],
+        ]);
+
+        $this->getJson('/api/shoots/history?per_page=25')
+            ->assertOk()
+            ->assertJsonPath('data.0.address.latitude', null)
+            ->assertJsonPath('data.0.address.longitude', null);
     }
 }

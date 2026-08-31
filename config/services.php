@@ -97,6 +97,18 @@ return [
         'provider' => env('ADDRESS_PROVIDER', 'google'),
     ],
 
+    // Public Nominatim usage is limited to one request per second for the
+    // entire application. Use a shared, atomic-lock-capable cache store in
+    // multi-process deployments (database and Redis both qualify).
+    'nominatim' => [
+        'throttle_cache_store' => env('NOMINATIM_THROTTLE_CACHE_STORE'),
+        'min_interval_milliseconds' => (int) env('NOMINATIM_MIN_INTERVAL_MS', 1000),
+        'lock_seconds' => (int) env('NOMINATIM_LOCK_SECONDS', 20),
+        'lock_wait_seconds' => (int) env('NOMINATIM_LOCK_WAIT_SECONDS', 15),
+        'request_timeout_seconds' => (int) env('NOMINATIM_REQUEST_TIMEOUT_SECONDS', 10),
+        'user_agent' => env('NOMINATIM_USER_AGENT', 'REPRO Dashboard App/1.0 (contact@reprophotos.com)'),
+    ],
+
     'resend' => [
         'key' => env('RESEND_KEY'),
     ],

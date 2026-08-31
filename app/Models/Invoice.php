@@ -112,6 +112,8 @@ class Invoice extends Model
     protected $appends = [
         'can_edit',
         'edit_locked_reason',
+        'overpayment_amount',
+        'overpaymentAmount',
     ];
 
     public function photographer(): BelongsTo
@@ -416,6 +418,7 @@ class Invoice extends Model
             'billing_period_end' => optional($this->billing_period_end)->toDateString(),
             'total_amount' => round((float) $this->total_amount, 2),
             'amount_paid' => round((float) $this->amount_paid, 2),
+            'overpayment_amount' => $this->overpaymentAmount(),
             'commissionable_gross' => round($commissionableGross, 2),
             'excluded_fees_total' => round($excludedFees, 2),
             'commission_rate' => $commissionRate !== null ? (float) $commissionRate : null,
@@ -545,6 +548,24 @@ class Invoice extends Model
             );
 
         return max((float) $total - (float) $paid, 0);
+    }
+
+    public function overpaymentAmount(): float
+    {
+        $total = (float) ($this->total ?? $this->total_amount ?? $this->charges_total ?? 0);
+        $paid = $this->hasRelatedPaymentRecords()
+            ? $this->totalPaid()
+            : max(
+                (float) ($this->getAttribute('amount_paid') ?? 0),
+                (float) ($this->getAttribute('payments_total') ?? 0)
+            );
+
+        return round(max($paid - $total, 0), 2);
+    }
+
+    public function getOverpaymentAmountAttribute(): float
+    {
+        return $this->overpaymentAmount();
     }
 
     public function paymentLink(): string

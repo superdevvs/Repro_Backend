@@ -15,6 +15,7 @@ use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMutationSupportService;
+use App\Services\Shoots\ShootServiceChangeGuard;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -32,7 +33,8 @@ class UpdateShootAction
         protected ShootActivityLogger $activityLogger,
         protected MailService $mailService,
         protected AutomationService $automationService,
-        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
+        protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
+        protected ShootServiceChangeGuard $serviceChangeGuard
     ) {
     }
 
@@ -211,13 +213,44 @@ class UpdateShootAction
             ]
         ));
 
-        if (array_key_exists('services', $validated)) {
-            $targetShootType = (string) ($validated['shoot_type'] ?? $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
-            $canRemoveAllServices = $normalizedRole === 'superadmin'
-                && in_array($targetShootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
-            if (empty($validated['services']) && !$canRemoveAllServices) {
-                $this->abortJson('At least one service must be selected.', 422);
+        $serviceChangeRequested = array_key_exists('services', $validated)
+            || array_key_exists('service_items', $validated);
+        $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
+            && $validated['admin_adjusted_total_quote'] !== null;
+        $targetServicesForChange = $serviceChangeRequested
+            ? $this->editablePayloadService->targetServicesFor($shoot, $validated, $user)
+            : [];
+
+        if ($hasAdjustedTotal
+            && ! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)) {
+            $this->abortJson('Only Admin and Super Admin can set an adjusted total.', 403);
+        }
+
+        $serviceDetachImpact = null;
+        if ($serviceChangeRequested) {
+            $legacyPricingFields = array_intersect(
+                ['base_quote', 'tax_amount', 'total_quote'],
+                array_keys($validated)
+            );
+            if (! empty($legacyPricingFields)) {
+                $this->abortJson(
+                    'Service changes are priced by the server. Use admin_adjusted_total_quote for an intentional override.',
+                    422
+                );
             }
+
+            $serviceDetachImpact = $this->serviceChangeGuard->assertChangeAllowed(
+                $shoot,
+                $targetServicesForChange,
+                $user,
+                (bool) ($validated['confirm_service_detach'] ?? false),
+                $validated['service_detach_confirmation_token'] ?? null,
+                $hasAdjustedTotal
+                    ? (float) $validated['admin_adjusted_total_quote']
+                    : null,
+                $validated['state'] ?? $shoot->state,
+                array_key_exists('state', $validated) ? null : ($shoot->tax_region ?: null)
+            );
         }
         $availabilityPayload = $validated;
         $scheduledAtProvidedForAvailability = array_key_exists('scheduled_at', $validated);
@@ -258,7 +291,7 @@ class UpdateShootAction
             $targetScheduledAt = isset($availabilityPayload['scheduled_at'])
                 ? new \DateTime((string) $availabilityPayload['scheduled_at'])
                 : ($shoot->scheduled_at ? new \DateTime($shoot->scheduled_at->format('Y-m-d H:i:s')) : null);
-            $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $availabilityPayload);
+            $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $availabilityPayload, $user);
 
             if ($targetPhotographerId && $targetScheduledAt) {
                 $this->support->assertWithinAvailabilityBounds(
@@ -460,7 +493,7 @@ class UpdateShootAction
             if ($originalAddress !== $newAddress) {
                 $changes['address'] = ['from' => $originalAddress, 'to' => $newAddress];
             }
-            if (array_key_exists('services', $validated)) {
+            if ($serviceChangeRequested) {
                 $newServiceIds = $shoot->services->pluck('id')->sort()->values()->all();
                 $newServiceNames = $shoot->services->pluck('name')->filter()->values()->all();
                 if ($originalServiceIds !== $newServiceIds) {
@@ -496,6 +529,7 @@ class UpdateShootAction
                     [
                         'by' => $user->name,
                         'changes' => $changes,
+                        'service_detach_impact' => $serviceDetachImpact,
                     ],
                     $user
                 );

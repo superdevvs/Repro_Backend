@@ -715,6 +715,155 @@ class InvoiceShootOrderSyncTest extends TestCase
         $this->assertSame((float) $freshInvoice->total, (float) $freshInvoice->total_amount);
     }
 
+    public function test_zero_service_edit_keeps_billable_adjustment_and_reports_invoice_credit_due(): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Retained Manual Charge',
+            'amount' => 20,
+            'bills_client' => true,
+        ])->assertCreated();
+        Payment::factory()->create([
+            'shoot_id' => $shoot->id,
+            'amount' => 106,
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ])->assertStatus(409)
+            ->assertJsonPath('impact.new_total', 20)
+            ->assertJsonPath('impact.refund_credit_due', 86);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ])->assertOk()
+            ->assertJsonPath('data.invoiceAdjustmentsTotal', 20)
+            ->assertJsonPath('data.total_quote', fn ($value) => (float) $value === 20.0)
+            ->assertJsonPath('data.overpaymentAmount', 86);
+
+        $freshShoot = $shoot->fresh();
+        $this->assertNull($freshShoot->service_id);
+        $this->assertSame(0, $freshShoot->serviceItems()->count());
+        $this->assertSame(0.0, (float) $freshShoot->base_quote);
+        $this->assertSame(0.0, (float) $freshShoot->discount_amount);
+        $this->assertSame(0.0, (float) $freshShoot->tax_amount);
+        $this->assertSame(20.0, (float) $freshShoot->total_quote);
+
+        $freshInvoice = $invoice->fresh(['items']);
+        $this->assertSame(20.0, (float) $freshInvoice->total_amount);
+        $this->assertSame(106.0, (float) $freshInvoice->amount_paid);
+        $this->assertSame(0.0, (float) $freshInvoice->balanceDue());
+        $this->assertSame(86.0, $freshInvoice->overpaymentAmount());
+        $this->assertSame(Invoice::STATUS_PAID, $freshInvoice->status);
+        $this->assertNotNull($freshInvoice->items->firstWhere('description', 'Retained Manual Charge'));
+    }
+
+    public function test_adjusted_total_is_internally_consistent_and_only_applies_to_that_save(): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Persistent Adjustment',
+            'amount' => 20,
+            'bills_client' => true,
+        ])->assertCreated();
+        $shoot->forceFill(['tax_region' => 'md', 'tax_percent' => 6])->save();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 2],
+            ],
+            'admin_adjusted_total_quote' => 150,
+        ])->assertOk();
+
+        $adjustedShoot = $shoot->fresh();
+        $this->assertSame(150.0, (float) $adjustedShoot->total_quote);
+        $this->assertNull($adjustedShoot->discount_type);
+        $this->assertNull($adjustedShoot->discount_value);
+        $this->assertSame(0.0, (float) $adjustedShoot->discount_amount);
+        $this->assertEqualsWithDelta(
+            150.0,
+            (float) $adjustedShoot->base_quote + (float) $adjustedShoot->tax_amount + 20,
+            0.01
+        );
+        $this->assertSame(150.0, (float) $invoice->fresh()->total_amount);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1],
+            ],
+            'admin_adjusted_total_quote' => null,
+        ])->assertOk();
+
+        $automaticShoot = $shoot->fresh();
+        $this->assertSame(126.0, (float) $automaticShoot->total_quote);
+        $this->assertSame(126.0, (float) $invoice->fresh()->total_amount);
+    }
+
+    public function test_adjusted_total_cannot_be_lower_than_retained_billable_adjustments(): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Non-negotiable Adjustment',
+            'amount' => 30,
+            'bills_client' => true,
+        ])->assertCreated();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 2],
+            ],
+            'admin_adjusted_total_quote' => 20,
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('admin_adjusted_total_quote');
+
+        $this->assertSame(136.0, (float) $shoot->fresh()->total_quote);
+        $this->assertSame(1, (int) $shoot->fresh()->serviceItems()->firstOrFail()->quantity);
+        $this->assertSame(136.0, (float) $invoice->fresh()->total_amount);
+    }
+
+    public function test_service_removal_rebuilds_aggregate_invoice_without_changing_unrelated_shoot(): void
+    {
+        $firstShoot = $this->createShoot('100 First Aggregate St');
+        $secondShoot = $this->createShoot('200 Second Aggregate St');
+        $start = Carbon::parse($firstShoot->scheduled_date)->startOfDay();
+        $end = $start->copy()->endOfDay();
+        $aggregate = $this->app->make(InvoiceService::class)
+            ->generateInvoice($this->client, Invoice::ROLE_CLIENT, $start, $end);
+
+        $this->assertSame(212.0, (float) $aggregate->total_amount);
+
+        $confirmation = $this->patchJson("/api/shoots/{$firstShoot->id}", [
+            'services' => [],
+        ])->assertStatus(409);
+        $this->patchJson("/api/shoots/{$firstShoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ])->assertOk();
+
+        $aggregate->refresh()->load('items');
+        $this->assertSame(106.0, (float) $aggregate->total_amount);
+        $this->assertSame(106.0, (float) $secondShoot->fresh()->total_quote);
+        $this->assertSame(
+            100.0,
+            (float) $aggregate->items
+                ->where('shoot_id', $secondShoot->id)
+                ->where('type', InvoiceItem::TYPE_CHARGE)
+                ->sum('total_amount')
+        );
+        $this->assertSame(
+            0.0,
+            (float) $aggregate->items
+                ->where('shoot_id', $firstShoot->id)
+                ->where('type', InvoiceItem::TYPE_CHARGE)
+                ->sum('total_amount')
+        );
+    }
+
     public function test_cancellation_invoice_regeneration_counts_manual_adjustment_once(): void
     {
         [$shoot, $invoice] = $this->createShootAndInvoice();

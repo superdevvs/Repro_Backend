@@ -6,6 +6,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\MailService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Laravel\Sanctum\Sanctum;
@@ -215,6 +216,148 @@ class InvoiceApprovalControllerTest extends TestCase
         $response->assertJsonPath('data.payee.name', 'Cole Booker');
         $response->assertJsonPath('data.modification_notes', 'Added comment about commission split.');
         $response->assertJsonPath('data.rejection_reason', 'Please review the client change order note.');
+    }
+
+    public function test_photographer_reject_with_changes_enters_super_admin_review_queue(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-04-09 11:00:00'));
+
+        $superAdmin = User::factory()->superAdmin()->create();
+        $photographer = User::factory()->photographer()->create([
+            'name' => 'Jay Snap',
+            'email' => 'jay.snap@example.com',
+        ]);
+        $invoice = $this->createWeeklyInvoice($photographer, [
+            'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
+            'billing_period_start' => '2026-04-05',
+            'billing_period_end' => '2026-04-11',
+        ]);
+        $item = $invoice->items()->where('type', InvoiceItem::TYPE_CHARGE)->firstOrFail();
+
+        $mailService = $this->mock(MailService::class);
+        $mailService
+            ->shouldReceive('sendInvoicePendingApprovalEmail')
+            ->once()
+            ->andReturnTrue();
+
+        Sanctum::actingAs($photographer);
+
+        $this->patchJson("/api/photographer/invoices/{$invoice->id}/items/{$item->id}", [
+            'description' => 'Updated HDR package',
+            'amount' => 275,
+            'quantity' => 1,
+        ])->assertOk();
+
+        $response = $this->postJson("/api/photographer/invoices/{$invoice->id}/reject", [
+            'reason' => 'Updated the package and corrected the payout amount.',
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('invoice.approval_status', Invoice::APPROVAL_STATUS_PENDING_APPROVAL);
+
+        $invoice->refresh();
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $invoice->approval_status);
+        $this->assertSame($photographer->id, $invoice->modified_by);
+        $this->assertSame('Updated the package and corrected the payout amount.', $invoice->modification_notes);
+        $this->assertNull($invoice->rejected_by);
+        $this->assertNull($invoice->rejected_at);
+        $this->assertDatabaseHas('invoice_audit_events', [
+            'invoice_id' => $invoice->id,
+            'actor_id' => $photographer->id,
+            'event' => 'submitted_with_changes',
+        ]);
+
+        Sanctum::actingAs($superAdmin);
+
+        $queue = $this->getJson(
+            '/api/admin/invoices/review-queue?role=photographer&approval_status=pending_approval'
+            . '&search=jay&start=2026-04-05&end=2026-04-11'
+        );
+
+        $queue->assertOk();
+        $queuedInvoice = collect($queue->json('data'))->firstWhere('id', $invoice->id);
+        $this->assertNotNull($queuedInvoice);
+        $this->assertSame('Jay Snap', $queuedInvoice['photographer']['name']);
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $queuedInvoice['approval_status']);
+    }
+
+    public function test_deployment_repair_moves_legacy_payee_rejection_into_super_admin_review(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-08-31 09:00:00'));
+
+        $photographer = User::factory()->photographer()->create([
+            'name' => 'Jay Snap',
+            'email' => 'jay.snap@example.com',
+        ]);
+        $invoice = $this->createWeeklyInvoice($photographer, [
+            'approval_status' => Invoice::APPROVAL_STATUS_REJECTED,
+            'billing_period_start' => '2026-08-23',
+            'billing_period_end' => '2026-08-29',
+            'rejected_by' => $photographer->id,
+            'rejected_at' => '2026-08-30 16:30:00',
+            'rejection_reason' => 'Corrected the package and payout amount.',
+        ]);
+
+        $migration = require database_path(
+            'migrations/2026_08_31_000001_resubmit_legacy_payee_rejected_invoices.php'
+        );
+        $migration->up();
+
+        $invoice->refresh();
+
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $invoice->approval_status);
+        $this->assertSame($photographer->id, $invoice->modified_by);
+        $this->assertSame('Corrected the package and payout amount.', $invoice->modification_notes);
+        $this->assertNull($invoice->rejected_by);
+        $this->assertNull($invoice->rejected_at);
+        $this->assertNull($invoice->rejection_reason);
+        $this->assertDatabaseHas('invoice_audit_events', [
+            'invoice_id' => $invoice->id,
+            'actor_id' => $photographer->id,
+            'event' => 'legacy_payee_changes_resubmitted',
+        ]);
+    }
+
+    public function test_photographer_resubmission_clears_admin_return_and_reenters_review(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-04-09 11:30:00'));
+
+        $admin = User::factory()->admin()->create();
+        $photographer = User::factory()->photographer()->create();
+        $invoice = $this->createWeeklyInvoice($photographer, [
+            'approval_status' => Invoice::APPROVAL_STATUS_REJECTED,
+            'rejected_by' => $admin->id,
+            'rejected_at' => '2026-04-08 15:00:00',
+            'rejection_reason' => 'Please correct the package amount.',
+        ]);
+
+        $mailService = $this->mock(MailService::class);
+        $mailService
+            ->shouldReceive('sendInvoicePendingApprovalEmail')
+            ->once()
+            ->andReturnTrue();
+
+        Sanctum::actingAs($photographer);
+
+        $response = $this->postJson(
+            "/api/photographer/invoices/{$invoice->id}/submit-for-approval",
+            ['notes' => 'Package amount corrected.']
+        );
+
+        $response->assertOk();
+        $response->assertJsonPath('invoice.approval_status', Invoice::APPROVAL_STATUS_PENDING_APPROVAL);
+
+        $invoice->refresh();
+        $this->assertSame(Invoice::APPROVAL_STATUS_PENDING_APPROVAL, $invoice->approval_status);
+        $this->assertSame('Package amount corrected.', $invoice->modification_notes);
+        $this->assertNull($invoice->rejection_reason);
+        $this->assertNull($invoice->rejected_by);
+        $this->assertNull($invoice->rejected_at);
+        $this->assertDatabaseHas('invoice_audit_events', [
+            'invoice_id' => $invoice->id,
+            'actor_id' => $photographer->id,
+            'event' => 'submitted_for_approval',
+        ]);
     }
 
     public function test_approve_review_freezes_photographer_invoice_without_marking_shoots_paid(): void

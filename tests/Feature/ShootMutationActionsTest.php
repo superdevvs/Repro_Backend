@@ -4,9 +4,14 @@ namespace Tests\Feature;
 
 use App\Events\ShootActivityBroadcast;
 use App\Models\AccountLink;
+use App\Models\Payment;
+use App\Models\PaymentServiceAllocation;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootEmailDelivery;
+use App\Models\ShootFile;
+use App\Models\ShootMediaAlbum;
+use App\Models\ShootUploadAttempt;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\CubiCasaService;
@@ -18,6 +23,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Mockery;
 use Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
@@ -504,7 +510,7 @@ class ShootMutationActionsTest extends TestCase
 
         $scheduledAt = now()->addDays(7)->setTime(11, 30)->format('Y-m-d H:i:s');
 
-        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", [
+        $payload = [
             'address' => '900 Approval Way',
             'city' => 'Washington',
             'state' => 'DC',
@@ -524,10 +530,18 @@ class ShootMutationActionsTest extends TestCase
             'bedrooms' => 4,
             'bathrooms' => 3.5,
             'sqft' => 2450,
-            'base_quote' => 90,
-            'tax_amount' => 5.40,
-            'total_quote' => 95.40,
-        ]);
+            'admin_adjusted_total_quote' => 95.40,
+        ];
+
+        $confirmation = $this->postJson("/api/shoots/{$shoot->id}/approve", $payload);
+        $confirmation->assertStatus(409)
+            ->assertJsonPath('code', 'service_detach_confirmation_required')
+            ->assertJsonPath('impact.removed_services.0.name', $this->service->name);
+
+        $response = $this->postJson("/api/shoots/{$shoot->id}/approve", array_merge($payload, [
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ]));
 
         $response->assertOk()
             ->assertJsonPath('data.id', (string) $shoot->id);
@@ -540,15 +554,27 @@ class ShootMutationActionsTest extends TestCase
         $this->assertSame('Washington', $shoot->city);
         $this->assertSame('DC', $shoot->state);
         $this->assertSame('20001', $shoot->zip);
+        $detachActivity = DB::table('shoot_activity_logs')
+            ->where('shoot_id', $shoot->id)
+            ->where('action', 'shoot_services_detached')
+            ->latest('id')
+            ->first();
+        $this->assertNotNull($detachActivity);
+        $detachMetadata = json_decode($detachActivity->metadata ?? '[]', true);
+        $this->assertSame(
+            $this->service->name,
+            data_get($detachMetadata, 'service_detach_impact.removed_services.0.name')
+        );
         $this->assertSame($scheduledAt, $shoot->scheduled_at?->format('Y-m-d H:i:s'));
         $this->assertSame($this->photographer->id, $shoot->photographer_id);
         $this->assertSame('Gate code is 1234', $shoot->shoot_notes);
         $this->assertSame('Internal dispatch note', $shoot->company_notes);
         $this->assertSame('Bring a drone if weather is clear', $shoot->photographer_notes);
         $this->assertSame('Prioritize twilight tones', $shoot->editor_notes);
-        $this->assertEquals(90.0, (float) $shoot->base_quote);
-        $this->assertEquals(5.4, (float) $shoot->tax_amount);
         $this->assertEquals(95.4, (float) $shoot->total_quote);
+        $this->assertEqualsWithDelta(95.4, (float) $shoot->base_quote + (float) $shoot->tax_amount, 0.01);
+        $this->assertNull($shoot->discount_type);
+        $this->assertEquals(0.0, (float) $shoot->discount_amount);
         $this->assertCount(1, $shoot->services);
         $this->assertSame($this->secondService->id, $shoot->services->first()->id);
         $this->assertDatabaseHas('shoot_service', [
@@ -1169,7 +1195,7 @@ class ShootMutationActionsTest extends TestCase
 
         $updatedAt = now()->addDays(4)->setTime(13, 15)->format('Y-m-d H:i:s');
 
-        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+        $payload = [
             'address' => '500 Updated Ave',
             'city' => 'Washington',
             'state' => 'DC',
@@ -1178,7 +1204,16 @@ class ShootMutationActionsTest extends TestCase
             'services' => [
                 ['id' => $this->secondService->id, 'quantity' => 2],
             ],
-        ]);
+        ];
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", $payload);
+        $confirmation->assertStatus(409)
+            ->assertJsonPath('code', 'service_detach_confirmation_required');
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", array_merge($payload, [
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ]));
 
         $response->assertOk()
             ->assertJsonPath('message', 'Shoot updated');
@@ -1590,7 +1625,7 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function admin_cannot_remove_every_product_even_for_an_internal_shoot_type(): void
+    public function admin_can_remove_every_service_after_confirming_the_impact(): void
     {
         Sanctum::actingAs($this->admin);
 
@@ -1598,20 +1633,187 @@ class ShootMutationActionsTest extends TestCase
             'client_id' => $this->client->id,
             'service_id' => $this->service->id,
             'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'base_quote' => 240,
+            'tax_amount' => 14.40,
+            'total_quote' => 254.40,
         ]);
         $this->attachPrimaryService($shoot);
+        $shoot->services()->attach($this->secondService->id, [
+            'price' => 90,
+            'quantity' => 1,
+        ]);
 
-        $this->patchJson("/api/shoots/{$shoot->id}", [
-            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
             'services' => [],
-        ])->assertUnprocessable()
-            ->assertJsonPath('message', 'At least one service must be selected.');
+        ])->assertStatus(409)
+            ->assertJsonPath('code', 'service_detach_confirmation_required')
+            ->assertJsonPath('impact.leaves_no_services', true)
+            ->assertJsonCount(2, 'impact.removed_services')
+            ->assertJsonPath('impact.current_total', 254.4)
+            ->assertJsonPath('impact.new_total', 0);
 
         $this->assertTrue($shoot->fresh()->services()->whereKey($this->service->id)->exists());
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.canRemoveAllServices', true)
+            ->assertJsonPath('data.can_remove_all_services', true)
+            ->assertJsonPath('data.overpaymentAmount', 0);
+
+        $shoot->refresh();
+        $this->assertNull($shoot->service_id);
+        $this->assertCount(0, $shoot->services()->get());
+        $this->assertSame(Shoot::PRODUCT_STATUS_NO_PRODUCT, $shoot->product_status);
+        $this->assertEquals(0.0, (float) $shoot->base_quote);
+        $this->assertEquals(0.0, (float) $shoot->discount_amount);
+        $this->assertEquals(0.0, (float) $shoot->tax_amount);
+        $this->assertEquals(0.0, (float) $shoot->total_quote);
+        $this->assertSame('paid', $shoot->payment_status);
+        $this->assertTrue((bool) $shoot->bypass_paywall);
+        $this->assertDatabaseHas('shoot_activity_logs', [
+            'shoot_id' => $shoot->id,
+            'action' => 'shoot_services_detached',
+            'user_id' => $this->admin->id,
+        ]);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function superadmin_can_remove_products_from_an_internal_no_charge_shoot(): void
+    public function removed_service_media_and_upload_history_are_preserved_and_detached(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $item = $shoot->serviceItems()->firstOrFail();
+        $item->forceFill([
+            'editor_id' => $editor->id,
+            'workflow_status' => 'in_progress',
+            'delivery_status' => 'ready',
+        ])->save();
+
+        $album = ShootMediaAlbum::query()->create([
+            'shoot_id' => $shoot->id,
+            'shoot_service_id' => $item->id,
+            'photographer_id' => $this->photographer->id,
+            'source' => ShootMediaAlbum::SOURCE_LOCAL,
+            'folder_path' => 'shoots/test/album',
+        ]);
+        $file = ShootFile::query()->create([
+            'shoot_id' => $shoot->id,
+            'shoot_service_id' => $item->id,
+            'album_id' => $album->id,
+            'filename' => 'retained.jpg',
+            'stored_filename' => 'retained-1.jpg',
+            'path' => 'shoots/test/retained-1.jpg',
+            'file_type' => 'image/jpeg',
+            'file_size' => 100,
+            'uploaded_by' => $this->photographer->id,
+        ]);
+        $attempt = ShootUploadAttempt::query()->create([
+            'shoot_id' => $shoot->id,
+            'actor_id' => $this->photographer->id,
+            'idempotency_key' => 'detach-history-'.$shoot->id,
+            'request_fingerprint' => str_repeat('a', 64),
+            'upload_type' => 'raw',
+            'shoot_service_id' => $item->id,
+            'status' => ShootUploadAttempt::STATUS_COMPLETED,
+            'correlation_id' => (string) Str::uuid(),
+        ]);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ])->assertStatus(409)
+            ->assertJsonPath('impact.files_detached', 1)
+            ->assertJsonPath('impact.albums_detached', 1)
+            ->assertJsonPath('impact.upload_attempts_detached', 1)
+            ->assertJsonPath('impact.assignments_removed', 1)
+            ->assertJsonPath('impact.progress_rows_removed', 1);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ])->assertOk();
+
+        $this->assertDatabaseHas('shoot_files', [
+            'id' => $file->id,
+            'shoot_id' => $shoot->id,
+            'shoot_service_id' => null,
+        ]);
+        $this->assertDatabaseHas('shoot_media_albums', [
+            'id' => $album->id,
+            'shoot_id' => $shoot->id,
+            'shoot_service_id' => null,
+        ]);
+        $this->assertDatabaseHas('shoot_upload_attempts', [
+            'id' => $attempt->id,
+            'shoot_id' => $shoot->id,
+            'shoot_service_id' => null,
+        ]);
+        $this->assertDatabaseMissing('shoot_service', ['id' => $item->id]);
+
+        $activity = DB::table('shoot_activity_logs')
+            ->where('shoot_id', $shoot->id)
+            ->where('action', 'shoot_updated')
+            ->latest('id')
+            ->first();
+        $metadata = json_decode($activity?->metadata ?? '[]', true);
+        $this->assertSame('HDR Photos', data_get($metadata, 'service_detach_impact.removed_services.0.name'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function admin_can_remove_all_services_from_every_pre_delivery_status(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        foreach ([
+            Shoot::STATUS_REQUESTED,
+            Shoot::STATUS_SCHEDULED,
+            'booked',
+            Shoot::STATUS_ON_HOLD,
+            Shoot::STATUS_UPLOADED,
+            'completed',
+            Shoot::STATUS_EDITING,
+            Shoot::STATUS_REVIEW,
+            Shoot::STATUS_READY,
+        ] as $status) {
+            $shoot = Shoot::factory()->create([
+                'client_id' => $this->client->id,
+                'service_id' => $this->service->id,
+                'status' => $status,
+                'workflow_status' => $status,
+            ]);
+            $this->attachPrimaryService($shoot);
+
+            $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+                'services' => [],
+            ])->assertStatus(409);
+
+            $this->patchJson("/api/shoots/{$shoot->id}", [
+                'services' => [],
+                'confirm_service_detach' => true,
+                'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+            ])->assertOk();
+
+            $this->assertSame(0, $shoot->fresh()->serviceItems()->count(), "Failed for status [{$status}].");
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function superadmin_can_remove_products_from_a_pre_delivery_shoot_after_confirmation(): void
     {
         $superadmin = User::factory()->create([
             'role' => 'superadmin',
@@ -1623,18 +1825,468 @@ class ShootMutationActionsTest extends TestCase
             'client_id' => $this->client->id,
             'service_id' => $this->service->id,
             'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
         ]);
         $this->attachPrimaryService($shoot);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
+            'services' => [],
+        ])->assertStatus(409);
 
         $this->patchJson("/api/shoots/{$shoot->id}", [
             'shoot_type' => Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
             'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
         ])->assertOk();
 
         $shoot->refresh();
         $this->assertSame(Shoot::SHOOT_TYPE_SAMPLE_UPLOAD, $shoot->shoot_type);
         $this->assertSame(Shoot::PRODUCT_STATUS_NO_PRODUCT, $shoot->product_status);
         $this->assertCount(0, $shoot->services()->get());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function editing_manager_cannot_save_a_shoot_without_services(): void
+    {
+        $editingManager = User::factory()->create([
+            'role' => 'editing_manager',
+            'email' => 'service-removal-editing-manager@test.com',
+        ]);
+        Sanctum::actingAs($editingManager);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_EDITING,
+            'workflow_status' => Shoot::STATUS_EDITING,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('services');
+
+        $this->assertTrue($shoot->fresh()->services()->whereKey($this->service->id)->exists());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function clients_and_sales_representatives_cannot_save_zero_services(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'rep_id' => $this->salesRep->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        foreach ([$this->client, $this->salesRep] as $actor) {
+            Sanctum::actingAs($actor);
+            $response = $this->patchJson("/api/shoots/{$shoot->id}", ['services' => []]);
+            $this->assertContains($response->status(), [403, 422]);
+            $this->assertTrue($shoot->fresh()->serviceItems()->exists());
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function admin_cannot_remove_services_from_a_terminal_shoot(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        foreach ([Shoot::STATUS_DELIVERED, Shoot::STATUS_CANCELLED, 'canceled', 'declined'] as $status) {
+            $shoot = Shoot::factory()->create([
+                'client_id' => $this->client->id,
+                'service_id' => $this->service->id,
+                'status' => $status,
+                'workflow_status' => $status,
+            ]);
+            $this->attachPrimaryService($shoot);
+
+            $this->patchJson("/api/shoots/{$shoot->id}", [
+                'services' => [],
+            ])->assertUnprocessable();
+
+            $this->assertTrue($shoot->fresh()->services()->whereKey($this->service->id)->exists());
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function service_removal_confirmation_token_is_rejected_after_the_shoot_changes(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ])->assertStatus(409);
+        $oldToken = $confirmation->json('confirmation_token');
+
+        DB::table('shoots')->where('id', $shoot->id)->update([
+            'updated_at' => now()->addMinute(),
+        ]);
+
+        $freshConfirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $oldToken,
+        ]);
+
+        $freshConfirmation->assertStatus(409)
+            ->assertJsonPath('code', 'service_detach_confirmation_required');
+        $this->assertNotSame($oldToken, $freshConfirmation->json('confirmation_token'));
+        $this->assertTrue($shoot->fresh()->services()->whereKey($this->service->id)->exists());
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function service_changes_reject_independent_client_pricing_fields(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'price' => 150, 'quantity' => 1],
+            ],
+            'base_quote' => 1,
+            'tax_amount' => 0,
+            'total_quote' => 1,
+        ])->assertUnprocessable();
+
+        $this->assertEquals(150.0, (float) $shoot->fresh()->services()->first()->pivot->price);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function duplicate_service_rows_are_rejected_before_pricing(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'base_quote' => 150,
+            'total_quote' => 159,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id],
+                ['id' => $this->service->id],
+            ],
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors('services.1.id');
+
+        $this->assertCount(1, $shoot->fresh()->serviceItems);
+        $this->assertEquals(159.0, (float) $shoot->fresh()->total_quote);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function removing_all_services_preserves_payments_and_exposes_refund_credit_due(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'base_quote' => 150,
+            'tax_amount' => 0,
+            'total_quote' => 150,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $item = $shoot->serviceItems()->firstOrFail();
+        $payment = Payment::factory()->create([
+            'shoot_id' => $shoot->id,
+            'amount' => 100,
+            'status' => Payment::STATUS_COMPLETED,
+        ]);
+        PaymentServiceAllocation::query()->create([
+            'payment_id' => $payment->id,
+            'shoot_service_id' => $item->id,
+            'amount' => 100,
+        ]);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ]);
+        $confirmation->assertStatus(409)
+            ->assertJsonPath('impact.payment_allocations_released', 100)
+            ->assertJsonPath('impact.refund_credit_due', 100);
+
+        $response = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath('data.overpaymentAmount', 100)
+            ->assertJsonPath('data.overpayment_amount', 100);
+        $this->assertDatabaseHas('payments', ['id' => $payment->id, 'amount' => 100]);
+        $this->assertDatabaseMissing('payment_service_allocations', ['payment_id' => $payment->id]);
+        $this->assertSame('paid', $shoot->fresh()->payment_status);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function payment_allocations_are_preserved_then_redistributed_deterministically(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $replacement = Service::factory()->create(['name' => 'Video Tour', 'price' => 200]);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'base_quote' => 240,
+            'tax_amount' => 0,
+            'total_quote' => 240,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $shoot->services()->attach($this->secondService->id, ['price' => 90, 'quantity' => 1]);
+        $items = $shoot->serviceItems()->orderBy('id')->get()->keyBy('service_id');
+        $payment = Payment::factory()->create([
+            'shoot_id' => $shoot->id,
+            'amount' => 150,
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+        PaymentServiceAllocation::query()->insert([
+            [
+                'payment_id' => $payment->id,
+                'shoot_service_id' => $items[$this->service->id]->id,
+                'amount' => 80,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+            [
+                'payment_id' => $payment->id,
+                'shoot_service_id' => $items[$this->secondService->id]->id,
+                'amount' => 70,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+        ]);
+
+        $target = [
+            ['id' => $this->secondService->id],
+            ['id' => $replacement->id],
+        ];
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => $target,
+        ])->assertStatus(409)
+            ->assertJsonPath('impact.payment_allocations_released', 80);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => $target,
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ])->assertOk();
+
+        $freshItems = $shoot->fresh()->serviceItems()->get()->keyBy('service_id');
+        $this->assertDatabaseHas('payment_service_allocations', [
+            'payment_id' => $payment->id,
+            'shoot_service_id' => $freshItems[$this->secondService->id]->id,
+            'amount' => 90,
+        ]);
+        $this->assertDatabaseHas('payment_service_allocations', [
+            'payment_id' => $payment->id,
+            'shoot_service_id' => $freshItems[$replacement->id]->id,
+            'amount' => 60,
+        ]);
+        $this->assertSame(
+            150.0,
+            (float) PaymentServiceAllocation::query()->where('payment_id', $payment->id)->sum('amount')
+        );
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function retained_lines_keep_booked_price_and_quantity_while_new_lines_use_catalogue_price(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $newService = Service::factory()->create(['name' => 'Drone Add-on', 'price' => 55]);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'state' => 'AK',
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot->services()->attach($this->service->id, [
+            'price' => 123,
+            'quantity' => 2,
+            'photographer_id' => $this->photographer->id,
+            'editor_id' => $editor->id,
+            'scheduled_at' => '2026-10-15 13:30:00',
+            'workflow_status' => 'in_progress',
+            'delivery_status' => 'ready',
+            'is_deliverable' => false,
+            'force_unlock_delivery' => true,
+            'unlock_reason' => 'Retained exception',
+            'unlocked_by' => $this->admin->id,
+        ]);
+        $shoot->services()->attach($this->secondService->id, ['price' => 80, 'quantity' => 3]);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id],
+                ['id' => $this->secondService->id],
+                ['id' => $newService->id],
+            ],
+        ])->assertOk();
+
+        $lines = $shoot->fresh()->serviceItems()->get()->keyBy('service_id');
+        $this->assertEquals(123.0, (float) $lines[$this->service->id]->price);
+        $this->assertSame(2, (int) $lines[$this->service->id]->quantity);
+        $this->assertSame($this->photographer->id, (int) $lines[$this->service->id]->photographer_id);
+        $this->assertSame($editor->id, (int) $lines[$this->service->id]->editor_id);
+        $this->assertSame('2026-10-15 13:30:00', $lines[$this->service->id]->scheduled_at?->format('Y-m-d H:i:s'));
+        $this->assertSame('in_progress', $lines[$this->service->id]->workflow_status);
+        $this->assertSame('ready', $lines[$this->service->id]->delivery_status);
+        $this->assertFalse((bool) $lines[$this->service->id]->is_deliverable);
+        $this->assertTrue((bool) $lines[$this->service->id]->force_unlock_delivery);
+        $this->assertSame('Retained exception', $lines[$this->service->id]->unlock_reason);
+        $this->assertSame($this->admin->id, (int) $lines[$this->service->id]->unlocked_by);
+        $this->assertEquals(80.0, (float) $lines[$this->secondService->id]->price);
+        $this->assertSame(3, (int) $lines[$this->secondService->id]->quantity);
+        $this->assertEquals(55.0, (float) $lines[$newService->id]->price);
+        $this->assertSame(1, (int) $lines[$newService->id]->quantity);
+        $this->assertEquals(541.0, (float) $shoot->fresh()->base_quote);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function later_client_discount_changes_do_not_reprice_an_undiscounted_booking(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $this->client->forceFill([
+            'client_discount_type' => 'percent',
+            'client_discount_value' => 50,
+        ])->save();
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'state' => 'AK',
+            'discount_type' => null,
+            'discount_value' => null,
+            'discount_amount' => 0,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 2],
+            ],
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertNull($shoot->discount_type);
+        $this->assertNull($shoot->discount_value);
+        $this->assertEquals(0.0, (float) $shoot->discount_amount);
+        $this->assertEquals(300.0, (float) $shoot->base_quote);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function invoice_sync_failure_rolls_back_the_entire_service_edit(): void
+    {
+        $invoiceService = Mockery::mock(InvoiceService::class);
+        $invoiceService->shouldIgnoreMissing();
+        $invoiceService->shouldReceive('refreshClientInvoicesForShoot')
+            ->once()
+            ->andThrow(new \RuntimeException('invoice sync failed'));
+        $this->app->instance(InvoiceService::class, $invoiceService);
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'state' => 'AK',
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'base_quote' => 150,
+            'tax_amount' => 0,
+            'total_quote' => 150,
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 2],
+            ],
+        ])->assertStatus(500);
+
+        $shoot->refresh();
+        $this->assertEquals(150.0, (float) $shoot->base_quote);
+        $this->assertEquals(150.0, (float) $shoot->total_quote);
+        $this->assertSame(1, (int) $shoot->serviceItems()->firstOrFail()->quantity);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function admin_can_add_a_service_back_after_saving_an_empty_shoot(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_READY,
+            'workflow_status' => Shoot::STATUS_READY,
+            'state' => 'MD',
+        ]);
+        $this->attachPrimaryService($shoot);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ])->assertStatus(409);
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ])->assertOk();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [
+                ['id' => $this->secondService->id, 'quantity' => 1],
+            ],
+        ])->assertOk();
+
+        $shoot->refresh();
+        $this->assertSame($this->secondService->id, $shoot->service_id);
+        $this->assertCount(1, $shoot->services()->get());
+        $this->assertEquals(90.0, (float) $shoot->base_quote);
+        $this->assertGreaterThanOrEqual(90.0, (float) $shoot->total_quote);
+        $this->assertEqualsWithDelta(
+            (float) $shoot->total_quote,
+            (float) $shoot->base_quote + (float) $shoot->tax_amount,
+            0.01
+        );
+        $this->assertSame(Shoot::PRODUCT_STATUS_HAS_PRODUCT, $shoot->product_status);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

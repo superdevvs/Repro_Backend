@@ -6,6 +6,7 @@ use App\Services\SalesReportService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Models\User;
+use App\Support\ReportingWeek;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
 
@@ -35,13 +36,7 @@ class SalesReportController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        $startDate = $request->input('start_date') 
-            ? Carbon::parse($request->input('start_date'))
-            : Carbon::now()->startOfWeek()->subWeek();
-        
-        $endDate = $request->input('end_date')
-            ? Carbon::parse($request->input('end_date'))
-            : Carbon::now()->startOfWeek()->subWeek()->endOfWeek();
+        [$startDate, $endDate] = $this->resolveWeeklyReportWindow($request);
 
         $report = $this->salesReportService->generateWeeklyReportForSalesRep($user, $startDate, $endDate);
 
@@ -154,13 +149,7 @@ class SalesReportController extends Controller
             return response()->json(['message' => 'User is not a sales rep'], 422);
         }
 
-        $startDate = $request->input('start_date') 
-            ? Carbon::parse($request->input('start_date'))
-            : Carbon::now()->startOfWeek()->subWeek();
-        
-        $endDate = $request->input('end_date')
-            ? Carbon::parse($request->input('end_date'))
-            : Carbon::now()->startOfWeek()->subWeek()->endOfWeek();
+        [$startDate, $endDate] = $this->resolveWeeklyReportWindow($request);
 
         $report = $this->salesReportService->generateWeeklyReportForSalesRep($salesRep, $startDate, $endDate);
 
@@ -235,6 +224,24 @@ class SalesReportController extends Controller
 
         return [$resolvedStart->startOfDay(), $resolvedEnd->endOfDay()];
     }
+
+    private function resolveWeeklyReportWindow(Request $request): array
+    {
+        $validated = $request->validate([
+            'start_date' => ['nullable', 'date_format:Y-m-d'],
+            'end_date' => ['nullable', 'date_format:Y-m-d', 'after_or_equal:start_date'],
+        ]);
+
+        $start = !empty($validated['start_date']) ? $validated['start_date'] : null;
+        $end = !empty($validated['end_date']) ? $validated['end_date'] : null;
+
+        if ($start === null && $end === null) {
+            return $this->salesReportService->getLastCompletedWeek();
+        }
+
+        $start ??= $end;
+        $end ??= $start;
+
+        return ReportingWeek::normalizeRange($start, $end);
+    }
 }
-
-

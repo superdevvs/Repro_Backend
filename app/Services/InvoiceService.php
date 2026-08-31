@@ -10,6 +10,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Messaging\AutomationService;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -524,13 +525,14 @@ class InvoiceService
             $paymentsTotal = (float) ($invoice->payments_total ?? 0);
             $balanceDue = max($invoiceTotal - $paymentsTotal, 0);
 
+            $invoiceIsPaid = $invoiceTotal <= 0.01 || $balanceDue <= 0.01;
             $normalizedTotals = [
                 'amount_paid' => $paymentsTotal,
-                'is_paid' => $invoiceTotal > 0.01 && $balanceDue <= 0.01,
-                'status' => $invoiceTotal > 0.01 && $balanceDue <= 0.01
+                'is_paid' => $invoiceIsPaid,
+                'status' => $invoiceIsPaid
                     ? Invoice::STATUS_PAID
                     : Invoice::STATUS_SENT,
-                'paid_at' => $invoiceTotal > 0.01 && $balanceDue <= 0.01
+                'paid_at' => $invoiceIsPaid && $paymentsTotal > 0
                     ? $invoice->latestEffectivePaymentAt()
                     : null,
             ];
@@ -772,8 +774,7 @@ class InvoiceService
      */
     public function generateForLastCompletedWeek(bool $sendEmails = false): Collection
     {
-        $end = now()->startOfWeek(Carbon::SUNDAY)->subDay()->endOfDay();
-        $start = $end->copy()->startOfWeek(Carbon::SUNDAY);
+        [$start, $end] = ReportingWeek::lastCompleted();
 
         $photographerInvoices = $this->generateForPeriod($start, $end, $sendEmails);
         $salesRepInvoices = $this->generateSalesRepInvoicesForPeriod($start, $end, $sendEmails);
@@ -968,6 +969,50 @@ class InvoiceService
     /**
      * Generate an individual invoice for a shoot (client-facing invoice)
      */
+    public function refreshClientInvoicesForShoot(Shoot $shoot): Collection
+    {
+        $invoiceAdjustments = app(InvoiceAdjustmentService::class);
+        $invoices = $invoiceAdjustments->clientInvoicesForShoot($shoot);
+
+        if ($invoices->isEmpty()) {
+            return collect();
+        }
+
+        $refreshed = collect();
+        if ($invoices->contains(fn (Invoice $invoice) => (int) $invoice->shoot_id === (int) $shoot->id)) {
+            $direct = $this->generateForShoot($shoot->fresh());
+            if ($direct) {
+                $refreshed->push($direct);
+            }
+        }
+
+        $aggregateInvoices = $invoices->reject(
+            fn (Invoice $invoice) => (int) $invoice->shoot_id === (int) $shoot->id
+        );
+
+        foreach ($aggregateInvoices as $invoice) {
+            $client = User::find($invoice->user_id) ?: $shoot->client;
+            if (! $client) {
+                throw new \RuntimeException("Cannot refresh invoice {$invoice->id}: client is missing.");
+            }
+
+            $startValue = $invoice->period_start ?? $invoice->billing_period_start;
+            $endValue = $invoice->period_end ?? $invoice->billing_period_end;
+            if (! $startValue || ! $endValue) {
+                throw new \RuntimeException("Cannot refresh invoice {$invoice->id}: billing period is missing.");
+            }
+
+            $refreshed->push($this->generateInvoice(
+                $client,
+                Invoice::ROLE_CLIENT,
+                Carbon::parse($startValue),
+                Carbon::parse($endValue)
+            ));
+        }
+
+        return $refreshed->unique('id')->values();
+    }
+
     public function generateForShoot(Shoot $shoot): ?Invoice
     {
         return DB::transaction(function () use ($shoot) {
@@ -1029,14 +1074,15 @@ class InvoiceService
                     })
                     ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
 
+                $isPaid = $total <= 0.01 || $totalPaid >= ($total - 0.01);
                 $existingInvoice->forceFill([
                     'subtotal' => $subtotal,
                     'tax' => $taxAmount,
                     'total' => $total,
                     'total_amount' => $total,
                     'amount_paid' => $totalPaid,
-                    'is_paid' => $total > 0.01 && $totalPaid >= ($total - 0.01),
-                    'status' => $total > 0.01 && $totalPaid >= ($total - 0.01)
+                    'is_paid' => $isPaid,
+                    'status' => $isPaid
                         ? Invoice::STATUS_PAID
                         : Invoice::STATUS_SENT,
                 ])->save();
@@ -1066,6 +1112,7 @@ class InvoiceService
 
             $userId = $this->determineInvoiceUserId($shoot);
 
+            $isPaid = $total <= 0.01 || $totalPaid >= ($total - 0.01);
             $invoiceData = [
                 'user_id' => $userId,
                 'role' => Invoice::ROLE_CLIENT,
@@ -1079,9 +1126,9 @@ class InvoiceService
                 'total' => $total,
                 'total_amount' => $total,
                 'amount_paid' => $totalPaid,
-                'is_paid' => $total > 0.01 && $totalPaid >= ($total - 0.01),
+                'is_paid' => $isPaid,
                 'is_sent' => true,
-                'status' => $total > 0.01 && $totalPaid >= ($total - 0.01)
+                'status' => $isPaid
                     ? Invoice::STATUS_PAID
                     : Invoice::STATUS_SENT,
                 'paid_at' => null,

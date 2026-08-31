@@ -2,15 +2,16 @@
 
 namespace App\Services\Shoots;
 
-use App\Models\Invoice;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\ShootActivityLogger;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\InvoiceService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ShootEditablePayloadService
 {
@@ -18,7 +19,10 @@ class ShootEditablePayloadService
         protected ShootMutationSupportService $support,
         protected InvoiceService $invoiceService,
         protected InvoiceAdjustmentService $invoiceAdjustments,
-        protected ShootNotesCompatibilityService $notesCompatibility
+        protected ShootNotesCompatibilityService $notesCompatibility,
+        protected ShootServiceChangeGuard $serviceChangeGuard,
+        protected ShootServiceItemSupport $serviceItemSupport,
+        protected ShootActivityLogger $activityLogger
     ) {}
 
     public function validationRules(): array
@@ -32,7 +36,7 @@ class ShootEditablePayloadService
             'alternate_scheduled_at' => 'nullable|date',
             'timezone' => 'nullable|string|timezone',
             'services' => 'nullable|array',
-            'services.*.id' => 'required_with:services|integer|exists:services,id',
+            'services.*.id' => 'required_with:services|integer|distinct|exists:services,id',
             'services.*.price' => 'nullable|numeric|min:0',
             'services.*.quantity' => 'nullable|integer|min:1',
             'services.*.photographer_id' => 'nullable|integer|exists:users,id',
@@ -40,7 +44,7 @@ class ShootEditablePayloadService
             'services.*.scheduled_at' => 'nullable|date',
             'services.*.is_deliverable' => 'nullable|boolean',
             'service_items' => 'nullable|array',
-            'service_items.*.service_id' => 'required_with:service_items|integer|exists:services,id',
+            'service_items.*.service_id' => 'required_with:service_items|integer|distinct|exists:services,id',
             'service_items.*.price' => 'nullable|numeric|min:0',
             'service_items.*.quantity' => 'nullable|integer|min:1',
             'service_items.*.photographer_id' => 'nullable|integer|exists:users,id',
@@ -63,6 +67,9 @@ class ShootEditablePayloadService
             'discount_amount' => 'nullable|numeric|min:0',
             'tax_amount' => 'nullable|numeric|min:0',
             'total_quote' => 'nullable|numeric|min:0',
+            'admin_adjusted_total_quote' => 'nullable|numeric|min:0',
+            'confirm_service_detach' => 'nullable|boolean',
+            'service_detach_confirmation_token' => 'nullable|string|size:64',
             'property_details' => 'nullable|array',
             'mls_image_width' => 'nullable|integer|min:1|max:10000',
             'bedrooms' => 'nullable|integer|min:0',
@@ -120,6 +127,82 @@ class ShootEditablePayloadService
 
     public function apply(Shoot $shoot, array $validated, ?User $actor = null): void
     {
+        // UpdateShootAction stages a small set of workflow/listing attributes on
+        // the caller model before handing off here. Carry those values onto the
+        // locked row so a mixed details + service save is one atomic write and a
+        // refresh cannot silently discard them.
+        $pendingAttributes = $shoot->getDirty();
+
+        DB::transaction(function () use ($shoot, $validated, $actor, $pendingAttributes) {
+            $lockedShoot = Shoot::query()
+                ->with(['client', 'serviceItems.service'])
+                ->lockForUpdate()
+                ->findOrFail($shoot->id);
+
+            $serviceChangeRequested = array_key_exists('services', $validated)
+                || array_key_exists('service_items', $validated);
+            $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
+                && $validated['admin_adjusted_total_quote'] !== null;
+            $serviceDetachImpact = null;
+
+            if ($serviceChangeRequested) {
+                $conflictingPricingFields = array_intersect(
+                    ['base_quote', 'tax_amount', 'total_quote'],
+                    array_keys($validated)
+                );
+                if (! empty($conflictingPricingFields)) {
+                    throw ValidationException::withMessages([
+                        'pricing' => [
+                            'Service changes are priced by the server. Use admin_adjusted_total_quote for an intentional Admin override.',
+                        ],
+                    ]);
+                }
+            }
+
+            if ($serviceChangeRequested && ! $actor) {
+                throw ValidationException::withMessages([
+                    'services' => ['An authenticated actor is required to change booked services.'],
+                ]);
+            }
+
+            if ($serviceChangeRequested) {
+                $targetServices = $this->targetServicesFor($lockedShoot, $validated, $actor);
+                $serviceDetachImpact = $this->serviceChangeGuard->assertChangeAllowed(
+                    $lockedShoot,
+                    $targetServices,
+                    $actor,
+                    (bool) ($validated['confirm_service_detach'] ?? false),
+                    $validated['service_detach_confirmation_token'] ?? null,
+                    $hasAdjustedTotal
+                        ? (float) $validated['admin_adjusted_total_quote']
+                        : null,
+                    $validated['state'] ?? $lockedShoot->state,
+                    array_key_exists('state', $validated) ? null : ($lockedShoot->tax_region ?: null)
+                );
+            }
+
+            if (! empty($pendingAttributes)) {
+                $lockedShoot->forceFill($pendingAttributes);
+            }
+
+            $this->applyWithinTransaction($lockedShoot, $validated, $actor);
+
+            if ($serviceDetachImpact !== null) {
+                $this->activityLogger->log($lockedShoot, 'shoot_services_detached', [
+                    'by' => $actor->name,
+                    'service_detach_impact' => $serviceDetachImpact,
+                    'suppress_notifications' => true,
+                ], $actor);
+            }
+        });
+
+        // Keep the caller's model instance aligned with the row that was
+        // mutated under lock (approval and update actions continue using it).
+        $shoot->refresh();
+    }
+
+    protected function applyWithinTransaction(Shoot $shoot, array $validated, ?User $actor = null): void
+    {
         $shoot->loadMissing('services');
 
         $noteFields = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
@@ -131,14 +214,20 @@ class ShootEditablePayloadService
         }
 
         $invoiceNeedsRefresh = false;
-        $paymentFieldsProvided = array_key_exists('base_quote', $validated)
+        $serviceChangeRequested = array_key_exists('services', $validated)
+            || array_key_exists('service_items', $validated);
+        $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
+            && $validated['admin_adjusted_total_quote'] !== null;
+        $previousProductStatus = (string) ($shoot->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT);
+        $previousBypassPaywall = (bool) $shoot->bypass_paywall;
+        $paymentFieldsProvided = ! $serviceChangeRequested && (array_key_exists('base_quote', $validated)
             || array_key_exists('discount_type', $validated)
             || array_key_exists('discount_value', $validated)
             || array_key_exists('discount_amount', $validated)
             || array_key_exists('tax_amount', $validated)
-            || array_key_exists('total_quote', $validated);
+            || array_key_exists('total_quote', $validated));
         $targetClientId = (int) ($validated['client_id'] ?? $shoot->client_id);
-        $targetServices = $this->targetServicesFor($shoot, $validated);
+        $targetServices = $this->targetServicesFor($shoot, $validated, $actor);
 
         $this->support->ensureClientCanBookServices($targetClientId, $targetServices);
 
@@ -185,6 +274,10 @@ class ShootEditablePayloadService
             || array_key_exists('service_photographers', $validated)
         ) {
             $this->support->attachServices($shoot, $targetServices);
+            $shoot->service_id = collect($targetServices)
+                ->map(fn (array $service) => (int) ($service['id'] ?? $service['service_id'] ?? 0))
+                ->filter()
+                ->first();
             $invoiceNeedsRefresh = array_key_exists('services', $validated) || array_key_exists('service_items', $validated);
         }
 
@@ -209,13 +302,13 @@ class ShootEditablePayloadService
         if (array_key_exists('mls_image_width', $validated)) {
             $shoot->mls_image_width = $validated['mls_image_width'];
         }
-        if (array_key_exists('base_quote', $validated)) {
+        if (! $serviceChangeRequested && array_key_exists('base_quote', $validated)) {
             $shoot->base_quote = $validated['base_quote'];
         }
-        if (array_key_exists('tax_amount', $validated)) {
+        if (! $serviceChangeRequested && array_key_exists('tax_amount', $validated)) {
             $shoot->tax_amount = $validated['tax_amount'];
         }
-        if (array_key_exists('total_quote', $validated)) {
+        if (! $serviceChangeRequested && array_key_exists('total_quote', $validated)) {
             $shoot->total_quote = $validated['total_quote'];
         }
         if (array_key_exists('shoot_type', $validated)) {
@@ -224,52 +317,98 @@ class ShootEditablePayloadService
         if (array_key_exists('product_status', $validated)) {
             $shoot->product_status = $validated['product_status'] ?: Shoot::PRODUCT_STATUS_HAS_PRODUCT;
         }
-        if (array_key_exists('discount_type', $validated)) {
+        if (! $serviceChangeRequested && array_key_exists('discount_type', $validated)) {
             $shoot->discount_type = $validated['discount_type'];
         }
-        if (array_key_exists('discount_value', $validated)) {
+        if (! $serviceChangeRequested && array_key_exists('discount_value', $validated)) {
             $shoot->discount_value = $validated['discount_value'];
         }
-        if (array_key_exists('discount_amount', $validated)) {
+        if (! $serviceChangeRequested && array_key_exists('discount_amount', $validated)) {
             $shoot->discount_amount = $validated['discount_amount'];
         }
         if ($paymentFieldsProvided) {
             $invoiceNeedsRefresh = true;
         }
 
-        $shouldRecalculatePricing = ! $paymentFieldsProvided && (
-            array_key_exists('services', $validated)
-            || array_key_exists('client_id', $validated)
+        $shouldRecalculatePricing = $serviceChangeRequested
+            || $hasAdjustedTotal
+            || (! $paymentFieldsProvided && (
+            array_key_exists('client_id', $validated)
             || array_key_exists('state', $validated)
-        );
+        ));
+
+        $serviceSubtotal = $this->support->calculateBaseQuote($targetServices);
 
         if ($shouldRecalculatePricing) {
-            $pricingCalculation = $this->support->buildPricingCalculation(
-                $targetServices,
-                User::find($targetClientId),
-                $validated['state'] ?? $shoot->state ?? null,
-                $shoot->tax_region ?: null
-            );
-
-            $shoot->base_quote = $pricingCalculation['base_quote'];
-            $shoot->discount_type = $pricingCalculation['discount_type'];
-            $shoot->discount_value = $pricingCalculation['discount_value'];
-            $shoot->discount_amount = $pricingCalculation['discount_amount'];
-            $shoot->tax_region = $pricingCalculation['tax_region'];
-            $shoot->tax_percent = $pricingCalculation['tax_percent'];
-            $shoot->tax_amount = $pricingCalculation['tax_amount'];
-            $billableAdjustments = $this->invoiceAdjustments
+            $taxRegion = array_key_exists('state', $validated)
+                ? null
+                : ($shoot->tax_region ?: null);
+            $pricingCalculation = $serviceChangeRequested
+                ? $this->support->buildPricingCalculationForExistingShoot(
+                    $targetServices,
+                    $shoot,
+                    $validated['state'] ?? $shoot->state ?? null,
+                    $taxRegion
+                )
+                : $this->support->buildPricingCalculation(
+                    $targetServices,
+                    User::find($targetClientId),
+                    $validated['state'] ?? $shoot->state ?? null,
+                    $taxRegion
+                );
+            $serviceSubtotal = (float) $pricingCalculation['service_subtotal'];
+            $billableAdjustments = (float) $this->invoiceAdjustments
                 ->billableItemsForShoot($shoot)
                 ->sum(fn ($item) => (float) $item->total_amount);
-            $shoot->total_quote = round($pricingCalculation['total_quote'] + $billableAdjustments, 2);
+
+            if ($hasAdjustedTotal) {
+                $normalizedRole = strtolower((string) ($actor?->role ?? ''));
+                if (! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)) {
+                    throw ValidationException::withMessages([
+                        'admin_adjusted_total_quote' => ['Only Admin and Super Admin can set an adjusted total.'],
+                    ]);
+                }
+
+                $adjustedTotal = round((float) $validated['admin_adjusted_total_quote'], 2);
+                if ($adjustedTotal + 0.001 < $billableAdjustments) {
+                    throw ValidationException::withMessages([
+                        'admin_adjusted_total_quote' => ['Adjusted total cannot be lower than retained billable invoice adjustments.'],
+                    ]);
+                }
+
+                $taxInclusiveServiceTotal = round(max($adjustedTotal - $billableAdjustments, 0), 2);
+                $taxPercent = (float) ($pricingCalculation['tax_percent'] ?? 0);
+                $baseQuote = $taxPercent > 0
+                    ? round($taxInclusiveServiceTotal / (1 + ($taxPercent / 100)), 2)
+                    : $taxInclusiveServiceTotal;
+
+                $shoot->base_quote = $baseQuote;
+                $shoot->discount_type = null;
+                $shoot->discount_value = null;
+                $shoot->discount_amount = 0;
+                $shoot->tax_region = $pricingCalculation['tax_region'];
+                $shoot->tax_percent = $taxPercent;
+                $shoot->tax_amount = round($taxInclusiveServiceTotal - $baseQuote, 2);
+                $shoot->total_quote = $adjustedTotal;
+            } else {
+                $shoot->base_quote = $pricingCalculation['base_quote'];
+                $shoot->discount_type = $pricingCalculation['discount_type'];
+                $shoot->discount_value = $pricingCalculation['discount_value'];
+                $shoot->discount_amount = $pricingCalculation['discount_amount'];
+                $shoot->tax_region = $pricingCalculation['tax_region'];
+                $shoot->tax_percent = $pricingCalculation['tax_percent'];
+                $shoot->tax_amount = $pricingCalculation['tax_amount'];
+                $shoot->total_quote = round($pricingCalculation['total_quote'] + $billableAdjustments, 2);
+            }
+
             $invoiceNeedsRefresh = true;
         }
 
-        if (array_key_exists('services', $validated) || $shouldRecalculatePricing || $paymentFieldsProvided) {
+        if ($serviceChangeRequested || $shouldRecalculatePricing || $paymentFieldsProvided) {
             $hasServices = count($targetServices) > 0;
             if (! $hasServices) {
                 $shoot->product_status = Shoot::PRODUCT_STATUS_NO_PRODUCT;
-            } elseif ((float) ($shoot->total_quote ?? 0) <= 0.01) {
+            } elseif ($serviceSubtotal <= 0.01) {
                 $shoot->product_status = Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT;
             } elseif (! array_key_exists('product_status', $validated)) {
                 $shoot->product_status = Shoot::PRODUCT_STATUS_HAS_PRODUCT;
@@ -278,6 +417,11 @@ class ShootEditablePayloadService
             if ((float) ($shoot->total_quote ?? 0) <= 0.01) {
                 $shoot->payment_status = 'paid';
                 $shoot->bypass_paywall = true;
+            } elseif ($previousBypassPaywall && in_array($previousProductStatus, [
+                Shoot::PRODUCT_STATUS_NO_PRODUCT,
+                Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
+            ], true)) {
+                $shoot->bypass_paywall = false;
             }
         }
 
@@ -407,19 +551,20 @@ class ShootEditablePayloadService
             }
         });
 
-        if ($invoiceNeedsRefresh) {
-            try {
-                $hasInvoice = Invoice::where('shoot_id', $shoot->id)->exists();
-                if ($hasInvoice) {
-                    $this->invoiceService->generateForShoot($shoot->fresh());
-                }
-            } catch (\Exception $e) {
-                \Log::warning('Failed to refresh invoice after shoot update', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
+        if ($serviceChangeRequested) {
+            $this->serviceItemSupport->reconcileAllocationsAfterServiceChange($shoot->fresh());
         }
+
+        if ($shouldRecalculatePricing || $paymentFieldsProvided) {
+            $shoot->refresh();
+            $shoot->syncPaymentStatusFromRecords();
+        }
+
+        if ($invoiceNeedsRefresh) {
+            $this->invoiceService->refreshClientInvoicesForShoot($shoot->fresh());
+        }
+
+        $shoot->refresh();
     }
 
     protected function syncFeaturedHomepageImages(Shoot $shoot, array $images): void
@@ -474,9 +619,9 @@ class ShootEditablePayloadService
             });
     }
 
-    public function targetServicesFor(Shoot $shoot, array $validated): array
+    public function targetServicesFor(Shoot $shoot, array $validated, ?User $actor = null): array
     {
-        $shoot->loadMissing('services');
+        $shoot->loadMissing(['services', 'serviceItems']);
 
         $targetServices = array_key_exists('services', $validated)
             ? $validated['services']
@@ -492,11 +637,56 @@ class ShootEditablePayloadService
                 'is_deliverable' => $service->pivot?->is_deliverable,
             ])->values()->all();
 
-        return $this->support->mergeServiceItemPayload(
+        $merged = $this->support->mergeServiceItemPayload(
             $targetServices,
             $validated['service_items'] ?? null,
             $validated['service_photographers'] ?? null,
-            $validated['scheduled_at'] ?? $shoot->scheduled_at
+            $validated['scheduled_at'] ?? $shoot->scheduled_at,
+            true
         );
+
+        $canOverrideLinePrice = in_array(
+            strtolower(trim((string) ($actor?->role ?? ''))),
+            ['admin', 'superadmin', 'super_admin'],
+            true
+        );
+        $currentItems = $shoot->serviceItems->keyBy(fn ($item) => (int) $item->service_id);
+        $serviceModels = \App\Models\Service::query()
+            ->whereIn('id', collect($merged)->pluck('id')->filter()->unique()->all())
+            ->get()
+            ->keyBy(fn ($service) => (int) $service->id);
+        $currentPropertyDetails = is_array($shoot->property_details) ? $shoot->property_details : [];
+        $propertyDetails = is_array($validated['property_details'] ?? null)
+            ? array_merge($currentPropertyDetails, $validated['property_details'])
+            : $currentPropertyDetails;
+        $sqftValue = $validated['sqft']
+            ?? data_get($propertyDetails, 'sqft')
+            ?? data_get($propertyDetails, 'squareFeet')
+            ?? data_get($propertyDetails, 'square_feet');
+        $sqft = is_numeric($sqftValue) ? (int) $sqftValue : null;
+
+        return collect($merged)->map(function (array $service) use (
+            $canOverrideLinePrice,
+            $currentItems,
+            $serviceModels,
+            $sqft
+        ) {
+            $serviceId = (int) ($service['id'] ?? 0);
+            $currentItem = $currentItems->get($serviceId);
+            $serviceModel = $serviceModels->get($serviceId);
+            $submittedPrice = $service['price'] ?? null;
+
+            if (! $canOverrideLinePrice || $submittedPrice === null) {
+                $service['price'] = $currentItem?->price
+                    ?? $serviceModel?->getPriceForSqft($sqft)
+                    ?? 0;
+            }
+
+            if (($service['quantity'] ?? null) === null) {
+                $service['quantity'] = $currentItem?->quantity ?? 1;
+            }
+
+            return $service;
+        })->values()->all();
     }
 }

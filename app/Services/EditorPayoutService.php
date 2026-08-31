@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\EditorPayout;
 use App\Models\User;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -406,13 +407,14 @@ class EditorPayoutService
 
     private function resolveDateRange(array $filters): array
     {
-        $defaultStart = Carbon::now()->startOfWeek(Carbon::MONDAY)->subWeek();
-        $defaultEnd = $defaultStart->copy()->endOfWeek(Carbon::SUNDAY);
+        if (!empty($filters['start']) || !empty($filters['end'])) {
+            $rangeStart = !empty($filters['start']) ? $filters['start'] : $filters['end'];
+            $rangeEnd = !empty($filters['end']) ? $filters['end'] : $rangeStart;
 
-        $start = !empty($filters['start']) ? Carbon::parse($filters['start'])->startOfDay() : $defaultStart;
-        $end = !empty($filters['end']) ? Carbon::parse($filters['end'])->endOfDay() : $defaultEnd;
+            return ReportingWeek::normalizeRange($rangeStart, $rangeEnd);
+        }
 
-        return [$start, $end];
+        return ReportingWeek::lastCompleted();
     }
 
     private function resolveCompletedAt(object $row): ?Carbon

@@ -291,7 +291,7 @@ class InvoiceAdjustmentService
             );
         $paid = round($paid, 2);
         $balance = round(max($newTotal - $paid, 0), 2);
-        $isPaid = $newTotal > 0.01 && $balance <= 0.01;
+        $isPaid = $newTotal <= 0.01 || $balance <= 0.01;
 
         $updates = [
             'subtotal' => $newSubtotal,

@@ -16,6 +16,7 @@ use App\Services\Payments\PublicPaymentAccessTokenService;
 use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\FinalizeProgressTracker;
+use App\Services\Shoots\NoMediaDeliveryEligibility;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootPaymentStatusSupport;
 use App\Services\Shoots\ShootServiceItemSupport;
@@ -29,7 +30,7 @@ class ShootPaymentsController extends Controller
 {
     private const INTENT_METHODS = ['cash', 'check'];
 
-    private const FINALIZE_ROLES = ['admin', 'superadmin', 'editing_manager'];
+    private const FINALIZE_ROLES = ['admin', 'superadmin', 'super_admin', 'editing_manager'];
 
     public function __construct(
         protected InvoiceService $invoiceService,
@@ -41,7 +42,8 @@ class ShootPaymentsController extends Controller
         protected InvoiceAdjustmentService $invoiceAdjustments,
         protected InvoiceAuthorizationService $invoiceAuthorization,
         protected ShootAuthorizationSupport $authorizationSupport,
-        protected FinalizeProgressTracker $finalizeProgress
+        protected FinalizeProgressTracker $finalizeProgress,
+        protected NoMediaDeliveryEligibility $noMediaDeliveryEligibility
     ) {}
 
     public function finalize(Request $request, $shootId)
@@ -72,12 +74,11 @@ class ShootPaymentsController extends Controller
             ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
             ->get();
         $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
-        // Explicit fast-forward delivery is valid only for an eligible whole
-        // shoot. Never trust the request flag by itself: a forged flag on a
-        // standard/billable shoot must still fail closed.
+        // The request flag is only an explicit opt-in. Eligibility is computed
+        // from current server-owned role, status, media, link and service data.
         $allowNoMediaDelivery = $request->boolean('allow_no_media_delivery')
             && ! $shootServiceId
-            && $shoot->allowsNoMediaDelivery();
+            && $this->noMediaDeliveryEligibility->allows($shoot, $user);
         $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
 
         if (! in_array($shoot->workflow_status, $allowedStatuses, true) && ! $hasEditedWithoutRaw && ! $allowNoMediaDelivery) {

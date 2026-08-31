@@ -189,7 +189,11 @@ class PhotographerInvoiceController extends Controller
     }
 
     /**
-     * Reject an invoice
+     * Legacy "reject with changes" action.
+     *
+     * A photographer's changed invoice is work for accounts to review, not an
+     * invoice returned to the photographer. Keep this route for older clients,
+     * but move the invoice directly into the admin review queue.
      */
     public function reject(Request $request, Invoice $invoice)
     {
@@ -210,28 +214,40 @@ class PhotographerInvoiceController extends Controller
         ]);
 
         try {
-            $invoice->update([
-                'approval_status' => Invoice::APPROVAL_STATUS_REJECTED,
-                'rejection_reason' => $validated['reason'] ?? 'Rejected by photographer',
-                'rejected_by' => $user->id,
-                'rejected_at' => now(),
-            ]);
-            $invoice->recordAuditEvent('payee_returned', $user, 'Photographer requested invoice changes.', [
-                'reason' => $validated['reason'] ?? 'Rejected by photographer',
-            ]);
+            $changeSummary = $validated['reason'] ?? 'Photographer submitted invoice changes.';
+
+            DB::transaction(function () use ($invoice, $user, $changeSummary) {
+                $invoice->update([
+                    'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+                    'modified_by' => $user->id,
+                    'modified_at' => now(),
+                    'modification_notes' => $changeSummary,
+                    'rejection_reason' => null,
+                    'rejected_by' => null,
+                    'rejected_at' => null,
+                ]);
+                $invoice->recordAuditEvent(
+                    'submitted_with_changes',
+                    $user,
+                    'Photographer submitted changed invoice for admin review.',
+                    ['notes' => $changeSummary]
+                );
+            });
+
+            $this->mailService->sendInvoicePendingApprovalEmail($invoice->fresh());
 
             return response()->json([
-                'message' => 'Invoice rejected successfully',
-                'invoice' => $invoice->fresh(),
+                'message' => 'Invoice changes submitted for admin review',
+                'invoice' => $invoice->fresh(['items']),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to reject invoice', [
+            Log::error('Failed to submit changed photographer invoice', [
                 'invoice_id' => $invoice->id,
                 'error' => $e->getMessage()
             ]);
 
             return response()->json([
-                'message' => 'Failed to reject invoice',
+                'message' => 'Failed to submit invoice changes for review',
                 'error' => $e->getMessage()
             ], 500);
         }
@@ -490,18 +506,23 @@ class PhotographerInvoiceController extends Controller
         ]);
 
         try {
-            $invoice->update([
-                'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
-                'modified_by' => $user->id,
-                'modified_at' => now(),
-                'modification_notes' => $validated['notes'] ?? null,
-            ]);
-            $invoice->recordAuditEvent('submitted_for_approval', $user, 'Photographer submitted invoice for accounts approval.', [
-                'notes' => $validated['notes'] ?? null,
-            ]);
+            DB::transaction(function () use ($invoice, $user, $validated) {
+                $invoice->update([
+                    'approval_status' => Invoice::APPROVAL_STATUS_PENDING_APPROVAL,
+                    'modified_by' => $user->id,
+                    'modified_at' => now(),
+                    'modification_notes' => $validated['notes'] ?? null,
+                    'rejection_reason' => null,
+                    'rejected_by' => null,
+                    'rejected_at' => null,
+                ]);
+                $invoice->recordAuditEvent('submitted_for_approval', $user, 'Photographer submitted invoice for accounts approval.', [
+                    'notes' => $validated['notes'] ?? null,
+                ]);
+            });
 
             // Notify admins
-            $this->mailService->sendInvoicePendingApprovalEmail($invoice);
+            $this->mailService->sendInvoicePendingApprovalEmail($invoice->fresh());
 
             return response()->json([
                 'message' => 'Invoice submitted for approval',

@@ -77,6 +77,73 @@ class ShootMutationSupportService
         ]);
     }
 
+    /**
+     * Reprice an existing shoot without silently adopting a client's current
+     * account discount. The booked discount fields are the persisted pricing
+     * snapshot and must remain stable when services are edited later.
+     */
+    public function buildPricingCalculationForExistingShoot(
+        array $services,
+        Shoot $shoot,
+        ?string $state = null,
+        ?string $taxRegion = null
+    ): array {
+        $serviceSubtotal = $this->calculateBaseQuote($services);
+        $hasStoredDiscount = is_string($shoot->discount_type)
+            && trim($shoot->discount_type) !== ''
+            && $shoot->discount_value !== null;
+
+        if (! $hasStoredDiscount) {
+            $resolvedTaxRegion = $taxRegion
+                ?? $this->taxService->determineTaxRegion((string) ($state ?? $shoot->state));
+            $taxCalculation = $this->taxService->calculateTotal($serviceSubtotal, $resolvedTaxRegion);
+
+            return array_merge($taxCalculation, [
+                'service_subtotal' => $serviceSubtotal,
+                'base_quote' => (float) $taxCalculation['base_quote'],
+                'discount_type' => null,
+                'discount_value' => null,
+                'discount_amount' => 0.0,
+                'discounted_subtotal' => (float) $taxCalculation['base_quote'],
+                'client_discount_type' => null,
+                'client_discount_value' => null,
+                'client_discount_amount' => 0.0,
+                'coupon_code' => null,
+                'coupon_discount_type' => null,
+                'coupon_discount_value' => null,
+                'coupon_discount_amount' => 0.0,
+            ]);
+        }
+
+        $discountType = strtolower(trim((string) $shoot->discount_type));
+        $discountValue = (float) $shoot->discount_value;
+        $discountAmount = $this->calculateDiscountAmount(
+            $serviceSubtotal,
+            $discountType,
+            $discountValue
+        );
+        $discountedSubtotal = round(max($serviceSubtotal - $discountAmount, 0), 2);
+        $resolvedTaxRegion = $taxRegion
+            ?? $this->taxService->determineTaxRegion((string) ($state ?? $shoot->state));
+        $taxCalculation = $this->taxService->calculateTotal($discountedSubtotal, $resolvedTaxRegion);
+
+        return array_merge($taxCalculation, [
+            'service_subtotal' => $serviceSubtotal,
+            'base_quote' => (float) $taxCalculation['base_quote'],
+            'discount_type' => $discountType,
+            'discount_value' => $discountValue,
+            'discount_amount' => $discountAmount,
+            'discounted_subtotal' => (float) $taxCalculation['base_quote'],
+            'client_discount_type' => null,
+            'client_discount_value' => null,
+            'client_discount_amount' => 0.0,
+            'coupon_code' => null,
+            'coupon_discount_type' => null,
+            'coupon_discount_value' => null,
+            'coupon_discount_amount' => 0.0,
+        ]);
+    }
+
     public function getClientRep(int $clientId): ?int
     {
         $mostRecentShoot = Shoot::where('client_id', $clientId)
@@ -249,8 +316,8 @@ class ShootMutationSupportService
 
             return [
                 $service['id'] => [
-                    'price' => $service['price'] ?? $serviceModel?->price ?? 0,
-                    'quantity' => $service['quantity'] ?? 1,
+                    'price' => $service['price'] ?? $currentItem?->price ?? $serviceModel?->price ?? 0,
+                    'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
                     'photographer_id' => array_key_exists('photographer_id', $service)
                         ? $this->normalizeNullableInteger($service['photographer_id'])
@@ -320,7 +387,8 @@ class ShootMutationSupportService
         array $services,
         ?array $serviceItems,
         ?array $servicePhotographers,
-        mixed $defaultScheduledAt = null
+        mixed $defaultScheduledAt = null,
+        bool $preserveOmittedFields = false
     ): array {
         $itemsByService = collect($serviceItems ?? [])
             ->filter(fn ($item) => isset($item['service_id']) || isset($item['id']))
@@ -332,16 +400,53 @@ class ShootMutationSupportService
 
         $defaultScheduledAt = $this->normalizeDateTimeForDatabase($defaultScheduledAt);
 
-        return collect($services)->map(function ($service) use ($itemsByService, $photographersByService, $defaultScheduledAt) {
+        return collect($services)->map(function ($service) use ($itemsByService, $photographersByService, $defaultScheduledAt, $preserveOmittedFields) {
             $serviceId = (int) ($service['id'] ?? $service['service_id']);
             $item = $itemsByService->get($serviceId, []);
             $photographerAssignment = $photographersByService->get($serviceId, []);
+
+            if ($preserveOmittedFields) {
+                $result = array_merge($service, [
+                    'id' => $serviceId,
+                    'price' => $item['price'] ?? $service['price'] ?? null,
+                    'quantity' => $item['quantity'] ?? $service['quantity'] ?? null,
+                ]);
+
+                foreach ([
+                    'photographer_id',
+                    'editor_id',
+                    'workflow_status',
+                    'delivery_status',
+                    'is_deliverable',
+                    'force_unlock_delivery',
+                    'unlock_reason',
+                    'unlocked_by',
+                ] as $field) {
+                    if (array_key_exists($field, $item)) {
+                        $result[$field] = $item[$field];
+                    }
+                }
+
+                if (! array_key_exists('photographer_id', $result)
+                    && array_key_exists('photographer_id', $photographerAssignment)) {
+                    $result['photographer_id'] = $photographerAssignment['photographer_id'];
+                }
+
+                if (array_key_exists('scheduled_at', $item) || array_key_exists('scheduled_at', $service)) {
+                    $result['scheduled_at'] = $this->normalizeDateTimeForDatabase(
+                        $item['scheduled_at'] ?? $service['scheduled_at'] ?? null
+                    );
+                }
+
+                return $result;
+            }
+
             $scheduledAt = $item['scheduled_at'] ?? $service['scheduled_at'] ?? $defaultScheduledAt;
 
             return array_merge($service, [
                 'id' => $serviceId,
                 'price' => $item['price'] ?? $service['price'] ?? null,
-                'quantity' => $item['quantity'] ?? $service['quantity'] ?? 1,
+                'quantity' => $item['quantity'] ?? $service['quantity'] ?? null,
                 'photographer_id' => array_key_exists('photographer_id', $item)
                     ? $item['photographer_id']
                     : ($service['photographer_id'] ?? $photographerAssignment['photographer_id'] ?? null),

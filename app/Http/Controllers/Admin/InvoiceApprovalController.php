@@ -8,7 +8,7 @@ use App\Models\InvoiceItem;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\MailService;
-use Carbon\Carbon;
+use App\Support\ReportingWeek;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -46,7 +46,7 @@ class InvoiceApprovalController extends Controller
             'per_page' => 'nullable|integer|min:1|max:100',
         ]);
 
-        $this->hydrateReviewQueueForWindow($filters);
+        $this->hydrateLatestReviewQueue();
 
         $query = $this->buildReviewQueueQuery($filters);
 
@@ -510,15 +510,11 @@ class InvoiceApprovalController extends Controller
         };
     }
 
-    private function hydrateReviewQueueForWindow(array $filters): void
+    private function hydrateLatestReviewQueue(): void
     {
-        if (!empty($filters['start']) && !empty($filters['end'])) {
-            $start = Carbon::parse($filters['start'])->startOfDay();
-            $end = Carbon::parse($filters['end'])->endOfDay();
-        } else {
-            $end = now()->startOfWeek(Carbon::SUNDAY)->subDay()->endOfDay();
-            $start = $end->copy()->startOfWeek(Carbon::SUNDAY);
-        }
+        // Date filters only select existing review records. They must never create
+        // a monthly or partial-week payout invoice as a side effect of browsing.
+        [$start, $end] = ReportingWeek::lastCompleted();
 
         $this->invoiceService->generateForPeriod($start, $end, false);
         $this->invoiceService->generateSalesRepInvoicesForPeriod($start, $end, false);

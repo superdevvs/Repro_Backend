@@ -6,7 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\EditorPayoutService;
 use App\Services\Messaging\MessagingService;
-use Carbon\Carbon;
+use App\Support\ReportingWeek;
 use Illuminate\Http\Request;
 
 class EditorPayoutController extends Controller
@@ -75,12 +75,13 @@ class EditorPayoutController extends Controller
             'end' => 'nullable|date',
         ]);
 
-        $start = !empty($filters['start'])
-            ? Carbon::parse($filters['start'])->startOfDay()
-            : Carbon::now()->startOfWeek(Carbon::MONDAY)->subWeek();
-        $end = !empty($filters['end'])
-            ? Carbon::parse($filters['end'])->endOfDay()
-            : $start->copy()->endOfWeek(Carbon::SUNDAY);
+        if (!empty($filters['start']) || !empty($filters['end'])) {
+            $rangeStart = !empty($filters['start']) ? $filters['start'] : $filters['end'];
+            $rangeEnd = !empty($filters['end']) ? $filters['end'] : $rangeStart;
+            [$start, $end] = ReportingWeek::normalizeRange($rangeStart, $rangeEnd);
+        } else {
+            [$start, $end] = ReportingWeek::lastCompleted();
+        }
         $summaries = $this->service->buildEmailSummaries($start, $end);
 
         $sent = 0;

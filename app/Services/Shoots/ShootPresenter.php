@@ -294,7 +294,14 @@ class ShootPresenter
             $shoot->payment_status = $this->calculatePaymentStatus($totalPaid, $totalQuote);
         }
 
-        $shoot->setAttribute('service_subtotal', (float) (($shoot->base_quote ?? 0) + ($shoot->discount_amount ?? 0)));
+        $serviceSubtotal = (float) $shoot->services->sum(function ($service) {
+            $price = (float) ($service->pivot?->price ?? $service->price ?? 0);
+            $quantity = max((int) ($service->pivot?->quantity ?? 1), 1);
+
+            return $price * $quantity;
+        });
+        $shoot->setAttribute('service_subtotal', round($serviceSubtotal, 2));
+        $shoot->setAttribute('serviceSubtotal', round($serviceSubtotal, 2));
         $shoot->setAttribute('discount_type', $shoot->discount_type);
         $shoot->setAttribute('discount_value', $shoot->discount_value !== null ? (float) $shoot->discount_value : null);
         $shoot->setAttribute('discount_amount', (float) ($shoot->discount_amount ?? 0));
@@ -851,6 +858,20 @@ class ShootPresenter
             ->canViewShootInvoice($shoot, $requestingUser);
         $shoot->setAttribute('can_view_invoice', $canViewInvoice);
         $shoot->setAttribute('canViewInvoice', $canViewInvoice);
+        $canFinalizeNoMedia = app(NoMediaDeliveryEligibility::class)
+            ->allows($shoot, $requestingUser, $serviceItemSummaries);
+        $shoot->setAttribute('can_finalize_no_media', $canFinalizeNoMedia);
+        $shoot->setAttribute('canFinalizeNoMedia', $canFinalizeNoMedia);
+        $canRemoveAllServices = app(ShootServiceChangeGuard::class)
+            ->canRemoveAllServices($shoot, $requestingUser);
+        $shoot->setAttribute('can_remove_all_services', $canRemoveAllServices);
+        $shoot->setAttribute('canRemoveAllServices', $canRemoveAllServices);
+        $overpaymentAmount = round(max(
+            (float) ($shoot->total_paid ?? 0) - (float) ($shoot->total_quote ?? 0),
+            0
+        ), 2);
+        $shoot->setAttribute('overpayment_amount', $overpaymentAmount);
+        $shoot->setAttribute('overpaymentAmount', $overpaymentAmount);
 
         $servicesArray = collect($shoot->getAttribute('services') ?? $shoot->services)->pluck('name')->filter()->values()->all();
         $miscItems = ($isEditorRole || $isPhotographerRole)

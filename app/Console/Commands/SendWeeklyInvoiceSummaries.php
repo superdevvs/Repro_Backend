@@ -6,6 +6,7 @@ use App\Models\Invoice;
 use App\Models\Message;
 use App\Models\User;
 use App\Services\Messaging\AutomationService;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
@@ -43,10 +44,7 @@ class SendWeeklyInvoiceSummaries extends Command
      */
     private function getLastCompletedWeek(): array
     {
-        $end = now()->startOfWeek()->subDay()->endOfDay();
-        $start = $end->copy()->startOfWeek();
-
-        return [$start, $end];
+        return ReportingWeek::lastCompleted();
     }
 
     private function sendClientSummaries(

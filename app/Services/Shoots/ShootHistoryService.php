@@ -361,6 +361,9 @@ class ShootHistoryService
 
         $completedDate = $this->resolveCompletedDate($shoot);
         $payments = $this->resolvePaymentsSummary($shoot);
+        $propertyDetails = is_array($shoot->property_details) ? $shoot->property_details : [];
+        $latitude = $this->resolveCoordinate($propertyDetails, ['latitude', 'lat'], -90.0, 90.0);
+        $longitude = $this->resolveCoordinate($propertyDetails, ['longitude', 'lng'], -180.0, 180.0);
 
         $taxPercent = 0.0;
         if ((float) $shoot->base_quote > 0 && (float) $shoot->tax_amount > 0) {
@@ -386,6 +389,8 @@ class ShootHistoryService
                 'state' => $shoot->state,
                 'zip' => $shoot->zip,
                 'full' => $this->formatFullAddress($shoot),
+                'latitude' => $latitude,
+                'longitude' => $longitude,
             ],
             'photographer' => [
                 'id' => $isEditor ? null : ($shoot->photographer->id ?? null),
@@ -419,6 +424,45 @@ class ShootHistoryService
             'bright_mls_publish_status' => $shoot->bright_mls_publish_status,
             'bright_mls_last_published_at' => $shoot->bright_mls_last_published_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * Return the first valid coordinate stored under one of the supported keys.
+     *
+     * @param  array<string, mixed>  $propertyDetails
+     * @param  array<int, string>  $keys
+     */
+    protected function resolveCoordinate(
+        array $propertyDetails,
+        array $keys,
+        float $minimum,
+        float $maximum
+    ): ?float {
+        foreach ($keys as $key) {
+            if (! array_key_exists($key, $propertyDetails)) {
+                continue;
+            }
+
+            $value = $propertyDetails[$key];
+            if (! is_int($value) && ! is_float($value) && ! is_string($value)) {
+                continue;
+            }
+
+            if (is_string($value) && trim($value) === '') {
+                continue;
+            }
+
+            if (! is_numeric($value)) {
+                continue;
+            }
+
+            $coordinate = (float) $value;
+            if (is_finite($coordinate) && $coordinate >= $minimum && $coordinate <= $maximum) {
+                return $coordinate;
+            }
+        }
+
+        return null;
     }
 
     protected function formatFullAddress(Shoot $shoot): string

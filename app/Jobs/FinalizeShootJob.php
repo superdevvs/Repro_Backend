@@ -9,6 +9,7 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\FinalizeProgressTracker;
+use App\Services\Shoots\NoMediaDeliveryEligibility;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -263,11 +264,13 @@ class FinalizeShootJob implements ShouldQueue
                 ->when($this->shootServiceId, fn ($q) => $q->where('shoot_service_id', $this->shootServiceId))
                 ->count();
             $hasEditedWithoutRaw = !empty($completedIds) && $rawCount === 0;
-            // Revalidate eligibility inside the job so a forged/stale queued
-            // payload cannot bypass the controller's no-media restrictions.
+            // Revalidate every mutable eligibility input while the shoot row is
+            // locked. A queued request must fail if its actor, status, media,
+            // video link or qualifying service changed before execution.
+            $actor = User::find($this->userId);
             $allowNoMediaDelivery = $this->allowNoMediaDelivery
                 && !$this->shootServiceId
-                && $shoot->allowsNoMediaDelivery();
+                && app(NoMediaDeliveryEligibility::class)->allows($shoot, $actor);
 
             $allowedStatuses = [Shoot::STATUS_EDITING, Shoot::STATUS_READY, Shoot::STATUS_UPLOADED];
             if (!in_array($shoot->workflow_status, $allowedStatuses, true) && !$hasEditedWithoutRaw && !$allowNoMediaDelivery) {

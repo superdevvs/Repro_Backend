@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Services\PayoutReportService;
 use App\Services\Messaging\MessagingService;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -28,12 +29,7 @@ class PayoutReportController extends Controller
             'role' => 'nullable|string|in:all,photographer,salesRep,editor',
         ]);
 
-        if ($request->filled('start') && $request->filled('end')) {
-            $start = Carbon::parse($request->input('start'))->startOfDay();
-            $end = Carbon::parse($request->input('end'))->endOfDay();
-        } else {
-            [$start, $end] = $this->service->lastCompletedWeekRange();
-        }
+        [$start, $end] = $this->resolveReportingWindow($request);
 
         $role = $request->input('role', 'all');
         $photographerSummaries = in_array($role, ['all', 'photographer'], true)
@@ -77,12 +73,7 @@ class PayoutReportController extends Controller
             'role' => 'nullable|string|in:all,photographer,salesRep,editor',
         ]);
 
-        if ($request->filled('start') && $request->filled('end')) {
-            $start = Carbon::parse($request->input('start'))->startOfDay();
-            $end = Carbon::parse($request->input('end'))->endOfDay();
-        } else {
-            [$start, $end] = $this->service->lastCompletedWeekRange();
-        }
+        [$start, $end] = $this->resolveReportingWindow($request);
 
         $role = $request->input('role', 'all');
         $photographerSummaries = in_array($role, ['all', 'photographer'], true)
@@ -172,12 +163,7 @@ class PayoutReportController extends Controller
             'role' => 'nullable|string|in:all,photographer,salesRep,editor',
         ]);
 
-        if ($request->filled('start') && $request->filled('end')) {
-            $start = Carbon::parse($request->input('start'))->startOfDay();
-            $end = Carbon::parse($request->input('end'))->endOfDay();
-        } else {
-            [$start, $end] = $this->service->lastCompletedWeekRange();
-        }
+        [$start, $end] = $this->resolveReportingWindow($request);
 
         $role = $request->input('role', 'all');
         $groups = collect();
@@ -229,5 +215,27 @@ class PayoutReportController extends Controller
             'message' => 'Payout reports sent.',
             'sent_count' => $sent,
         ]);
+    }
+
+    /**
+     * @return array{0: Carbon, 1: Carbon}
+     */
+    private function resolveReportingWindow(Request $request): array
+    {
+        if ($request->filled('start') || $request->filled('end')) {
+            $rangeStart = $request->filled('start')
+                ? $request->input('start')
+                : $request->input('end');
+            $rangeEnd = $request->filled('end')
+                ? $request->input('end')
+                : $rangeStart;
+
+            return ReportingWeek::normalizeRange(
+                Carbon::parse($rangeStart),
+                Carbon::parse($rangeEnd)
+            );
+        }
+
+        return $this->service->lastCompletedWeekRange();
     }
 }

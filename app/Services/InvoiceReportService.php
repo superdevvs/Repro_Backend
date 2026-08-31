@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -136,7 +137,7 @@ class InvoiceReportService
 
         return match ($range) {
             'day' => [$now->copy()->startOfDay(), $now->copy()->endOfDay()],
-            'week' => [$now->copy()->startOfWeek(), $now->copy()->endOfWeek()],
+            'week' => ReportingWeek::containing($now),
             'month' => [$now->copy()->startOfMonth(), $now->copy()->endOfMonth()],
             'year' => [$now->copy()->startOfYear(), $now->copy()->endOfYear()],
             default => [$now->copy()->startOfDay(), $now->copy()->endOfDay()],
@@ -147,7 +148,7 @@ class InvoiceReportService
     {
         return match ($range) {
             'day' => $issueDate->format('Y-m-d'),
-            'week' => $issueDate->format('o-\WW'),
+            'week' => $issueDate->copy()->startOfWeek(ReportingWeek::START_DAY)->toDateString(),
             'month' => $issueDate->format('Y-m'),
             'year' => $issueDate->format('Y'),
             default => $issueDate->format('Y-m-d'),
@@ -160,13 +161,12 @@ class InvoiceReportService
             return $key;
         }
 
-        if (!preg_match('/^(\\d{4})-W(\\d{2})$/', $key, $matches)) {
+        try {
+            [$startOfWeek, $endOfWeek] = ReportingWeek::containing(Carbon::parse($key));
+        } catch (\Throwable) {
             return $key;
         }
 
-        $startOfWeek = Carbon::now()->setISODate((int) $matches[1], (int) $matches[2])->startOfWeek();
-        $endOfWeek = (clone $startOfWeek)->endOfWeek();
-
-        return sprintf('%s (%s - %s)', $key, $startOfWeek->format('Y-m-d'), $endOfWeek->format('Y-m-d'));
+        return sprintf('%s - %s', $startOfWeek->format('Y-m-d'), $endOfWeek->format('Y-m-d'));
     }
 }

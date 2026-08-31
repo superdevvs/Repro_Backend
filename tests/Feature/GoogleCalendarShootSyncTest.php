@@ -326,6 +326,73 @@ class GoogleCalendarShootSyncTest extends TestCase
         $this->assertDatabaseCount('google_calendar_event_mappings', 0);
     }
 
+    public function test_removing_all_services_collapses_service_events_to_one_shoot_level_event(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $this->createGoogleCalendarConnection($this->photographer, 'photographer-calendar@example.com', 'access-token-zero-services');
+
+        $scheduledAt = now()->addDays(7)->setTime(10, 0);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'scheduled_at' => $scheduledAt,
+            'scheduled_date' => $scheduledAt->toDateString(),
+            'time' => '10:00',
+        ]);
+        $shoot->services()->attach($this->service->id, [
+            'price' => 150,
+            'quantity' => 1,
+            'photographer_id' => $this->photographer->id,
+            'scheduled_at' => $scheduledAt,
+        ]);
+        $shoot->services()->attach($this->secondService->id, [
+            'price' => 90,
+            'quantity' => 1,
+            'photographer_id' => $this->photographer->id,
+            'scheduled_at' => $scheduledAt,
+        ]);
+        $items = $shoot->serviceItems()->orderBy('id')->get();
+
+        foreach ($items->values() as $index => $item) {
+            GoogleCalendarEventMapping::create([
+                'shoot_id' => $shoot->id,
+                'shoot_service_id' => $item->id,
+                'user_id' => $this->photographer->id,
+                'calendar_id' => 'primary',
+                'google_event_id' => 'service-event-'.($index + 1),
+                'sync_fingerprint' => 'old-fingerprint-'.$index,
+            ]);
+        }
+
+        Http::fake([
+            'https://www.googleapis.com/calendar/v3/calendars/*/events/service-event-1' => Http::response([
+                'id' => 'service-event-1',
+            ], 200),
+            'https://www.googleapis.com/calendar/v3/calendars/*/events/service-event-2' => Http::response('', 204),
+        ]);
+
+        $confirmation = $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+        ])->assertStatus(409);
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [],
+            'confirm_service_detach' => true,
+            'service_detach_confirmation_token' => $confirmation->json('confirmation_token'),
+        ])->assertOk();
+
+        $mappings = GoogleCalendarEventMapping::query()->where('shoot_id', $shoot->id)->get();
+        $this->assertCount(1, $mappings);
+        $this->assertNull($mappings->first()->shoot_service_id);
+        $this->assertSame('service-event-1', $mappings->first()->google_event_id);
+        Http::assertSent(fn (Request $request) => $request->method() === 'DELETE'
+            && str_contains($request->url(), '/events/service-event-2'));
+        Http::assertSent(fn (Request $request) => $request->method() === 'PATCH'
+            && str_contains($request->url(), '/events/service-event-1'));
+    }
+
     public function test_google_calendar_payload_builder_formats_service_titles_and_notes_cleanly(): void
     {
         $camelCaseService = Service::factory()->create([

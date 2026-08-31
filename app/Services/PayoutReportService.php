@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
@@ -17,10 +18,7 @@ class PayoutReportService
 
     public function lastCompletedWeekRange(): array
     {
-        $end = Carbon::now()->startOfWeek(Carbon::SUNDAY)->subDay()->endOfDay();
-        $start = $end->copy()->startOfWeek(Carbon::SUNDAY);
-
-        return [$start, $end];
+        return ReportingWeek::lastCompleted();
     }
 
     /**

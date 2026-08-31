@@ -147,6 +147,10 @@ class ShootResource extends JsonResource
             $resolvedTopLevelEditor = $editorAssignments[0]['editor'] ?? null;
         }
         $serviceItemSummaries = app(\App\Services\Shoots\ShootServiceItemSupport::class)->summaries($this->resource);
+        $canFinalizeNoMedia = app(\App\Services\Shoots\NoMediaDeliveryEligibility::class)
+            ->allows($this->resource, $requestingUser, $serviceItemSummaries);
+        $canRemoveAllServices = app(\App\Services\Shoots\ShootServiceChangeGuard::class)
+            ->canRemoveAllServices($this->resource, $requestingUser);
         $servicePresentation = app(\App\Services\Shoots\ShootServiceItemSupport::class)->presentation($this->resource);
         if ($isEditor && $requestingUser) {
             $visibleServiceIds = $serviceCollection->pluck('id')->map(fn ($id) => (int) $id)->all();
@@ -193,6 +197,10 @@ class ShootResource extends JsonResource
             && $cancellationBaseTotal > 0
             && $originalServiceSubtotal > $cancellationBaseTotal + 0.01
         ) ? $cancellationBaseTotal : 0.0;
+        $overpaymentAmount = round(max(
+            (float) ($this->total_paid ?? 0) - (float) ($this->total_quote ?? 0),
+            0
+        ), 2);
 
         $tourLinks = is_array($this->tour_links) ? $this->tour_links : [];
         $realtorClient = $this->resolveRealtorClient($tourLinks);
@@ -419,8 +427,14 @@ class ShootResource extends JsonResource
             'can_approve_editing_review' => $this->computeCanApproveEditingReview($requestingUser),
             'canViewInvoice' => $canViewInvoice,
             'can_view_invoice' => $canViewInvoice,
+            'canFinalizeNoMedia' => $canFinalizeNoMedia,
+            'can_finalize_no_media' => $canFinalizeNoMedia,
+            'canRemoveAllServices' => $canRemoveAllServices,
+            'can_remove_all_services' => $canRemoveAllServices,
+            'overpaymentAmount' => $isEditor ? 0.0 : $overpaymentAmount,
+            'overpayment_amount' => $isEditor ? 0.0 : $overpaymentAmount,
             'payment' => [
-                'serviceSubtotal' => $isEditor ? 0.0 : (float) (($this->base_quote ?? 0) + ($this->discount_amount ?? 0)),
+                'serviceSubtotal' => $isEditor ? 0.0 : round($originalServiceSubtotal, 2),
                 'baseQuote' => $isEditor ? 0.0 : (float) $this->base_quote,
                 'discountType' => $this->discount_type,
                 'discountValue' => $this->discount_value !== null ? (float) $this->discount_value : null,
@@ -432,6 +446,8 @@ class ShootResource extends JsonResource
                 'totalQuote' => $isEditor ? 0.0 : (float) $this->total_quote,
                 'totalPaid' => $isEditor ? 0.0 : (float) $this->total_paid,
                 'remainingBalance' => $isEditor ? 0.0 : (float) $this->remaining_balance,
+                'overpaymentAmount' => $isEditor ? 0.0 : $overpaymentAmount,
+                'overpayment_amount' => $isEditor ? 0.0 : $overpaymentAmount,
                 'paymentStatus' => $isEditor ? null : $this->payment_status,
                 'originalServiceSubtotal' => $isEditor ? 0.0 : $originalServiceSubtotal,
                 'cancellationFee' => $isEditor ? 0.0 : $cancellationFee,

@@ -23,11 +23,7 @@ class GoogleCalendarShootSyncService
         $shoot = Shoot::with(['services', 'serviceItems.service', 'serviceItems.photographer'])->find($shootId);
         $mappings = GoogleCalendarEventMapping::query()
             ->where('shoot_id', $shootId)
-            ->get()
-            ->keyBy(fn (GoogleCalendarEventMapping $mapping) => $this->mappingKey(
-                $mapping->user_id,
-                $mapping->shoot_service_id
-            ));
+            ->get();
 
         if (!$shoot || !$this->isSyncable($shoot)) {
             $this->removeMappings($mappings);
@@ -43,10 +39,28 @@ class GoogleCalendarShootSyncService
 
         $assignedPhotographerIds = $this->resolveAssignedPhotographerIds($shoot);
 
-        $mappings->each(function (GoogleCalendarEventMapping $mapping, string $mappingKey) use ($assignedPhotographerIds) {
+        // Deleting service rows nulls their mapping foreign keys. Keep at most
+        // one of those events as the shoot-level photographer event and remove
+        // every obsolete duplicate left by formerly separate service events.
+        $keptShootLevelUsers = collect();
+        $mappings->each(function (GoogleCalendarEventMapping $mapping) use (
+            $assignedPhotographerIds,
+            $keptShootLevelUsers
+        ) {
             if ($mapping->shoot_service_id || !$assignedPhotographerIds->contains((string) $mapping->user_id)) {
                 $this->removeMapping($mapping);
+
+                return;
             }
+
+            $userId = (string) $mapping->user_id;
+            if ($keptShootLevelUsers->contains($userId)) {
+                $this->removeMapping($mapping);
+
+                return;
+            }
+
+            $keptShootLevelUsers->push($userId);
         });
 
         foreach ($assignedPhotographerIds as $userId) {
@@ -259,7 +273,8 @@ class GoogleCalendarShootSyncService
 
         $validKeys = $eventTargets->pluck('key');
 
-        $mappings->each(function (GoogleCalendarEventMapping $mapping, string $mappingKey) use ($validKeys) {
+        $mappings->each(function (GoogleCalendarEventMapping $mapping) use ($validKeys) {
+            $mappingKey = $this->mappingKey($mapping->user_id, $mapping->shoot_service_id);
             if (!$validKeys->contains($mappingKey)) {
                 $this->removeMapping($mapping);
             }

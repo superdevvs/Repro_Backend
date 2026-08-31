@@ -65,7 +65,7 @@ class ApproveShootAction
 
         $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
-        $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated);
+        $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
         if (!$skipAvailabilityCheck) {
             if (!empty($targetPhotographerId)) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices);

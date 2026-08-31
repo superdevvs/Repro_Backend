@@ -98,6 +98,21 @@ class InvoiceReportsTest extends TestCase
         $this->assertEquals(270.0, $breakdown[0]['total_outstanding']);
     }
 
+    public function test_weekly_invoice_report_always_uses_sunday_through_saturday(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-08-31 12:00:00'));
+
+        $admin = User::factory()->create(['role' => 'admin']);
+        $this->actingAs($admin);
+
+        $response = $this->getJson('/api/reports/invoices/summary?range=week');
+
+        $response->assertOk();
+        $response->assertJsonPath('summary.range', 'week');
+        $response->assertJsonPath('summary.start', '2026-08-30');
+        $response->assertJsonPath('summary.end', '2026-09-05');
+    }
+
     public function test_past_due_endpoint_returns_overdue_invoices(): void
     {
         Carbon::setTestNow(Carbon::parse('2025-08-20 09:00:00'));

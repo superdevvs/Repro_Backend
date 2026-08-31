@@ -221,6 +221,106 @@ class ShootServiceItemSupport
         });
     }
 
+    /**
+     * Keep per-service paid/balance projections aligned after service rows are
+     * removed, replaced, or repriced. Payment records remain authoritative and
+     * untouched; only their operational allocation rows are rebuilt.
+     */
+    public function reconcileAllocationsAfterServiceChange(Shoot $shoot): void
+    {
+        $items = $shoot->serviceItems()
+            ->orderByRaw('scheduled_at is null')
+            ->orderBy('scheduled_at')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+        $allPayments = $shoot->payments()
+            ->with(['refunds', 'serviceAllocations'])
+            ->orderBy('processed_at')
+            ->orderBy('id')
+            ->get();
+        $paymentIds = $allPayments->pluck('id')->all();
+
+        if ($paymentIds === []) {
+            return;
+        }
+
+        $existingByPayment = $allPayments->mapWithKeys(fn (Payment $payment) => [
+            (int) $payment->id => $payment->serviceAllocations
+                ->map(fn (PaymentServiceAllocation $allocation) => [
+                    'shoot_service_id' => (int) $allocation->shoot_service_id,
+                    'amount' => round((float) $allocation->amount, 2),
+                ])
+                ->values()
+                ->all(),
+        ]);
+
+        PaymentServiceAllocation::query()->whereIn('payment_id', $paymentIds)->delete();
+
+        if ($items->isEmpty()) {
+            return;
+        }
+
+        $shoot->setRelation('payments', $allPayments);
+        $canonicalPaymentIds = $shoot->getCanonicalCompletedPayments()
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+        $capacity = $items->mapWithKeys(fn (ShootService $item) => [
+            (int) $item->id => $this->subtotal($item),
+        ])->all();
+        $validItemIds = $items->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        foreach ($allPayments->whereIn('id', $canonicalPaymentIds) as $payment) {
+            $remainingPayment = round($payment->netAmount(), 2);
+            $rows = [];
+
+            foreach ($existingByPayment->get((int) $payment->id, []) as $existing) {
+                $itemId = (int) $existing['shoot_service_id'];
+                if (! in_array($itemId, $validItemIds, true) || $remainingPayment <= 0.01) {
+                    continue;
+                }
+
+                $amount = min(
+                    round((float) $existing['amount'], 2),
+                    round((float) ($capacity[$itemId] ?? 0), 2),
+                    $remainingPayment
+                );
+                if ($amount <= 0.01) {
+                    continue;
+                }
+
+                $rows[$itemId] = round(($rows[$itemId] ?? 0) + $amount, 2);
+                $capacity[$itemId] = round(max(($capacity[$itemId] ?? 0) - $amount, 0), 2);
+                $remainingPayment = round(max($remainingPayment - $amount, 0), 2);
+            }
+
+            foreach ($items as $item) {
+                $itemId = (int) $item->id;
+                if ($remainingPayment <= 0.01) {
+                    break;
+                }
+
+                $amount = min((float) ($capacity[$itemId] ?? 0), $remainingPayment);
+                if ($amount <= 0.01) {
+                    continue;
+                }
+
+                $rows[$itemId] = round(($rows[$itemId] ?? 0) + $amount, 2);
+                $capacity[$itemId] = round(max(($capacity[$itemId] ?? 0) - $amount, 0), 2);
+                $remainingPayment = round(max($remainingPayment - $amount, 0), 2);
+            }
+
+            foreach ($rows as $itemId => $amount) {
+                PaymentServiceAllocation::create([
+                    'payment_id' => $payment->id,
+                    'shoot_service_id' => $itemId,
+                    'amount' => $amount,
+                ]);
+            }
+        }
+    }
+
     public function requiresExplicitAllocation(Shoot $shoot, float $amount, array $payload): bool
     {
         if ($shoot->serviceItems()->count() === 0) {

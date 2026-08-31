@@ -2,9 +2,9 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
 
 class AddressLookupService
 {
@@ -12,6 +12,7 @@ class AddressLookupService
     private $googleApiKey;
     private $googleBaseUrl = 'https://maps.googleapis.com/maps/api';
     private ZillowPropertyService $zillowPropertyService;
+    private NominatimRequestThrottler $nominatimRequestThrottler;
 
     private $locationIqKey;
     private $locationIqBaseUrl;
@@ -24,9 +25,12 @@ class AddressLookupService
     private $zillowServerToken;
     private $zillowBaseUrl;
 
-    public function __construct(ZillowPropertyService $zillowPropertyService)
-    {
+    public function __construct(
+        ZillowPropertyService $zillowPropertyService,
+        NominatimRequestThrottler $nominatimRequestThrottler
+    ) {
         $this->zillowPropertyService = $zillowPropertyService;
+        $this->nominatimRequestThrottler = $nominatimRequestThrottler;
         // Try to get provider from database settings, fallback to config
         $this->provider = $this->getProviderFromSettings() ?? config('services.address.provider', 'google');
         $this->googleApiKey = config('services.google.places_api_key');
@@ -846,13 +850,15 @@ class AddressLookupService
         }
 
         try {
-            $response = Http::withHeaders([
-                'User-Agent' => 'REPRO Dashboard App/1.0 (contact@repro.com)'
-            ])->timeout(5)->get('https://nominatim.openstreetmap.org/search', [
-                'format' => 'json',
-                'q' => $query,
-                'limit' => 1,
-            ]);
+            $response = $this->nominatimRequestThrottler->run(
+                fn () => Http::withHeaders([
+                    'User-Agent' => config('services.nominatim.user_agent'),
+                ])->timeout($this->nominatimRequestTimeout())->get('https://nominatim.openstreetmap.org/search', [
+                    'format' => 'json',
+                    'q' => $query,
+                    'limit' => 1,
+                ])
+            );
 
             if (!$response->successful()) {
                 return null;
@@ -1441,9 +1447,11 @@ class AddressLookupService
 
         // Use official Nominatim instance (please use responsibly - see usage policy)
         $url = 'https://nominatim.openstreetmap.org/search';
-        $response = Http::withHeaders([
-            'User-Agent' => config('app.name', 'REPRO') . ' Address Lookup'
-        ])->get($url, $params);
+        $response = $this->nominatimRequestThrottler->run(
+            fn () => Http::withHeaders([
+                'User-Agent' => config('services.nominatim.user_agent'),
+            ])->timeout($this->nominatimRequestTimeout())->get($url, $params)
+        );
 
         if (!$response->successful()) {
             Log::error('Nominatim autocomplete error', [
@@ -1482,13 +1490,15 @@ class AddressLookupService
     private function nominatimDetails(string $placeId): ?array
     {
         $url = 'https://nominatim.openstreetmap.org/lookup';
-        $response = Http::withHeaders([
-            'User-Agent' => config('app.name', 'REPRO') . ' Address Lookup'
-        ])->get($url, [
-            'osm_ids' => $placeId,
-            'format' => 'json',
-            'addressdetails' => 1,
-        ]);
+        $response = $this->nominatimRequestThrottler->run(
+            fn () => Http::withHeaders([
+                'User-Agent' => config('services.nominatim.user_agent'),
+            ])->timeout($this->nominatimRequestTimeout())->get($url, [
+                'osm_ids' => $placeId,
+                'format' => 'json',
+                'addressdetails' => 1,
+            ])
+        );
 
         if (!$response->successful()) {
             return null;
@@ -1505,6 +1515,11 @@ class AddressLookupService
         }
 
         return $this->parseLocationIqAddress($item); // Same format as LocationIQ
+    }
+
+    private function nominatimRequestTimeout(): int
+    {
+        return max(1, (int) config('services.nominatim.request_timeout_seconds', 10));
     }
 
     /**

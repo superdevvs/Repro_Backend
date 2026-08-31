@@ -6,6 +6,7 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 
@@ -388,8 +389,7 @@ class SalesReportService
      */
     public function generateWeeklyReportForSalesRep(User $salesRep, Carbon $startDate, Carbon $endDate): array
     {
-        $startDate = $startDate->copy()->startOfDay();
-        $endDate = $endDate->copy()->endOfDay();
+        [$startDate, $endDate] = ReportingWeek::normalizeRange($startDate, $endDate);
 
         // Get all shoots assigned to this sales rep in the period
         $shoots = Shoot::with(['client', 'photographer', 'payments'])
@@ -520,10 +520,7 @@ class SalesReportService
      */
     public function getLastCompletedWeek(): array
     {
-        $end = now()->startOfWeek()->subDay()->endOfDay();
-        $start = $end->copy()->startOfWeek();
-
-        return [$start, $end];
+        return ReportingWeek::lastCompleted();
     }
 
     protected function buildSalesRepClientScope(User $salesRep, Collection $repShoots): Collection
@@ -753,10 +750,10 @@ class SalesReportService
 
         $cursor = $useMonthlyBuckets
             ? $startDate->copy()->startOfMonth()
-            : $startDate->copy()->startOfWeek(Carbon::MONDAY);
+            : $startDate->copy()->startOfWeek(ReportingWeek::START_DAY);
         $lastBucket = $useMonthlyBuckets
             ? $endDate->copy()->startOfMonth()
-            : $endDate->copy()->startOfWeek(Carbon::MONDAY);
+            : $endDate->copy()->startOfWeek(ReportingWeek::START_DAY);
 
         while ($cursor->lte($lastBucket)) {
             $bucketKey = $cursor->toDateString();
@@ -786,7 +783,7 @@ class SalesReportService
 
             $bucketKey = $useMonthlyBuckets
                 ? $paidAt->copy()->startOfMonth()->toDateString()
-                : $paidAt->copy()->startOfWeek(Carbon::MONDAY)->toDateString();
+                : $paidAt->copy()->startOfWeek(ReportingWeek::START_DAY)->toDateString();
 
             if (!$bucketedData->has($bucketKey)) {
                 continue;
@@ -808,7 +805,7 @@ class SalesReportService
 
             $bucketKey = $useMonthlyBuckets
                 ? $relationshipDate->copy()->startOfMonth()->toDateString()
-                : $relationshipDate->copy()->startOfWeek(Carbon::MONDAY)->toDateString();
+                : $relationshipDate->copy()->startOfWeek(ReportingWeek::START_DAY)->toDateString();
 
             if (!$bucketedData->has($bucketKey)) {
                 continue;
@@ -845,5 +842,4 @@ class SalesReportService
         return $date?->copy()->toDateString();
     }
 }
-
 

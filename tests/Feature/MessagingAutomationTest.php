@@ -17,6 +17,7 @@ use App\Services\Messaging\OutboundDeliveryGuard;
 use App\Services\Messaging\Providers\LocalSmtpProvider;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
+use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Auth\Events\Verified;
@@ -955,9 +956,6 @@ class MessagingAutomationTest extends TestCase
      */
     private function lastCompletedWeek(): array
     {
-        $end = now()->startOfWeek()->subDay()->endOfDay();
-        $start = $end->copy()->startOfWeek();
-
-        return [$start, $end];
+        return ReportingWeek::lastCompleted();
     }
 }
