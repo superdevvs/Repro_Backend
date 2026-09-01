@@ -106,6 +106,10 @@ class PayoutReportService
             ]);
         }
 
+        $serviceRows = $serviceRows
+            ->filter(fn (array $row) => abs((float) ($row['photographer_pay'] ?? 0)) >= 0.005)
+            ->values();
+
         // Group by resolved photographer
         return $serviceRows
             ->groupBy('resolved_photographer_id')
@@ -152,6 +156,7 @@ class PayoutReportService
                 $start->copy()->startOfDay()->toDateTimeString(),
                 $end->copy()->endOfDay()->toDateTimeString(),
             ])
+            ->where('sales_rep_pay_enabled', true)
             ->whereNotNull('rep_id')
             ->whereNotIn('workflow_status', [
                 Shoot::STATUS_ON_HOLD,

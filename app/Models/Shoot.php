@@ -166,6 +166,7 @@ class Shoot extends Model
         'photographer_paid_invoice_id',
         'sales_rep_paid_at',
         'sales_rep_paid_invoice_id',
+        'sales_rep_pay_enabled',
         // External booking sync fields
         'alternate_scheduled_date',
         'alternate_time',
@@ -244,6 +245,7 @@ class Shoot extends Model
         'hold_requested_at' => 'datetime',
         'photographer_paid_at' => 'datetime',
         'sales_rep_paid_at' => 'datetime',
+        'sales_rep_pay_enabled' => 'boolean',
         'reshoot_of_shoot_id' => 'integer',
         'root_shoot_id' => 'integer',
         // External booking sync fields (alternate_time and external_booking_mapping_status

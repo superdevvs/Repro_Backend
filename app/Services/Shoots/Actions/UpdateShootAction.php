@@ -2,7 +2,10 @@
 
 namespace App\Services\Shoots\Actions;
 
+use App\Jobs\CreateCubiCasaOrderJob;
+use App\Jobs\ProcessCreatedShootSideEffectsJob;
 use App\Jobs\ProcessUpdatedShootSideEffectsJob;
+use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\AuditLogService;
@@ -12,7 +15,7 @@ use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\ShootActivityLogger;
-use App\Services\Shoots\ComplimentaryReshootService;
+use App\Services\Shoots\ReturnVisitBookingService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\Shoots\ShootEditingAssignmentService;
@@ -39,7 +42,7 @@ class UpdateShootAction
         protected AutomationService $automationService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
         protected ShootServiceChangeGuard $serviceChangeGuard,
-        protected ComplimentaryReshootService $complimentaryReshoots,
+        protected ReturnVisitBookingService $returnVisits,
         protected AuditLogService $auditLog
     ) {}
 
@@ -462,8 +465,10 @@ class UpdateShootAction
         }
         unset($validated['complimentary_service_options']);
 
-        $createdComplimentaryReshoot = null;
-        $complimentaryReshootReplayed = false;
+        $createdReturnVisit = null;
+        $returnVisitReplayed = false;
+        $createdReturnVisitClassification = null;
+        $createdReturnVisitInvoiceId = null;
         try {
             DB::transaction(function () use (
                 $shoot,
@@ -473,8 +478,10 @@ class UpdateShootAction
                 $requestedFeaturedState,
                 $canApproveFeaturedShoot,
                 $complimentaryServiceOptions,
-                &$createdComplimentaryReshoot,
-                &$complimentaryReshootReplayed
+                &$createdReturnVisit,
+                &$returnVisitReplayed,
+                &$createdReturnVisitClassification,
+                &$createdReturnVisitInvoiceId
             ): void {
                 $this->editablePayloadService->apply($shoot, $validated, $user);
                 if ($featuredFlagProvided) {
@@ -503,24 +510,34 @@ class UpdateShootAction
                         $complimentaryServiceOptions
                     );
                 }
-                $result = $this->complimentaryReshoots->createFromEditOptions(
+                $result = $this->returnVisits->createFromEditOptions(
                     $shoot->fresh(),
                     $complimentaryServiceOptions,
                     $user
                 );
-                $createdComplimentaryReshoot = $result['shoot'];
-                $complimentaryReshootReplayed = (bool) $result['replayed'];
+                $createdReturnVisit = $result['shoot'];
+                $returnVisitReplayed = (bool) $result['replayed'];
+                $createdReturnVisitClassification = (string) $result['classification'];
+                $createdReturnVisitInvoiceId = $result['invoice_id'] ?? null;
 
-                if (! $complimentaryReshootReplayed) {
+                if (! $returnVisitReplayed) {
+                    $eventType = $createdReturnVisitClassification === 'additional_work'
+                        ? 'additional_work.created'
+                        : 'complimentary_reshoot.created';
                     $this->auditLog->record(
-                        'complimentary_reshoot.created',
+                        $eventType,
                         $user,
-                        $createdComplimentaryReshoot,
+                        $createdReturnVisit,
                         [
                             'entry_point' => 'edit_shoot',
-                            'reshoot_of_shoot_id' => $createdComplimentaryReshoot->reshoot_of_shoot_id,
-                            'root_shoot_id' => $createdComplimentaryReshoot->root_shoot_id,
-                            'idempotency_key' => $createdComplimentaryReshoot->complimentary_reshoot_idempotency_key,
+                            'classification' => $createdReturnVisitClassification,
+                            'client_pays' => (bool) ($complimentaryServiceOptions['client_pays'] ?? false),
+                            'pay_photographer' => (bool) $complimentaryServiceOptions['pay_photographer'],
+                            'pay_sales_rep' => (bool) $complimentaryServiceOptions['pay_sales_rep'],
+                            'reason_code' => $complimentaryServiceOptions['reason_code'],
+                            'reshoot_of_shoot_id' => $createdReturnVisit->reshoot_of_shoot_id,
+                            'root_shoot_id' => $createdReturnVisit->root_shoot_id,
+                            'idempotency_key' => $createdReturnVisit->complimentary_reshoot_idempotency_key,
                         ]
                     );
                 }
@@ -736,34 +753,88 @@ class UpdateShootAction
             );
         }
 
+        if ($createdReturnVisitClassification === 'additional_work'
+            && $createdReturnVisit
+            && ! $returnVisitReplayed) {
+            $this->dispatchCreatedAdditionalWorkSideEffects($createdReturnVisit);
+        }
+
         $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
+        if ($createdReturnVisit && ! $returnVisitReplayed) {
+            $this->googleCalendarSyncDispatcher->dispatchShootSync($createdReturnVisit->id);
+        }
 
         // Bust the per-date schedule buckets for both the old and the new calendar day so a
         // reschedule via update reflects in the Schedule_View immediately (Req 8.1, 8.3).
         $scheduleScope->invalidateDates([
             $previousLocalDate,
             $scheduleScope->localDateForShoot($shoot),
+            $createdReturnVisit ? $scheduleScope->localDateForShoot($createdReturnVisit) : null,
         ]);
 
         $updatedShoot = $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files', 'ghostUsers']);
-        if ($createdComplimentaryReshoot) {
+        if ($createdReturnVisit) {
             // Loading the relation opts the presenter into returning the compact
             // related-reshoot summary on this response, so Edit Shoot can show
             // the result without making the admin hunt for a second record.
             $updatedShoot->load('reshootChildren');
             $createdSummary = [
-                'id' => $createdComplimentaryReshoot->id,
-                'shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT,
-                'reshoot_of_shoot_id' => $createdComplimentaryReshoot->reshoot_of_shoot_id,
-                'scheduled_at' => $createdComplimentaryReshoot->scheduled_at?->toIso8601String(),
-                'client_charge_total' => 0.0,
-                'replayed' => $complimentaryReshootReplayed,
+                'id' => $createdReturnVisit->id,
+                'shoot_type' => $createdReturnVisit->shoot_type,
+                'reshoot_classification' => $createdReturnVisitClassification,
+                'reshoot_of_shoot_id' => $createdReturnVisit->reshoot_of_shoot_id,
+                'root_shoot_id' => $createdReturnVisit->root_shoot_id,
+                'scheduled_at' => $createdReturnVisit->scheduled_at?->toIso8601String(),
+                'client_charge_total' => round((float) $createdReturnVisit->total_quote, 2),
+                'payment_required' => $createdReturnVisitClassification === 'additional_work',
+                'invoice_id' => $createdReturnVisitInvoiceId,
+                'replayed' => $returnVisitReplayed,
             ];
-            $updatedShoot->setAttribute('created_complimentary_reshoot', $createdSummary);
-            $updatedShoot->setAttribute('createdComplimentaryReshoot', $createdSummary);
+            $updatedShoot->setAttribute('created_return_visit', $createdSummary);
+            $updatedShoot->setAttribute('createdReturnVisit', $createdSummary);
+            if ($createdReturnVisitClassification === 'complimentary_reshoot') {
+                $updatedShoot->setAttribute('created_complimentary_reshoot', $createdSummary);
+                $updatedShoot->setAttribute('createdComplimentaryReshoot', $createdSummary);
+            } else {
+                $updatedShoot->setAttribute('created_additional_work', $createdSummary);
+                $updatedShoot->setAttribute('createdAdditionalWork', $createdSummary);
+            }
         }
 
         return $updatedShoot;
+    }
+
+    private function dispatchCreatedAdditionalWorkSideEffects(Shoot $shoot): void
+    {
+        ProcessCreatedShootSideEffectsJob::dispatch(
+            $shoot->id,
+            false,
+            $shoot->scheduled_at !== null
+        )->afterCommit();
+
+        if ($shoot->scheduled_at !== null && $shoot->hasCubiCasaEligibleService()) {
+            try {
+                $pending = CreateCubiCasaOrderJob::dispatch($shoot->id, 'booking')->afterCommit();
+                unset($pending);
+            } catch (\Throwable $exception) {
+                Log::warning('CubiCasa auto-create failed during additional-work booking; booking completed regardless.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+
+        if ($shoot->hasIguideEligibleService()) {
+            try {
+                $pending = SyncShootIguideJob::dispatch($shoot->id)->afterCommit();
+                unset($pending);
+            } catch (\Throwable $exception) {
+                Log::warning('iGUIDE discovery dispatch failed during additional-work booking; booking completed regardless.', [
+                    'shoot_id' => $shoot->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
     }
 
     protected function registerDeferredSideEffects(

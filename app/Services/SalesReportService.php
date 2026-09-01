@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Shoot;
 use App\Models\ShootCompensation;
@@ -35,8 +36,10 @@ class SalesReportService
 
         $repInvoices = Invoice::query()
             ->with([
-                'shoot:id,client_id,rep_id,scheduled_date,created_at',
-                'shoots:id,client_id,rep_id,scheduled_date,created_at',
+                'shoot:id,client_id,rep_id,scheduled_date,created_at,total_quote,sales_rep_pay_enabled',
+                'shoots:id,client_id,rep_id,scheduled_date,created_at,total_quote,sales_rep_pay_enabled',
+                'items:id,invoice_id,shoot_id,type,total_amount',
+                'items.shoot:id,total_quote,sales_rep_pay_enabled',
             ])
             ->where(function ($query) use ($salesRep, $clientIds, $repShootIds) {
                 $query->where('sales_rep_id', $salesRep->id);
@@ -75,8 +78,10 @@ class SalesReportService
         $paidRevenue = round($paidRevenueByClient->sum(), 2);
         $activeClientCount = $paidRevenueByClient->filter(fn (float $value) => $value > 0)->count();
         $commissionRate = $this->extractCommissionRate($salesRep);
+        $commissionablePaidRevenue = round((float) $windowedPaidInvoices
+            ->sum(fn (Invoice $invoice) => $this->resolveInvoiceCommissionablePaidAmount($invoice)), 2);
         $commissionEarned = $commissionRate !== null
-            ? round(($paidRevenue * $commissionRate) / 100, 2)
+            ? round(($commissionablePaidRevenue * $commissionRate) / 100, 2)
             : null;
         $compensationEarned = round((float) ShootCompensation::query()
             ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
@@ -704,6 +709,67 @@ class SalesReportService
     protected function resolveInvoicePaidAmount(Invoice $invoice): float
     {
         return round((float) ($invoice->amount_paid ?? 0), 2);
+    }
+
+    /**
+     * Client revenue and rep compensation are deliberately independent. A paid
+     * additional-work visit still contributes revenue when Admin leaves Rep
+     * pay off, but that revenue must not appear as commission earnings.
+     *
+     * Aggregate invoices are apportioned by their attributed charge lines. The
+     * direct-shoot fallback preserves legacy invoices that predate item-level
+     * attribution.
+     */
+    protected function resolveInvoiceCommissionablePaidAmount(Invoice $invoice): float
+    {
+        $paidAmount = $this->resolveInvoicePaidAmount($invoice);
+        if ($paidAmount <= 0) {
+            return 0.0;
+        }
+
+        $chargeItems = $invoice->items
+            ->filter(fn (InvoiceItem $item) => $item->type === InvoiceItem::TYPE_CHARGE)
+            ->filter(fn (InvoiceItem $item) => (float) $item->total_amount > 0)
+            ->values();
+        if ($chargeItems->isNotEmpty()) {
+            $totalCharges = (float) $chargeItems->sum('total_amount');
+            $eligibleCharges = (float) $chargeItems
+                ->filter(fn (InvoiceItem $item) => $this->shootAllowsSalesRepPay($item->shoot))
+                ->sum('total_amount');
+
+            if ($totalCharges > 0) {
+                return round($paidAmount * min(max($eligibleCharges / $totalCharges, 0), 1), 2);
+            }
+        }
+
+        $attributedShoots = collect([$invoice->shoot])
+            ->merge($invoice->shoots)
+            ->filter(fn ($shoot) => $shoot instanceof Shoot)
+            ->unique('id')
+            ->values();
+        if ($attributedShoots->isEmpty()) {
+            return $paidAmount;
+        }
+
+        $totalValue = (float) $attributedShoots->sum(fn (Shoot $shoot) => max((float) $shoot->total_quote, 0));
+        if ($totalValue > 0) {
+            $eligibleValue = (float) $attributedShoots
+                ->filter(fn (Shoot $shoot) => $this->shootAllowsSalesRepPay($shoot))
+                ->sum(fn (Shoot $shoot) => max((float) $shoot->total_quote, 0));
+
+            return round($paidAmount * min(max($eligibleValue / $totalValue, 0), 1), 2);
+        }
+
+        return $attributedShoots->every(fn (Shoot $shoot) => $this->shootAllowsSalesRepPay($shoot))
+            ? $paidAmount
+            : 0.0;
+    }
+
+    protected function shootAllowsSalesRepPay(?Shoot $shoot): bool
+    {
+        // Null preserves legacy invoice behavior where no shoot attribution was
+        // recorded. On actual shoot rows the migration defaults this to true.
+        return $shoot === null || $shoot->sales_rep_pay_enabled !== false;
     }
 
     protected function resolveOutstandingBalance(Invoice $invoice): float

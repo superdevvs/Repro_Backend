@@ -133,6 +133,14 @@ class InvoiceService
             }
         }
 
+        // An explicit zero on a standard service line means the photographer is
+        // not being paid for that line (for example, a paid return visit where
+        // Admin left Photographer off). Do not create empty payout invoices or
+        // $0 line items for those decisions.
+        $serviceRows = $serviceRows
+            ->filter(fn (array $row) => abs((float) ($row['photographer_pay'] ?? 0)) >= 0.005)
+            ->values();
+
         return DB::transaction(function () use ($serviceRows, $start, $end, $sendEmails) {
             $this->acquirePayoutGenerationLock(Invoice::ROLE_PHOTOGRAPHER, $start, $end);
 
@@ -783,6 +791,7 @@ class InvoiceService
                 $start->copy()->startOfDay()->toDateTimeString(),
                 $end->copy()->endOfDay()->toDateTimeString(),
             ])
+            ->where('sales_rep_pay_enabled', true)
             ->whereNotNull('rep_id')
             ->whereNotIn('workflow_status', [
                 Shoot::STATUS_ON_HOLD,

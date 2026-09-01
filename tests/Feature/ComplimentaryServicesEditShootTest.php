@@ -2,6 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Jobs\CreateCubiCasaOrderJob;
+use App\Jobs\ProcessCreatedShootSideEffectsJob;
+use App\Jobs\SyncShootIguideJob;
 use App\Models\CompReshootItem;
 use App\Models\Invoice;
 use App\Models\Payment;
@@ -13,6 +16,7 @@ use App\Models\ShootService;
 use App\Models\User;
 use App\Services\InvoiceService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -40,6 +44,8 @@ class ComplimentaryServicesEditShootTest extends TestCase
     {
         parent::setUp();
 
+        Queue::fake();
+
         $this->admin = User::factory()->admin()->create();
         $this->client = User::factory()->create(['role' => 'client']);
         $this->photographer = User::factory()->photographer()->create();
@@ -63,6 +69,8 @@ class ComplimentaryServicesEditShootTest extends TestCase
             'base_quote' => 250,
             'tax_amount' => 0,
             'total_quote' => 250,
+            'state' => 'FL',
+            'tax_region' => 'none',
             'property_details' => ['sqft' => 2400],
             'shoot_type' => Shoot::SHOOT_TYPE_STANDARD,
             'status' => Shoot::STATUS_SCHEDULED,
@@ -91,6 +99,16 @@ class ComplimentaryServicesEditShootTest extends TestCase
             'photographer only' => [true, false, ShootCompensation::MODE_STANDARD, ShootCompensation::MODE_NONE, 75.0, 0.0],
             'sales rep only' => [false, true, ShootCompensation::MODE_NONE, ShootCompensation::MODE_STANDARD, 0.0, 25.0],
             'both recipients paid' => [true, true, ShootCompensation::MODE_STANDARD, ShootCompensation::MODE_STANDARD, 75.0, 25.0],
+        ];
+    }
+
+    public static function paidReturnVisitPayChoices(): array
+    {
+        return [
+            'neither recipient paid' => [false, false, 0.0],
+            'photographer only' => [true, false, 75.0],
+            'sales rep only' => [false, true, 0.0],
+            'both recipients paid' => [true, true, 75.0],
         ];
     }
 
@@ -166,6 +184,240 @@ class ComplimentaryServicesEditShootTest extends TestCase
             'target_id' => $child->id,
             'event_type' => 'complimentary_reshoot.created',
         ]);
+    }
+
+    #[DataProvider('paidReturnVisitPayChoices')]
+    public function test_client_pay_creates_standard_additional_work_with_independent_staff_pay(
+        bool $payPhotographer,
+        bool $paySalesRep,
+        float $photographerPay,
+    ): void {
+        $payload = $this->payload($payPhotographer, $paySalesRep);
+        $payload['complimentary_service_options']['client_pays'] = true;
+
+        $response = $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload);
+
+        $response->assertOk()
+            ->assertJsonPath('data.created_return_visit.shoot_type', Shoot::SHOOT_TYPE_STANDARD)
+            ->assertJsonPath('data.created_return_visit.reshoot_classification', 'additional_work')
+            ->assertJsonPath('data.created_return_visit.reshoot_of_shoot_id', $this->sourceShoot->id)
+            ->assertJsonPath('data.created_return_visit.root_shoot_id', $this->sourceShoot->id)
+            ->assertJsonPath('data.created_return_visit.client_charge_total', 250)
+            ->assertJsonPath('data.created_return_visit.payment_required', true)
+            ->assertJsonPath('data.created_return_visit.replayed', false)
+            ->assertJsonPath('data.created_additional_work.client_charge_total', 250)
+            ->assertJsonPath('data.reshoot_summary.additional_work_count', 1);
+
+        $childId = (int) $response->json('data.created_return_visit.id');
+        $child = Shoot::findOrFail($childId);
+        $childItem = $child->serviceItems()->firstOrFail();
+
+        $this->assertSame(Shoot::SHOOT_TYPE_STANDARD, $child->shoot_type);
+        $this->assertSame($this->sourceShoot->id, $child->reshoot_of_shoot_id);
+        $this->assertSame($this->sourceShoot->id, $child->root_shoot_id);
+        $this->assertSame(250.0, (float) $child->base_quote);
+        $this->assertSame(0.0, (float) $child->tax_amount);
+        $this->assertSame(250.0, (float) $child->total_quote);
+        $this->assertSame('unpaid', $child->payment_status);
+        $this->assertFalse((bool) $child->bypass_paywall);
+        $this->assertSame($paySalesRep, (bool) $child->sales_rep_pay_enabled);
+        $this->assertSame($this->salesRep->id, $child->rep_id, 'The inherited rep remains attached even when rep pay is off.');
+        $this->assertSame(250.0, (float) $childItem->price);
+        $this->assertSame($photographerPay, (float) $childItem->photographer_pay);
+
+        $this->assertDatabaseHas('invoices', [
+            'shoot_id' => $child->id,
+            'role' => Invoice::ROLE_CLIENT,
+            'document_type' => Invoice::DOCUMENT_TYPE_INVOICE,
+            'payment_required' => true,
+            'total_amount' => 250,
+            'amount_paid' => 0,
+            'is_paid' => false,
+        ]);
+        $this->assertDatabaseMissing('shoot_compensations', ['shoot_id' => $child->id]);
+        $this->assertDatabaseMissing('comp_reshoot_items', ['shoot_id' => $child->id]);
+        $this->assertDatabaseHas('user_activity_logs', [
+            'actor_user_id' => $this->admin->id,
+            'target_id' => $child->id,
+            'event_type' => 'additional_work.created',
+        ]);
+        Queue::assertPushed(ProcessCreatedShootSideEffectsJob::class, fn ($job) => (int) $job->shootId === $child->id
+        );
+
+        $this->assertSame(250.0, (float) $this->sourceShoot->fresh()->total_quote);
+        $this->assertSame(250.0, (float) $this->sourceItem->fresh()->price);
+    }
+
+    public function test_client_pay_uses_server_catalog_price_and_is_idempotent(): void
+    {
+        $this->service->update(['price' => 325]);
+        $payload = $this->payload(true, true);
+        $payload['complimentary_service_options']['client_pays'] = true;
+        // Unknown client pricing input is deliberately ignored by the validated
+        // Edit Shoot return-visit contract.
+        $payload['complimentary_service_options']['service_items'][0]['price'] = 1;
+
+        $first = $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)
+            ->assertOk()
+            ->assertJsonPath('data.created_return_visit.client_charge_total', 325)
+            ->assertJsonPath('data.created_return_visit.replayed', false);
+        $childId = (int) $first->json('data.created_return_visit.id');
+
+        $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)
+            ->assertOk()
+            ->assertJsonPath('data.created_return_visit.id', $childId)
+            ->assertJsonPath('data.created_return_visit.client_charge_total', 325)
+            ->assertJsonPath('data.created_return_visit.replayed', true);
+
+        $this->assertSame(1, Shoot::query()
+            ->where('reshoot_of_shoot_id', $this->sourceShoot->id)
+            ->where('shoot_type', Shoot::SHOOT_TYPE_STANDARD)
+            ->count());
+        $this->assertSame(1, Invoice::query()
+            ->where('shoot_id', $childId)
+            ->where('role', Invoice::ROLE_CLIENT)
+            ->count());
+        $this->assertSame(325.0, (float) Shoot::findOrFail($childId)->serviceItems()->firstOrFail()->price);
+        $this->assertSame(1, \App\Models\UserActivityLog::query()
+            ->where('event_type', 'additional_work.created')
+            ->where('target_id', $childId)
+            ->count());
+    }
+
+    public function test_client_pay_uses_service_item_schedule_as_the_shoot_schedule(): void
+    {
+        $payload = $this->payload(true, false);
+        $payload['complimentary_service_options']['client_pays'] = true;
+        unset($payload['complimentary_service_options']['scheduled_at']);
+        $payload['complimentary_service_options']['service_items'][0]['scheduled_at'] = '2026-09-16 11:15:00';
+
+        $response = $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)
+            ->assertOk()
+            ->assertJsonPath('data.created_return_visit.scheduled_at', '2026-09-16T11:15:00+00:00');
+
+        $child = Shoot::findOrFail((int) $response->json('data.created_return_visit.id'));
+        $this->assertSame('2026-09-16 11:15:00', $child->scheduled_at?->format('Y-m-d H:i:s'));
+        $this->assertSame('2026-09-16 11:15:00', $child->serviceItems()->firstOrFail()->scheduled_at?->format('Y-m-d H:i:s'));
+    }
+
+    public function test_client_paid_floor_plan_dispatches_normal_booking_provider_jobs(): void
+    {
+        $this->service->update(['name' => '2D Floor Plan']);
+        $payload = $this->payload(true, true);
+        $payload['complimentary_service_options']['client_pays'] = true;
+
+        $response = $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)->assertOk();
+        $childId = (int) $response->json('data.created_return_visit.id');
+
+        Queue::assertPushed(ProcessCreatedShootSideEffectsJob::class, fn ($job) => (int) $job->shootId === $childId
+                && $job->treatAsClientRequest === false
+                && $job->isImmediatelyScheduled === true
+        );
+        Queue::assertPushed(CreateCubiCasaOrderJob::class, fn ($job) => (int) $job->shootId === $childId && $job->source === 'booking'
+        );
+        Queue::assertPushed(SyncShootIguideJob::class, fn ($job) => (int) $job->shootId === $childId);
+    }
+
+    public function test_reusing_a_return_visit_key_with_a_different_client_pay_mode_is_rejected(): void
+    {
+        $payload = $this->payload(false, false);
+
+        $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)->assertOk();
+        $payload['complimentary_service_options']['client_pays'] = true;
+
+        $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'This Idempotency-Key was already used for a different return-visit request.');
+
+        $this->assertSame(1, Shoot::query()->where('reshoot_of_shoot_id', $this->sourceShoot->id)->count());
+    }
+
+    public function test_reusing_a_paid_return_visit_key_for_a_free_comp_is_rejected(): void
+    {
+        $payload = $this->payload(false, false);
+        $payload['complimentary_service_options']['client_pays'] = true;
+
+        $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)->assertOk();
+        $payload['complimentary_service_options']['client_pays'] = false;
+
+        $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'This Idempotency-Key was already used for a different reshoot request.');
+
+        $this->assertSame(1, Shoot::query()
+            ->where('reshoot_of_shoot_id', $this->sourceShoot->id)
+            ->where('shoot_type', Shoot::SHOOT_TYPE_STANDARD)
+            ->count());
+        $this->assertSame(0, Shoot::query()
+            ->where('reshoot_of_shoot_id', $this->sourceShoot->id)
+            ->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)
+            ->count());
+    }
+
+    #[DataProvider('paidReturnVisitPayChoices')]
+    public function test_paid_return_visit_payout_generation_honors_both_staff_toggles(
+        bool $payPhotographer,
+        bool $paySalesRep,
+        float $photographerPay,
+    ): void {
+        $payload = $this->payload($payPhotographer, $paySalesRep);
+        $payload['complimentary_service_options']['client_pays'] = true;
+
+        $response = $this->patchJson("/api/shoots/{$this->sourceShoot->id}", $payload)->assertOk();
+        $child = Shoot::findOrFail((int) $response->json('data.created_return_visit.id'));
+        $childItem = $child->serviceItems()->firstOrFail();
+        $earnedAt = \Carbon\Carbon::parse('2026-09-15 14:00:00');
+
+        // Keep the original booking outside this focused payout period.
+        $this->sourceShoot->update(['scheduled_date' => '2025-01-01']);
+        $childItem->update([
+            'workflow_status' => ShootService::WORKFLOW_DELIVERED,
+            'delivery_status' => ShootService::DELIVERY_DELIVERED,
+            'delivered_at' => $earnedAt,
+        ]);
+        $child->update([
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'scheduled_date' => $earnedAt->toDateString(),
+            'completed_at' => $earnedAt,
+            'admin_verified_at' => $earnedAt,
+        ]);
+
+        $invoiceService = app(InvoiceService::class);
+        $invoiceService->generateForPeriod($earnedAt->copy()->startOfDay(), $earnedAt->copy()->endOfDay());
+        $invoiceService->generateSalesRepInvoicesForPeriod($earnedAt->copy()->startOfDay(), $earnedAt->copy()->endOfDay());
+        // Re-running the same payout windows must reuse the existing invoices
+        // and line items rather than paying either recipient twice.
+        $invoiceService->generateForPeriod($earnedAt->copy()->startOfDay(), $earnedAt->copy()->endOfDay());
+        $invoiceService->generateSalesRepInvoicesForPeriod($earnedAt->copy()->startOfDay(), $earnedAt->copy()->endOfDay());
+
+        $photographerInvoice = Invoice::query()
+            ->where('photographer_id', $this->photographer->id)
+            ->where('role', Invoice::ROLE_PHOTOGRAPHER)
+            ->first();
+        $repInvoice = Invoice::query()
+            ->where('sales_rep_id', $this->salesRep->id)
+            ->whereNull('photographer_id')
+            ->first();
+
+        $this->assertSame($payPhotographer, $photographerInvoice !== null);
+        if ($photographerInvoice) {
+            $this->assertSame($photographerPay, (float) $photographerInvoice->total_amount);
+            $this->assertSame(1, $photographerInvoice->items()->count());
+        }
+        $this->assertSame($paySalesRep, $repInvoice !== null);
+        if ($repInvoice) {
+            $this->assertSame(25.0, (float) $repInvoice->total_amount);
+            $this->assertSame(1, $repInvoice->items()->count());
+        }
+        $this->assertSame($payPhotographer ? 1 : 0, Invoice::query()
+            ->where('photographer_id', $this->photographer->id)
+            ->where('role', Invoice::ROLE_PHOTOGRAPHER)
+            ->count());
+        $this->assertSame($paySalesRep ? 1 : 0, Invoice::query()
+            ->where('sales_rep_id', $this->salesRep->id)
+            ->whereNull('photographer_id')
+            ->count());
     }
 
     public function test_edit_comp_mode_is_admin_only(): void

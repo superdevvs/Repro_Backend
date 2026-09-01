@@ -294,6 +294,59 @@ class SalesReportSummaryTest extends TestCase
         $this->assertEquals(320, $response->json('summary.paid_revenue'));
     }
 
+    public function test_paid_revenue_remains_visible_when_rep_pay_is_disabled_but_commission_excludes_it(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-04-15 10:00:00'));
+
+        $salesRep = User::factory()->create([
+            'role' => 'salesRep',
+            'metadata' => ['repDetails' => ['commissionPercentage' => 10]],
+        ]);
+        $client = User::factory()->create([
+            'role' => 'client',
+            'created_by_id' => $salesRep->id,
+        ]);
+        $commissionableShoot = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'rep_id' => $salesRep->id,
+            'total_quote' => 100,
+            'scheduled_date' => '2026-04-08',
+            'sales_rep_pay_enabled' => true,
+        ]);
+        $nonCommissionableReturn = Shoot::factory()->create([
+            'client_id' => $client->id,
+            'rep_id' => $salesRep->id,
+            'total_quote' => 200,
+            'scheduled_date' => '2026-04-09',
+            'reshoot_of_shoot_id' => $commissionableShoot->id,
+            'root_shoot_id' => $commissionableShoot->id,
+            'sales_rep_pay_enabled' => false,
+        ]);
+
+        foreach ([[$commissionableShoot, 100], [$nonCommissionableReturn, 200]] as [$shoot, $amount]) {
+            Invoice::factory()->create([
+                'client_id' => $client->id,
+                'shoot_id' => $shoot->id,
+                'sales_rep_id' => $salesRep->id,
+                'total' => $amount,
+                'total_amount' => $amount,
+                'amount_paid' => $amount,
+                'status' => Invoice::STATUS_PAID,
+                'is_paid' => true,
+                'paid_at' => Carbon::parse('2026-04-10 12:00:00'),
+            ]);
+        }
+
+        Sanctum::actingAs($salesRep);
+
+        $response = $this->getJson('/api/reports/sales/summary?start_date=2026-04-01&end_date=2026-04-15')
+            ->assertOk();
+
+        $this->assertEquals(300.0, $response->json('summary.paid_revenue'));
+        $this->assertEquals(10.0, $response->json('summary.commission_earned'));
+        $this->assertEquals(10.0, $response->json('summary.total_earnings'));
+    }
+
     public function test_empty_window_returns_zeroed_summary_and_empty_lists(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-04-15 10:00:00'));

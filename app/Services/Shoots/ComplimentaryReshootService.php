@@ -738,7 +738,8 @@ class ComplimentaryReshootService
 
     private function assertReplayMatches(Shoot $shoot, Shoot $sourceShoot, string $requestHash): void
     {
-        if ((int) $shoot->reshoot_of_shoot_id !== (int) $sourceShoot->id
+        if (! $shoot->isComplimentaryReshoot()
+            || (int) $shoot->reshoot_of_shoot_id !== (int) $sourceShoot->id
             || ! hash_equals((string) $shoot->complimentary_reshoot_request_hash, $requestHash)) {
             throw new \DomainException('This Idempotency-Key was already used for a different reshoot request.', 409);
         }

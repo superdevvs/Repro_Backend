@@ -69,6 +69,7 @@ class ShootEditablePayloadService
             ],
             'complimentary_service_options.pay_photographer' => 'required_with:complimentary_service_options|boolean',
             'complimentary_service_options.pay_sales_rep' => 'required_with:complimentary_service_options|boolean',
+            'complimentary_service_options.client_pays' => 'nullable|boolean',
             'complimentary_service_options.scheduled_at' => 'nullable|date',
             'complimentary_service_options.scheduled_date' => 'nullable|date',
             'complimentary_service_options.time' => 'nullable|string|max:40',
