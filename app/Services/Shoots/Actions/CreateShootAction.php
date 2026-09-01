@@ -157,6 +157,12 @@ class CreateShootAction
             $initialTourLinks = [];
             if (array_key_exists('tour_links', $validated) && is_array($validated['tour_links'])) {
                 $initialTourLinks = $validated['tour_links'];
+                unset($initialTourLinks['iguide_mls_source']);
+                if (array_key_exists('iguide_mls', $initialTourLinks)) {
+                    $initialTourLinks['iguide_mls_source'] = filled($initialTourLinks['iguide_mls'])
+                        ? 'manual'
+                        : null;
+                }
             }
             if (!empty($autoPropertyTourLinks)) {
                 $initialTourLinks = array_merge($autoPropertyTourLinks, $initialTourLinks);

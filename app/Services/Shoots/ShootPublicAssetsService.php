@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\IguideOfflineViewerService;
 use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -22,7 +23,8 @@ class ShootPublicAssetsService
         protected ShootPaymentStatusSupport $paymentStatusSupport,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected MediaStorage $mediaStorage,
-        protected DeliveryMediaOrderService $deliveryMediaOrderService
+        protected DeliveryMediaOrderService $deliveryMediaOrderService,
+        protected ?IguideOfflineViewerService $iguideOfflineViewerService = null
     ) {
     }
 
@@ -63,25 +65,53 @@ class ShootPublicAssetsService
         $videoUrl = $this->resolveTypedVideoUrl($tourLinks, $type);
         $videoThumbnailUrl = $this->resolveVideoThumbnailUrl($videoUrl);
 
-        $brandedIguideUrl = $this->firstFilled(
-            $shoot->iguide_tour_url,
-            $tourLinks['iguide_branded'] ?? null,
-            $tourLinks['iGuide'] ?? null
+        // A manually published branded URL takes precedence over the provider
+        // mirror on the shoot. A delivered, audience-attested uploaded package
+        // is the most explicit source and becomes the branded or MLS viewer
+        // without exposing the private ZIP itself.
+        $explicitBrandedIguideUrl = $this->normalizePublicTourUrl($tourLinks['iguide_branded'] ?? null);
+        $providerBrandedIguideUrl = $this->normalizePublicTourUrl($shoot->iguide_tour_url);
+        $legacyBrandedIguideUrl = $this->firstFilled(
+            $this->normalizePublicTourUrl($tourLinks['iGuide'] ?? null),
+            $this->normalizePublicTourUrl($tourLinks['iguide'] ?? null)
         );
-        $iguideMlsUrl = $this->firstFilled($tourLinks['iguide_mls'] ?? null);
+        $brandedIguideUrl = $this->firstFilled(
+            $explicitBrandedIguideUrl,
+            $providerBrandedIguideUrl,
+            $legacyBrandedIguideUrl
+        );
+        $brandedIguideSource = match (true) {
+            $explicitBrandedIguideUrl !== null && $explicitBrandedIguideUrl === $providerBrandedIguideUrl => 'provider_fetched',
+            $explicitBrandedIguideUrl !== null => 'tour_links',
+            $providerBrandedIguideUrl !== null => 'provider_fetched',
+            $legacyBrandedIguideUrl !== null => 'legacy_tour_links',
+            default => null,
+        };
+        $iguideMlsUrl = $this->normalizePublicTourUrl($tourLinks['iguide_mls'] ?? null);
         if ($iguideMlsUrl !== null && in_array($iguideMlsUrl, array_filter([
-            $shoot->iguide_tour_url,
-            $tourLinks['iguide_branded'] ?? null,
-            $tourLinks['iGuide'] ?? null,
+            $this->normalizePublicTourUrl($shoot->iguide_tour_url),
+            $this->normalizePublicTourUrl($tourLinks['iguide_branded'] ?? null),
+            $this->normalizePublicTourUrl($tourLinks['iGuide'] ?? null),
+            $this->normalizePublicTourUrl($tourLinks['iguide'] ?? null),
         ]), true)) {
             // Historical iGUIDE syncs copied the branded URL into iguide_mls.
             // Treat an identical value as unverified and fail closed.
             $iguideMlsUrl = null;
         }
         $iguideMlsSource = $tourLinks['iguide_mls_source'] ?? null;
-        if ($iguideMlsUrl !== null && is_string($iguideMlsSource) && $iguideMlsSource !== 'unbranded_url') {
+        if ($iguideMlsUrl !== null
+            && is_string($iguideMlsSource)
+            && ! in_array($iguideMlsSource, ['unbranded_url', 'manual', 'manual_url'], true)) {
             // A provenance marker exists but does not attest an unbranded source.
             $iguideMlsUrl = null;
+        }
+        $resolvedMlsSource = $iguideMlsUrl === null
+            ? null
+            : ($iguideMlsSource === 'unbranded_url' ? 'provider_unbranded' : 'tour_links_unbranded');
+        if ($iguideMlsUrl === null) {
+            unset($tourLinks['iguide_mls'], $tourLinks['iguide_mls_source']);
+        } else {
+            $tourLinks['iguide_mls'] = $iguideMlsUrl;
         }
 
         $matterportBrandedUrl = $this->firstFilled(
@@ -97,7 +127,31 @@ class ShootPublicAssetsService
         }
 
         $isBranded = $type === 'branded';
-        $iguideUrl = $isBranded ? ($brandedIguideUrl ?? $iguideMlsUrl) : $iguideMlsUrl;
+        $offlineViewer = ($this->iguideOfflineViewerService ?? app(IguideOfflineViewerService::class))
+            ->issuePublicViewerLinkIfEligible($shoot, $isBranded ? 'branded' : 'mls');
+        if ($offlineViewer !== null) {
+            $iguideUrl = $offlineViewer['url'];
+            $iguideSource = 'published_offline_package';
+            $iguideExpiresAt = $offlineViewer['expires_at'];
+        } else {
+            $iguideUrl = $isBranded ? ($brandedIguideUrl ?? $iguideMlsUrl) : $iguideMlsUrl;
+            $iguideSource = $isBranded
+                ? ($brandedIguideUrl !== null ? $brandedIguideSource : $resolvedMlsSource)
+                : $resolvedMlsSource;
+            $iguideExpiresAt = null;
+        }
+        $iguideInlineUrl = $offlineViewer !== null
+            ? $iguideUrl
+            : $this->resolveIguideInlineUrl($shoot, $iguideUrl, $iguideSource, $isBranded);
+
+        // Canonicalize the response slots as well as the top-level aliases.
+        // The dedicated /tour/3d redirect reads tour_links first; leaving a
+        // stale provider/manual value there would make it open a different
+        // viewer from the iGUIDE section on the property tour page.
+        unset($tourLinks['iguide_branded'], $tourLinks['iGuide'], $tourLinks['iguide']);
+        if ($isBranded && $iguideUrl !== null) {
+            $tourLinks['iguide_branded'] = $iguideUrl;
+        }
 
         // Do not return branded 3D destinations inside MLS/generic payloads.
         // zillow_3d has no unbranded equivalent and neither the MLS tour pages
@@ -111,12 +165,33 @@ class ShootPublicAssetsService
                 $tourLinks['iguide'],
                 $tourLinks['matterport_branded'],
                 $tourLinks['matterport'],
-                $tourLinks['zillow_3d']
+                $tourLinks['zillow_3d'],
+                $tourLinks['cubicasa_branded'],
+                $tourLinks['cubicasa'],
+                $tourLinks['branded'],
+                $tourLinks['video_branded'],
+                $tourLinks['video_link'],
+                $tourLinks['realtor_client_id'],
+                $tourLinks['realtorClientId'],
+                $tourLinks['realtor_info']
             );
-            if ($iguideMlsUrl === null) {
+            $tourLinks['embeds'] = $this->sanitizeUnbrandedEmbeds($tourLinks['embeds'] ?? null);
+            if ($tourLinks['embeds'] === []) {
+                unset($tourLinks['embeds'], $tourLinks['featured_embed'], $tourLinks['featured_embed_id']);
+            } else {
+                $validEmbedIds = array_column($tourLinks['embeds'], 'id');
+                $featuredEmbedId = $tourLinks['featured_embed_id'] ?? $tourLinks['featured_embed'] ?? null;
+                if (! is_string($featuredEmbedId) || ! in_array($featuredEmbedId, $validEmbedIds, true)) {
+                    unset($tourLinks['featured_embed'], $tourLinks['featured_embed_id']);
+                }
+            }
+            if ($iguideUrl === null) {
                 unset($tourLinks['iguide_mls'], $tourLinks['iguide_mls_source']);
             } else {
-                $tourLinks['iguide_mls'] = $iguideMlsUrl;
+                $tourLinks['iguide_mls'] = $iguideUrl;
+                $tourLinks['iguide_mls_source'] = $offlineViewer !== null
+                    ? 'uploaded_offline_package'
+                    : ($iguideMlsSource ?: 'manual');
             }
         }
 
@@ -124,6 +199,12 @@ class ShootPublicAssetsService
         $assets['property_details'] = $propertyDetails;
         $assets['iguide_tour_url'] = $iguideUrl;
         $assets['iguide_url'] = $iguideUrl;
+        $assets['iguide_viewer'] = [
+            'source' => $iguideSource,
+            'inline_url' => $iguideInlineUrl,
+            'open_url' => $iguideUrl,
+            'expires_at' => $iguideExpiresAt,
+        ];
         $assets['iguide_floorplans'] = $shoot->iguide_floorplans;
         // Prefer localized floorplan files (with generated preview images) so the tour
         // shows real previews. Fall back to the iGUIDE JSON (external URLs) when no local
@@ -138,6 +219,13 @@ class ShootPublicAssetsService
         $assets['tour_links'] = $tourLinks;
         $assets['tour_style'] = $tourLinks['tour_style'] ?? 'default';
         $assets['show_garage'] = !empty($tourLinks['show_garage']);
+
+        if (! $isBranded) {
+            foreach (['client_name', 'client_company', 'client_email', 'client_phone', 'client_avatar'] as $identityKey) {
+                unset($assets['shoot'][$identityKey]);
+            }
+            unset($assets['branding']);
+        }
 
         if ($type === 'branded') {
             $effectiveClient = $this->resolveEffectiveBrandedClient($shoot, $tourLinks);
@@ -756,6 +844,132 @@ class ShootPublicAssetsService
         }
 
         return is_array($tourLinks) ? $tourLinks : [];
+    }
+
+    protected function normalizePublicTourUrl(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $url = trim($value);
+        if ($url === ''
+            || strlen($url) > 2048
+            || preg_match('/[\x00-\x1F\x7F]/', $url)
+            || filter_var($url, FILTER_VALIDATE_URL) === false) {
+            return null;
+        }
+
+        $parts = parse_url($url);
+        if (! is_array($parts)
+            || ! in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true)
+            || empty($parts['host'])
+            || isset($parts['user'])
+            || isset($parts['pass'])) {
+            return null;
+        }
+
+        return $url;
+    }
+
+    /** @return list<array{id:string,title:string,mls:string}> */
+    protected function sanitizeUnbrandedEmbeds(mixed $embeds): array
+    {
+        if (! is_array($embeds)) {
+            return [];
+        }
+
+        return collect($embeds)
+            ->filter(static fn (mixed $embed): bool => is_array($embed))
+            ->map(function (array $embed, int|string $index): ?array {
+                $mls = $embed['mls'] ?? $embed['mls_embed'] ?? null;
+                if (! is_string($mls) || trim($mls) === '') {
+                    return null;
+                }
+
+                $id = $embed['id'] ?? 'embed-' . $index;
+                $title = $embed['title'] ?? 'Embed ' . ((int) $index + 1);
+
+                return [
+                    'id' => is_string($id) && trim($id) !== '' ? trim($id) : 'embed-' . $index,
+                    'title' => is_string($title) && trim($title) !== '' ? trim($title) : 'Embed ' . ((int) $index + 1),
+                    'mls' => trim($mls),
+                ];
+            })
+            ->filter()
+            ->values()
+            ->all();
+    }
+
+    protected function resolveIguideInlineUrl(
+        Shoot $shoot,
+        ?string $openUrl,
+        ?string $source,
+        bool $isBranded
+    ): ?string {
+        if ($openUrl === null) {
+            return null;
+        }
+
+        if ($isBranded && $source === 'provider_fetched') {
+            $storedEmbed = $this->normalizePublicTourUrl(data_get($shoot->iguide_data, 'embedded_url'));
+            if ($storedEmbed !== null && $this->sameIguideView($openUrl, $storedEmbed)) {
+                return $this->deriveIguideEmbedUrl($storedEmbed, false) ?? $storedEmbed;
+            }
+        }
+
+        return $this->deriveIguideEmbedUrl($openUrl, ! $isBranded) ?? $openUrl;
+    }
+
+    protected function deriveIguideEmbedUrl(string $url, bool $unbranded): ?string
+    {
+        $parts = parse_url($url);
+        $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
+        if (! preg_match('/^(?:unbranded\.)?(youriguide|iguidephotos|iguideradix)\.com$/D', $host, $match)) {
+            return null;
+        }
+
+        $segments = array_values(array_filter(explode('/', trim((string) ($parts['path'] ?? ''), '/')), 'strlen'));
+        $viewPath = ($segments[0] ?? null) === 'embed' ? ($segments[1] ?? null) : ($segments[0] ?? null);
+        if (! is_string($viewPath) || $viewPath === '' || preg_match('/^[A-Za-z0-9._~-]+$/D', $viewPath) !== 1) {
+            return null;
+        }
+
+        $baseDomain = $match[1] . '.com';
+        $embedHost = $unbranded ? 'unbranded.' . $baseDomain : $host;
+        $query = [];
+        if (is_string($parts['query'] ?? null)) {
+            parse_str($parts['query'], $query);
+        }
+        $query['autostart'] = '1';
+        $query['noinitanimation'] = '1';
+        if ($unbranded) {
+            $query['unbranded'] = '1';
+            $query['nomenu'] = '1';
+            $query['nodetails'] = '1';
+        }
+
+        return 'https://' . $embedHost . '/embed/' . rawurlencode($viewPath) . '/'
+            . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    }
+
+    protected function sameIguideView(string $first, string $second): bool
+    {
+        $viewPath = static function (string $url): ?string {
+            $parts = parse_url($url);
+            $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
+            if (! preg_match('/^(?:unbranded\.)?(youriguide|iguidephotos|iguideradix)\.com$/D', $host, $hostMatch)) {
+                return null;
+            }
+            $segments = array_values(array_filter(explode('/', trim((string) ($parts['path'] ?? ''), '/')), 'strlen'));
+            $path = ($segments[0] ?? null) === 'embed' ? ($segments[1] ?? null) : ($segments[0] ?? null);
+
+            return is_string($path) && $path !== '' ? $hostMatch[1] . ':' . $path : null;
+        };
+
+        $firstView = $viewPath($first);
+
+        return $firstView !== null && hash_equals($firstView, (string) $viewPath($second));
     }
 
     protected function resolveTypedVideoUrl(array $tourLinks, string $type): ?string

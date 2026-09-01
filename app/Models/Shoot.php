@@ -99,6 +99,7 @@ class Shoot extends Model
         'mls_image_width',
         'listing_source',
         'property_details',
+        'tour_links',
         'integration_flags',
         'bright_mls_publish_status',
         'bright_mls_last_published_at',

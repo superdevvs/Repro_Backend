@@ -990,7 +990,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Shoot-specific integration actions
         Route::prefix('shoots/{shoot}')->group(function () {
             Route::post('/property/refresh', [IntegrationController::class, 'refreshPropertyDetails']);
-            Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide']);
+            Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide'])
+                ->middleware('role:admin,superadmin,editing_manager');
             Route::post('/iguide/offline-package', [IguideOfflinePackageController::class, 'store'])
                 ->middleware('role:admin,superadmin,editing_manager');
             Route::post('/iguide/offline-package/view-link', IguideOfflineViewerLinkController::class)

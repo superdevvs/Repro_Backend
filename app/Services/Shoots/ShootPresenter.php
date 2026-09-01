@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
+use App\Services\IguideDataVisibilityService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -18,7 +19,8 @@ class ShootPresenter
         protected ShootEditingAssignmentService $editingAssignmentService,
         protected DropboxWorkflowService $dropboxService,
         protected \App\Services\Media\MediaStorage $mediaStorage,
-        protected ShootClientContactVisibility $clientContactVisibility
+        protected ShootClientContactVisibility $clientContactVisibility,
+        protected IguideDataVisibilityService $iguideDataVisibility
     ) {}
 
     public function transformOperationalShoot(Shoot $shoot, bool $isClientUser): array
@@ -287,6 +289,18 @@ class ShootPresenter
             $shoot->load('payments.refunds');
         }
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
+        $requestingUser = auth()->user();
+        $visibleIguideData = $this->iguideDataVisibility->forUser($shoot->iguide_data, $requestingUser);
+        $rawOfflinePackage = data_get($shoot->iguide_data, 'manual_offline_package');
+        $visibleOfflinePackage = $this->iguideDataVisibility->canManage($requestingUser)
+            && is_array($rawOfflinePackage)
+                ? $rawOfflinePackage
+                : $this->iguideDataVisibility->safePackage($rawOfflinePackage);
+        $shoot->setAttribute('iguide_data', $visibleIguideData);
+        $shoot->setAttribute('iguide_manual_offline_package', $visibleOfflinePackage);
+        if (! $this->iguideDataVisibility->canManage($requestingUser)) {
+            $shoot->makeHidden(['iguide_property_id', 'iguide_work_order_id']);
+        }
 
         if ($shoot->isComplimentaryReshoot()) {
             $shoot->payment_status = Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED;

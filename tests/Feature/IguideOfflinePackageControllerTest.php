@@ -68,6 +68,13 @@ class IguideOfflinePackageControllerTest extends TestCase
             ->assertJsonPath('manual_offline_package.status', 'scanning')
             ->assertJsonPath('manual_offline_package.original_filename', '9137 Lakeland Valley - offline_en.zip')
             ->assertJsonPath('manual_offline_package.index_entry_path', '9137 Lakeland Valley/Index.HTML')
+            ->assertJsonPath(
+                'manual_offline_package.publication_attestation.policy',
+                'authorized_staff_official_iguide_export'
+            )
+            ->assertJsonPath('manual_offline_package.publication_attestation.version', 1)
+            ->assertJsonPath('manual_offline_package.publication_attestation.audiences', ['branded', 'mls'])
+            ->assertJsonPath('manual_offline_package.publication_attestation.attested_by', $admin->id)
             ->assertJsonPath('manual_offline_package.previous_ready.file_id', 77)
             ->assertJsonPath('iguide_data.provider_payload.work_order', 'IG-123');
 

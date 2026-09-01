@@ -189,6 +189,40 @@ class IguideWebhookControllerTest extends TestCase
         $this->assertSame('https://manual-mls.example.com/', $tourLinks['iguide_mls']);
     }
 
+    public function test_provider_webhook_preserves_the_manual_offline_package_lifecycle(): void
+    {
+        Queue::fake();
+        $package = [
+            'id' => 'upload-1',
+            'upload_id' => 'upload-1',
+            'status' => 'ready',
+            'file_id' => 42,
+            'publication_attestation' => [
+                'policy' => 'authorized_staff_official_iguide_export',
+                'version' => 1,
+                'audiences' => ['branded', 'mls'],
+                'attested_by' => 7,
+                'attested_at' => '2026-09-01T00:00:00+00:00',
+            ],
+        ];
+        $shoot = Shoot::factory()->create([
+            'iguide_work_order_id' => 'WO-TEST-1',
+            'iguide_data' => [
+                'manual_offline_package' => $package,
+                'stale_provider_value' => true,
+            ],
+        ]);
+        $this->attachIguideService($shoot);
+
+        $this->postJson('/iguide_webhook.php', $this->buildPayload())
+            ->assertOk();
+
+        $iguideData = $shoot->fresh()->iguide_data;
+        $this->assertSame($package, $iguideData['manual_offline_package']);
+        $this->assertSame('igTEST001', $iguideData['property_id']);
+        $this->assertArrayNotHasKey('stale_provider_value', $iguideData);
+    }
+
     public function test_duplicate_event_is_idempotent(): void
     {
         Queue::fake();

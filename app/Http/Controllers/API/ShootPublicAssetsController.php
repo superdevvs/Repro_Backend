@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Shoots\PropertyDescriptionPolicy;
 use App\Services\Shoots\ShootPublicAssetsService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -24,7 +25,7 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return response()->json($this->buildVisiblePublicAssets($request, $shoot, 'branded'));
+        return $this->publicAssetsResponse($this->buildVisiblePublicAssets($request, $shoot, 'branded'));
     }
 
     public function publicMls(Request $request, $shootId = null)
@@ -34,7 +35,7 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return response()->json($this->buildVisiblePublicAssets($request, $shoot, 'mls'));
+        return $this->publicAssetsResponse($this->buildVisiblePublicAssets($request, $shoot, 'mls'));
     }
 
     public function publicGenericMls(Request $request, $shootId = null)
@@ -44,7 +45,22 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'Shoot not found'], 404);
         }
 
-        return response()->json($this->buildVisiblePublicAssets($request, $shoot, 'generic-mls'));
+        return $this->publicAssetsResponse($this->buildVisiblePublicAssets($request, $shoot, 'generic-mls'));
+    }
+
+    private function publicAssetsResponse(array $assets): JsonResponse
+    {
+        $response = response()->json($assets);
+        if (filled(data_get($assets, 'iguide_viewer.expires_at'))) {
+            // The offline viewer URL is a short-lived bearer credential. Do
+            // not let a browser, service worker, or intermediary retain a JSON
+            // response whose otherwise-valid tour data contains an expired URL.
+            $response->headers->set('Cache-Control', 'no-store, private, max-age=0');
+            $response->headers->set('Pragma', 'no-cache');
+            $response->headers->set('Expires', '0');
+        }
+
+        return $response;
     }
 
     private function buildVisiblePublicAssets(Request $request, Shoot $shoot, string $type): array

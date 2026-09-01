@@ -152,6 +152,156 @@ class IguideOfflineViewerTest extends TestCase
     }
 
     #[Test]
+    public function public_branded_tours_resolve_a_ready_package_without_exposing_the_zip(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-01 00:00:00 UTC'));
+        [$shoot, $file] = $this->readyPackage();
+        $shoot->fill([
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'iguide_tour_url' => 'https://youriguide.com/provider-version/',
+        ]);
+        $shoot->tour_links = [
+            'iguide_branded' => 'https://youriguide.com/manually-entered-version/',
+        ];
+        $shoot->save();
+
+        $response = $this->getJson("/api/public/shoots/{$shoot->id}/branded");
+
+        $response->assertOk();
+        $viewerUrl = (string) $response->json('iguide_tour_url');
+        $this->assertSame($viewerUrl, $response->json('iguide_url'));
+        $this->assertSame($viewerUrl, $response->json('tour_links.iguide_branded'));
+        $this->assertSame('published_offline_package', $response->json('iguide_viewer.source'));
+        $this->assertSame($viewerUrl, $response->json('iguide_viewer.inline_url'));
+        $this->assertSame($viewerUrl, $response->json('iguide_viewer.open_url'));
+        $this->assertSame(
+            now()->addMinutes(60)->toIso8601String(),
+            $response->json('iguide_viewer.expires_at')
+        );
+        $this->assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
+        $response->assertHeader('Pragma', 'no-cache')
+            ->assertHeader('Expires', '0');
+        $this->assertMatchesRegularExpression(
+            "#/api/iguide/offline-view/{$shoot->id}/{$file->id}/[0-9]+/[a-f0-9]{64}/tour/index\.html$#",
+            rawurldecode((string) parse_url($viewerUrl, PHP_URL_PATH))
+        );
+
+        $serializedPayload = json_encode($response->json(), JSON_THROW_ON_ERROR);
+        $this->assertStringNotContainsString('offline-tour.zip', $serializedPayload);
+        $this->assertStringNotContainsString('secure/iguide-packages', $serializedPayload);
+
+        // The public bearer streams only the validated viewer member. It does
+        // not make the original private archive's download endpoint public.
+        $this->get((string) parse_url($viewerUrl, PHP_URL_PATH))->assertOk();
+        $this->get("/api/images/{$file->id}/download/original")->assertUnauthorized();
+    }
+
+    #[Test]
+    public function public_mls_tours_use_the_local_viewer_without_falling_back_to_a_branded_external_url(): void
+    {
+        [$shoot] = $this->readyPackage();
+        $shoot->fill([
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'iguide_tour_url' => 'https://youriguide.com/provider-branded/',
+        ]);
+        $shoot->tour_links = [
+            'iguide_branded' => 'https://youriguide.com/provider-branded/',
+            'iguide_mls' => 'https://unbranded.youriguide.com/provider-unbranded/',
+            'iguide_mls_source' => 'unbranded_url',
+        ];
+        $shoot->save();
+
+        $mls = $this->getJson("/api/public/shoots/{$shoot->id}/mls");
+
+        $mls->assertOk()
+            ->assertJsonPath('iguide_viewer.source', 'published_offline_package');
+        $localViewer = (string) $mls->json('iguide_tour_url');
+        $this->assertStringContainsString('/iguide/offline-view/', $localViewer);
+        $this->assertSame($localViewer, $mls->json('iguide_url'));
+        $this->assertSame($localViewer, $mls->json('tour_links.iguide_mls'));
+        $this->assertArrayNotHasKey('iguide_branded', $mls->json('tour_links'));
+
+        // Once the package ceases to be ready, the verified provider URL is
+        // used. It remains isolated from the branded provider destination.
+        $iguideData = $shoot->fresh()->iguide_data;
+        $iguideData['manual_offline_package']['status'] = 'failed';
+        $shoot->fill([
+            'iguide_data' => $iguideData,
+            'iguide_tour_url' => 'https://youriguide.com/provider-branded/',
+        ]);
+        $shoot->tour_links = [
+            'iguide_branded' => 'https://youriguide.com/provider-branded/',
+            'iguide_mls' => 'https://unbranded.youriguide.com/provider-unbranded/',
+            'iguide_mls_source' => 'unbranded_url',
+        ];
+        $shoot->save();
+        $shoot->refresh();
+        $providerMls = $this->getJson("/api/public/shoots/{$shoot->id}/mls");
+        $providerMls->assertOk()
+            ->assertJsonPath('iguide_tour_url', 'https://unbranded.youriguide.com/provider-unbranded/')
+            ->assertJsonPath('iguide_viewer.source', 'provider_unbranded');
+
+        $shoot->tour_links = [
+            'iguide_branded' => 'https://youriguide.com/provider-branded/',
+        ];
+        $shoot->save();
+
+        $withoutAttestedMlsUrl = $this->getJson("/api/public/shoots/{$shoot->id}/mls");
+        $withoutAttestedMlsUrl->assertOk()
+            ->assertJsonPath('iguide_tour_url', null)
+            ->assertJsonPath('iguide_url', null);
+        $this->assertArrayNotHasKey('iguide_branded', $withoutAttestedMlsUrl->json('tour_links'));
+        $this->assertArrayNotHasKey('iguide_mls', $withoutAttestedMlsUrl->json('tour_links'));
+    }
+
+    #[Test]
+    public function an_undelivered_public_tour_never_receives_an_offline_viewer_bearer(): void
+    {
+        [$shoot] = $this->readyPackage();
+        $shoot->update([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'iguide_tour_url' => 'https://youriguide.com/provider-branded/',
+        ]);
+
+        $response = $this->getJson("/api/public/shoots/{$shoot->id}/branded");
+
+        $response->assertOk()
+            ->assertJsonPath('iguide_tour_url', 'https://youriguide.com/provider-branded/')
+            ->assertJsonPath('iguide_viewer.source', 'provider_fetched')
+            ->assertJsonPath('iguide_viewer.expires_at', null);
+        $this->assertStringNotContainsString('/iguide/offline-view/', (string) $response->getContent());
+    }
+
+    #[Test]
+    public function the_data_migration_attests_an_existing_clean_ready_staff_upload(): void
+    {
+        [$shoot] = $this->readyPackage();
+        $iguideData = $shoot->iguide_data;
+        unset($iguideData['manual_offline_package']['publication_attestation']);
+        $shoot->update(['iguide_data' => $iguideData]);
+
+        $migration = require database_path(
+            'migrations/2026_09_01_040000_attest_existing_ready_iguide_offline_packages.php'
+        );
+        $migration->up();
+
+        $attestation = data_get($shoot->fresh()->iguide_data, 'manual_offline_package.publication_attestation');
+        $this->assertSame('authorized_staff_official_iguide_export', $attestation['policy']);
+        $this->assertSame(1, $attestation['version']);
+        $this->assertSame(['branded', 'mls'], $attestation['audiences']);
+        $this->assertTrue($attestation['backfilled']);
+
+        $migration->down();
+        $this->assertNull(data_get(
+            $shoot->fresh()->iguide_data,
+            'manual_offline_package.publication_attestation'
+        ));
+    }
+
+    #[Test]
     public function the_signed_route_isolates_html_and_still_serves_relative_assets_to_its_opaque_origin(): void
     {
         [$shoot] = $this->readyPackage([
@@ -185,10 +335,10 @@ class IguideOfflineViewerTest extends TestCase
 
         $csp = (string) $index->headers->get('Content-Security-Policy');
         $this->assertStringContainsString(
-            'sandbox allow-scripts allow-pointer-lock allow-modals allow-downloads',
+            'sandbox allow-scripts allow-pointer-lock allow-modals',
             $csp
         );
-        foreach (['allow-same-origin', 'allow-top-navigation', 'allow-forms', 'allow-popups'] as $forbiddenToken) {
+        foreach (['allow-same-origin', 'allow-top-navigation', 'allow-forms', 'allow-popups', 'allow-downloads'] as $forbiddenToken) {
             $this->assertStringNotContainsString($forbiddenToken, $csp);
         }
         $this->assertStringContainsString("default-src 'none'", $csp);
@@ -375,7 +525,11 @@ class IguideOfflineViewerTest extends TestCase
     ], ?string $wrapper = 'tour'): array
     {
         $uploader = User::factory()->admin()->create();
-        $shoot = Shoot::factory()->create();
+        $shoot = Shoot::factory()->create([
+            'total_quote' => 0,
+            'payment_status' => 'paid',
+            'bypass_paywall' => true,
+        ]);
         $uploadId = (string) Str::uuid();
         $storagePath = "secure/iguide-packages/{$shoot->id}/offline-tour.zip";
         $zipPath = tempnam(sys_get_temp_dir(), 'iguide-viewer-');
@@ -433,10 +587,19 @@ class IguideOfflineViewerTest extends TestCase
                     'upload_id' => $uploadId,
                     'status' => 'ready',
                     'file_id' => $file->id,
+                    'uploaded_by' => $uploader->id,
+                    'uploaded_at' => now()->toIso8601String(),
                     'original_filename' => 'offline-tour.zip',
                     'wrapper_directory' => $wrapper,
                     'index_entry_path' => $indexEntryPath,
                     'ready_at' => now()->toIso8601String(),
+                    'publication_attestation' => [
+                        'policy' => 'authorized_staff_official_iguide_export',
+                        'version' => 1,
+                        'audiences' => ['branded', 'mls'],
+                        'attested_by' => $uploader->id,
+                        'attested_at' => now()->toIso8601String(),
+                    ],
                 ],
             ],
         ]);
@@ -461,10 +624,10 @@ class IguideOfflineViewerTest extends TestCase
     private function assertOpaqueDocumentPolicy(string $policy): void
     {
         $this->assertStringContainsString(
-            'sandbox allow-scripts allow-pointer-lock allow-modals allow-downloads',
+            'sandbox allow-scripts allow-pointer-lock allow-modals',
             $policy
         );
-        foreach (['allow-same-origin', 'allow-top-navigation', 'allow-forms', 'allow-popups'] as $forbiddenToken) {
+        foreach (['allow-same-origin', 'allow-top-navigation', 'allow-forms', 'allow-popups', 'allow-downloads'] as $forbiddenToken) {
             $this->assertStringNotContainsString($forbiddenToken, $policy);
         }
         $this->assertStringContainsString("default-src 'none'", $policy);

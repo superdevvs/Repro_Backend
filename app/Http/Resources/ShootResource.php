@@ -5,6 +5,7 @@ namespace App\Http\Resources;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use App\Services\IguideDataVisibilityService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -113,6 +114,13 @@ class ShootResource extends JsonResource
         $requestingUser = $request->user();
         $requestingRole = strtolower((string) ($requestingUser?->role ?? ''));
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
+        $iguideVisibility = app(IguideDataVisibilityService::class);
+        $canManageIguide = $iguideVisibility->canManage($requestingUser);
+        $visibleIguideData = $iguideVisibility->forUser($this->iguide_data, $requestingUser);
+        $rawOfflinePackage = data_get($this->iguide_data, 'manual_offline_package');
+        $visibleOfflinePackage = $canManageIguide && is_array($rawOfflinePackage)
+            ? $rawOfflinePackage
+            : $iguideVisibility->safePackage($rawOfflinePackage);
         $isOwningClient = $requestingRole === 'client'
             && $requestingUser
             && (int) $requestingUser->id === (int) $this->client_id;
@@ -546,9 +554,10 @@ class ShootResource extends JsonResource
             'iguide_tour_url' => $this->iguide_tour_url,
             'iguide_floorplans' => $this->iguide_floorplans ?? [],
             'iguide_last_synced_at' => $this->iguide_last_synced_at?->toIso8601String(),
-            'iguide_property_id' => $this->iguide_property_id,
-            'iguide_work_order_id' => $this->iguide_work_order_id ?? null,
-            'iguide_data' => is_array($this->iguide_data) ? $this->iguide_data : null,
+            'iguide_property_id' => $this->when($canManageIguide, $this->iguide_property_id),
+            'iguide_work_order_id' => $this->when($canManageIguide, $this->iguide_work_order_id ?? null),
+            'iguide_data' => $visibleIguideData,
+            'iguide_manual_offline_package' => $visibleOfflinePackage,
             'cubicasa_order_id' => $this->cubicasa_order_id ?? null,
             'cubicasa_external_id' => $this->cubicasa_external_id ?? null,
             'cubicasa_status' => $this->cubicasa_status ?? null,

@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Models\Shoot;
+use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use App\Services\LinkPreview\ImageSourceLoader;
 use App\Services\LinkPreview\LinkPreviewService;
@@ -107,6 +108,83 @@ class LinkPreviewComplianceTest extends TestCase
         $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, 'mls');
 
         $this->assertSame('https://youriguide.com/unbranded_4821/', $payload['iguide_tour_url']);
+        $this->assertSame(
+            'https://unbranded.youriguide.com/embed/unbranded_4821/?autostart=1&noinitanimation=1&unbranded=1&nomenu=1&nodetails=1',
+            $payload['iguide_viewer']['inline_url']
+        );
+        $this->assertSame($payload['iguide_tour_url'], $payload['iguide_viewer']['open_url']);
+    }
+
+    #[Test]
+    public function provider_branded_payload_uses_the_matching_stored_embed_url(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'iguide_tour_url' => 'https://youriguide.com/provider-view/?accessToken=secret',
+            'iguide_data' => [
+                'embedded_url' => 'https://youriguide.com/embed/provider-view/?accessToken=secret',
+            ],
+        ]);
+        $shoot->tour_links = [
+            'iguide_branded' => 'https://youriguide.com/provider-view/?accessToken=secret',
+        ];
+        $shoot->save();
+
+        $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, 'branded');
+
+        $this->assertSame('provider_fetched', $payload['iguide_viewer']['source']);
+        $this->assertSame(
+            'https://youriguide.com/provider-view/?accessToken=secret',
+            $payload['iguide_viewer']['open_url']
+        );
+        $this->assertSame(
+            'https://youriguide.com/embed/provider-view/?accessToken=secret&autostart=1&noinitanimation=1',
+            $payload['iguide_viewer']['inline_url']
+        );
+    }
+
+    #[Test]
+    public function branded_payloads_prefer_a_manually_published_iguide_url_over_the_provider_mirror(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'iguide_tour_url' => 'https://youriguide.com/provider-version/',
+        ]);
+        $shoot->tour_links = [
+            'iguide_branded' => 'https://custom-tour.example/manual-version/',
+        ];
+        $shoot->save();
+
+        $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, 'branded');
+
+        $this->assertSame('https://custom-tour.example/manual-version/', $payload['iguide_tour_url']);
+        $this->assertSame($payload['iguide_tour_url'], $payload['iguide_url']);
+        $this->assertSame($payload['iguide_tour_url'], $payload['tour_links']['iguide_branded']);
+        $this->assertSame('tour_links', $payload['iguide_viewer']['source']);
+        $this->assertSame($payload['iguide_tour_url'], $payload['iguide_viewer']['inline_url']);
+        $this->assertSame($payload['iguide_tour_url'], $payload['iguide_viewer']['open_url']);
+        $this->assertNull($payload['iguide_viewer']['expires_at']);
+    }
+
+    #[Test]
+    public function public_payloads_discard_non_http_iguide_destinations(): void
+    {
+        $shoot = Shoot::factory()->create([
+            'iguide_tour_url' => 'javascript:alert(1)',
+        ]);
+        $shoot->tour_links = [
+            'iguide_branded' => 'data:text/html,branded',
+            'iguide_mls' => 'file:///private/unbranded.html',
+            'iguide_mls_source' => 'manual',
+        ];
+        $shoot->save();
+
+        foreach (['branded', 'mls'] as $type) {
+            $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, $type);
+
+            $this->assertNull($payload['iguide_tour_url']);
+            $this->assertNull($payload['iguide_url']);
+            $this->assertArrayNotHasKey('iguide_branded', $payload['tour_links']);
+            $this->assertArrayNotHasKey('iguide_mls', $payload['tour_links']);
+        }
     }
 
     #[Test]
@@ -124,6 +202,58 @@ class LinkPreviewComplianceTest extends TestCase
             $this->assertStringNotContainsStringIgnoringCase('R/E Pro', $copy);
             $this->assertStringNotContainsStringIgnoringCase('REPRO', $copy);
             $this->assertStringNotContainsStringIgnoringCase('Pro Photos', $copy);
+        }
+    }
+
+    #[Test]
+    public function unbranded_asset_payloads_strip_client_identity_and_branded_embed_variants(): void
+    {
+        $client = User::factory()->create([
+            'name' => 'Agent Identity',
+            'company_name' => 'Brokerage Identity',
+            'email' => 'agent-identity@example.test',
+        ]);
+        $shoot = Shoot::factory()->create(['client_id' => $client->id]);
+        $shoot->tour_links = [
+            'realtor_client_id' => $client->id,
+            'realtor_info' => 'Agent Identity, Brokerage Identity',
+            'embeds' => [
+                [
+                    'id' => 'branded-only',
+                    'title' => 'Branded only',
+                    'branded' => 'https://branded.example.test/tour',
+                    'url' => 'https://legacy-branded.example.test/tour',
+                ],
+                [
+                    'id' => 'both',
+                    'title' => 'MLS-safe',
+                    'branded_embed' => '<iframe src="https://branded.example.test"></iframe>',
+                    'mls_embed' => '<iframe src="https://mls.example.test"></iframe>',
+                ],
+            ],
+            'featured_embed_id' => 'both',
+        ];
+        $shoot->save();
+
+        foreach (['mls', 'generic-mls'] as $type) {
+            $payload = $this->makeAssets()->buildTypedPublicAssets($shoot, $type);
+
+            foreach (['client_name', 'client_company', 'client_email', 'client_phone', 'client_avatar'] as $key) {
+                $this->assertArrayNotHasKey($key, $payload['shoot']);
+            }
+            foreach (['realtor_client_id', 'realtor_info'] as $key) {
+                $this->assertArrayNotHasKey($key, $payload['tour_links']);
+            }
+            $this->assertSame([[
+                'id' => 'both',
+                'title' => 'MLS-safe',
+                'mls' => '<iframe src="https://mls.example.test"></iframe>',
+            ]], $payload['tour_links']['embeds']);
+            $this->assertSame($payload['tour_links']['embeds'], $payload['embeds']);
+            $this->assertSame('both', $payload['tour_links']['featured_embed_id']);
+            $this->assertStringNotContainsString('branded.example.test', json_encode($payload, JSON_THROW_ON_ERROR));
+            $this->assertStringNotContainsString('Agent Identity', json_encode($payload, JSON_THROW_ON_ERROR));
+            $this->assertStringNotContainsString('Brokerage Identity', json_encode($payload, JSON_THROW_ON_ERROR));
         }
     }
 

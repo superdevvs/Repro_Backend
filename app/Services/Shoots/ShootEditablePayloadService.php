@@ -529,7 +529,17 @@ class ShootEditablePayloadService
             if (is_string($currentTourLinks)) {
                 $currentTourLinks = json_decode($currentTourLinks, true) ?? [];
             }
-            $shoot->tour_links = array_merge($currentTourLinks, $validated['tour_links']);
+            $submittedTourLinks = $validated['tour_links'];
+            // Provenance is server-owned. Entering a URL in the dedicated MLS
+            // slot is an explicit admin attestation that it is the unbranded
+            // destination; callers cannot forge provider provenance separately.
+            unset($submittedTourLinks['iguide_mls_source']);
+            if (array_key_exists('iguide_mls', $submittedTourLinks)) {
+                $submittedTourLinks['iguide_mls_source'] = filled($submittedTourLinks['iguide_mls'])
+                    ? 'manual'
+                    : null;
+            }
+            $shoot->tour_links = array_merge($currentTourLinks, $submittedTourLinks);
         }
 
         if (array_key_exists('shoot_notes', $validated)) {

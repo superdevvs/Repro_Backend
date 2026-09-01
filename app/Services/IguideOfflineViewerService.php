@@ -4,11 +4,13 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\User;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\HeaderUtils;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\Mime\MimeTypes;
 use ZipArchive;
 
@@ -54,6 +56,45 @@ class IguideOfflineViewerService
             'expires_at' => $expiresAt->toIso8601String(),
             'file_id' => (int) $file->getKey(),
         ];
+    }
+
+    /**
+     * Issue a viewer link only when the shoot still points at a valid, clean
+     * ready package. Public tour payloads use this best-effort variant so a
+     * stale lifecycle pointer cannot make the rest of a property tour fail.
+     *
+     * @return array{url:string,expires_at:string,file_id:int}|null
+     */
+    public function issueViewerLinkIfReady(Shoot $shoot): ?array
+    {
+        try {
+            return $this->issueViewerLink($shoot);
+        } catch (HttpExceptionInterface $exception) {
+            if ($exception->getStatusCode() === 404) {
+                return null;
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * Public pages may publish only a delivered/admin-verified package whose
+     * upload lifecycle explicitly attests the requested audience.
+     *
+     * @return array{url:string,expires_at:string,file_id:int}|null
+     */
+    public function issuePublicViewerLinkIfEligible(Shoot $shoot, string $audience): ?array
+    {
+        if (! in_array($audience, ['branded', 'mls'], true) || ! $this->isPubliclyReleased($shoot)) {
+            return null;
+        }
+
+        if (! $this->hasPublicationAttestation($shoot, $audience)) {
+            return null;
+        }
+
+        return $this->issueViewerLinkIfReady($shoot);
     }
 
     public function streamAsset(
@@ -435,7 +476,7 @@ HTML;
         $ancestorSources = implode(' ', ["'self'", ...$frameAncestors]);
 
         return implode('; ', [
-            'sandbox allow-scripts allow-pointer-lock allow-modals allow-downloads',
+            'sandbox allow-scripts allow-pointer-lock allow-modals',
             "default-src 'none'",
             "base-uri 'none'",
             "object-src 'none'",
@@ -519,6 +560,52 @@ HTML;
         }
 
         abort(404, 'The iGUIDE package is not available.');
+    }
+
+    private function isPubliclyReleased(Shoot $shoot): bool
+    {
+        if ($shoot->admin_verified_at !== null) {
+            return true;
+        }
+
+        $releasedStatuses = [
+            Shoot::STATUS_DELIVERED,
+            'ready_for_client',
+            'admin_verified',
+            'workflow_completed',
+            'client_delivered',
+            'finalized',
+            'finalised',
+        ];
+
+        return in_array(strtolower((string) $shoot->status), $releasedStatuses, true)
+            || in_array(strtolower((string) $shoot->workflow_status), $releasedStatuses, true);
+    }
+
+    private function hasPublicationAttestation(Shoot $shoot, string $audience): bool
+    {
+        $lifecycle = data_get($shoot->iguide_data, 'manual_offline_package');
+        if (! is_array($lifecycle) || ($lifecycle['status'] ?? null) !== 'ready') {
+            return false;
+        }
+
+        $attestation = $lifecycle['publication_attestation'] ?? null;
+        if (! is_array($attestation)
+            || ($attestation['policy'] ?? null) !== 'authorized_staff_official_iguide_export'
+            || (int) ($attestation['version'] ?? 0) !== 1
+            || ! in_array($audience, (array) ($attestation['audiences'] ?? []), true)
+            || ! is_numeric($attestation['attested_by'] ?? null)
+            || ! filled($attestation['attested_at'] ?? null)) {
+            return false;
+        }
+
+        $actor = User::withTrashed()->find((int) $attestation['attested_by']);
+        $role = strtolower(str_replace(['_', '-', ' '], '', (string) ($actor?->role ?? '')));
+        if (! in_array($role, ['admin', 'superadmin', 'editingmanager'], true)) {
+            return false;
+        }
+
+        return true;
     }
 
     private function hasValidSignature(int $shootId, int $fileId, int $expires, string $provided): bool

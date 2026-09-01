@@ -253,6 +253,17 @@ class IguideOfflinePackageService
                 'uploaded_by' => $user->getKey(),
                 'uploaded_at' => now()->toIso8601String(),
                 'queued_at' => now()->toIso8601String(),
+                // Uploading an official offline export is an explicit publishing
+                // decision by an authorized integration manager. The audience
+                // list is persisted so MLS publication is never inferred merely
+                // from an antivirus result.
+                'publication_attestation' => [
+                    'policy' => 'authorized_staff_official_iguide_export',
+                    'version' => 1,
+                    'audiences' => ['branded', 'mls'],
+                    'attested_by' => $user->getKey(),
+                    'attested_at' => now()->toIso8601String(),
+                ],
                 'error' => null,
             ];
             if ($previousReady !== null) {

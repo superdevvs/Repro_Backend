@@ -171,7 +171,15 @@ class IguideService
 
         // Persist a slimmed-down structured payload (no large blobs) for the UI.
         if (Schema::hasColumn('shoots', 'iguide_data')) {
-            $shoot->iguide_data = $this->buildIguideDataPayload($iguideData);
+            $existingIguideData = is_array($shoot->iguide_data) ? $shoot->iguide_data : [];
+            $providerPayload = $this->buildIguideDataPayload($iguideData);
+            // Provider sync/webhook data and a manually uploaded offline export
+            // have independent lifecycles. A late provider event must never erase
+            // the current private package pointer or its publication attestation.
+            if (is_array($existingIguideData['manual_offline_package'] ?? null)) {
+                $providerPayload['manual_offline_package'] = $existingIguideData['manual_offline_package'];
+            }
+            $shoot->iguide_data = $providerPayload;
         }
 
         // Auto-fill the managed iGuide Branded / MLS link slots in tour_links so
