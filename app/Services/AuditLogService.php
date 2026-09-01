@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 
 /**
  * Reusable Audit_Log facade (Req 12.9, 16.7, 18.4, 19.10).
@@ -52,7 +53,7 @@ class AuditLogService
             'target_type' => $targetType,
             'target_id' => $targetId,
             'event_type' => $action,
-            'title' => null,
+            'title' => Str::of($action)->replace(['.', '_'], ' ')->title()->toString(),
             'description' => null,
             'metadata' => $metadata,
             'occurred_at' => now(),

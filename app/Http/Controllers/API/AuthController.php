@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use App\Models\ServiceGroup;
 use App\Models\User;
 use App\Models\UserActivityLog;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -19,6 +20,7 @@ use App\Services\Users\DashboardOnboardingService;
 use App\Services\Users\EmailHealthService;
 use App\Services\Users\AccountCreatedNotificationService;
 use App\Services\Users\PhotographerAddressPolicy;
+use App\Services\Users\TwoFactorAuthenticationService;
 use App\Services\Legal\LegalDocumentService;
 
 class AuthController extends Controller
@@ -26,16 +28,19 @@ class AuthController extends Controller
     protected $mailService;
     protected $automationService;
     protected $emailHealthService;
+    protected $twoFactorAuthentication;
 
     public function __construct(
         MailService $mailService,
         AutomationService $automationService,
-        EmailHealthService $emailHealthService
+        EmailHealthService $emailHealthService,
+        TwoFactorAuthenticationService $twoFactorAuthentication
     )
     {
         $this->mailService = $mailService;
         $this->automationService = $automationService;
         $this->emailHealthService = $emailHealthService;
+        $this->twoFactorAuthentication = $twoFactorAuthentication;
     }
 
     public function register(Request $request)
@@ -112,7 +117,19 @@ class AuthController extends Controller
             );
         }
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $newToken = $user->createToken('auth_token');
+        $token = $newToken->plainTextToken;
+        $this->recordUserActivity(
+            $user,
+            'login',
+            'Signed in',
+            'A new dashboard session was created after registration.',
+            [
+                'token_id' => $newToken->accessToken->getKey(),
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]
+        );
 
         $notificationDelivery = app(AccountCreatedNotificationService::class)->dispatch($user, [
             'actor' => $user,
@@ -134,7 +151,8 @@ class AuthController extends Controller
     {
         $request->validate([
             'email' => 'required|email',
-            'password' => 'required'
+            'password' => 'required',
+            'two_factor_code' => 'nullable|string|max:32',
         ]);
 
         $email = strtolower(trim($request->email));
@@ -150,7 +168,7 @@ class AuthController extends Controller
         }
 
         if (!$user->isAccountEligibleForAuthentication()) {
-            $user->revokeAllApiTokens();
+            $user->tokens()->delete();
 
             Log::warning('[Auth] Login blocked for inactive account', [
                 'email' => $email,
@@ -164,7 +182,33 @@ class AuthController extends Controller
             ], 403);
         }
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        if ($user->password_reset_required) {
+            $user->tokens()->delete();
+
+            return response()->json([
+                'message' => 'Reset your password before signing in to this restored account.',
+                'password_reset_required' => true,
+            ], 403);
+        }
+
+        if ($this->twoFactorAuthentication->enabled($user)) {
+            $twoFactorCode = (string) $request->input('two_factor_code', '');
+            if ($twoFactorCode === '') {
+                return response()->json([
+                    'message' => 'Enter the code from your authenticator app.',
+                    'two_factor_required' => true,
+                ], 202);
+            }
+
+            if (!$this->twoFactorAuthentication->verifyUserCode($user, $twoFactorCode)) {
+                throw ValidationException::withMessages([
+                    'two_factor_code' => ['The authentication or recovery code is invalid.'],
+                ]);
+            }
+        }
+
+        $newToken = $user->createToken('auth_token');
+        $token = $newToken->plainTextToken;
 
         // Re-evaluate dashboard onboarding eligibility on login so existing users
         // are (re)enrolled when a role's onboarding version is bumped, without
@@ -182,6 +226,18 @@ class AuthController extends Controller
         }
 
         Log::info('[Auth] Login successful', ['email' => $email, 'user_id' => $user->id]);
+        $this->recordUserActivity(
+            $user,
+            'login',
+            'Signed in',
+            'A dashboard session was created.',
+            [
+                'token_id' => $newToken->accessToken->getKey(),
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'two_factor_verified' => $this->twoFactorAuthentication->enabled($user),
+            ]
+        );
 
         return response()->json([
             'message' => 'Login successful',
@@ -192,7 +248,21 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+        $currentToken = $user->currentAccessToken();
+        $tokenId = $currentToken?->getKey();
+        $currentToken?->delete();
+        $this->recordUserActivity(
+            $user,
+            'logout',
+            'Signed out',
+            'The current dashboard session was ended.',
+            [
+                'token_id' => $tokenId,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]
+        );
 
         return response()->json([
             'message' => 'Logged out successfully'
@@ -285,6 +355,10 @@ class AuthController extends Controller
             'termsAccepted' => 'sometimes|boolean',
             'travel_range' => 'nullable|integer|min:0|max:500',
             'travel_range_unit' => 'nullable|string|in:miles,km',
+            'specialties' => 'sometimes|array|max:100',
+            'specialties.*' => 'string|max:255',
+            'property_types' => 'sometimes|array|max:100',
+            'property_types.*' => 'string|max:100',
             // A photographer's own default HDR bracket size. This only seeds a new
             // bracket-capable shoot-service assignment; changing it later never rewrites
             // an assignment that already recorded its own size.
@@ -306,6 +380,12 @@ class AuthController extends Controller
             'preferences.notifications.shootReminders' => 'nullable|boolean',
             'preferences.notifications.paymentReminders' => 'nullable|boolean',
             'preferences.notifications.weeklySummaries' => 'nullable|boolean',
+            'preferences.marketingEmails' => 'nullable|boolean',
+            'preferences.notificationSettings' => 'nullable|array',
+            'preferences.notificationSettings.email' => 'nullable|boolean',
+            'preferences.notificationSettings.sms' => 'nullable|boolean',
+            'preferences.notificationSettings.push' => 'nullable|boolean',
+            'preferences.notificationSettings.marketing' => 'nullable|boolean',
             'email_warning_override' => 'sometimes|boolean',
         ], $onboardingRules));
 
@@ -372,6 +452,14 @@ class AuthController extends Controller
             $metadata['travel_range_unit'] = $validated['travel_range_unit'];
             unset($validated['travel_range_unit']);
         }
+        if (array_key_exists('specialties', $validated)) {
+            $metadata['specialties'] = array_values(array_unique($validated['specialties']));
+            unset($validated['specialties']);
+        }
+        if (array_key_exists('property_types', $validated)) {
+            $metadata['property_types'] = array_values(array_unique($validated['property_types']));
+            unset($validated['property_types']);
+        }
 
         if (array_key_exists('about', $validated)) {
             $metadata['about'] = $validated['about'];
@@ -380,6 +468,7 @@ class AuthController extends Controller
 
         if ($passwordChanged) {
             $validated['password'] = $validated['new_password'];
+            $validated['password_changed_at'] = now();
         }
         unset($validated['current_password'], $validated['new_password'], $validated['new_password_confirmation']);
         unset($validated['email_warning_override']);
@@ -394,7 +483,53 @@ class AuthController extends Controller
 
         $user->fill($validated);
         $user->metadata = $metadata;
-        $user->save();
+        $reauthRequired = $emailChanged || $passwordChanged;
+        DB::transaction(function () use ($user, $reauthRequired, $passwordChanged, $previousEmail): void {
+            $user->save();
+            if ($reauthRequired) {
+                // Credential persistence and direct token deletion are one
+                // atomic security decision. Never use the model's best-effort
+                // revocation helper for a password or email change.
+                $user->tokens()->delete();
+            }
+            if ($passwordChanged) {
+                DB::table('password_reset_tokens')
+                    ->whereIn('email', array_values(array_unique([
+                        $previousEmail,
+                        strtolower((string) $user->email),
+                    ])))
+                    ->delete();
+            }
+        });
+        $savedChanges = collect(array_keys($user->getChanges()))
+            ->reject(fn (string $field) => in_array($field, ['password', 'remember_token', 'updated_at'], true))
+            ->values()
+            ->all();
+
+        if ($passwordChanged) {
+            $this->recordUserActivity(
+                $user,
+                'password_changed',
+                'Password changed',
+                'The account password was changed and all dashboard sessions were signed out.',
+                [
+                    'ip_address' => $request->ip(),
+                    'user_agent' => $request->userAgent(),
+                ]
+            );
+        } elseif ($savedChanges !== []) {
+            $this->recordUserActivity(
+                $user,
+                'profile_updated',
+                'Profile updated',
+                'Account profile or preferences were updated.',
+                [
+                    'fields' => $savedChanges,
+                    'ip_address' => $request->ip(),
+                    'user_agent' => $request->userAgent(),
+                ]
+            );
+        }
 
         if ($emailChanged && $emailHealthMutation && $emailHealthMutation['warning_override']) {
             $this->recordUserActivity(
@@ -474,11 +609,6 @@ class AuthController extends Controller
 
             $user->metadata = $metadata;
             $user->save();
-        }
-
-        $reauthRequired = $emailChanged || $passwordChanged;
-        if ($reauthRequired) {
-            $request->user()?->currentAccessToken()?->delete();
         }
 
         Log::info('[Auth] Profile updated', ['user_id' => $user->id, 'fields' => array_keys($validated)]);
@@ -739,11 +869,25 @@ class AuthController extends Controller
             ], 404);
         }
 
-        $user->password = Hash::make($validated['password']);
-        $user->save();
+        DB::transaction(function () use ($user, $validated, $email): void {
+            $user->password = $validated['password'];
+            $user->password_changed_at = now();
+            $user->password_reset_required = false;
+            $user->save();
+            $user->tokens()->delete();
+            DB::table('password_reset_tokens')->where('email', $email)->delete();
+        });
 
-        // Delete the used token
-        \DB::table('password_reset_tokens')->where('email', $email)->delete();
+        $this->recordUserActivity(
+            $user,
+            'password_reset',
+            'Password reset',
+            'The account password was reset using an emailed recovery link. All dashboard sessions were signed out.',
+            [
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]
+        );
 
         // Trigger automation event
         $this->automationService->handleEvent('PASSWORD_RESET', $this->buildUserContext($user));
@@ -847,6 +991,14 @@ class AuthController extends Controller
         ?string $description = null,
         array $metadata = []
     ): void {
-        UserActivityLog::record($user, $eventType, $title, $description, null, $metadata);
+        try {
+            UserActivityLog::record($user, $eventType, $title, $description, null, $metadata);
+        } catch (\Throwable $exception) {
+            Log::warning('Unable to persist authentication activity.', [
+                'user_id' => $user->getKey(),
+                'event_type' => $eventType,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 }

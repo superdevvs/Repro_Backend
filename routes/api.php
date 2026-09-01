@@ -3,6 +3,7 @@
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\API\ProfileSecurityController;
 use App\Http\Controllers\API\ShootIssuesController;
 use App\Http\Controllers\API\ShootMediaController;
 use App\Http\Controllers\API\ShootNotesController;
@@ -430,7 +431,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::post('/register', [AuthController::class, 'register']);
 
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
 
 // Password Reset Routes (public)
 Route::post('/password/forgot', [AuthController::class, 'forgotPassword']);
@@ -444,6 +445,16 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/system/email
 Route::middleware('auth:sanctum')->put('/profile', [AuthController::class, 'updateProfile']);
 Route::middleware('auth:sanctum')->post('/profile/email-verification/resend', [AuthController::class, 'resendEmailVerification']);
 Route::middleware('auth:sanctum')->post('/profile/tax-document', [AuthController::class, 'uploadTaxDocument']);
+Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
+    Route::get('/activity', [ProfileSecurityController::class, 'activity']);
+    Route::get('/security', [ProfileSecurityController::class, 'status']);
+    Route::post('/security/two-factor/setup', [ProfileSecurityController::class, 'beginTwoFactorSetup'])->middleware('throttle:5,1');
+    Route::post('/security/two-factor/confirm', [ProfileSecurityController::class, 'confirmTwoFactorSetup'])->middleware('throttle:10,1');
+    Route::post('/security/two-factor/recovery-codes', [ProfileSecurityController::class, 'regenerateRecoveryCodes'])->middleware('throttle:5,1');
+    Route::delete('/security/two-factor', [ProfileSecurityController::class, 'disableTwoFactor'])->middleware('throttle:5,1');
+    Route::delete('/security/sessions/others', [ProfileSecurityController::class, 'revokeOtherSessions'])->middleware('throttle:10,1');
+    Route::delete('/security/sessions/{tokenId}', [ProfileSecurityController::class, 'revokeSession'])->whereNumber('tokenId')->middleware('throttle:10,1');
+});
 
 // Debug route to check current user role
 Route::middleware('auth:sanctum')->get('/debug/user-role', function (Request $request) {
@@ -466,6 +477,7 @@ Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->pat
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/convert-type', [AccountStatusController::class, 'convertType']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/status', [AccountStatusController::class, 'setStatus'])->withTrashed();
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->get('/admin/users/deleted-accounts', [AccountStatusController::class, 'deletedAccounts']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users/{id}', [UserController::class, 'show'])->whereNumber('id');
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{user}/restore', [AccountStatusController::class, 'restore'])->withTrashed();
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
 Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);

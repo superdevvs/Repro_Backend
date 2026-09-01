@@ -182,6 +182,8 @@ class UserController extends Controller
             'bio' => 'nullable|string',
             'avatar' => 'nullable|image|max:2048',
             'metadata' => 'nullable',
+            'preferences' => 'sometimes|array',
+            'preferences.notificationEmail' => 'nullable|boolean',
             'created_by_name' => 'nullable|string|max:255',
             'created_by_id' => 'nullable|integer|exists:users,id',
             'pilotLicenseFile' => 'nullable|string|url',
@@ -315,6 +317,16 @@ class UserController extends Controller
                     'account_rep' => $admin->name,
                 ]);
             }
+        }
+
+        if (array_key_exists('preferences', $validated) && is_array($validated['preferences'])) {
+            $metadata = is_array($validated['metadata'] ?? null)
+                ? $validated['metadata']
+                : [];
+            $existingPreferences = is_array($metadata['preferences'] ?? null) ? $metadata['preferences'] : [];
+            $metadata['preferences'] = array_replace($existingPreferences, $validated['preferences']);
+            $validated['metadata'] = $metadata;
+            unset($validated['preferences']);
         }
 
         // Add photographer-specific fields to metadata
@@ -645,6 +657,8 @@ class UserController extends Controller
             'bio' => 'nullable|string',
             'avatar' => 'nullable|string',
             'metadata' => 'nullable',
+            'preferences' => 'sometimes|array',
+            'preferences.notificationEmail' => 'nullable|boolean',
             'created_by_name' => 'nullable|string|max:255',
             'created_by_id' => 'nullable|integer|exists:users,id',
             'pilotLicenseFile' => 'nullable|string|url',
@@ -755,6 +769,16 @@ class UserController extends Controller
             }
         }
 
+        if (array_key_exists('preferences', $validated) && is_array($validated['preferences'])) {
+            $metadata = is_array($validated['metadata'] ?? null)
+                ? $validated['metadata']
+                : (is_array($user->metadata) ? $user->metadata : []);
+            $existingPreferences = is_array($metadata['preferences'] ?? null) ? $metadata['preferences'] : [];
+            $metadata['preferences'] = array_replace($existingPreferences, $validated['preferences']);
+            $validated['metadata'] = $metadata;
+            unset($validated['preferences']);
+        }
+
         if ($this->isSalesRepUser($admin)) {
             unset($validated['created_by_id'], $validated['created_by_name']);
             unset($validated['account_status']);
@@ -762,7 +786,10 @@ class UserController extends Controller
 
         // Add photographer-specific fields to metadata
         if ($user->role === 'photographer' || ($request->has('role') && $request->input('role') === 'photographer')) {
-            $photographerData = $user->metadata ?? [];
+            $photographerData = array_merge(
+                is_array($user->metadata) ? $user->metadata : [],
+                is_array($validated['metadata'] ?? null) ? $validated['metadata'] : []
+            );
             
             if ($request->has('pilotLicenseFile')) {
                 $photographerData['pilotLicenseFile'] = $request->input('pilotLicenseFile');
@@ -789,13 +816,14 @@ class UserController extends Controller
                 }
             }
             
-            $validated['metadata'] = array_merge($validated['metadata'] ?? $user->metadata ?? [], $photographerData);
+            $validated['metadata'] = $photographerData;
         }
 
         if ($user->role === 'editor' || ($request->has('role') && $request->input('role') === 'editor')) {
-            $editorData = is_array($validated['metadata'] ?? null)
-                ? $validated['metadata']
-                : ($user->metadata ?? []);
+            $editorData = array_merge(
+                is_array($user->metadata) ? $user->metadata : [],
+                is_array($validated['metadata'] ?? null) ? $validated['metadata'] : []
+            );
 
             if ($request->has('editing_capabilities')) {
                 $editingCapabilities = $request->input('editing_capabilities');
@@ -812,7 +840,7 @@ class UserController extends Controller
                     ->all();
             }
 
-            $validated['metadata'] = array_merge($validated['metadata'] ?? $user->metadata ?? [], $editorData);
+            $validated['metadata'] = $editorData;
         }
 
         $existingServiceGroupIds = $this->serviceGroupsFeatureAvailable()
@@ -1057,12 +1085,24 @@ class UserController extends Controller
         }
 
         $validated = $request->validate([
-            'password' => 'required|string|min:6',
+            'password' => 'required|string|min:8',
         ]);
 
         $user = User::findOrFail($id);
-        $user->password = Hash::make($validated['password']);
-        $user->save();
+        if ($user->role === 'superadmin' && $admin->role !== 'superadmin') {
+            return response()->json(['message' => 'Only a superadmin can reset a superadmin password.'], 403);
+        }
+
+        DB::transaction(function () use ($user, $validated): void {
+            $user->password = $validated['password'];
+            $user->password_changed_at = now();
+            $user->password_reset_required = false;
+            $user->save();
+            $user->tokens()->delete();
+            DB::table('password_reset_tokens')
+                ->where('email', strtolower((string) $user->email))
+                ->delete();
+        });
 
         $context = ['account_id' => $user->id];
         $role = strtolower((string) $user->role);
@@ -1081,7 +1121,7 @@ class UserController extends Controller
             $user,
             'password_reset',
             'Password reset by admin',
-            sprintf('Password was reset by %s.', $admin->name),
+            sprintf('Password was reset by %s. All dashboard sessions were signed out.', $admin->name),
             $admin
         );
 
@@ -1102,6 +1142,9 @@ class UserController extends Controller
         }
 
         $user = User::findOrFail($id);
+        if ($user->role === 'superadmin' && $admin->role !== 'superadmin') {
+            return response()->json(['message' => 'Only a superadmin can send a reset link to a superadmin.'], 403);
+        }
         
         // Generate a password reset token
         $token = Str::random(64);

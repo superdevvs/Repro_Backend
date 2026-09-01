@@ -61,6 +61,11 @@ class User extends Authenticatable
         'restore_until',
         'password_reset_required',
         'password',
+        'two_factor_secret',
+        'two_factor_recovery_codes',
+        'two_factor_confirmed_at',
+        'two_factor_last_used_step',
+        'password_changed_at',
         'created_by_name',
         'created_by_id',
         'metadata',
@@ -93,6 +98,9 @@ class User extends Authenticatable
     protected $hidden = [
         'password',
         'remember_token',
+        'two_factor_secret',
+        'two_factor_recovery_codes',
+        'two_factor_last_used_step',
     ];
 
     /**
@@ -122,6 +130,11 @@ class User extends Authenticatable
             'restore_until' => 'datetime',
             'password_reset_required' => 'boolean',
             'password' => 'hashed',
+            'two_factor_secret' => 'encrypted',
+            'two_factor_recovery_codes' => 'encrypted:array',
+            'two_factor_confirmed_at' => 'datetime',
+            'two_factor_last_used_step' => 'integer',
+            'password_changed_at' => 'datetime',
             'metadata' => 'array',
             'secondary_roles' => 'array',
             'shoot_cc_emails' => 'array',
