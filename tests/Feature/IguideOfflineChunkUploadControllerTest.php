@@ -209,6 +209,50 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
     }
 
     #[Test]
+    public function distinct_chunks_can_arrive_out_of_order_without_corrupting_progress_or_manifest(): void
+    {
+        Storage::fake('local');
+        config()->set('iguide.offline_upload.chunk_size_bytes', 5);
+
+        $admin = User::factory()->admin()->create();
+        $shoot = Shoot::factory()->create();
+        Sanctum::actingAs($admin);
+        $bytes = 'abcdefghijklmn';
+        $session = $this->initiate($shoot, strlen($bytes));
+
+        $this->putChunk($shoot, $session, 2, substr($bytes, 10, 4))
+            ->assertCreated()
+            ->assertJsonPath('upload.received_bytes', 4)
+            ->assertJsonPath('upload.received_chunk_indexes', [2]);
+        $this->putChunk($shoot, $session, 0, substr($bytes, 0, 5))
+            ->assertCreated()
+            ->assertJsonPath('upload.received_bytes', 9)
+            ->assertJsonPath('upload.received_chunk_indexes', [0, 2]);
+        $this->putChunk($shoot, $session, 1, substr($bytes, 5, 5))
+            ->assertCreated()
+            ->assertJsonPath('upload.received_bytes', strlen($bytes))
+            ->assertJsonPath('upload.received_chunk_indexes', [0, 1, 2]);
+
+        $this->putChunk($shoot, $session, 2, substr($bytes, 10, 4))
+            ->assertOk()
+            ->assertJsonPath('upload.received_bytes', strlen($bytes))
+            ->assertJsonPath('upload.received_chunk_indexes', [0, 1, 2]);
+
+        $this->getJson($this->uploadUrl($shoot, $session))
+            ->assertOk()
+            ->assertJsonPath('upload.received_bytes', strlen($bytes))
+            ->assertJsonPath('upload.received_chunk_indexes', [0, 1, 2])
+            ->assertJsonPath('upload.received_chunks.0.index', 0)
+            ->assertJsonPath('upload.received_chunks.1.index', 1)
+            ->assertJsonPath('upload.received_chunks.2.index', 2);
+        $this->assertDatabaseCount('iguide_offline_upload_chunks', 3);
+        $this->assertDatabaseHas('iguide_offline_upload_sessions', [
+            'id' => $session->id,
+            'received_bytes' => strlen($bytes),
+        ]);
+    }
+
+    #[Test]
     public function completion_reports_missing_chunks_and_dispatches_assembly_only_once(): void
     {
         Storage::fake('local');
