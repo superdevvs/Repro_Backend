@@ -153,7 +153,11 @@ class AutomationService
      */
     private function isShootPaid(Shoot $shoot): bool
     {
-        return strtolower((string) $shoot->payment_status) === 'paid';
+        return in_array(
+            strtolower((string) $shoot->payment_status),
+            ['paid', Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED],
+            true
+        );
     }
 
     /**

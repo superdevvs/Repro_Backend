@@ -37,7 +37,10 @@ class PaymentRemindersSweep extends Command
                 ->whereNotNull('shoot_ready_notified_at')
                 // Unpaid shoots only (case-insensitive); NULL/empty payment_status counts as unpaid.
                 // schedulePaymentReminders() re-checks paid status, so a slip-through is still safe.
-                ->whereRaw("LOWER(COALESCE(payment_status, '')) != ?", ['paid'])
+                ->whereRaw(
+                    "LOWER(COALESCE(payment_status, '')) NOT IN (?, ?)",
+                    ['paid', Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED]
+                )
                 ->chunkById(200, function ($shoots) use ($automationService, &$processed) {
                     foreach ($shoots as $shoot) {
                         $automationService->schedulePaymentReminders($shoot);

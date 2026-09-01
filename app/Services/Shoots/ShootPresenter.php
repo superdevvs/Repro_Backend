@@ -288,7 +288,9 @@ class ShootPresenter
         }
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
 
-        if ((float) ($shoot->total_quote ?? 0) <= 0.01 || ! $shoot->payment_status || ! in_array($shoot->payment_status, ['paid', 'unpaid', 'partial'], true)) {
+        if ($shoot->isComplimentaryReshoot()) {
+            $shoot->payment_status = Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED;
+        } elseif ((float) ($shoot->total_quote ?? 0) <= 0.01 || ! $shoot->payment_status || ! in_array($shoot->payment_status, ['paid', 'unpaid', 'partial'], true)) {
             $totalPaid = $shoot->total_paid ?? 0;
             $totalQuote = $shoot->total_quote ?? 0;
             $shoot->payment_status = $this->calculatePaymentStatus($totalPaid, $totalQuote);
@@ -339,6 +341,7 @@ class ShootPresenter
         $isPhotographerRole = $requestingRole === 'photographer';
         $isEditorRole = $requestingRole === 'editor';
         $isClientRole = $requestingRole === 'client';
+        $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
         $requestingUserId = $requestingUser?->id ? (string) $requestingUser->id : null;
         $editorAssignments = $this->editingAssignmentService->buildEditorAssignmentsPayload(
             $shoot,
@@ -509,6 +512,14 @@ class ShootPresenter
         $shoot->company_notes = ($isEditorRole || $isClientRole) ? null : $shoot->company_notes;
         $shoot->photographer_notes = ($isEditorRole || $isClientRole) ? null : $shoot->photographer_notes;
         $shoot->editor_notes = $isClientRole ? null : $shoot->editor_notes;
+
+        // Complimentary-reshoot notes are the internal reason narrative. The
+        // affected-work mapping below is admin-only, so do not leak the same
+        // narrative through the legacy shoot_notes field to recipients/clients.
+        if ($shoot->isComplimentaryReshoot() && ! $canManageReshoots) {
+            $shoot->shoot_notes = null;
+            $shoot->makeHidden('shoot_notes');
+        }
 
         if ($isClientRole) {
             $shoot->makeHidden([
@@ -889,6 +900,78 @@ class ShootPresenter
         $shoot->setAttribute('services_list', $servicesArray);
         $shoot->setAttribute('shoot_type', $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
         $shoot->setAttribute('shootType', $shoot->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD);
+        $shoot->setAttribute('reshootOfShootId', $shoot->reshoot_of_shoot_id);
+        $shoot->setAttribute('rootShootId', $shoot->root_shoot_id);
+        $shoot->setAttribute(
+            'reshoot_classification',
+            $shoot->reshoot_of_shoot_id
+                ? ($shoot->isComplimentaryReshoot() ? 'complimentary_reshoot' : 'additional_work')
+                : null
+        );
+        $shoot->setAttribute('reshootClassification', $shoot->reshoot_classification);
+        $isOwningClient = $isClientRole
+            && $requestingUser
+            && (int) $requestingUser->id === (int) $shoot->client_id;
+        $canViewSafeReshootContext = $canManageReshoots || $isOwningClient;
+        if ($canViewSafeReshootContext
+            && ($shoot->relationLoaded('reshootChildren')
+                || $shoot->relationLoaded('rootReshootDescendants')
+                || $shoot->relationLoaded('rootShoot'))) {
+            $relatedSummaries = collect(
+                $canManageReshoots
+                    ? $shoot->relatedReshootSummaries()
+                    : $shoot->safeRelatedReshootSummaries()
+            );
+            $reshootSummary = [
+                'related_count' => $relatedSummaries->count(),
+                'complimentary_count' => $relatedSummaries
+                    ->where('classification', 'complimentary_reshoot')
+                    ->count(),
+                'additional_work_count' => $relatedSummaries
+                    ->where('classification', 'additional_work')
+                    ->count(),
+                'related_reshoots' => $relatedSummaries->all(),
+            ];
+            $shoot->setAttribute('reshoot_summary', $reshootSummary);
+            $shoot->setAttribute('reshootSummary', $reshootSummary);
+            $complimentaryReshoots = $relatedSummaries
+                ->where('classification', 'complimentary_reshoot')
+                ->values()
+                ->all();
+            $shoot->setAttribute('complimentary_reshoots', $complimentaryReshoots);
+            $shoot->setAttribute('complimentaryReshoots', $complimentaryReshoots);
+        }
+        if ($canViewSafeReshootContext && $shoot->isComplimentaryReshoot()) {
+            $lineageContext = $shoot->safeReshootLineageContext();
+            $shoot->setAttribute('reshoot_parent', $lineageContext['parent']);
+            $shoot->setAttribute('reshootParent', $lineageContext['parent']);
+            $shoot->setAttribute('reshoot_root', $lineageContext['root']);
+            $shoot->setAttribute('reshootRoot', $lineageContext['root']);
+        }
+        if ($canManageReshoots && $shoot->isComplimentaryReshoot()) {
+            $complimentaryOverview = $shoot->complimentaryReshootOverview();
+            $shoot->setAttribute('complimentary_reshoot_overview', $complimentaryOverview);
+            $shoot->setAttribute('complimentaryReshootOverview', $complimentaryOverview);
+            $shoot->setAttribute('compensation_summary', $complimentaryOverview);
+            $shoot->setAttribute('compensationSummary', $complimentaryOverview);
+            $reshootServiceLinks = $shoot->complimentaryReshootServiceLinks();
+            $shoot->setAttribute('reshoot_service_links', $reshootServiceLinks);
+            $shoot->setAttribute('reshootServiceLinks', $reshootServiceLinks);
+            $shoot->setAttribute('affected_source_items', $reshootServiceLinks);
+            $primaryReshootLink = collect($reshootServiceLinks)->first();
+            $shoot->setAttribute('reshoot_reason_code', $primaryReshootLink['reason_code'] ?? null);
+            $shoot->setAttribute('reshootReasonCode', $primaryReshootLink['reason_code'] ?? null);
+            $shoot->setAttribute('reshoot_reason_note', $primaryReshootLink['reason_note'] ?? null);
+            $shoot->setAttribute('reshootReasonNote', $primaryReshootLink['reason_note'] ?? null);
+            foreach (['compReshootItems', 'compensations', 'editorPayouts'] as $relation) {
+                $shoot->unsetRelation($relation);
+            }
+        }
+        // The eager-loaded self-relations exist only to build the compact,
+        // role-gated summaries above. Never serialize the raw nested shoot graph.
+        foreach (['reshootChildren', 'rootReshootDescendants', 'rootShoot', 'reshootOf'] as $relation) {
+            $shoot->unsetRelation($relation);
+        }
         $shoot->setAttribute('product_status', $shoot->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT);
         $shoot->setAttribute('productStatus', $shoot->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT);
         $shoot->setAttribute('raw_photo_count', $shoot->raw_photo_count ?? 0);

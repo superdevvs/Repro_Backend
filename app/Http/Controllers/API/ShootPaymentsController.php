@@ -217,6 +217,8 @@ class ShootPaymentsController extends Controller
 
     public function markAsPaid(Request $request, Shoot $shoot)
     {
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+
         $validated = $request->validate([
             'amount' => 'nullable|numeric|min:0',
             'payment_type' => 'nullable|string|in:manual,square,check,cash,bank_transfer,zelle,ach,other',
@@ -476,6 +478,8 @@ class ShootPaymentsController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+
         $validated = $request->validate([
             'payment_method' => 'required|string|in:cash,check',
             'amount' => 'required|numeric|min:0.01',
@@ -613,6 +617,8 @@ class ShootPaymentsController extends Controller
         if ((int) $payment->shoot_id !== (int) $shoot->id) {
             return response()->json(['message' => 'Payment does not belong to this shoot.'], 404);
         }
+
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
 
         $validated = $request->validate([
             'payment_date' => 'nullable|date',

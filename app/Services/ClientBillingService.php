@@ -142,11 +142,18 @@ class ClientBillingService
         }
 
         $issueDate = $this->normalizeDate($invoice->issue_date ?? $invoice->billing_period_start ?? $invoice->created_at);
-        $dueDate = $this->normalizeDate($invoice->due_date ?? $invoice->billing_period_end ?? $invoice->period_end);
-        $paymentRequiredToRelease = $balance > 0
+        $paymentRequired = $invoice->requiresPayment();
+        $dueDate = $paymentRequired
+            ? $this->normalizeDate($invoice->due_date ?? $invoice->billing_period_end ?? $invoice->period_end)
+            : null;
+        $paymentRequiredToRelease = $paymentRequired && $balance > 0
             && $relatedShoots->contains(fn (Shoot $shoot) => $this->isReleaseBlockedShoot($shoot));
-        $bucket = $this->resolveBucket($balance, $dueDate, $paymentRequiredToRelease, $relatedShoots->first());
-        $status = $this->resolveStatus($balance, $dueDate);
+        $bucket = $paymentRequired
+            ? $this->resolveBucket($balance, $dueDate, $paymentRequiredToRelease, $relatedShoots->first())
+            : 'no_payment_required';
+        $status = $paymentRequired
+            ? $this->resolveStatus($balance, $dueDate)
+            : 'no_payment_required';
         $primaryShoot = $relatedShoots->first() ?: $invoice->shoot;
 
         $resolvedPayment = $invoice->resolvePaymentMetadata();
@@ -159,6 +166,8 @@ class ClientBillingService
             'id' => 'invoice-' . $invoice->id,
             'source' => 'invoice',
             'sourceLabel' => 'Invoice',
+            'documentType' => $invoice->document_type,
+            'paymentRequired' => $paymentRequired,
             'invoiceId' => $invoice->id,
             'shootId' => $primaryShoot?->id,
             'number' => $invoice->invoice_number ?: (string) $invoice->id,
@@ -254,6 +263,7 @@ class ClientBillingService
             'dueNow' => ['amount' => 0.0, 'count' => 0],
             'upcoming' => ['amount' => 0.0, 'count' => 0],
             'paid' => ['amount' => 0.0, 'count' => 0],
+            'noPaymentRequired' => ['amount' => 0.0, 'count' => 0],
             'paymentRequiredToReleaseCount' => 0,
         ];
 
@@ -268,6 +278,8 @@ class ClientBillingService
             } elseif ($item['bucket'] === 'upcoming') {
                 $summary['upcoming']['amount'] += $amount;
                 $summary['upcoming']['count']++;
+            } elseif ($item['bucket'] === 'no_payment_required') {
+                $summary['noPaymentRequired']['count']++;
             } else {
                 $summary['paid']['amount'] += $amount;
                 $summary['paid']['count']++;
@@ -281,6 +293,7 @@ class ClientBillingService
         $summary['dueNow']['amount'] = $this->roundMoney($summary['dueNow']['amount']);
         $summary['upcoming']['amount'] = $this->roundMoney($summary['upcoming']['amount']);
         $summary['paid']['amount'] = $this->roundMoney($summary['paid']['amount']);
+        $summary['noPaymentRequired']['amount'] = 0.0;
 
         return $summary;
     }
@@ -291,6 +304,7 @@ class ClientBillingService
             'due_now' => 0,
             'upcoming' => 1,
             'paid' => 2,
+            'no_payment_required' => 3,
         ];
 
         $leftBucket = $bucketOrder[$left['bucket']] ?? 99;

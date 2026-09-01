@@ -7,6 +7,7 @@ use App\Models\Invoice;
 use App\Models\InvoiceItem;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\InvoiceService;
 use App\Services\Messaging\MessagingService;
 use App\Support\InvoiceReference;
 use Illuminate\Support\Facades\Schema;
@@ -95,6 +96,10 @@ class InvoiceBillingFlow
             // Get shoots without invoices
             $shootsWithoutInvoice = Shoot::whereDoesntHave('invoices')
                 ->where('status', 'completed')
+                ->where(function ($query) {
+                    $query->whereNull('shoot_type')
+                        ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+                })
                 ->orderBy('completed_at', 'desc')
                 ->limit(10)
                 ->get();
@@ -117,6 +122,10 @@ class InvoiceBillingFlow
                 if ($shootsWithoutInvoice->isEmpty()) {
                     // Check for any completed shoots
                     $completedShoots = Shoot::where('status', 'completed')
+                        ->where(function ($query) {
+                            $query->whereNull('shoot_type')
+                                ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+                        })
                         ->orderBy('completed_at', 'desc')
                         ->limit(10)
                         ->get();
@@ -182,6 +191,26 @@ class InvoiceBillingFlow
                     'metadata' => ['step' => 'create_invoice'],
                 ]],
                 'suggestions' => ['Start over'],
+            ];
+        }
+
+        if ($shoot->isComplimentaryReshoot()) {
+            $receipt = app(InvoiceService::class)->generateForShoot($shoot);
+            $this->setStepAndData($session, null, []);
+            $session->save();
+
+            return [
+                'assistant_messages' => [[
+                    'content' => "This is a complimentary reshoot. Its $0 no-payment-required receipt is available, and a billable client invoice was not created.",
+                    'metadata' => [
+                        'step' => 'done',
+                        'shoot_id' => $shoot->id,
+                        'invoice_id' => $receipt->id,
+                        'document_type' => Invoice::DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT,
+                        'payment_required' => false,
+                    ],
+                ]],
+                'suggestions' => ['View receipt', 'View booking'],
             ];
         }
 
@@ -464,6 +493,10 @@ class InvoiceBillingFlow
         if (empty($data['shoot_id']) && empty($data['invoice_id'])) {
             // Get recent shoots
             $recentShoots = Shoot::whereNotIn('status', ['cancelled'])
+                ->where(function ($query) {
+                    $query->whereNull('shoot_type')
+                        ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+                })
                 ->orderBy('created_at', 'desc')
                 ->limit(10)
                 ->get();
@@ -538,6 +571,23 @@ class InvoiceBillingFlow
                     'metadata' => ['step' => 'apply_discount'],
                 ]],
                 'suggestions' => ['Start over'],
+            ];
+        }
+
+        if ($shoot->isComplimentaryReshoot()) {
+            $this->setStepAndData($session, null, []);
+            $session->save();
+
+            return [
+                'assistant_messages' => [[
+                    'content' => 'Complimentary reshoots are permanently $0 and cannot be repriced or discounted. Book separate additional work for any client charge.',
+                    'metadata' => [
+                        'step' => 'done',
+                        'shoot_id' => $shoot->id,
+                        'blocked' => true,
+                    ],
+                ]],
+                'suggestions' => ['View booking', 'Book additional work'],
             ];
         }
 

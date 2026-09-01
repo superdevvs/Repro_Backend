@@ -21,6 +21,7 @@ use App\Services\Shoots\CreateShootResult;
 use App\Services\Shoots\ShootMutationSupportService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class CreateShootAction
 {
@@ -161,7 +162,10 @@ class CreateShootAction
                 $initialTourLinks = array_merge($autoPropertyTourLinks, $initialTourLinks);
             }
 
-            $shootType = $this->normalizeShootType($validated['shoot_type'] ?? null, $servicesPayload);
+            $additionalWorkLineage = $this->resolveAdditionalWorkLineage($validated, $userRole);
+            $shootType = $additionalWorkLineage
+                ? Shoot::SHOOT_TYPE_STANDARD
+                : $this->normalizeShootType($validated['shoot_type'] ?? null, $servicesPayload);
             $productStatus = $this->resolveProductStatus($servicesPayload, (float) $pricingCalculation['total_quote'], $validated['product_status'] ?? null);
             $isNoCharge = (float) $pricingCalculation['total_quote'] <= 0.01;
             $scheduleScope = app(ScheduleDateScopeService::class);
@@ -177,10 +181,10 @@ class CreateShootAction
                 'rep_id' => $repId,
                 'photographer_id' => $photographerId,
                 'service_id' => $servicesPayload[0]['id'] ?? null,
-                'address' => $validated['address'],
-                'city' => $validated['city'],
-                'state' => $validated['state'],
-                'zip' => $validated['zip'],
+                'address' => $additionalWorkLineage['property']['address'] ?? $validated['address'],
+                'city' => $additionalWorkLineage['property']['city'] ?? $validated['city'],
+                'state' => $additionalWorkLineage['property']['state'] ?? $validated['state'],
+                'zip' => $additionalWorkLineage['property']['zip'] ?? $validated['zip'],
                 'mls_id' => $validated['mls_id']
                     ?? data_get($propertyDetailsPayload, 'mls_id')
                     ?? data_get($propertyDetailsPayload, 'mlsId'),
@@ -205,6 +209,8 @@ class CreateShootAction
                 'bypass_paywall' => $isNoCharge || (bool) ($validated['bypass_paywall'] ?? false),
                 'payment_status' => $isNoCharge ? 'paid' : 'unpaid',
                 'shoot_type' => $shootType,
+                'reshoot_of_shoot_id' => $additionalWorkLineage['parent_id'] ?? null,
+                'root_shoot_id' => $additionalWorkLineage['root_id'] ?? null,
                 'product_status' => $productStatus,
                 'created_by' => $user->name,
                 'updated_by' => $user->name,
@@ -342,6 +348,80 @@ class CreateShootAction
             'tax_amount' => $taxAmount,
             'total_quote' => $totalQuote,
         ]);
+    }
+
+    /**
+     * @return array{parent_id: int, root_id: int, property: array{address: ?string, city: ?string, state: ?string, zip: ?string}}|null
+     */
+    protected function resolveAdditionalWorkLineage(array $validated, string $userRole): ?array
+    {
+        $parentId = (int) ($validated['reshoot_parent_shoot_id'] ?? 0);
+        if (! $parentId) {
+            return null;
+        }
+
+        if (! in_array($userRole, ['admin', 'superadmin'], true)
+            || ($validated['reshoot_classification'] ?? null) !== 'additional_work') {
+            throw ValidationException::withMessages([
+                'reshoot_parent_shoot_id' => ['Only an administrator can create billable additional work.'],
+            ]);
+        }
+
+        $seen = [];
+        $currentId = $parentId;
+        $rootId = $parentId;
+        $parent = null;
+        while ($currentId) {
+            if (isset($seen[$currentId])) {
+                throw ValidationException::withMessages([
+                    'reshoot_parent_shoot_id' => ['The selected reshoot lineage contains a cycle.'],
+                ]);
+            }
+
+            $seen[$currentId] = true;
+            $current = Shoot::query()->lockForUpdate()->find($currentId);
+            if (! $current) {
+                throw ValidationException::withMessages([
+                    'reshoot_parent_shoot_id' => ['The selected parent shoot no longer exists.'],
+                ]);
+            }
+
+            $parent ??= $current;
+
+            $rootId = (int) $current->id;
+            $currentId = (int) ($current->reshoot_of_shoot_id ?? 0);
+        }
+
+        if ((int) $parent->client_id !== (int) $validated['client_id']) {
+            throw ValidationException::withMessages([
+                'client_id' => ['Additional work must use the same client as its parent shoot.'],
+            ]);
+        }
+
+        foreach (['address', 'city', 'state', 'zip'] as $field) {
+            if ($this->normalizePropertyIdentity($validated[$field] ?? null)
+                !== $this->normalizePropertyIdentity($parent->{$field})) {
+                throw ValidationException::withMessages([
+                    $field => ['Additional work must use the same property as its parent shoot.'],
+                ]);
+            }
+        }
+
+        return [
+            'parent_id' => $parentId,
+            'root_id' => $rootId,
+            'property' => [
+                'address' => $parent->address,
+                'city' => $parent->city,
+                'state' => $parent->state,
+                'zip' => $parent->zip,
+            ],
+        ];
+    }
+
+    protected function normalizePropertyIdentity(mixed $value): string
+    {
+        return strtolower((string) preg_replace('/[^a-z0-9]+/i', '', trim((string) $value)));
     }
 
     protected function normalizeShootType(?string $shootType, array $servicesPayload): string

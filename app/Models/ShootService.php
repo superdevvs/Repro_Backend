@@ -34,6 +34,7 @@ class ShootService extends Model
         'bracket_mode',
         'editor_id',
         'price',
+        'nominal_value_snapshot',
         'quantity',
         'photographer_pay',
         'editing_completed_at',
@@ -51,6 +52,7 @@ class ShootService extends Model
 
     protected $casts = [
         'price' => 'decimal:2',
+        'nominal_value_snapshot' => 'decimal:2',
         'quantity' => 'integer',
         'bracket_mode' => 'integer',
         'photographer_pay' => 'decimal:2',
@@ -62,6 +64,19 @@ class ShootService extends Model
         'is_deliverable' => 'boolean',
         'force_unlock_delivery' => 'boolean',
     ];
+
+    protected static function booted(): void
+    {
+        static::saving(function (ShootService $serviceItem) {
+            $shoot = $serviceItem->relationLoaded('shoot')
+                ? $serviceItem->shoot
+                : $serviceItem->shoot()->first();
+
+            if ($shoot?->isComplimentaryReshoot()) {
+                $serviceItem->price = 0;
+            }
+        });
+    }
 
     public function shoot()
     {
@@ -91,6 +106,21 @@ class ShootService extends Model
     public function paymentAllocations()
     {
         return $this->hasMany(PaymentServiceAllocation::class, 'shoot_service_id');
+    }
+
+    public function compReshootItem()
+    {
+        return $this->hasOne(CompReshootItem::class, 'shoot_service_id');
+    }
+
+    public function sourceForCompReshootItems()
+    {
+        return $this->hasMany(CompReshootItem::class, 'source_shoot_service_id');
+    }
+
+    public function compensations()
+    {
+        return $this->hasMany(ShootCompensation::class, 'shoot_service_id');
     }
 
     public function completedPaymentAllocations()

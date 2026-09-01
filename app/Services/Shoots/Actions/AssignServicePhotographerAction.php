@@ -8,6 +8,7 @@ use App\Services\AddressLookupService;
 use App\Services\Photographers\RadiusEligibility;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMutationSupportService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class AssignServicePhotographerAction
@@ -21,6 +22,8 @@ class AssignServicePhotographerAction
     public function execute(Shoot $shoot, array $payload, User $actor): Shoot
     {
         $assignments = $this->normalizeAssignments($payload);
+        $radiusViolations = [];
+        $radiusOverrideReason = null;
 
         // Option B — service-radius gating (flag-gated; config: availability.radius_enforcement).
         // When enforcement is ON, an assignment that places a photographer outside their service
@@ -30,18 +33,18 @@ class AssignServicePhotographerAction
         // The override is request-scoped only — it never mutates the photographer profile. No-op when
         // the flag is OFF.
         if (RadiusEligibility::enforced()) {
-            $violations = $this->collectRadiusViolations($shoot, $assignments);
+            $radiusViolations = $this->collectRadiusViolations($shoot, $assignments);
 
-            if (!empty($violations)) {
+            if (!empty($radiusViolations)) {
                 $override = filter_var($payload['override'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
                 if (!$override) {
                     throw ValidationException::withMessages([
-                        'service_photographers' => array_map(fn ($v) => $v['message'], $violations),
+                        'service_photographers' => array_map(fn ($v) => $v['message'], $radiusViolations),
                     ]);
                 }
 
-                $this->logRadiusOverrides($shoot, $violations, $payload['override_reason'] ?? null, $actor);
+                $radiusOverrideReason = $payload['override_reason'] ?? null;
             }
         }
 
@@ -50,7 +53,24 @@ class AssignServicePhotographerAction
             $shoot->photographer_id,
             $shoot->id
         );
-        $this->shootMutationSupportService->assignServicePhotographers($shoot, $assignments);
+        DB::transaction(function () use (
+            $shoot,
+            $assignments,
+            $actor,
+            $radiusViolations,
+            $radiusOverrideReason
+        ): void {
+            $this->shootMutationSupportService->assignServicePhotographers($shoot, $assignments, $actor);
+
+            if ($radiusViolations !== []) {
+                $this->logRadiusOverrides(
+                    $shoot,
+                    $radiusViolations,
+                    $radiusOverrideReason,
+                    $actor
+                );
+            }
+        }, 3);
 
         return $shoot->fresh(['client', 'rep', 'photographer', 'services.category'])
             ?? $shoot->load(['client', 'rep', 'photographer', 'services.category']);

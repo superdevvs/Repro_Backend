@@ -41,6 +41,7 @@ class PayoutReportController extends Controller
         $editorSummaries = in_array($role, ['all', 'editor'], true)
             ? $this->service->buildEditorSummaries($start, $end)
             : collect();
+        $complimentaryReshoots = $this->service->buildComplimentaryReshootSummary($start, $end);
 
         return response()->json([
             'period' => [
@@ -51,13 +52,17 @@ class PayoutReportController extends Controller
             'photographers' => $photographerSummaries->values(),
             'editors' => $editorSummaries->values(),
             'sales_reps' => $repSummaries->values(),
+            'complimentary_reshoots' => $complimentaryReshoots,
             'totals' => [
                 'photographer_count' => $photographerSummaries->count(),
                 'photographer_total' => round($photographerSummaries->sum('gross_total'), 2),
+                'photographer_compensation_total' => round($photographerSummaries->sum('compensation_total'), 2),
                 'editor_count' => $editorSummaries->count(),
                 'editor_total' => round($editorSummaries->sum('gross_total'), 2),
                 'sales_rep_count' => $repSummaries->count(),
                 'sales_rep_commission_total' => round($repSummaries->sum('commission_total'), 2),
+                'sales_rep_compensation_total' => round($repSummaries->sum('compensation_total'), 2),
+                'sales_rep_payout_total' => round($repSummaries->sum('payout_total'), 2),
             ],
         ]);
     }
@@ -85,6 +90,7 @@ class PayoutReportController extends Controller
         $editorSummaries = in_array($role, ['all', 'editor'], true)
             ? $this->service->buildEditorSummaries($start, $end)
             : collect();
+        $complimentaryReshoots = $this->service->buildComplimentaryReshootSummary($start, $end);
 
         $filename = sprintf(
             'payout-report-%s-to-%s.csv',
@@ -92,7 +98,7 @@ class PayoutReportController extends Controller
             $end->format('Y-m-d')
         );
 
-        return response()->streamDownload(function () use ($photographerSummaries, $editorSummaries, $repSummaries, $start, $end) {
+        return response()->streamDownload(function () use ($photographerSummaries, $editorSummaries, $repSummaries, $complimentaryReshoots, $start, $end) {
             $handle = fopen('php://output', 'w');
 
             fputcsv($handle, ['Payout Report']);
@@ -101,18 +107,19 @@ class PayoutReportController extends Controller
 
             // Photographers section
             fputcsv($handle, ['PHOTOGRAPHERS']);
-            fputcsv($handle, ['Name', 'Email', 'Shoots', 'Amount to Pay']);
+            fputcsv($handle, ['Name', 'Email', 'Shoots', 'Compensation', 'Amount to Pay']);
 
             foreach ($photographerSummaries as $summary) {
                 fputcsv($handle, [
                     $summary['name'],
                     $summary['email'],
                     $summary['shoot_count'],
+                    number_format($summary['compensation_total'] ?? 0, 2, '.', ''),
                     number_format($summary['gross_total'], 2, '.', ''),
                 ]);
             }
 
-            fputcsv($handle, ['Total', '', $photographerSummaries->sum('shoot_count'), number_format($photographerSummaries->sum('gross_total'), 2, '.', '')]);
+            fputcsv($handle, ['Total', '', $photographerSummaries->sum('shoot_count'), number_format($photographerSummaries->sum('compensation_total'), 2, '.', ''), number_format($photographerSummaries->sum('gross_total'), 2, '.', '')]);
             fputcsv($handle, []);
 
             fputcsv($handle, ['EDITORS']);
@@ -134,7 +141,7 @@ class PayoutReportController extends Controller
 
             // Sales Reps section
             fputcsv($handle, ['SALES REPRESENTATIVES']);
-            fputcsv($handle, ['Name', 'Email', 'Shoots', 'Gross Total', 'Commission Rate', 'Commission Amount']);
+            fputcsv($handle, ['Name', 'Email', 'Shoots', 'Commissionable Gross', 'Commission Rate', 'Commission Amount', 'Compensation', 'Total Payout']);
 
             foreach ($repSummaries as $summary) {
                 fputcsv($handle, [
@@ -144,10 +151,26 @@ class PayoutReportController extends Controller
                     number_format($summary['gross_total'], 2, '.', ''),
                     $summary['commission_rate'] ? $summary['commission_rate'] . '%' : 'N/A',
                     number_format($summary['commission_total'] ?? 0, 2, '.', ''),
+                    number_format($summary['compensation_total'] ?? 0, 2, '.', ''),
+                    number_format($summary['payout_total'] ?? 0, 2, '.', ''),
                 ]);
             }
 
-            fputcsv($handle, ['Total', '', $repSummaries->sum('shoot_count'), number_format($repSummaries->sum('gross_total'), 2, '.', ''), '', number_format($repSummaries->sum('commission_total'), 2, '.', '')]);
+            fputcsv($handle, ['Total', '', $repSummaries->sum('shoot_count'), number_format($repSummaries->sum('gross_total'), 2, '.', ''), '', number_format($repSummaries->sum('commission_total'), 2, '.', ''), number_format($repSummaries->sum('compensation_total'), 2, '.', ''), number_format($repSummaries->sum('payout_total'), 2, '.', '')]);
+            fputcsv($handle, []);
+
+            fputcsv($handle, ['COMPLIMENTARY RESHOOT ROLLUP']);
+            fputcsv($handle, ['Metric', 'Value']);
+            fputcsv($handle, ['Shoot count', $complimentaryReshoots['shoot_count']]);
+            fputcsv($handle, ['Nominal service value comped', number_format($complimentaryReshoots['nominal_value_comped'], 2, '.', '')]);
+            fputcsv($handle, ['Photographer compensation', number_format($complimentaryReshoots['photographer_compensation'], 2, '.', '')]);
+            fputcsv($handle, ['Sales rep compensation', number_format($complimentaryReshoots['sales_rep_compensation'], 2, '.', '')]);
+            fputcsv($handle, ['Actual editor cost', number_format($complimentaryReshoots['actual_editor_cost'], 2, '.', '')]);
+            fputcsv($handle, ['Total company comp cost', number_format($complimentaryReshoots['total_company_comp_cost'], 2, '.', '')]);
+            fputcsv($handle, ['Revenue', '0.00']);
+            fputcsv($handle, ['Cash collected', '0.00']);
+            fputcsv($handle, ['Accounts receivable', '0.00']);
+            fputcsv($handle, ['Margin', 'N/A']);
 
             fclose($handle);
         }, $filename, [

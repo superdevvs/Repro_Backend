@@ -69,7 +69,8 @@ class InvoiceFeatureTest extends TestCase
         $this->assertEquals($photographer->id, $invoice->photographer_id);
         $this->assertSame(2, $invoice->shoots()->count());
         $this->assertEquals(345.0, (float) $invoice->total_amount);
-        $this->assertEquals(345.0, (float) $invoice->amount_paid);
+        $this->assertEquals(0.0, (float) $invoice->amount_paid);
+        $this->assertFalse($invoice->is_paid);
     }
 
     /**
@@ -241,6 +242,7 @@ class InvoiceFeatureTest extends TestCase
 
         app(InvoiceService::class)->generateForPeriod($start, $end);
         $invoice = Invoice::first();
+        $invoice->update(['approval_status' => Invoice::APPROVAL_STATUS_APPROVED]);
 
         Sanctum::actingAs($admin);
 

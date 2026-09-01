@@ -16,6 +16,7 @@ use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\AccountStatusController;
 use App\Http\Controllers\Admin\ServiceAreaController;
 use App\Http\Controllers\Admin\TestShootController;
+use App\Http\Controllers\Admin\ComplimentaryReshootController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceGroupController;
 use App\Http\Controllers\CategoryController;
@@ -619,6 +620,18 @@ Route::middleware('auth:sanctum')->prefix('client')->group(function () {
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin')->group(function () {
+    Route::middleware('role:admin,superadmin')->group(function () {
+        Route::get('shoots/{sourceShoot}/complimentary-reshoots', [ComplimentaryReshootController::class, 'template']);
+        Route::get('shoots/{sourceShoot}/complimentary-reshoots/template', [ComplimentaryReshootController::class, 'template']);
+        Route::get('shoots/{sourceShoot}/complimentary-reshoot-template', [ComplimentaryReshootController::class, 'template']);
+        Route::post('shoots/{sourceShoot}/complimentary-reshoots', [ComplimentaryReshootController::class, 'store']);
+        Route::patch('shoots/{shoot}/compensations', [ComplimentaryReshootController::class, 'update']);
+        Route::post(
+            'shoots/{shoot}/compensations/{compensation}/adjustments',
+            [ComplimentaryReshootController::class, 'storeAdjustment']
+        );
+    });
+
     Route::get('invoices', [InvoiceController::class, 'index']);
     // Static routes MUST come before the {invoice} wildcard to avoid being swallowed
     Route::post('invoices/generate', [App\Http\Controllers\Admin\InvoiceController::class, 'generate']);
@@ -661,6 +674,9 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::get('sales-reports/{salesRepId}', [App\Http\Controllers\SalesReportController::class, 'salesRepReport']);
     Route::post('sales-reports/send-weekly', [App\Http\Controllers\SalesReportController::class, 'sendWeeklyReports']);
 });
+
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,photographer,salesRep,sales_rep'])
+    ->get('/admin/shoots/{shoot}/compensations', [ComplimentaryReshootController::class, 'show']);
 
 // Tour Branding routes (Admin/Super Admin only)
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('tour-branding')->group(function () {

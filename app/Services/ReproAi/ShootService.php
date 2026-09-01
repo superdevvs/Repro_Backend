@@ -12,6 +12,7 @@ use App\Services\ShootTaxService;
 use App\Services\ShootWorkflowService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class ShootService
 {
@@ -201,6 +202,16 @@ class ShootService
     public function updateFromAiConversation(Shoot $shoot, array $data, User $user): Shoot
     {
         return DB::transaction(function () use ($shoot, $data, $user) {
+            $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+
+            if ($shoot->isComplimentaryReshoot() && array_key_exists('service_ids', $data)) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'Robbie cannot change services on a booked complimentary reshoot. Book separate additional work or another complimentary reshoot instead.',
+                    ],
+                ]);
+            }
+
             // Update scheduled date/time if provided
             if (! empty($data['date'])) {
                 $date = \Carbon\Carbon::parse($data['date']);

@@ -20,6 +20,7 @@ use App\Services\Shoots\ShootHistoryService;
 use App\Services\Shoots\ShootListingService;
 use App\Services\Shoots\ShootPresenter;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -64,7 +65,8 @@ class ShootController extends Controller
     {
         $shoot = Shoot::with([
             'client', 'photographer', 'service', 'services.category', 'files', 'payments',
-            'dropboxFolders', 'workflowLogs.user', 'verifiedBy',
+            'dropboxFolders', 'workflowLogs.user', 'verifiedBy', 'reshootOf', 'reshootChildren',
+            'rootReshootDescendants', 'rootShoot.rootReshootDescendants',
         ])->findOrFail($id);
 
         if (!$this->shootAuthorizationSupport->canViewShootDetails($shoot, auth()->user())) {
@@ -253,7 +255,10 @@ class ShootController extends Controller
 
         $validated = $request->validate([
             'service_id' => 'required|integer',
-            'photographer_id' => 'nullable|exists:users,id',
+            'photographer_id' => [
+                'nullable',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+            ],
             'override' => 'nullable|boolean',
             'override_reason' => 'nullable|string|max:500',
         ]);
@@ -317,13 +322,22 @@ class ShootController extends Controller
         $request->validate([
             'service_photographers' => 'nullable|array',
             'service_photographers.*.service_id' => 'required|integer',
-            'service_photographers.*.photographer_id' => 'nullable|exists:users,id',
+            'service_photographers.*.photographer_id' => [
+                'nullable',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+            ],
             'assignments' => 'nullable|array',
             'assignments.*.service_id' => 'required|integer',
-            'assignments.*.photographer_id' => 'nullable|exists:users,id',
+            'assignments.*.photographer_id' => [
+                'nullable',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+            ],
             'services' => 'nullable|array',
             'services.*.service_id' => 'required|integer',
-            'services.*.photographer_id' => 'nullable|exists:users,id',
+            'services.*.photographer_id' => [
+                'nullable',
+                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
+            ],
             'override' => 'nullable|boolean',
             'override_reason' => 'nullable|string|max:500',
         ]);

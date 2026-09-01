@@ -58,7 +58,9 @@ class SendPayoutReports extends Command
             'reps' => $repSummaries,
             'totalPhotographerPayout' => $photographerSummaries->sum('gross_total'),
             'totalEditorPayout' => $editorSummaries->sum('gross_total'),
-            'totalRepPayout' => $repSummaries->sum('commission_total'),
+            'totalRepPayout' => $repSummaries->sum('payout_total'),
+            'totalRepCommission' => $repSummaries->sum('commission_total'),
+            'totalRepCompensation' => $repSummaries->sum('compensation_total'),
         ])->render();
 
         try {

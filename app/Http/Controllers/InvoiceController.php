@@ -187,9 +187,14 @@ class InvoiceController extends Controller
         $safeReference = Str::slug((string) $reference) ?: (string) $invoice->id;
         $startStamp = $periodStart?->format('Ymd') ?? 'undated';
         $endStamp = $periodEnd?->format('Ymd') ?? $startStamp;
+        $isNoPaymentDocument = ! $invoice->requiresPayment();
+        $documentLabel = $invoice->document_type === Invoice::DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT
+            ? 'Complimentary Receipt'
+            : ($isNoPaymentDocument ? 'Receipt' : 'Invoice');
 
         $filename = sprintf(
-            'invoice-%s-%s-to-%s.csv',
+            '%s-%s-%s-to-%s.csv',
+            $isNoPaymentDocument ? 'receipt' : 'invoice',
             $safeReference,
             $startStamp,
             $endStamp
@@ -208,7 +213,11 @@ class InvoiceController extends Controller
         $hasCanonicalPayments = $usesClientPaymentLedger && $invoice->hasRelatedPaymentRecords();
         $storedPaidFlag = filter_var($invoice->getRawOriginal('is_paid'), FILTER_VALIDATE_BOOLEAN);
 
-        if ($usesClientPaymentLedger) {
+        if ($isNoPaymentDocument) {
+            $amountPaid = 0.0;
+            $balance = 0.0;
+            $isPaid = false;
+        } elseif ($usesClientPaymentLedger) {
             $amountPaid = $hasCanonicalPayments
                 ? round($invoice->totalPaid(), 2)
                 : round(max(
@@ -243,19 +252,24 @@ class InvoiceController extends Controller
             $total,
             $amountPaid,
             $balance,
-            $isPaid
+            $isPaid,
+            $isNoPaymentDocument,
+            $documentLabel
         ) {
             $handle = fopen('php://output', 'w');
 
-            $this->writeCsvRow($handle, ['Invoice ID', $invoice->id]);
-            $this->writeCsvRow($handle, ['Invoice Number', $invoice->invoice_number ?: $invoice->id]);
+            $this->writeCsvRow($handle, ['Document Type', $documentLabel]);
+            $this->writeCsvRow($handle, [$documentLabel.' ID', $invoice->id]);
+            $this->writeCsvRow($handle, [$documentLabel.' Number', $invoice->invoice_number ?: $invoice->id]);
             $this->writeCsvRow($handle, [$partyLabel, $partyName]);
             $this->writeCsvRow($handle, ['Billing Period', $periodLabel]);
             $this->writeCsvRow($handle, []);
             $this->writeCsvRow($handle, ['Shoot ID', 'Scheduled Date', 'Client', 'Total Quote', 'Payments Received']);
 
             foreach ($shoots as $shoot) {
-                $paymentsReceived = $shoot->calculateCanonicalTotalPaid();
+                $paymentsReceived = $isNoPaymentDocument
+                    ? 0.0
+                    : $shoot->calculateCanonicalTotalPaid();
 
                 $this->writeCsvRow($handle, [
                     $shoot->id,
@@ -268,7 +282,7 @@ class InvoiceController extends Controller
 
             if ($invoice->items->isNotEmpty()) {
                 $this->writeCsvRow($handle, []);
-                $this->writeCsvRow($handle, ['Invoice Line Items']);
+                $this->writeCsvRow($handle, [$documentLabel.' Line Items']);
                 $this->writeCsvRow($handle, [
                     'Type',
                     'Description',
@@ -294,7 +308,12 @@ class InvoiceController extends Controller
             $this->writeCsvRow($handle, ['Total', number_format($total, 2, '.', '')]);
             $this->writeCsvRow($handle, ['Amount Paid', number_format($amountPaid, 2, '.', '')]);
             $this->writeCsvRow($handle, ['Balance', number_format($balance, 2, '.', '')]);
-            $this->writeCsvRow($handle, ['Paid', $isPaid ? 'Yes' : 'No']);
+            if ($isNoPaymentDocument) {
+                $this->writeCsvRow($handle, ['Payment Required', 'No']);
+                $this->writeCsvRow($handle, ['Status', 'No Payment Required']);
+            } else {
+                $this->writeCsvRow($handle, ['Paid', $isPaid ? 'Yes' : 'No']);
+            }
 
             fclose($handle);
         }, $filename, [
@@ -320,6 +339,20 @@ class InvoiceController extends Controller
 
         if (! $canMarkPaid) {
             return response()->json(['message' => 'You do not have permission to mark this invoice as paid'], 403);
+        }
+
+        if (! $invoice->requiresPayment()) {
+            return response()->json([
+                'message' => 'This complimentary receipt does not require payment.',
+            ], 422);
+        }
+
+        app(InvoiceAdjustmentService::class)->assertClientPaymentAllowedForInvoice($invoice);
+
+        if ($invoice->isPayoutInvoice() && ! $invoice->isAccountsApproved()) {
+            return response()->json([
+                'message' => 'Accounts approval is required before a staff payout can be marked paid.',
+            ], 422);
         }
 
         $data = $request->validate([
@@ -411,10 +444,11 @@ class InvoiceController extends Controller
             ),
             2
         );
+        $isNonPositivePayoutSettlement = $invoice->isPayoutInvoice() && $invoiceTotal <= 0;
         $isPaid = $invoiceTotal > 0
             ? $amountPaid >= ($invoiceTotal - 0.01)
-            : $amountPaid > 0;
-        $effectivePaidAt = $paymentAmount > 0
+            : $isNonPositivePayoutSettlement;
+        $effectivePaidAt = $paymentAmount > 0 || $isNonPositivePayoutSettlement
             ? $paidAt
             : ($invoice->latestCompletedPayment()?->processed_at ?? $invoice->paid_at ?? now());
 
@@ -444,11 +478,14 @@ class InvoiceController extends Controller
         $invoice->loadMissing(['client', 'photographer', 'shoot', 'shoot.client']);
         if ($isPaid) {
             $this->markPayoutShootsPaid($invoice, $paidAt);
-            $invoice->recordAuditEvent('paid', $request->user(), 'Invoice payment marked as sent.', [
+            $invoice->recordAuditEvent('paid', $request->user(), $isNonPositivePayoutSettlement
+                ? 'Non-positive payout adjustment settled with no cash payment.'
+                : 'Invoice payment marked as sent.', [
                 'amount_paid' => $amountPaid,
                 'payment_amount' => $paymentAmount,
                 'payment_method' => $paymentMethod,
                 'paid_at' => $paidAt->toISOString(),
+                'settlement_type' => $isNonPositivePayoutSettlement ? 'non_positive_adjustment' : 'payment',
             ]);
 
             $context = [
@@ -523,6 +560,8 @@ class InvoiceController extends Controller
         }
         $shoot = $relatedShoots->first();
 
+        $invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+
         $payment = Payment::create([
             'shoot_id' => $shoot->id,
             'invoice_id' => $invoice->id,
@@ -555,6 +594,14 @@ class InvoiceController extends Controller
         $invoice->loadMissing('shoots');
 
         foreach ($invoice->shoots as $shoot) {
+            // Complimentary reshoots can contain multiple service-level
+            // compensation rows with different eligibility periods. Their
+            // linked invoice items are the settlement source of truth; a
+            // whole-shoot paid flag would prematurely settle later rows.
+            if ($shoot->isComplimentaryReshoot()) {
+                continue;
+            }
+
             $updateData = [];
 
             if ($invoice->photographer_id && ! $shoot->photographer_paid_at) {

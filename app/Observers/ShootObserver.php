@@ -6,15 +6,36 @@ use App\Jobs\CreateCubiCasaOrderJob;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\SyncShootIguideJob;
 use App\Models\Shoot;
+use App\Services\CompensationEligibilityService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class ShootObserver
 {
+    public function deleting(Shoot $shoot): void
+    {
+        if ($shoot->isComplimentaryReshoot()
+            || $shoot->reshootChildren()->exists()
+            || $shoot->rootReshootDescendants()->exists()
+            || $shoot->compReshootItems()->exists()
+            || $shoot->compensations()->exists()) {
+            throw ValidationException::withMessages([
+                'shoot' => [
+                    'Shoots in a complimentary-reshoot lineage cannot be permanently deleted. Cancel the shoot to preserve its audit trail.',
+                ],
+            ]);
+        }
+    }
+
     public function updated(Shoot $shoot): void
     {
         $this->ensureCubiCasaOrder($shoot);
         $this->ensureIguideDiscovery($shoot);
+
+        if ($shoot->wasChanged(['workflow_status', 'status', 'admin_verified_at', 'completed_at'])) {
+            app(CompensationEligibilityService::class)->syncForShoot($shoot);
+        }
 
         if (!$shoot->wasChanged('workflow_status') && !$shoot->wasChanged('status')) {
             return;

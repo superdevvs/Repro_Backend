@@ -7,6 +7,7 @@ use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Shoot;
+use App\Models\ShootCompensation;
 use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Messaging\AutomationService;
@@ -42,15 +43,16 @@ class InvoiceService
         $end = $end->copy()->endOfDay();
 
         $shoots = Shoot::with([
-            'payments' => function ($query) {
-                $query->where('status', Payment::STATUS_COMPLETED);
-            },
             'photographer',
             'service',
             'services' => function ($q) {
                 $q->withPivot(['photographer_id', 'photographer_pay', 'quantity']);
             },
         ])
+            ->where(function ($query) {
+                $query->whereNull('shoot_type')
+                    ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+            })
             ->where(function ($query) use ($start, $end) {
                 $query->whereBetween('completed_at', [$start, $end])
                     ->orWhere(function ($innerQuery) use ($start, $end) {
@@ -63,10 +65,6 @@ class InvoiceService
                 Shoot::WORKFLOW_ADMIN_VERIFIED,
             ])
             ->get();
-
-        if ($shoots->isEmpty()) {
-            return collect();
-        }
 
         // Flatten to service-level rows with resolved photographer
         $serviceRows = collect();
@@ -135,38 +133,126 @@ class InvoiceService
             }
         }
 
-        // Group by resolved photographer
-        $grouped = $serviceRows->groupBy('resolved_photographer_id');
+        return DB::transaction(function () use ($serviceRows, $start, $end, $sendEmails) {
+            $this->acquirePayoutGenerationLock(Invoice::ROLE_PHOTOGRAPHER, $start, $end);
 
-        return DB::transaction(function () use ($grouped, $start, $end, $sendEmails, $shoots) {
+            // Eligible compensation is selected under the same transaction and
+            // deterministic period lock that creates invoice items. A second
+            // worker therefore replays against the committed linkage instead of
+            // consuming a stale pre-lock collection.
+            $compensations = ShootCompensation::query()
+                ->with([
+                    'shoot',
+                    'serviceItem.service',
+                    'serviceItem.compReshootItem',
+                    'invoiceItem.invoice',
+                ])
+                ->where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
+                ->where('mode', '!=', ShootCompensation::MODE_NONE)
+                ->whereNull('voided_at')
+                ->whereNotNull('recipient_user_id')
+                ->where('amount', '!=', 0)
+                ->whereBetween('earned_at', [$start, $end])
+                ->lockForUpdate()
+                ->get()
+                ->filter(fn (ShootCompensation $compensation) => $this->compensationCanBeGeneratedForPeriod(
+                    $compensation,
+                    Invoice::ROLE_PHOTOGRAPHER,
+                    $start,
+                    $end,
+                ));
+
+            foreach ($compensations as $compensation) {
+                $shoot = $compensation->shoot;
+                if (! $shoot || ! $shoot->isComplimentaryReshoot()) {
+                    continue;
+                }
+
+                $serviceItem = $compensation->serviceItem;
+                $reshootItem = $serviceItem?->compReshootItem;
+                $serviceName = $reshootItem?->service_name_snapshot
+                    ?? $serviceItem?->service?->name
+                    ?? 'Service';
+
+                $serviceRows->push([
+                    'shoot_id' => $shoot->id,
+                    'shoot' => $shoot,
+                    'service_id' => $reshootItem?->service_id_snapshot ?? $serviceItem?->service_id,
+                    'service_name' => $serviceName,
+                    'resolved_photographer_id' => $compensation->recipient_user_id,
+                    'photographer_pay' => (float) $compensation->amount,
+                    'scheduled_date' => $compensation->earned_at,
+                    'address' => $shoot->address ?? 'Location TBD',
+                    'shoot_compensation_id' => $compensation->id,
+                    'compensation_mode' => $compensation->mode,
+                    'compensation_line_type' => $compensation->line_type,
+                    'adjusts_compensation_id' => $compensation->adjusts_compensation_id,
+                    'payout_invoice_id' => $compensation->invoiceItem?->invoice_id,
+                    'basis_amount_snapshot' => $compensation->basis_amount_snapshot,
+                    'rate_snapshot' => $compensation->rate_snapshot,
+                ]);
+            }
+
+            if ($serviceRows->isEmpty()) {
+                return collect();
+            }
+
+            // Group by resolved photographer after locking/re-reading all
+            // compensation rows so recipients cannot change underneath us.
+            $grouped = $serviceRows->groupBy('resolved_photographer_id');
             $invoices = collect();
 
             foreach ($grouped as $photographerId => $photographerServices) {
-                $shootIds = $photographerServices->pluck('shoot_id')->unique();
-                $relatedShoots = $shoots->whereIn('id', $shootIds);
-                $totalAmount = $photographerServices->sum('photographer_pay');
-                $amountPaid = $relatedShoots
-                    ->flatMap(fn (Shoot $shoot) => $shoot->payments)
-                    ->sum(fn ($payment) => (float) $payment->amount);
-
-                // Check if invoice already exists
-                $existingInvoice = Invoice::where('photographer_id', $photographerId)
+                $periodInvoices = Invoice::where('photographer_id', $photographerId)
                     ->where('role', Invoice::ROLE_PHOTOGRAPHER)
                     ->whereDate('billing_period_start', $start->toDateString())
                     ->whereDate('billing_period_end', $end->toDateString())
-                    ->first();
+                    ->lockForUpdate()
+                    ->get();
+                $existingInvoice = $periodInvoices->first(
+                    fn (Invoice $invoice) => ! $invoice->isAccountsApproved()
+                        && $invoice->status !== Invoice::STATUS_PAID
+                        && ! $invoice->paid_at
+                );
+                $hasSettledInvoice = $periodInvoices->contains(
+                    fn (Invoice $invoice) => $invoice->isAccountsApproved()
+                        || $invoice->status === Invoice::STATUS_PAID
+                        || $invoice->paid_at
+                );
 
-                if ($existingInvoice) {
-                    if ($existingInvoice->isAccountsApproved() || $existingInvoice->status === Invoice::STATUS_PAID) {
-                        $existingInvoice->recordAuditEvent('recalculation_skipped', null, 'Approved or paid photographer invoice was not recalculated.', [
-                            'total_amount' => $totalAmount,
-                            'service_count' => $photographerServices->count(),
-                        ]);
-                        $invoices->push($existingInvoice->fresh(['photographer', 'items', 'shoots']));
+                if ($hasSettledInvoice) {
+                    // Never rebuild work already frozen on an approved/paid
+                    // invoice. A newly earned correction/reversal becomes a
+                    // supplemental draft for the same earning period.
+                    $photographerServices = $photographerServices
+                        ->filter(function (array $row) use ($existingInvoice) {
+                            $compensationId = $row['shoot_compensation_id'] ?? null;
+                            if (! $compensationId) {
+                                return false;
+                            }
+
+                            $invoiceId = $row['payout_invoice_id'] ?? null;
+
+                            return $invoiceId === null
+                                || ($existingInvoice && (int) $invoiceId === (int) $existingInvoice->id);
+                        })
+                        ->values();
+
+                    if ($photographerServices->isEmpty()) {
+                        $invoices->push($periodInvoices->sortByDesc('id')->first());
 
                         continue;
                     }
+                }
 
+                $shootIds = $photographerServices->pluck('shoot_id')->unique();
+                $totalAmount = $photographerServices->sum('photographer_pay');
+                // Client Payment rows belong to the client receivables ledger.
+                // A payout invoice starts unpaid and is settled only through
+                // the staff payout approval/payment lifecycle.
+                $amountPaid = 0.0;
+
+                if ($existingInvoice) {
                     $before = [
                         'total_amount' => round((float) $existingInvoice->total_amount, 2),
                         'unresolved_warnings' => $existingInvoice->unresolved_warnings ?? [],
@@ -176,24 +262,9 @@ class InvoiceService
                         ->delete();
 
                     foreach ($photographerServices as $serviceRow) {
-                        $existingInvoice->items()->create([
-                            'shoot_id' => $serviceRow['shoot_id'],
-                            'type' => InvoiceItem::TYPE_CHARGE,
-                            'description' => sprintf(
-                                'Shoot #%d - %s - %s',
-                                $serviceRow['shoot_id'],
-                                $serviceRow['address'],
-                                $serviceRow['service_name']
-                            ),
-                            'quantity' => 1,
-                            'unit_amount' => $serviceRow['photographer_pay'],
-                            'total_amount' => $serviceRow['photographer_pay'],
-                            'recorded_at' => $serviceRow['scheduled_date'],
-                            'meta' => [
-                                'service_id' => $serviceRow['service_id'],
-                                'service_name' => $serviceRow['service_name'],
-                            ],
-                        ]);
+                        $existingInvoice->items()->create(
+                            $this->photographerPayoutItemPayload($serviceRow)
+                        );
                     }
 
                     $existingInvoice->update([
@@ -235,10 +306,14 @@ class InvoiceService
                 // IDEMPOTENCY: Check for existing items to prevent duplicates on regeneration
                 foreach ($photographerServices as $serviceRow) {
                     // Check if this service item already exists on the invoice
-                    $existingItem = $invoice->items()
-                        ->where('shoot_id', $serviceRow['shoot_id'])
-                        ->whereJsonContains('meta->service_id', $serviceRow['service_id'])
-                        ->first();
+                    $existingItemQuery = $invoice->items()
+                        ->where('shoot_id', $serviceRow['shoot_id']);
+                    if (! empty($serviceRow['shoot_compensation_id'])) {
+                        $existingItemQuery->where('shoot_compensation_id', $serviceRow['shoot_compensation_id']);
+                    } else {
+                        $existingItemQuery->whereJsonContains('meta->service_id', $serviceRow['service_id']);
+                    }
+                    $existingItem = $existingItemQuery->first();
 
                     if ($existingItem) {
                         // Update existing item instead of creating duplicate
@@ -250,24 +325,9 @@ class InvoiceService
                         continue;
                     }
 
-                    $invoice->items()->create([
-                        'shoot_id' => $serviceRow['shoot_id'],
-                        'type' => InvoiceItem::TYPE_CHARGE,
-                        'description' => sprintf(
-                            'Shoot #%d - %s - %s',
-                            $serviceRow['shoot_id'],
-                            $serviceRow['address'],
-                            $serviceRow['service_name']
-                        ),
-                        'quantity' => 1,
-                        'unit_amount' => $serviceRow['photographer_pay'],
-                        'total_amount' => $serviceRow['photographer_pay'],
-                        'recorded_at' => $serviceRow['scheduled_date'],
-                        'meta' => [
-                            'service_id' => $serviceRow['service_id'],
-                            'service_name' => $serviceRow['service_name'],
-                        ],
-                    ]);
+                    $invoice->items()->create(
+                        $this->photographerPayoutItemPayload($serviceRow)
+                    );
                 }
 
                 $invoice->update([
@@ -316,6 +376,96 @@ class InvoiceService
         });
     }
 
+    private function photographerPayoutItemPayload(array $serviceRow): array
+    {
+        $compensationId = $serviceRow['shoot_compensation_id'] ?? null;
+        $isCompensation = $compensationId !== null;
+        $amount = round((float) $serviceRow['photographer_pay'], 2);
+
+        return [
+            'shoot_id' => $serviceRow['shoot_id'],
+            'shoot_compensation_id' => $compensationId,
+            'type' => InvoiceItem::TYPE_CHARGE,
+            'description' => sprintf(
+                $isCompensation
+                    ? 'Complimentary reshoot #%d - %s - %s'
+                    : 'Shoot #%d - %s - %s',
+                $serviceRow['shoot_id'],
+                $serviceRow['address'],
+                $serviceRow['service_name']
+            ),
+            'quantity' => 1,
+            'unit_amount' => $amount,
+            'total_amount' => $amount,
+            'recorded_at' => $serviceRow['scheduled_date'],
+            'meta' => array_filter([
+                'service_id' => $serviceRow['service_id'],
+                'service_name' => $serviceRow['service_name'],
+                'payout_kind' => $isCompensation ? 'complimentary_reshoot_compensation' : 'service_pay',
+                'compensation_amount' => $isCompensation ? $amount : null,
+                'compensation_mode' => $serviceRow['compensation_mode'] ?? null,
+                'compensation_line_type' => $serviceRow['compensation_line_type'] ?? null,
+                'adjusts_compensation_id' => $serviceRow['adjusts_compensation_id'] ?? null,
+                'basis_amount_snapshot' => $serviceRow['basis_amount_snapshot'] ?? null,
+                'rate_snapshot' => $serviceRow['rate_snapshot'] ?? null,
+            ], fn ($value) => $value !== null),
+        ];
+    }
+
+    private function compensationCanBeGeneratedForPeriod(
+        ShootCompensation $compensation,
+        string $role,
+        Carbon $start,
+        Carbon $end,
+    ): bool {
+        $item = $compensation->invoiceItem;
+        if (! $item) {
+            return true;
+        }
+
+        $invoice = $item->invoice;
+        if (! $invoice || $invoice->role !== $role) {
+            return false;
+        }
+
+        $periodStart = $invoice->billing_period_start ?? $invoice->period_start;
+        $periodEnd = $invoice->billing_period_end ?? $invoice->period_end;
+
+        return $periodStart && $periodEnd
+            && Carbon::parse($periodStart)->isSameDay($start)
+            && Carbon::parse($periodEnd)->isSameDay($end);
+    }
+
+    /**
+     * Serialize payout generation for one recipient role and earning period.
+     * The row is deliberately durable: insert-or-ignore handles first use and
+     * lockForUpdate makes concurrent workers wait for the active transaction.
+     */
+    private function acquirePayoutGenerationLock(string $role, Carbon $start, Carbon $end): void
+    {
+        $lockKey = implode(':', [
+            'payout',
+            strtolower($role),
+            $start->toDateString(),
+            $end->toDateString(),
+        ]);
+        $now = now();
+
+        DB::table('payout_generation_locks')->insertOrIgnore([
+            'lock_key' => $lockKey,
+            'recipient_role' => $role,
+            'period_start' => $start->toDateString(),
+            'period_end' => $end->toDateString(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        DB::table('payout_generation_locks')
+            ->where('lock_key', $lockKey)
+            ->lockForUpdate()
+            ->first();
+    }
+
     private function extractShootSqft(Shoot $shoot): ?int
     {
         $propertyDetails = $shoot->property_details;
@@ -356,16 +506,48 @@ class InvoiceService
             'services',
         ])
             ->where('client_id', $user->id)
+            ->where(function ($query) {
+                $query->whereNull('shoot_type')
+                    ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+            })
             ->whereBetween('scheduled_date', [
                 $start->copy()->startOfDay()->toDateTimeString(),
                 $end->copy()->endOfDay()->toDateTimeString(),
             ])
             ->get();
 
+        if ($shoots->isEmpty()) {
+            $complimentaryReceipt = Invoice::query()
+                ->where('user_id', $user->id)
+                ->where('role', Invoice::ROLE_CLIENT)
+                ->where('document_type', Invoice::DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT)
+                ->whereHas('shoot', function ($query) use ($start, $end) {
+                    $query->where('shoot_type', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT)
+                        ->whereBetween('scheduled_date', [
+                            $start->toDateTimeString(),
+                            $end->toDateTimeString(),
+                        ]);
+                })
+                ->latest('id')
+                ->first();
+
+            // A period containing only comp work already has its direct $0
+            // receipt. Reuse it instead of manufacturing an empty aggregate
+            // invoice that could be mistaken for another client document.
+            if ($complimentaryReceipt) {
+                return $complimentaryReceipt->load(['items', 'user', 'client', 'shoots']);
+            }
+        }
+
         return DB::transaction(function () use ($user, $start, $end, $shoots) {
             $invoice = Invoice::query()
                 ->where('user_id', $user->id)
                 ->where('role', Invoice::ROLE_CLIENT)
+                ->whereNull('shoot_id')
+                ->where(function ($query) {
+                    $query->whereNull('document_type')
+                        ->orWhere('document_type', '!=', Invoice::DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT);
+                })
                 ->whereDate('period_start', $start->toDateString())
                 ->whereDate('period_end', $end->toDateString())
                 ->lockForUpdate()
@@ -593,6 +775,10 @@ class InvoiceService
             'services' => fn ($query) => $query->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id']),
             'rep:id,name,email,role,secondary_roles,metadata,account_status',
         ])
+            ->where(function ($query) {
+                $query->whereNull('shoot_type')
+                    ->orWhere('shoot_type', '!=', Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT);
+            })
             ->whereBetween('scheduled_date', [
                 $start->copy()->startOfDay()->toDateTimeString(),
                 $end->copy()->endOfDay()->toDateTimeString(),
@@ -605,59 +791,112 @@ class InvoiceService
             ])
             ->get();
 
-        if ($shoots->isEmpty()) {
-            return collect();
-        }
+        return DB::transaction(function () use ($shoots, $start, $end, $sendEmails) {
+            $this->acquirePayoutGenerationLock(Invoice::ROLE_SALES_REP, $start, $end);
 
-        $grouped = $shoots->groupBy('rep_id');
+            $compensations = ShootCompensation::query()
+                ->with(['shoot', 'recipient', 'invoiceItem.invoice'])
+                ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
+                ->where('mode', '!=', ShootCompensation::MODE_NONE)
+                ->whereNull('voided_at')
+                ->whereNotNull('recipient_user_id')
+                ->where('amount', '!=', 0)
+                ->whereBetween('earned_at', [$start, $end])
+                ->lockForUpdate()
+                ->get()
+                ->filter(fn (ShootCompensation $compensation) => $this->compensationCanBeGeneratedForPeriod(
+                    $compensation,
+                    Invoice::ROLE_SALES_REP,
+                    $start,
+                    $end,
+                ));
 
-        return DB::transaction(function () use ($grouped, $start, $end, $sendEmails) {
+            if ($shoots->isEmpty() && $compensations->isEmpty()) {
+                return collect();
+            }
+
+            $repIds = $shoots->pluck('rep_id')
+                ->merge($compensations->pluck('recipient_user_id'))
+                ->filter()
+                ->unique()
+                ->values();
             $invoices = collect();
 
-            foreach ($grouped as $repId => $repShoots) {
-                $rep = $repShoots->first()->rep ?: User::find($repId);
+            foreach ($repIds as $repId) {
+                $repShoots = $shoots->where('rep_id', $repId)->values();
+                $repCompensations = $compensations->where('recipient_user_id', $repId)->values();
+                $rep = $repShoots->first()?->rep
+                    ?: $repCompensations->first()?->recipient
+                    ?: User::find($repId);
                 if (! $this->isActiveSalesRep($rep)) {
                     continue;
+                }
+
+                $periodInvoices = Invoice::where('sales_rep_id', $repId)
+                    ->whereNull('photographer_id')
+                    ->whereDate('billing_period_start', $start->toDateString())
+                    ->whereDate('billing_period_end', $end->toDateString())
+                    ->lockForUpdate()
+                    ->get();
+                $existingInvoice = $periodInvoices->first(
+                    fn (Invoice $invoice) => ! $invoice->isAccountsApproved()
+                        && $invoice->status !== Invoice::STATUS_PAID
+                        && ! $invoice->paid_at
+                );
+                $hasSettledInvoice = $periodInvoices->contains(
+                    fn (Invoice $invoice) => $invoice->isAccountsApproved()
+                        || $invoice->status === Invoice::STATUS_PAID
+                        || $invoice->paid_at
+                );
+
+                if ($hasSettledInvoice) {
+                    $repShoots = collect();
+                    $repCompensations = $repCompensations
+                        ->filter(function (ShootCompensation $compensation) use ($existingInvoice) {
+                            $invoiceId = $compensation->invoiceItem?->invoice_id;
+
+                            return $invoiceId === null
+                                || ($existingInvoice && (int) $invoiceId === (int) $existingInvoice->id);
+                        })
+                        ->values();
+
+                    if ($repCompensations->isEmpty()) {
+                        $invoices->push($periodInvoices->sortByDesc('id')->first());
+
+                        continue;
+                    }
                 }
 
                 $commissionRate = $this->resolveSalesCommissionRate($rep);
                 $commissionRows = $repShoots
                     ->map(fn (Shoot $shoot) => $this->buildSalesRepCommissionRow($shoot, $commissionRate))
                     ->values();
+                $compensationRows = $repCompensations
+                    ->map(fn (ShootCompensation $compensation) => $this->buildSalesRepCompensationRow($compensation))
+                    ->filter()
+                    ->values();
                 $grossTotal = round((float) $commissionRows->sum('commissionable_gross'), 2);
                 $excludedFeesTotal = round((float) $commissionRows->sum('excluded_fees_total'), 2);
                 $commissionTotal = round((float) $commissionRows->sum('commission_amount'), 2);
+                $compensationTotal = round((float) $compensationRows->sum('compensation_amount'), 2);
                 $invoiceNotes = sprintf(
-                    'Commission rate: %s%% on $%s commissionable gross. Excluded fees: $%s.',
+                    'Commission rate: %s%% on $%s commissionable gross. Excluded fees: $%s. Complimentary compensation: $%s.',
                     $commissionRate,
                     number_format($grossTotal, 2),
-                    number_format($excludedFeesTotal, 2)
+                    number_format($excludedFeesTotal, 2),
+                    number_format($compensationTotal, 2),
                 );
-                $shootIds = $repShoots->pluck('id')->all();
+                $shootIds = $repShoots->pluck('id')
+                    ->merge($repCompensations->pluck('shoot_id'))
+                    ->unique()
+                    ->values()
+                    ->all();
                 $warnings = $commissionRows
                     ->flatMap(fn (array $row) => $row['warnings'])
                     ->values()
                     ->all();
 
-                // Check if invoice already exists
-                $existingInvoice = Invoice::where('sales_rep_id', $repId)
-                    ->whereNull('photographer_id')
-                    ->whereDate('billing_period_start', $start->toDateString())
-                    ->whereDate('billing_period_end', $end->toDateString())
-                    ->first();
-
                 if ($existingInvoice) {
-                    if ($existingInvoice->isAccountsApproved() || $existingInvoice->status === Invoice::STATUS_PAID) {
-                        $existingInvoice->recordAuditEvent('recalculation_skipped', null, 'Approved or paid sales rep invoice was not recalculated.', [
-                            'commissionable_gross' => $grossTotal,
-                            'commission_total' => $commissionTotal,
-                            'warnings' => $warnings,
-                        ]);
-                        $invoices->push($existingInvoice->fresh(['salesRep', 'items', 'shoots']));
-
-                        continue;
-                    }
-
                     $before = [
                         'total_amount' => round((float) $existingInvoice->total_amount, 2),
                         'unresolved_warnings' => $existingInvoice->unresolved_warnings ?? [],
@@ -669,8 +908,14 @@ class InvoiceService
                     foreach ($commissionRows as $row) {
                         $this->createSalesRepCommissionItem($existingInvoice, $row, $commissionRate);
                     }
+                    foreach ($compensationRows as $row) {
+                        $this->createSalesRepCompensationItem($existingInvoice, $row);
+                    }
 
                     $invoiceUpdateData = [
+                        'amount_paid' => 0,
+                        'is_paid' => false,
+                        'paid_at' => null,
                         'unresolved_warnings' => $warnings,
                         'warning_override_reason' => null,
                         'warning_override_by' => null,
@@ -691,6 +936,7 @@ class InvoiceService
                             'total_amount' => round((float) $existingInvoice->total_amount, 2),
                             'commissionable_gross' => $grossTotal,
                             'commission_total' => $commissionTotal,
+                            'compensation_total' => $compensationTotal,
                             'unresolved_warnings' => $warnings,
                         ],
                     ]);
@@ -710,6 +956,8 @@ class InvoiceService
                     'billing_period_end' => $end->toDateString(),
                     'status' => Invoice::STATUS_DRAFT,
                     'approval_status' => Invoice::APPROVAL_STATUS_PENDING,
+                    'amount_paid' => 0,
+                    'is_paid' => false,
                     'unresolved_warnings' => $warnings,
                 ];
                 if ($this->invoiceTableHasColumn('notes')) {
@@ -724,6 +972,9 @@ class InvoiceService
                 foreach ($commissionRows as $row) {
                     $this->createSalesRepCommissionItem($invoice, $row, $commissionRate);
                 }
+                foreach ($compensationRows as $row) {
+                    $this->createSalesRepCompensationItem($invoice, $row);
+                }
 
                 // Sync shoots
                 $invoice->shoots()->sync($shootIds);
@@ -735,6 +986,7 @@ class InvoiceService
                     'excluded_fees_total' => $excludedFeesTotal,
                     'commission_rate' => $commissionRate,
                     'commission_total' => $commissionTotal,
+                    'compensation_total' => $compensationTotal,
                     'warnings' => $warnings,
                 ]);
 
@@ -878,6 +1130,28 @@ class InvoiceService
         ];
     }
 
+    private function buildSalesRepCompensationRow(ShootCompensation $compensation): ?array
+    {
+        $shoot = $compensation->shoot;
+        if (! $shoot || ! $shoot->isComplimentaryReshoot()) {
+            return null;
+        }
+
+        return [
+            'shoot_id' => $shoot->id,
+            'address' => $shoot->address ?? 'Location TBD',
+            'recorded_at' => $compensation->earned_at,
+            'shoot_compensation_id' => $compensation->id,
+            'compensation_amount' => round((float) $compensation->amount, 2),
+            'compensation_mode' => $compensation->mode,
+            'compensation_line_type' => $compensation->line_type,
+            'adjusts_compensation_id' => $compensation->adjusts_compensation_id,
+            'payout_invoice_id' => $compensation->invoiceItem?->invoice_id,
+            'basis_amount_snapshot' => $compensation->basis_amount_snapshot,
+            'rate_snapshot' => $compensation->rate_snapshot,
+        ];
+    }
+
     private function resolveShootServicePrice(Shoot $shoot, Service $service, int $quantity): ?float
     {
         $pivotPrice = data_get($service, 'pivot.price');
@@ -922,6 +1196,38 @@ class InvoiceService
                 'excluded_lines' => $row['excluded_lines'],
                 'warnings' => $row['warnings'],
             ],
+        ]);
+    }
+
+    private function createSalesRepCompensationItem(Invoice $invoice, array $row): void
+    {
+        $amount = round((float) $row['compensation_amount'], 2);
+
+        $invoice->items()->create([
+            'shoot_id' => $row['shoot_id'],
+            'shoot_compensation_id' => $row['shoot_compensation_id'],
+            'type' => InvoiceItem::TYPE_CHARGE,
+            'description' => sprintf(
+                'Complimentary reshoot #%d - %s (Rep compensation)',
+                $row['shoot_id'],
+                $row['address'],
+            ),
+            'quantity' => 1,
+            'unit_amount' => $amount,
+            'total_amount' => $amount,
+            'recorded_at' => $row['recorded_at'],
+            'meta' => array_filter([
+                'payout_kind' => 'complimentary_reshoot_compensation',
+                'commissionable_gross' => 0,
+                'commission_rate' => 0,
+                'commission_amount' => 0,
+                'compensation_amount' => $amount,
+                'compensation_mode' => $row['compensation_mode'],
+                'compensation_line_type' => $row['compensation_line_type'] ?? null,
+                'adjusts_compensation_id' => $row['adjusts_compensation_id'] ?? null,
+                'basis_amount_snapshot' => $row['basis_amount_snapshot'],
+                'rate_snapshot' => $row['rate_snapshot'],
+            ], fn ($value) => $value !== null),
         ]);
     }
 
@@ -1020,7 +1326,8 @@ class InvoiceService
             // where regenerating an existing invoice happened outside a
             // transaction and could expose a half-rebuilt set of line items.
             $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
-            $shoot->load(['client', 'photographer', 'services', 'payments.refunds']);
+            $shoot->load(['client', 'photographer', 'services', 'payments.refunds', 'compReshootItems']);
+            $isComplimentaryReceipt = $shoot->isComplimentaryReshoot();
 
             $invoiceAdjustments = app(InvoiceAdjustmentService::class);
             $existingInvoice = Invoice::query()
@@ -1030,7 +1337,7 @@ class InvoiceService
                 ->orderByDesc('id')
                 ->first();
 
-            if (! $existingInvoice) {
+            if (! $existingInvoice && ! $isComplimentaryReceipt) {
                 // Period/aggregate invoices may be linked only through the pivot
                 // or an attributed item. Reuse them instead of creating a second
                 // client invoice for the same shoot. They must not be rebuilt as
@@ -1047,12 +1354,16 @@ class InvoiceService
             $shootAdjustmentTotal = $invoiceAdjustments
                 ->billableItemsForShoot($shoot)
                 ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
-            $subtotal = $isCancellationFeeOnly
-                ? max((float) ($shoot->total_quote ?? 0) - $shootAdjustmentTotal, 0)
-                : (float) ($shoot->base_quote ?? 0);
-            $taxAmount = $isCancellationFeeOnly ? 0.0 : (float) ($shoot->tax_amount ?? 0);
+            $subtotal = $isComplimentaryReceipt
+                ? 0.0
+                : ($isCancellationFeeOnly
+                    ? max((float) ($shoot->total_quote ?? 0) - $shootAdjustmentTotal, 0)
+                    : (float) ($shoot->base_quote ?? 0));
+            $taxAmount = ($isCancellationFeeOnly || $isComplimentaryReceipt)
+                ? 0.0
+                : (float) ($shoot->tax_amount ?? 0);
             $total = $isCancellationFeeOnly ? $subtotal : $subtotal + $taxAmount;
-            $totalPaid = $shoot->calculateCanonicalTotalPaid();
+            $totalPaid = $isComplimentaryReceipt ? 0.0 : $shoot->calculateCanonicalTotalPaid();
 
             if ($existingInvoice) {
                 $existingInvoice->items()
@@ -1074,8 +1385,13 @@ class InvoiceService
                     })
                     ->sum(fn (InvoiceItem $item) => (float) $item->total_amount);
 
-                $isPaid = $total <= 0.01 || $totalPaid >= ($total - 0.01);
+                $isPaid = ! $isComplimentaryReceipt
+                    && ($total <= 0.01 || $totalPaid >= ($total - 0.01));
                 $existingInvoice->forceFill([
+                    'document_type' => $isComplimentaryReceipt
+                        ? Invoice::DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT
+                        : Invoice::DOCUMENT_TYPE_INVOICE,
+                    'payment_required' => ! $isComplimentaryReceipt,
                     'subtotal' => $subtotal,
                     'tax' => $taxAmount,
                     'total' => $total,
@@ -1085,6 +1401,8 @@ class InvoiceService
                     'status' => $isPaid
                         ? Invoice::STATUS_PAID
                         : Invoice::STATUS_SENT,
+                    'paid_at' => $isPaid ? $existingInvoice->paid_at : null,
+                    'due_date' => $isComplimentaryReceipt ? null : $existingInvoice->due_date,
                 ])->save();
                 $invoiceAdjustments->applyInvoiceTotalDelta($existingInvoice, $adjustmentTotal);
 
@@ -1096,7 +1414,7 @@ class InvoiceService
                 ->orderBy('id', 'desc')
                 ->first();
 
-            $invoiceNumber = 'Invoice '.str_pad(
+            $invoiceNumber = ($isComplimentaryReceipt ? 'Receipt ' : 'Invoice ').str_pad(
                 $lastInvoice ? ((int) preg_replace('/\D/', '', $lastInvoice->invoice_number)) + 1 : 1,
                 5,
                 '0',
@@ -1112,15 +1430,22 @@ class InvoiceService
 
             $userId = $this->determineInvoiceUserId($shoot);
 
-            $isPaid = $total <= 0.01 || $totalPaid >= ($total - 0.01);
+            $isPaid = ! $isComplimentaryReceipt
+                && ($total <= 0.01 || $totalPaid >= ($total - 0.01));
             $invoiceData = [
                 'user_id' => $userId,
                 'role' => Invoice::ROLE_CLIENT,
+                'document_type' => $isComplimentaryReceipt
+                    ? Invoice::DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT
+                    : Invoice::DOCUMENT_TYPE_INVOICE,
+                'payment_required' => ! $isComplimentaryReceipt,
                 'period_start' => $periodStart,
                 'period_end' => $periodEnd,
                 'invoice_number' => $invoiceNumber,
                 'issue_date' => now(),
-                'due_date' => $shoot->scheduled_at ? Carbon::parse($shoot->scheduled_at)->addDays(30) : now()->addDays(30),
+                'due_date' => $isComplimentaryReceipt
+                    ? null
+                    : ($shoot->scheduled_at ? Carbon::parse($shoot->scheduled_at)->addDays(30) : now()->addDays(30)),
                 'subtotal' => $subtotal,
                 'tax' => $taxAmount,
                 'total' => $total,
@@ -1391,15 +1716,44 @@ class InvoiceService
 
     protected function createShootChargeItems(Invoice $invoice, Shoot $shoot, bool $isCancellationFeeOnly = false): void
     {
+        $isComplimentaryReceipt = $shoot->isComplimentaryReshoot();
+        $reshootItems = $shoot->relationLoaded('compReshootItems')
+            ? $shoot->compReshootItems->keyBy('shoot_service_id')
+            : $shoot->compReshootItems()->get()->keyBy('shoot_service_id');
+
         foreach ($shoot->services as $service) {
-            $servicePrice = (float) ($service->pivot->price ?? $service->price ?? 0);
-            $quantity = (int) ($service->pivot->quantity ?? 1);
+            $reshootItem = $reshootItems->get($service->pivot->id);
+            $quantity = (int) ($reshootItem?->quantity_snapshot ?? $service->pivot->quantity ?? 1);
+            $nominalUnitAmount = (float) (
+                $reshootItem?->nominal_unit_price_snapshot
+                ?? $service->pivot->nominal_value_snapshot
+                ?? $service->pivot->price
+                ?? $service->price
+                ?? 0
+            );
+            $nominalTotalAmount = (float) (
+                $reshootItem?->nominal_total_snapshot
+                ?? ($nominalUnitAmount * $quantity)
+            );
+            $servicePrice = $isComplimentaryReceipt ? 0.0 : $nominalUnitAmount;
             $originalAmount = $servicePrice * $quantity;
 
             $meta = [
                 'service_id' => $service->id,
-                'service_name' => $service->name ?? $service->service_name,
+                'service_name' => $reshootItem?->service_name_snapshot
+                    ?? $service->name
+                    ?? $service->service_name,
             ];
+
+            if ($isComplimentaryReceipt) {
+                $meta = array_merge($meta, [
+                    'complimentary_reshoot' => true,
+                    'comp_reshoot_item_id' => $reshootItem?->id,
+                    'reason_code' => $reshootItem?->reason_code,
+                    'nominal_unit_amount' => round($nominalUnitAmount, 2),
+                    'nominal_total_amount' => round($nominalTotalAmount, 2),
+                ]);
+            }
 
             if ($isCancellationFeeOnly) {
                 $meta['cancelled_service_charge'] = true;
@@ -1410,10 +1764,12 @@ class InvoiceService
             $invoice->items()->create([
                 'shoot_id' => $shoot->id,
                 'type' => InvoiceItem::TYPE_CHARGE,
-                'description' => $this->describeShootService($shoot, $service),
+                'description' => $isComplimentaryReceipt
+                    ? 'Complimentary - '.($meta['service_name'] ?: 'Service')
+                    : $this->describeShootService($shoot, $service),
                 'quantity' => $quantity,
                 'unit_amount' => $servicePrice,
-                'total_amount' => $isCancellationFeeOnly ? 0 : $originalAmount,
+                'total_amount' => ($isCancellationFeeOnly || $isComplimentaryReceipt) ? 0 : $originalAmount,
                 'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
                 'meta' => $meta,
             ]);

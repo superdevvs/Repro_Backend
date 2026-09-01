@@ -111,6 +111,12 @@ class ShootResource extends JsonResource
         }
 
         $requestingUser = $request->user();
+        $requestingRole = strtolower((string) ($requestingUser?->role ?? ''));
+        $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
+        $isOwningClient = $requestingRole === 'client'
+            && $requestingUser
+            && (int) $requestingUser->id === (int) $this->client_id;
+        $canViewSafeReshootContext = $canManageReshoots || $isOwningClient;
         $canViewInvoice = app(\App\Services\Invoices\InvoiceAuthorizationService::class)
             ->canViewShootInvoice($this->resource, $requestingUser);
         $isEditor = strtolower((string) ($requestingUser?->role ?? '')) === 'editor';
@@ -201,6 +207,18 @@ class ShootResource extends JsonResource
             (float) ($this->total_paid ?? 0) - (float) ($this->total_quote ?? 0),
             0
         ), 2);
+        $reshootSummaries = collect(match (true) {
+            $canManageReshoots => $this->relatedReshootSummaries(),
+            $isOwningClient => $this->safeRelatedReshootSummaries(),
+            default => [],
+        });
+        $reshootServiceLinks = $canManageReshoots && $this->isComplimentaryReshoot()
+            ? $this->complimentaryReshootServiceLinks()
+            : [];
+        $primaryReshootLink = collect($reshootServiceLinks)->first();
+        $lineageContext = $canViewSafeReshootContext
+            ? $this->safeReshootLineageContext()
+            : ['parent' => null, 'root' => null];
 
         $tourLinks = is_array($this->tour_links) ? $this->tour_links : [];
         $realtorClient = $this->resolveRealtorClient($tourLinks);
@@ -412,6 +430,57 @@ class ShootResource extends JsonResource
             'workflowStatus' => $this->workflow_status,
             'shoot_type' => $this->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD,
             'shootType' => $this->shoot_type ?? Shoot::SHOOT_TYPE_STANDARD,
+            'reshoot_of_shoot_id' => $this->reshoot_of_shoot_id,
+            'reshootOfShootId' => $this->reshoot_of_shoot_id,
+            'root_shoot_id' => $this->root_shoot_id,
+            'rootShootId' => $this->root_shoot_id,
+            'reshoot_classification' => $this->reshoot_of_shoot_id
+                ? ($this->isComplimentaryReshoot() ? 'complimentary_reshoot' : 'additional_work')
+                : null,
+            'reshootClassification' => $this->reshoot_of_shoot_id
+                ? ($this->isComplimentaryReshoot() ? 'complimentary_reshoot' : 'additional_work')
+                : null,
+            'reshoot_parent' => $this->when($canViewSafeReshootContext, $lineageContext['parent']),
+            'reshootParent' => $this->when($canViewSafeReshootContext, $lineageContext['parent']),
+            'reshoot_root' => $this->when($canViewSafeReshootContext, $lineageContext['root']),
+            'reshootRoot' => $this->when($canViewSafeReshootContext, $lineageContext['root']),
+            'reshoot_summary' => $this->when($canViewSafeReshootContext, [
+                'related_count' => $reshootSummaries->count(),
+                'complimentary_count' => $reshootSummaries
+                    ->where('classification', 'complimentary_reshoot')
+                    ->count(),
+                'additional_work_count' => $reshootSummaries
+                    ->where('classification', 'additional_work')
+                    ->count(),
+                'related_reshoots' => $reshootSummaries,
+            ]),
+            'complimentary_reshoots' => $this->when(
+                $canViewSafeReshootContext,
+                $reshootSummaries->where('classification', 'complimentary_reshoot')->values()
+            ),
+            'complimentary_reshoot_overview' => $this->when(
+                $canManageReshoots && $this->isComplimentaryReshoot(),
+                fn () => $this->complimentaryReshootOverview()
+            ),
+            'reshoot_reason_code' => $this->when(
+                $canManageReshoots && $this->isComplimentaryReshoot(),
+                $primaryReshootLink['reason_code'] ?? null
+            ),
+            'reshootReasonCode' => $this->when(
+                $canManageReshoots && $this->isComplimentaryReshoot(),
+                $primaryReshootLink['reason_code'] ?? null
+            ),
+            'reshoot_reason_note' => $this->when(
+                $canManageReshoots && $this->isComplimentaryReshoot(),
+                $primaryReshootLink['reason_note'] ?? null
+            ),
+            'reshootReasonNote' => $this->when(
+                $canManageReshoots && $this->isComplimentaryReshoot(),
+                $primaryReshootLink['reason_note'] ?? null
+            ),
+            'reshoot_service_links' => $this->when($canManageReshoots, $reshootServiceLinks),
+            'reshootServiceLinks' => $this->when($canManageReshoots, $reshootServiceLinks),
+            'affected_source_items' => $this->when($canManageReshoots, $reshootServiceLinks),
             'product_status' => $this->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT,
             'productStatus' => $this->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT,
             'deliveryStatus' => $this->delivery_status ?? 'not_started',

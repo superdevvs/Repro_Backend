@@ -44,6 +44,7 @@ class StoreShootRequest extends FormRequest
         $user = $this->user();
         $userRole = strtolower((string) ($user->role ?? ''));
         $isInternalScheduler = in_array($userRole, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'sales_rep'], true);
+        $canCreateAdditionalWork = in_array($userRole, ['admin', 'superadmin'], true);
         $shootType = (string) $this->input('shoot_type', 'standard');
         // Only a superadmin may intentionally create an internal/no-charge shoot
         // without a selected service. A zero-dollar selected service is still a
@@ -92,6 +93,17 @@ class StoreShootRequest extends FormRequest
                     Shoot::PRODUCT_STATUS_NO_PRODUCT,
                     Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
                 ]),
+            ],
+            'reshoot_parent_shoot_id' => [
+                $canCreateAdditionalWork ? 'nullable' : 'prohibited',
+                'integer',
+                'exists:shoots,id',
+            ],
+            'reshoot_classification' => [
+                $canCreateAdditionalWork ? 'nullable' : 'prohibited',
+                Rule::requiredIf(fn () => $this->filled('reshoot_parent_shoot_id')),
+                Rule::prohibitedIf(fn () => ! $this->filled('reshoot_parent_shoot_id')),
+                Rule::in(['additional_work']),
             ],
 
             // Services: required array with service_id, quantity, and price
@@ -182,6 +194,20 @@ class StoreShootRequest extends FormRequest
             'state.required' => 'State is required.',
             'zip.required' => 'ZIP code is required.',
         ];
+    }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            if ($this->filled('reshoot_parent_shoot_id')
+                && $this->filled('shoot_type')
+                && $this->input('shoot_type') !== Shoot::SHOOT_TYPE_STANDARD) {
+                $validator->errors()->add(
+                    'shoot_type',
+                    'Billable additional work must remain a standard shoot.'
+                );
+            }
+        });
     }
 
     /**

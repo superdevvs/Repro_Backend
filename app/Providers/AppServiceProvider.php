@@ -4,9 +4,13 @@ namespace App\Providers;
 
 use App\Models\PersonalAccessToken;
 use App\Models\Shoot;
+use App\Models\ShootCompensation;
 use App\Models\ShootFile;
+use App\Models\ShootService;
+use App\Observers\ShootCompensationObserver;
 use App\Observers\ShootFileObserver;
 use App\Observers\ShootObserver;
+use App\Observers\ShootServiceObserver;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -35,6 +39,8 @@ class AppServiceProvider extends ServiceProvider
         // Explicit route model binding for ShootFile
         Route::model('file', ShootFile::class);
         Shoot::observe(ShootObserver::class);
+        ShootService::observe(ShootServiceObserver::class);
+        ShootCompensation::observe(ShootCompensationObserver::class);
         ShootFile::observe(ShootFileObserver::class);
 
         if (!app()->environment('production') || app()->runningInConsole()) {

@@ -6,11 +6,13 @@ use App\Models\Coupon;
 use App\Models\Service;
 use App\Models\ServiceGroup;
 use App\Models\Shoot;
+use App\Models\ShootCompensation;
 use App\Models\ShootService;
 use App\Models\User;
 use App\Services\PhotographerAvailabilityService;
 use App\Services\ShootTaxService;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
@@ -295,6 +297,46 @@ class ShootMutationSupportService
 
     public function attachServices(Shoot $shoot, array $services): void
     {
+        $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
+
+        if ($shoot->isComplimentaryReshoot() && $currentItems->isNotEmpty()) {
+            $requestedIds = collect($services)
+                ->map(fn (array $service) => (int) ($service['id'] ?? 0))
+                ->filter()
+                ->values();
+            $currentIds = $currentItems->keys()->map(fn ($id) => (int) $id)->values();
+
+            if ($requestedIds->count() !== $requestedIds->unique()->count()
+                || $requestedIds->sort()->values()->all() !== $currentIds->sort()->values()->all()) {
+                throw ValidationException::withMessages([
+                    'services' => [
+                        'Booked complimentary-reshoot service lines are fixed. Book separate additional work or another complimentary reshoot instead.',
+                    ],
+                ]);
+            }
+
+            foreach ($services as $service) {
+                $currentItem = $currentItems->get((int) $service['id']);
+                $immutableValues = [
+                    'price' => fn ($value) => round((float) $value, 2) === round((float) $currentItem->price, 2),
+                    'nominal_value_snapshot' => fn ($value) => round((float) $value, 2) === round((float) $currentItem->nominal_value_snapshot, 2),
+                    'quantity' => fn ($value) => (int) $value === (int) $currentItem->quantity,
+                    'photographer_pay' => fn ($value) => $this->nullableNumericValuesMatch($value, $currentItem->photographer_pay),
+                    'photographer_id' => fn ($value) => $this->normalizeNullableInteger($value) === $this->normalizeNullableInteger($currentItem->photographer_id),
+                ];
+
+                foreach ($immutableValues as $field => $matchesCurrentValue) {
+                    if (array_key_exists($field, $service) && ! $matchesCurrentValue($service[$field])) {
+                        throw ValidationException::withMessages([
+                            'services' => [
+                                'Booked complimentary-reshoot service pricing, quantity, and photographer assignment can only be changed through their dedicated audited workflows.',
+                            ],
+                        ]);
+                    }
+                }
+            }
+        }
+
         if (empty($services)) {
             $shoot->services()->sync([]);
             $shoot->load(['services', 'serviceItems']);
@@ -305,7 +347,6 @@ class ShootMutationSupportService
 
         $serviceIds = collect($services)->pluck('id');
         $serviceModels = Service::whereIn('id', $serviceIds)->get()->keyBy('id');
-        $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
 
         $pivotData = collect($services)->mapWithKeys(function ($service) use ($serviceModels, $currentItems, $shoot) {
             $serviceModel = $serviceModels->get($service['id']);
@@ -316,7 +357,16 @@ class ShootMutationSupportService
 
             return [
                 $service['id'] => [
-                    'price' => $service['price'] ?? $currentItem?->price ?? $serviceModel?->price ?? 0,
+                    'price' => $shoot->isComplimentaryReshoot()
+                        ? 0
+                        : ($service['price'] ?? $currentItem?->price ?? $serviceModel?->price ?? 0),
+                    'nominal_value_snapshot' => $shoot->isComplimentaryReshoot()
+                        ? ($service['nominal_value_snapshot']
+                            ?? $currentItem?->nominal_value_snapshot
+                            ?? $service['price']
+                            ?? $serviceModel?->price
+                            ?? 0)
+                        : ($currentItem?->nominal_value_snapshot),
                     'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
                     'photographer_id' => array_key_exists('photographer_id', $service)
@@ -361,6 +411,15 @@ class ShootMutationSupportService
         $shoot->load(['services', 'serviceItems']);
         $this->snapshotBracketModes($shoot);
         $shoot->syncServiceItemRollups();
+    }
+
+    private function nullableNumericValuesMatch(mixed $left, mixed $right): bool
+    {
+        if (($left === null || $left === '') && ($right === null || $right === '')) {
+            return true;
+        }
+
+        return round((float) $left, 4) === round((float) $right, 4);
     }
 
     /**
@@ -464,29 +523,109 @@ class ShootMutationSupportService
         })->values()->all();
     }
 
-    public function assignServicePhotographers(Shoot $shoot, ?array $servicePhotographers): void
+    public function assignServicePhotographers(
+        Shoot $shoot,
+        ?array $servicePhotographers,
+        ?User $actor = null
+    ): void
     {
         if (!is_array($servicePhotographers) || count($servicePhotographers) === 0) {
             return;
         }
 
-        foreach ($servicePhotographers as $assignment) {
-            $serviceId = $assignment['service_id'] ?? null;
-            if ($serviceId) {
-                $assignedPhotographerId = array_key_exists('photographer_id', $assignment)
-                    ? $assignment['photographer_id']
-                    : null;
+        DB::transaction(function () use ($shoot, $servicePhotographers, $actor): void {
+            $lockedShoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
 
-                // assignPhotographerToService snapshots the bracket size for the
-                // incoming photographer as part of the assignment.
-                $shoot->assignPhotographerToService(
-                    (int) $serviceId,
-                    $assignedPhotographerId !== null && $assignedPhotographerId !== ''
-                        ? (int) $assignedPhotographerId
-                        : null
+            foreach ($servicePhotographers as $assignment) {
+                $serviceId = $assignment['service_id'] ?? null;
+                if (! $serviceId) {
+                    continue;
+                }
+
+                $assignedPhotographerId = array_key_exists('photographer_id', $assignment)
+                    && $assignment['photographer_id'] !== null
+                    && $assignment['photographer_id'] !== ''
+                        ? (int) $assignment['photographer_id']
+                        : null;
+
+                if ($assignedPhotographerId) {
+                    $assignedPhotographer = User::query()
+                        ->select(['id', 'role'])
+                        ->whereKey($assignedPhotographerId)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (! $assignedPhotographer || strtolower((string) $assignedPhotographer->role) !== 'photographer') {
+                        throw ValidationException::withMessages([
+                            'service_photographers' => [
+                                'The selected user must be a photographer before they can receive a service assignment or photographer compensation.',
+                            ],
+                        ]);
+                    }
+                }
+
+                $serviceItem = ShootService::query()
+                    ->where('shoot_id', $lockedShoot->id)
+                    ->where('service_id', (int) $serviceId)
+                    ->lockForUpdate()
+                    ->first();
+                if (! $serviceItem || (int) $serviceItem->photographer_id === (int) $assignedPhotographerId) {
+                    continue;
+                }
+
+                if ($lockedShoot->isComplimentaryReshoot()) {
+                    $compensation = ShootCompensation::query()
+                        ->with('invoiceItem.invoice')
+                        ->where('shoot_id', $lockedShoot->id)
+                        ->where('shoot_service_id', $serviceItem->id)
+                        ->where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
+                        ->where('line_type', ShootCompensation::LINE_TYPE_BASE)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if (! $compensation) {
+                        throw ValidationException::withMessages([
+                            'service_photographers' => [
+                                'This complimentary-reshoot service is missing its compensation decision and cannot be reassigned.',
+                            ],
+                        ]);
+                    }
+
+                    if ($compensation->locked_at
+                        || $compensation->earned_at
+                        || $compensation->invoiceItem
+                        || $compensation->isSettlementLocked()) {
+                        throw ValidationException::withMessages([
+                            'service_photographers' => [
+                                'This service compensation is earned or locked. Create an audited compensation correction instead of reassigning it.',
+                            ],
+                        ]);
+                    }
+
+                    if (! $assignedPhotographerId
+                        && $compensation->mode !== ShootCompensation::MODE_NONE
+                        && abs((float) $compensation->amount) > 0.001) {
+                        throw ValidationException::withMessages([
+                            'service_photographers' => [
+                                'A paid compensation decision must have an assigned photographer.',
+                            ],
+                        ]);
+                    }
+
+                    $compensation->forceFill([
+                        'recipient_user_id' => $assignedPhotographerId,
+                        'updated_by' => $actor?->id,
+                    ])->save();
+                }
+
+                $serviceItem->photographer_id = $assignedPhotographerId;
+                $serviceItem->save();
+                app(BracketModeResolver::class)->snapshotOnAssignment(
+                    $serviceItem,
+                    $assignedPhotographerId
                 );
             }
-        }
+        }, 3);
     }
 
     public function normalizeDateTimeForDatabase(mixed $value): ?string

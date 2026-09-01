@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Shoot;
+use App\Models\ShootCompensation;
 use App\Models\User;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
@@ -77,6 +78,14 @@ class SalesReportService
         $commissionEarned = $commissionRate !== null
             ? round(($paidRevenue * $commissionRate) / 100, 2)
             : null;
+        $compensationEarned = round((float) ShootCompensation::query()
+            ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
+            ->where('recipient_user_id', $salesRep->id)
+            ->where('mode', '!=', ShootCompensation::MODE_NONE)
+            ->whereNull('voided_at')
+            ->where('amount', '!=', 0)
+            ->whereBetween('earned_at', [$startDate, $endDate])
+            ->sum('amount'), 2);
         $averageClientValue = $activeClientCount > 0
             ? round($paidRevenue / $activeClientCount, 2)
             : 0.0;
@@ -149,6 +158,8 @@ class SalesReportService
                 'paid_revenue' => $paidRevenue,
                 'commission_rate' => $commissionRate,
                 'commission_earned' => $commissionEarned,
+                'compensation_earned' => $compensationEarned,
+                'total_earnings' => round((float) ($commissionEarned ?? 0) + $compensationEarned, 2),
                 'average_client_value' => $averageClientValue,
             ],
             'trend' => $this->buildSalesSummaryTrend(
@@ -842,4 +853,3 @@ class SalesReportService
         return $date?->copy()->toDateString();
     }
 }
-

@@ -114,6 +114,20 @@ class InvoiceController extends Controller
 
     public function markPaid(Request $request, Invoice $invoice)
     {
+        if (! $invoice->requiresPayment()) {
+            return response()->json([
+                'message' => 'This complimentary receipt does not require payment.',
+            ], 422);
+        }
+
+        $this->invoiceAdjustments->assertClientPaymentAllowedForInvoice($invoice);
+
+        if ($invoice->isPayoutInvoice() && ! $invoice->isAccountsApproved()) {
+            return response()->json([
+                'message' => 'Accounts approval is required before a staff payout can be marked paid.',
+            ], 422);
+        }
+
         $data = $request->validate([
             'paid_at' => ['nullable', 'date'],
             'amount_paid' => ['nullable', 'numeric', 'min:0'],
@@ -202,10 +216,11 @@ class InvoiceController extends Controller
             ),
             2
         );
+        $isNonPositivePayoutSettlement = $invoice->isPayoutInvoice() && $invoiceTotal <= 0;
         $isPaid = $invoiceTotal > 0
             ? $amountPaid >= ($invoiceTotal - 0.01)
-            : $amountPaid > 0;
-        $effectivePaidAt = $paymentAmount > 0
+            : $isNonPositivePayoutSettlement;
+        $effectivePaidAt = $paymentAmount > 0 || $isNonPositivePayoutSettlement
             ? $paidAt
             : ($invoice->latestCompletedPayment()?->processed_at ?? $invoice->paid_at ?? now());
 
@@ -229,11 +244,14 @@ class InvoiceController extends Controller
         $clientPayment = $this->syncShootPaymentFromInvoice($invoice, $paymentAmount, $paymentMethod, $paymentDetails, $paidAt);
         if ($isPaid) {
             $this->markPayoutShootsPaid($invoice, $paidAt);
-            $invoice->recordAuditEvent('paid', $request->user(), 'Invoice payment marked as sent.', [
+            $invoice->recordAuditEvent('paid', $request->user(), $isNonPositivePayoutSettlement
+                ? 'Non-positive payout adjustment settled with no cash payment.'
+                : 'Invoice payment marked as sent.', [
                 'amount_paid' => $amountPaid,
                 'payment_amount' => $paymentAmount,
                 'payment_method' => $paymentMethod,
                 'paid_at' => $paidAt->toISOString(),
+                'settlement_type' => $isNonPositivePayoutSettlement ? 'non_positive_adjustment' : 'payment',
             ]);
         }
 
@@ -292,6 +310,8 @@ class InvoiceController extends Controller
         }
         $shoot = $relatedShoots->first();
 
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+
         $payment = Payment::create([
             'shoot_id' => $shoot->id,
             'invoice_id' => $invoice->id,
@@ -324,6 +344,10 @@ class InvoiceController extends Controller
         $invoice->loadMissing('shoots');
 
         foreach ($invoice->shoots as $shoot) {
+            if ($shoot->isComplimentaryReshoot()) {
+                continue;
+            }
+
             $updateData = [];
 
             if ($invoice->photographer_id && ! $shoot->photographer_paid_at) {

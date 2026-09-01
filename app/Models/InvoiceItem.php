@@ -16,6 +16,7 @@ class InvoiceItem extends Model
     protected $fillable = [
         'invoice_id',
         'shoot_id',
+        'shoot_compensation_id',
         'type',
         'description',
         'quantity',
@@ -40,6 +41,11 @@ class InvoiceItem extends Model
     public function shoot()
     {
         return $this->belongsTo(Shoot::class);
+    }
+
+    public function shootCompensation()
+    {
+        return $this->belongsTo(ShootCompensation::class);
     }
 
     public function isCharge(): bool

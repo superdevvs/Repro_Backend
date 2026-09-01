@@ -9,6 +9,7 @@ use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootMediaMutationSupportService;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 use Illuminate\Support\Facades\Log;
 
@@ -25,6 +26,19 @@ class DeleteShootAction
 
     public function execute(Shoot $shoot, User $user, array $options = []): array
     {
+        $hasReshootDescendants = $shoot->reshootChildren()->exists()
+            || $shoot->rootReshootDescendants()->exists();
+        $hasCompAuditRecords = $shoot->compReshootItems()->exists()
+            || $shoot->compensations()->exists();
+
+        if ($shoot->isComplimentaryReshoot() || $hasReshootDescendants || $hasCompAuditRecords) {
+            throw ValidationException::withMessages([
+                'shoot' => [
+                    'Shoots in a complimentary-reshoot lineage cannot be permanently deleted. Cancel the shoot to preserve its service, responsibility, and payout audit trail.',
+                ],
+            ]);
+        }
+
         $deleteMedia = (bool) ($options['delete_media'] ?? false);
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service', 'files', 'mediaAlbums']);
         $context = [];

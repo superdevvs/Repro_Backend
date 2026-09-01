@@ -43,6 +43,25 @@
         </tr>
     </table>
 
+    @if(($summary['compensation_total'] ?? 0) > 0)
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
+        <tr>
+            <td class="stat-td" style="padding:0 8px 10px 0; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td class="stat-card-bg" style="border-radius:14px; background-color:#f5f9ff; border:1px solid #dbe6f3; padding:16px 16px 14px;">
+                    <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">Complimentary Reshoot Compensation</p>
+                    <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.2; font-weight:800; color:#071223;">{{ '$' . number_format($summary['compensation_total'], 2) }}</p>
+                </td></tr></table>
+            </td>
+            <td class="stat-td" style="padding:0 0 10px 0; vertical-align:top;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td class="stat-card-bg" style="border-radius:14px; background-color:#f5f9ff; border:1px solid #dbe6f3; padding:16px 16px 14px;">
+                    <p class="dark-muted" style="margin:0 0 6px; font-size:11px; line-height:1.3; letter-spacing:1.6px; text-transform:uppercase; color:#7f95b1; font-weight:700;">Total Payout</p>
+                    <p class="dark-heading" style="margin:0; font-size:22px; line-height:1.2; font-weight:800; color:#071223;">{{ '$' . number_format($summary['payout_total'] ?? $summary['gross_total'] ?? 0, 2) }}</p>
+                </td></tr></table>
+            </td>
+        </tr>
+    </table>
+    @endif
+
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:18px;">
         <tr>
             <td class="stat-td" style="padding:0 8px 10px 0; vertical-align:top;">

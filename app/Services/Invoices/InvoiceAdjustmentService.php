@@ -103,17 +103,33 @@ class InvoiceAdjustmentService
                 ]);
             }
 
+            if ($billable) {
+                $this->assertClientPaymentAllowedForShoot($target, 'bills_client');
+            }
+
             return $target;
         }
 
         if ($invoice->shoot_id) {
-            return $relatedShoots->first(
+            $target = $relatedShoots->first(
                 fn (Shoot $shoot) => (string) $shoot->id === (string) $invoice->shoot_id
             );
+
+            if ($billable && $target) {
+                $this->assertClientPaymentAllowedForShoot($target, 'bills_client');
+            }
+
+            return $target;
         }
 
         if ($relatedShoots->count() === 1) {
-            return $relatedShoots->first();
+            $target = $relatedShoots->first();
+
+            if ($billable) {
+                $this->assertClientPaymentAllowedForShoot($target, 'bills_client');
+            }
+
+            return $target;
         }
 
         if ($billable) {
@@ -123,6 +139,38 @@ class InvoiceAdjustmentService
         }
 
         return null;
+    }
+
+    /**
+     * Complimentary reshoots are classified by the persisted shoot row, not
+     * by a mutable balance, invoice flag, or caller-provided payload. They may
+     * have internal nominal values and staff compensation, but never a client
+     * payment obligation.
+     */
+    public function assertClientPaymentAllowedForShoot(Shoot $shoot, string $field = 'payment'): void
+    {
+        $shootType = $shoot->exists
+            ? Shoot::query()->whereKey($shoot->getKey())->value('shoot_type')
+            : $shoot->shoot_type;
+
+        if ($shootType !== Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            $field => ['Complimentary reshoots do not accept client payments or billable charges.'],
+        ]);
+    }
+
+    public function assertClientPaymentAllowedForInvoice(Invoice $invoice): void
+    {
+        if ($invoice->role !== Invoice::ROLE_CLIENT) {
+            return;
+        }
+
+        foreach ($this->relatedShoots($invoice) as $shoot) {
+            $this->assertClientPaymentAllowedForShoot($shoot);
+        }
     }
 
     /**
@@ -252,6 +300,12 @@ class InvoiceAdjustmentService
             return null;
         }
 
+        // Negative deltas remain available to clean up legacy bad data, but a
+        // complimentary reshoot can never acquire a new positive client debt.
+        if ($delta > 0) {
+            $this->assertClientPaymentAllowedForShoot($lockedShoot, 'amount');
+        }
+
         $newTotal = round(max((float) ($lockedShoot->total_quote ?? 0) + $delta, 0), 2);
         $lockedShoot->total_quote = $newTotal;
 
@@ -273,6 +327,40 @@ class InvoiceAdjustmentService
     public function applyInvoiceTotalDelta(Invoice $invoice, float $delta): Invoice
     {
         $invoice = Invoice::query()->lockForUpdate()->findOrFail($invoice->id);
+
+        if (! $invoice->requiresPayment()) {
+            $updates = [
+                'subtotal' => 0,
+                'tax' => 0,
+                'total' => 0,
+                'total_amount' => 0,
+                'amount_paid' => 0,
+                'is_paid' => false,
+                'paid_at' => null,
+            ];
+            if ($invoice->status === Invoice::STATUS_PAID) {
+                $updates['status'] = Invoice::STATUS_SENT;
+            }
+
+            $schema = $invoice->getConnection()->getSchemaBuilder();
+            if ($schema->hasColumn($invoice->getTable(), 'charges_total')) {
+                $updates['charges_total'] = 0;
+            }
+            if ($schema->hasColumn($invoice->getTable(), 'payments_total')) {
+                $updates['payments_total'] = 0;
+            }
+            if ($schema->hasColumn($invoice->getTable(), 'balance_due')) {
+                $updates['balance_due'] = 0;
+            }
+
+            $invoice->forceFill($updates)->save();
+
+            return $invoice->fresh();
+        }
+
+        if ($delta > 0) {
+            $this->assertClientPaymentAllowedForInvoice($invoice);
+        }
 
         $oldSubtotal = (float) ($invoice->subtotal ?? max((float) ($invoice->total ?? $invoice->total_amount ?? 0) - (float) ($invoice->tax ?? 0), 0));
         $oldTotal = (float) ($invoice->total ?? $invoice->total_amount ?? ($oldSubtotal + (float) ($invoice->tax ?? 0)));

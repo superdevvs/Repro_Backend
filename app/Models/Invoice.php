@@ -26,6 +26,10 @@ class Invoice extends Model
 
     public const ROLE_SALES_REP = 'salesRep';
 
+    public const DOCUMENT_TYPE_INVOICE = 'invoice';
+
+    public const DOCUMENT_TYPE_COMPLIMENTARY_RECEIPT = 'complimentary_receipt';
+
     // Approval status constants
     public const APPROVAL_STATUS_PENDING = 'pending';
 
@@ -40,6 +44,8 @@ class Invoice extends Model
     protected $fillable = [
         'user_id',
         'role',
+        'document_type',
+        'payment_required',
         'period_start',
         'period_end',
         'photographer_id',
@@ -90,6 +96,7 @@ class Invoice extends Model
         'amount_paid' => 'decimal:2',
         'is_sent' => 'boolean',
         'is_paid' => 'boolean',
+        'payment_required' => 'boolean',
         'paid_at' => 'datetime',
         'payment_details' => 'array',
         'approval_snapshot' => 'array',
@@ -103,6 +110,8 @@ class Invoice extends Model
     protected $attributes = [
         'approval_status' => 'pending',
         'status' => 'draft',
+        'document_type' => self::DOCUMENT_TYPE_INVOICE,
+        'payment_required' => true,
     ];
 
     /**
@@ -163,6 +172,36 @@ class Invoice extends Model
     public function refreshTotals(): void
     {
         $items = $this->items()->get();
+
+        if (! $this->requiresPayment()) {
+            $schema = $this->getConnection()->getSchemaBuilder();
+            $updates = [
+                'subtotal' => 0,
+                'tax' => 0,
+                'total' => 0,
+                'total_amount' => 0,
+                'amount_paid' => 0,
+                'is_paid' => false,
+                'paid_at' => null,
+            ];
+
+            if ($this->status === self::STATUS_PAID) {
+                $updates['status'] = self::STATUS_SENT;
+            }
+            if ($schema->hasColumn($this->getTable(), 'charges_total')) {
+                $updates['charges_total'] = 0;
+            }
+            if ($schema->hasColumn($this->getTable(), 'payments_total')) {
+                $updates['payments_total'] = 0;
+            }
+            if ($schema->hasColumn($this->getTable(), 'balance_due')) {
+                $updates['balance_due'] = 0;
+            }
+
+            $this->forceFill($updates)->save();
+
+            return;
+        }
 
         $charges = $items->where('type', InvoiceItem::TYPE_CHARGE)->sum('total_amount');
         // Admin adjustments (meta.source === 'admin_misc') only affect the client payable
@@ -406,6 +445,7 @@ class Invoice extends Model
 
         $commissionableGross = collect($items)->sum(fn (array $item) => (float) data_get($item, 'meta.commissionable_gross', 0));
         $excludedFees = collect($items)->sum(fn (array $item) => (float) data_get($item, 'meta.excluded_fees_total', 0));
+        $compensationTotal = collect($items)->sum(fn (array $item) => (float) data_get($item, 'meta.compensation_amount', 0));
         $commissionRate = collect($items)
             ->map(fn (array $item) => data_get($item, 'meta.commission_rate'))
             ->filter(fn ($value) => $value !== null)
@@ -421,6 +461,7 @@ class Invoice extends Model
             'overpayment_amount' => $this->overpaymentAmount(),
             'commissionable_gross' => round($commissionableGross, 2),
             'excluded_fees_total' => round($excludedFees, 2),
+            'compensation_total' => round($compensationTotal, 2),
             'commission_rate' => $commissionRate !== null ? (float) $commissionRate : null,
             'shoot_ids' => $this->shoots->pluck('id')->map(fn ($id) => (int) $id)->values()->all(),
             'items' => $items,
@@ -497,6 +538,14 @@ class Invoice extends Model
 
     public function totalPaid(): float
     {
+        if (! $this->requiresPayment()) {
+            return 0.0;
+        }
+
+        if ($this->isPayoutInvoice()) {
+            return round((float) ($this->getAttribute('amount_paid') ?? 0), 2);
+        }
+
         $payments = $this->relatedPaymentRecords();
         if ($payments->isNotEmpty()) {
             return round((float) $payments->sum(function (Payment $payment) {
@@ -517,6 +566,10 @@ class Invoice extends Model
 
     public function hasRelatedPaymentRecords(): bool
     {
+        if ($this->isPayoutInvoice() || ! $this->requiresPayment()) {
+            return false;
+        }
+
         return $this->relatedPaymentRecords()->isNotEmpty();
     }
 
@@ -597,6 +650,13 @@ class Invoice extends Model
      */
     public function relatedPaymentRecords(): Collection
     {
+        // Payment rows represent client cash collection. Payout invoices are
+        // settled through their own invoice lifecycle and must never inherit a
+        // payment merely because they reference the same shoot.
+        if ($this->isPayoutInvoice() || ! $this->requiresPayment()) {
+            return collect();
+        }
+
         $shootIds = collect([$this->shoot_id])
             ->merge($this->exists ? $this->shoots()->pluck('shoots.id') : [])
             ->merge($this->exists ? $this->items()->whereNotNull('shoot_id')->pluck('shoot_id') : [])
@@ -624,6 +684,25 @@ class Invoice extends Model
             ->get()
             ->unique(fn (Payment $payment) => $this->paymentDeduplicationKey($payment))
             ->values();
+    }
+
+    public function isPayoutInvoice(): bool
+    {
+        return in_array($this->role, [self::ROLE_PHOTOGRAPHER, self::ROLE_SALES_REP], true);
+    }
+
+    public function requiresPayment(): bool
+    {
+        return (bool) ($this->payment_required ?? true);
+    }
+
+    public function canBeMarkedPaid(): bool
+    {
+        if (! $this->requiresPayment()) {
+            return false;
+        }
+
+        return ! $this->isPayoutInvoice() || $this->isAccountsApproved();
     }
 
     private function relatedCompletedPayments(): Collection

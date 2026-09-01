@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\ValidationException;
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Shoots\ShootListingService;
 
@@ -59,6 +60,10 @@ class Shoot extends Model
         'status',
         'workflow_status',
         'shoot_type',
+        'reshoot_of_shoot_id',
+        'root_shoot_id',
+        'complimentary_reshoot_idempotency_key',
+        'complimentary_reshoot_request_hash',
         'service_area_kind',
         'service_area_value',
         'shoot_ready_notified_at',
@@ -238,6 +243,8 @@ class Shoot extends Model
         'hold_requested_at' => 'datetime',
         'photographer_paid_at' => 'datetime',
         'sales_rep_paid_at' => 'datetime',
+        'reshoot_of_shoot_id' => 'integer',
+        'root_shoot_id' => 'integer',
         // External booking sync fields (alternate_time and external_booking_mapping_status
         // remain plain strings — intentionally not cast).
         'alternate_scheduled_date' => 'date',
@@ -261,6 +268,7 @@ class Shoot extends Model
 
     public const SHOOT_TYPE_STANDARD = 'standard';
     public const SHOOT_TYPE_COMPLIMENTARY = 'complimentary';
+    public const SHOOT_TYPE_COMPLIMENTARY_RESHOOT = 'complimentary_reshoot';
     public const SHOOT_TYPE_SAMPLE_UPLOAD = 'sample_upload';
     public const SHOOT_TYPE_INTERNAL_TEST = 'internal_test';
     public const SHOOT_TYPE_PRICING_PENDING = 'pricing_pending';
@@ -269,6 +277,8 @@ class Shoot extends Model
     public const PRODUCT_STATUS_NO_PRODUCT = 'no_product';
     public const PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT = 'zero_dollar_product';
 
+    public const PAYMENT_STATUS_NO_PAYMENT_REQUIRED = 'no_payment_required';
+
     // External booking auto-mapping status constants
     public const MAPPING_STATUS_FULLY_MAPPED = 'fully_mapped';
     public const MAPPING_STATUS_PARTIALLY_MAPPED = 'partially_mapped';
@@ -276,6 +286,7 @@ class Shoot extends Model
 
     public const INTERNAL_NO_CHARGE_SHOOT_TYPES = [
         self::SHOOT_TYPE_COMPLIMENTARY,
+        self::SHOOT_TYPE_COMPLIMENTARY_RESHOOT,
         self::SHOOT_TYPE_SAMPLE_UPLOAD,
         self::SHOOT_TYPE_INTERNAL_TEST,
         self::SHOOT_TYPE_PRICING_PENDING,
@@ -304,9 +315,403 @@ class Shoot extends Model
         return $this->shoot_type === self::SHOOT_TYPE_INTERNAL_TEST;
     }
 
+    public function isComplimentaryReshoot(): bool
+    {
+        return $this->shoot_type === self::SHOOT_TYPE_COMPLIMENTARY_RESHOOT;
+    }
+
+    public function forceComplimentaryReshootClientTotals(): static
+    {
+        if (! $this->isComplimentaryReshoot()) {
+            return $this;
+        }
+
+        $this->forceFill([
+            'base_quote' => 0,
+            'discount_type' => null,
+            'discount_value' => null,
+            'discount_amount' => 0,
+            'tax_percent' => 0,
+            'tax_amount' => 0,
+            'total_quote' => 0,
+            'payment_status' => self::PAYMENT_STATUS_NO_PAYMENT_REQUIRED,
+            'bypass_paywall' => true,
+            'product_status' => self::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
+        ]);
+
+        return $this;
+    }
+
+    /**
+     * Compact internal-only accounting overview for a complimentary reshoot.
+     * Callers are responsible for role-gating this payload.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function complimentaryReshootOverview(): ?array
+    {
+        if (! $this->isComplimentaryReshoot()) {
+            return null;
+        }
+
+        // Presenter code decorates the live model with array attributes such as
+        // `serviceItems`; resolve a clean model so those aliases cannot collide
+        // with Eloquent relation loading.
+        $overviewShoot = static::query()->with([
+            'serviceItems.service',
+            'compReshootItems',
+            'compensations',
+            'editorPayouts',
+        ])->find($this->id);
+        if (! $overviewShoot) {
+            return null;
+        }
+
+        $activeCompensations = $overviewShoot->compensations->whereNull('voided_at');
+        $photographerTotal = round((float) $activeCompensations
+            ->where('recipient_type', ShootCompensation::RECIPIENT_PHOTOGRAPHER)
+            ->sum('amount'), 2);
+        $salesRepTotal = round((float) $activeCompensations
+            ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
+            ->sum('amount'), 2);
+        $staffCompensationTotal = round($photographerTotal + $salesRepTotal, 2);
+        $editorActualTotal = round((float) $overviewShoot->editorPayouts->sum('payout_amount'), 2);
+        $editingServiceCount = $overviewShoot->serviceItems
+            ->filter(fn (ShootService $item) => $item->service?->requiresEditing())
+            ->count();
+        $editorPayoutCount = $overviewShoot->editorPayouts->count();
+        $editorCostStatus = match (true) {
+            $editingServiceCount === 0 => 'not_applicable',
+            $editorPayoutCount === 0 => 'pending',
+            $editorPayoutCount < $editingServiceCount => 'partial',
+            default => 'final',
+        };
+        $companyCostActualToDate = round($staffCompensationTotal + $editorActualTotal, 2);
+        $reasonCodes = $overviewShoot->compReshootItems->pluck('reason_code')->filter()->unique()->values();
+
+        return [
+            'reason_code' => $reasonCodes->count() === 1 ? $reasonCodes->first() : null,
+            'reason_codes' => $reasonCodes->all(),
+            'client_charge_total' => 0.0,
+            'nominal_value_total' => round((float) $overviewShoot->serviceItems->sum('nominal_value_snapshot'), 2),
+            'photographer_compensation_total' => $photographerTotal,
+            'sales_rep_compensation_total' => $salesRepTotal,
+            'staff_compensation_total' => $staffCompensationTotal,
+            'editor_payout_actual_total' => $editorActualTotal,
+            'editor_cost_status' => $editorCostStatus,
+            'company_cost_actual_to_date' => $companyCostActualToDate,
+            'company_cost_total' => in_array($editorCostStatus, ['not_applicable', 'final'], true)
+                ? $companyCostActualToDate
+                : null,
+            'company_cost_is_final' => in_array($editorCostStatus, ['not_applicable', 'final'], true),
+        ];
+    }
+
+    /**
+     * Admin-only affected-source mappings for the shoot overview modal.
+     * Callers must role-gate this payload.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function complimentaryReshootServiceLinks(): array
+    {
+        if (! $this->isComplimentaryReshoot()) {
+            return [];
+        }
+
+        return CompReshootItem::query()
+            ->with([
+                'responsibleStaff:id,name',
+                'sourceServiceItem:id,shoot_id,service_id',
+                'sourceServiceItem.service:id,name',
+            ])
+            ->where('shoot_id', $this->id)
+            ->orderBy('id')
+            ->get()
+            ->map(function (CompReshootItem $item) {
+                $sourceServiceId = $item->source_service_id_snapshot
+                    ?? $item->sourceServiceItem?->service_id;
+                $sourceServiceName = $item->source_service_name_snapshot
+                    ?? $item->sourceServiceItem?->service?->name;
+                $responsibleStaffName = $item->responsibleStaff?->name;
+
+                return [
+                    'id' => $item->id,
+                    'reshoot_shoot_id' => $this->id,
+                    'reshootShootId' => $this->id,
+                    'reshoot_shoot_service_id' => $item->shoot_service_id,
+                    'reshootShootServiceId' => $item->shoot_service_id,
+                    'shoot_service_id' => $item->shoot_service_id,
+                    'shootServiceId' => $item->shoot_service_id,
+                    'source_shoot_id' => $item->sourceServiceItem?->shoot_id,
+                    'sourceShootId' => $item->sourceServiceItem?->shoot_id,
+                    'source_shoot_service_id' => $item->source_shoot_service_id,
+                    'sourceShootServiceId' => $item->source_shoot_service_id,
+                    'source_service_id' => $sourceServiceId,
+                    'sourceServiceId' => $sourceServiceId,
+                    'source_service_name' => $sourceServiceName,
+                    'sourceServiceName' => $sourceServiceName,
+                    'source_service' => [
+                        'id' => $sourceServiceId,
+                        'name' => $sourceServiceName,
+                    ],
+                    'reason_code' => $item->reason_code,
+                    'reasonCode' => $item->reason_code,
+                    'reason_note' => $item->reason_note,
+                    'reasonNote' => $item->reason_note,
+                    'responsibility' => $item->responsibility,
+                    'responsible_staff_id' => $item->responsible_staff_id,
+                    'responsibleStaffId' => $item->responsible_staff_id,
+                    'responsible_staff_name' => $responsibleStaffName,
+                    'responsibleStaffName' => $responsibleStaffName,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Compact admin-only child/root-chain summaries for the original-shoot modal.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function relatedReshootSummaries(): array
+    {
+        $rootId = (int) ($this->root_shoot_id ?: $this->id);
+
+        return static::query()
+            ->with(['compReshootItems', 'serviceItems.service:id,name'])
+            ->where('id', '!=', $this->id)
+            ->where(function ($query) use ($rootId) {
+                $query->where('reshoot_of_shoot_id', $this->id)
+                    ->orWhere('root_shoot_id', $rootId);
+            })
+            ->orderBy('created_at')
+            ->get([
+                'id',
+                'shoot_type',
+                'status',
+                'scheduled_at',
+                'scheduled_date',
+                'time',
+                'address',
+                'city',
+                'state',
+                'zip',
+                'reshoot_of_shoot_id',
+                'root_shoot_id',
+            ])
+            ->map(function (Shoot $reshoot) {
+                $reasonCodes = $reshoot->compReshootItems
+                    ->pluck('reason_code')
+                    ->filter()
+                    ->unique()
+                    ->values();
+                $reasonNotes = $reshoot->compReshootItems
+                    ->pluck('reason_note')
+                    ->filter(fn ($note) => trim((string) $note) !== '')
+                    ->unique()
+                    ->values();
+                $affectedServiceNames = $reshoot->compReshootItems
+                    ->pluck('service_name_snapshot')
+                    ->filter()
+                    ->merge($reshoot->serviceItems->pluck('service.name')->filter())
+                    ->unique()
+                    ->values();
+                $scheduledAt = $reshoot->scheduled_at?->toIso8601String();
+                $scheduledDate = $reshoot->scheduled_date?->toDateString();
+                $fullAddress = collect([
+                    $reshoot->address,
+                    $reshoot->city,
+                    trim(implode(' ', array_filter([$reshoot->state, $reshoot->zip]))),
+                ])->filter(fn ($part) => trim((string) $part) !== '')->implode(', ');
+                $classification = $reshoot->isComplimentaryReshoot()
+                    ? 'complimentary_reshoot'
+                    : 'additional_work';
+
+                return [
+                    'id' => $reshoot->id,
+                    'shoot_type' => $reshoot->shoot_type,
+                    'shootType' => $reshoot->shoot_type,
+                    'classification' => $classification,
+                    'status' => $reshoot->status,
+                    'scheduled_at' => $scheduledAt,
+                    'scheduledAt' => $scheduledAt,
+                    'scheduled_date' => $scheduledDate,
+                    'scheduledDate' => $scheduledDate,
+                    'address' => $reshoot->address,
+                    'full_address' => $fullAddress,
+                    'fullAddress' => $fullAddress,
+                    'reason_code' => $reasonCodes->count() === 1 ? $reasonCodes->first() : null,
+                    'reasonCode' => $reasonCodes->count() === 1 ? $reasonCodes->first() : null,
+                    'reason_codes' => $reasonCodes->all(),
+                    'reason_note' => $reasonNotes->count() === 1 ? $reasonNotes->first() : null,
+                    'reasonNote' => $reasonNotes->count() === 1 ? $reasonNotes->first() : null,
+                    'affected_service_names' => $affectedServiceNames->all(),
+                    'affectedServiceNames' => $affectedServiceNames->all(),
+                    'reshoot_of_shoot_id' => $reshoot->reshoot_of_shoot_id,
+                    'root_shoot_id' => $reshoot->root_shoot_id,
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Client-safe related shoots: intentionally excludes reason, responsibility,
+     * nominal value and every staff-cost field.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function safeRelatedReshootSummaries(): array
+    {
+        $rootId = (int) ($this->root_shoot_id ?: $this->id);
+        $allowedShootIds = static::query()
+            ->where('client_id', $this->client_id)
+            ->where('id', '!=', $this->id)
+            ->where(function ($query) use ($rootId) {
+                $query->where('reshoot_of_shoot_id', $this->id)
+                    ->orWhere('root_shoot_id', $rootId);
+            })
+            ->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        return collect($this->relatedReshootSummaries())
+            ->whereIn('id', $allowedShootIds)
+            ->map(fn (array $summary) => collect($summary)->only([
+                'id',
+                'shoot_type',
+                'shootType',
+                'classification',
+                'status',
+                'scheduled_at',
+                'scheduledAt',
+                'scheduled_date',
+                'scheduledDate',
+                'address',
+                'full_address',
+                'fullAddress',
+                'affected_service_names',
+                'affectedServiceNames',
+                'reshoot_of_shoot_id',
+                'root_shoot_id',
+            ])->all())
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Safe parent/root context shared with the shoot owner and operations staff.
+     *
+     * @return array{parent: ?array, root: ?array}
+     */
+    public function safeReshootLineageContext(): array
+    {
+        $ids = collect([$this->reshoot_of_shoot_id, $this->root_shoot_id])
+            ->filter()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+        $shoots = $ids->isEmpty()
+            ? collect()
+            : static::query()
+                ->with('serviceItems.service:id,name')
+                ->where('client_id', $this->client_id)
+                ->whereIn('id', $ids->all())
+                ->get()
+                ->keyBy('id');
+
+        return [
+            'parent' => $this->safeLineageShootSummary(
+                $shoots->get((int) $this->reshoot_of_shoot_id)
+            ),
+            'root' => $this->safeLineageShootSummary(
+                $shoots->get((int) $this->root_shoot_id)
+            ),
+        ];
+    }
+
+    private function safeLineageShootSummary(?Shoot $shoot): ?array
+    {
+        if (! $shoot) {
+            return null;
+        }
+
+        $scheduledAt = $shoot->scheduled_at?->toIso8601String();
+        $scheduledDate = $shoot->scheduled_date?->toDateString();
+        $serviceNames = $shoot->serviceItems
+            ->pluck('service.name')
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+        $fullAddress = collect([
+            $shoot->address,
+            $shoot->city,
+            trim(implode(' ', array_filter([$shoot->state, $shoot->zip]))),
+        ])->filter(fn ($part) => trim((string) $part) !== '')->implode(', ');
+
+        return [
+            'id' => $shoot->id,
+            'shoot_type' => $shoot->shoot_type,
+            'shootType' => $shoot->shoot_type,
+            'status' => $shoot->status,
+            'scheduled_at' => $scheduledAt,
+            'scheduledAt' => $scheduledAt,
+            'scheduled_date' => $scheduledDate,
+            'scheduledDate' => $scheduledDate,
+            'address' => $shoot->address,
+            'full_address' => $fullAddress,
+            'fullAddress' => $fullAddress,
+            'service_names' => $serviceNames,
+            'serviceNames' => $serviceNames,
+        ];
+    }
+
     public function client()
     {
         return $this->belongsTo(User::class, 'client_id');
+    }
+
+    public function reshootOf()
+    {
+        return $this->belongsTo(self::class, 'reshoot_of_shoot_id');
+    }
+
+    public function rootShoot()
+    {
+        return $this->belongsTo(self::class, 'root_shoot_id');
+    }
+
+    public function complimentaryReshoots()
+    {
+        return $this->hasMany(self::class, 'reshoot_of_shoot_id');
+    }
+
+    public function reshootChildren()
+    {
+        return $this->hasMany(self::class, 'reshoot_of_shoot_id');
+    }
+
+    public function rootReshootDescendants()
+    {
+        return $this->hasMany(self::class, 'root_shoot_id');
+    }
+
+    public function compReshootItems()
+    {
+        return $this->hasMany(CompReshootItem::class);
+    }
+
+    public function compensations()
+    {
+        return $this->hasMany(ShootCompensation::class);
+    }
+
+    public function editorPayouts()
+    {
+        return $this->hasMany(EditorPayout::class);
     }
 
     public function photographer()
@@ -425,6 +830,7 @@ class Shoot extends Model
             ->withPivot([
                 'id',
                 'price',
+                'nominal_value_snapshot',
                 'quantity',
                 'photographer_pay',
                 'photographer_id',
@@ -726,9 +1132,11 @@ class Shoot extends Model
         $previousStatus = $this->payment_status;
         $totalPaid = $this->calculateCanonicalTotalPaid();
         $totalQuote = (float) ($this->total_quote ?? 0);
-        $newStatus = $totalQuote <= 0.01
-            ? 'paid'
-            : ($totalPaid <= 0 ? 'unpaid' : ($totalPaid >= $totalQuote ? 'paid' : 'partial'));
+        $newStatus = $this->isComplimentaryReshoot()
+            ? self::PAYMENT_STATUS_NO_PAYMENT_REQUIRED
+            : ($totalQuote <= 0.01
+                ? 'paid'
+                : ($totalPaid <= 0 ? 'unpaid' : ($totalPaid >= $totalQuote ? 'paid' : 'partial')));
 
         $dirty = false;
 
@@ -752,7 +1160,13 @@ class Shoot extends Model
         // paid so repeated syncs on an already-paid shoot do not re-run cancellation. The dispatch
         // re-check in DispatchScheduledMessages remains the safety net. AutomationService is
         // resolved via the container to avoid coupling the model to the messaging service graph.
-        $becamePaid = strtolower((string) $previousStatus) !== 'paid' && $newStatus === 'paid';
+        $paymentIsComplete = in_array($newStatus, ['paid', self::PAYMENT_STATUS_NO_PAYMENT_REQUIRED], true);
+        $paymentWasComplete = in_array(
+            strtolower((string) $previousStatus),
+            ['paid', self::PAYMENT_STATUS_NO_PAYMENT_REQUIRED],
+            true
+        );
+        $becamePaid = ! $paymentWasComplete && $paymentIsComplete;
         if ($becamePaid) {
             try {
                 app(\App\Services\Messaging\AutomationService::class)->cancelPaymentReminders($this);
@@ -1083,6 +1497,22 @@ class Shoot extends Model
     protected static function boot()
     {
         parent::boot();
+
+        static::saving(function (Shoot $shoot) {
+            $persistedShootType = $shoot->exists && $shoot->isDirty('shoot_type')
+                ? static::query()->whereKey($shoot->getKey())->value('shoot_type')
+                : null;
+            if ($persistedShootType === self::SHOOT_TYPE_COMPLIMENTARY_RESHOOT
+                && $shoot->shoot_type !== self::SHOOT_TYPE_COMPLIMENTARY_RESHOOT) {
+                throw ValidationException::withMessages([
+                    'shoot_type' => [
+                        'A booked complimentary reshoot cannot be reclassified. Create a separate standard shoot instead.',
+                    ],
+                ]);
+            }
+
+            $shoot->forceComplimentaryReshootClientTotals();
+        });
 
         // Invalidate caches when shoot is updated
         static::saved(function ($shoot) {

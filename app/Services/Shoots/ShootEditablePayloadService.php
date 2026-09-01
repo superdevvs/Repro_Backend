@@ -109,6 +109,7 @@ class ShootEditablePayloadService
                 Rule::in([
                     Shoot::SHOOT_TYPE_STANDARD,
                     Shoot::SHOOT_TYPE_COMPLIMENTARY,
+                    Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT,
                     Shoot::SHOOT_TYPE_SAMPLE_UPLOAD,
                     Shoot::SHOOT_TYPE_INTERNAL_TEST,
                     Shoot::SHOOT_TYPE_PRICING_PENDING,
@@ -144,6 +145,8 @@ class ShootEditablePayloadService
             $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
                 && $validated['admin_adjusted_total_quote'] !== null;
             $serviceDetachImpact = null;
+
+            $this->assertComplimentaryReshootMutationAllowed($lockedShoot, $validated);
 
             if ($serviceChangeRequested) {
                 $conflictingPricingFields = array_intersect(
@@ -204,6 +207,15 @@ class ShootEditablePayloadService
     protected function applyWithinTransaction(Shoot $shoot, array $validated, ?User $actor = null): void
     {
         $shoot->loadMissing('services');
+
+        if (($validated['shoot_type'] ?? null) === Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT
+            && ! $shoot->isComplimentaryReshoot()) {
+            throw ValidationException::withMessages([
+                'shoot_type' => ['Create complimentary reshoots from the dedicated reshoot action so lineage and compensation decisions are recorded.'],
+            ]);
+        }
+
+        $this->assertComplimentaryReshootMutationAllowed($shoot, $validated);
 
         $noteFields = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
         $previousNotes = [];
@@ -688,5 +700,54 @@ class ShootEditablePayloadService
 
             return $service;
         })->values()->all();
+    }
+
+    private function assertComplimentaryReshootMutationAllowed(Shoot $shoot, array $validated): void
+    {
+        if (! $shoot->isComplimentaryReshoot()) {
+            return;
+        }
+
+        if (array_key_exists('shoot_type', $validated)
+            && ($validated['shoot_type'] ?: Shoot::SHOOT_TYPE_STANDARD) !== Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT) {
+            throw ValidationException::withMessages([
+                'shoot_type' => [
+                    'A booked complimentary reshoot cannot be reclassified. Create a separate standard shoot instead.',
+                ],
+            ]);
+        }
+
+        if (array_key_exists('services', $validated) || array_key_exists('service_items', $validated)) {
+            throw ValidationException::withMessages([
+                'services' => [
+                    'Service lines on a complimentary reshoot are fixed at booking. Book separate additional work or create a new complimentary reshoot instead.',
+                ],
+            ]);
+        }
+
+        foreach ([
+            'base_quote',
+            'discount_type',
+            'discount_value',
+            'discount_amount',
+            'tax_amount',
+            'total_quote',
+            'admin_adjusted_total_quote',
+        ] as $field) {
+            if (array_key_exists($field, $validated)) {
+                throw ValidationException::withMessages([
+                    $field => [
+                        'Client pricing on a complimentary reshoot is fixed at zero. Book separate additional work instead.',
+                    ],
+                ]);
+            }
+        }
+
+        if (array_key_exists('product_status', $validated)
+            && ($validated['product_status'] ?: Shoot::PRODUCT_STATUS_HAS_PRODUCT) !== Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT) {
+            throw ValidationException::withMessages([
+                'product_status' => ['A complimentary reshoot must remain a zero-dollar product.'],
+            ]);
+        }
     }
 }

@@ -77,6 +77,7 @@ class StripePaymentController extends Controller
     public function createCheckoutSession(Request $request, Shoot $shoot)
     {
         $shoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
         $allocationPayload = $this->buildAllocationPayloadFromRequest($request);
         $amountToPay = $this->resolveCheckoutAmountCents($shoot, $request, $allocationPayload);
 
@@ -156,6 +157,7 @@ class StripePaymentController extends Controller
     public function createEmbeddedCheckoutSession(Request $request, Shoot $shoot)
     {
         $shoot = $shoot->fresh(['payments']) ?? $shoot->loadMissing('payments');
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
         $allocationPayload = $this->buildAllocationPayloadFromRequest($request);
         $amountToPay = $this->resolveCheckoutAmountCents($shoot, $request, $allocationPayload);
         $returnTo = $this->sanitizeReturnTo($request->input('return_to'));
@@ -237,13 +239,17 @@ class StripePaymentController extends Controller
         ]);
 
         try {
-            $this->initStripe();
-
             $shoots = Shoot::whereIn('id', $validated['shoot_ids'])->get();
 
             if ($shoots->isEmpty()) {
                 return response()->json(['error' => 'No valid shoots found'], 400);
             }
+
+            foreach ($shoots as $shoot) {
+                $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+            }
+
+            $this->initStripe();
 
             $totalAmount = 0;
             $lineItems = [];
@@ -303,6 +309,8 @@ class StripePaymentController extends Controller
                 'shootCount' => count($shootIds),
             ]);
 
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\RuntimeException $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         } catch (\Exception $e) {
@@ -327,13 +335,17 @@ class StripePaymentController extends Controller
         ]);
 
         try {
-            $this->initStripe();
-
             $shoots = Shoot::whereIn('id', $validated['shoot_ids'])->get();
 
             if ($shoots->isEmpty()) {
                 return response()->json(['error' => 'No valid shoots found'], 400);
             }
+
+            foreach ($shoots as $shoot) {
+                $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+            }
+
+            $this->initStripe();
 
             $totalAmount = 0;
             $lineItems = [];
@@ -394,6 +406,8 @@ class StripePaymentController extends Controller
                 'shootCount' => count($shootIds),
             ]);
 
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\RuntimeException $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         } catch (\Exception $e) {
@@ -457,6 +471,8 @@ class StripePaymentController extends Controller
 
     public function confirmCheckoutSession(Request $request, Shoot $shoot)
     {
+        $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+
         $validated = $request->validate([
             'session_id' => 'required|string',
         ]);
@@ -671,6 +687,8 @@ class StripePaymentController extends Controller
                     return false;
                 }
 
+                $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+
                 // Double-check for duplicates inside transaction
                 if ($this->hasProcessedSession($sessionId, $paymentIntentId)) {
                     return false;
@@ -739,6 +757,10 @@ class StripePaymentController extends Controller
                 }
 
                 $shoots = Shoot::whereIn('id', $shootIds)->get()->keyBy('id');
+
+                foreach ($shoots as $shoot) {
+                    $this->invoiceAdjustments->assertClientPaymentAllowedForShoot($shoot);
+                }
 
                 // Map line items to shoots by order
                 $lineItemsList = $lineItems->data ?? [];
