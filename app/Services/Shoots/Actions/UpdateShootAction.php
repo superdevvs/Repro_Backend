@@ -5,22 +5,26 @@ namespace App\Services\Shoots\Actions;
 use App\Jobs\ProcessUpdatedShootSideEffectsJob;
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\AuditLogService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Schedule\ScheduleDateScopeService;
+use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ComplimentaryReshootService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditablePayloadService;
-use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\Shoots\ShootServiceChangeGuard;
 use Carbon\Carbon;
-use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class UpdateShootAction
 {
@@ -34,9 +38,10 @@ class UpdateShootAction
         protected MailService $mailService,
         protected AutomationService $automationService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
-        protected ShootServiceChangeGuard $serviceChangeGuard
-    ) {
-    }
+        protected ShootServiceChangeGuard $serviceChangeGuard,
+        protected ComplimentaryReshootService $complimentaryReshoots,
+        protected AuditLogService $auditLog
+    ) {}
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
@@ -108,7 +113,7 @@ class UpdateShootAction
             'realtor_client_id',
         ];
 
-        if (!$isAdmin) {
+        if (! $isAdmin) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
             $assignedPhotographer = $isPhotographer
@@ -120,17 +125,17 @@ class UpdateShootAction
             if ($ownsShoot) {
                 $onlyClientEditableFields = count($requestKeys) > 0 && count(array_diff($requestKeys, $clientEditableKeys)) === 0;
 
-                if (!$onlyClientEditableFields) {
+                if (! $onlyClientEditableFields) {
                     $this->abortJson('Forbidden', 403);
                 }
 
                 $requestedTourLinks = $request->input('tour_links', []);
-                if (!is_array($requestedTourLinks)) {
+                if (! is_array($requestedTourLinks)) {
                     $this->abortJson('Invalid tour_links payload', 422);
                 }
 
                 $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $clientEditableTourLinkKeys);
-                if (!empty($invalidTourLinkKeys)) {
+                if (! empty($invalidTourLinkKeys)) {
                     $this->abortJson('Forbidden', 403);
                 }
 
@@ -139,7 +144,7 @@ class UpdateShootAction
                 // overwrite price, MLS, description, or other property metadata.
                 if ($request->has('property_details')) {
                     $requestedPropertyDetails = $request->input('property_details', []);
-                    if (!is_array($requestedPropertyDetails)) {
+                    if (! is_array($requestedPropertyDetails)) {
                         $this->abortJson('Invalid property_details payload', 422);
                     }
 
@@ -147,7 +152,7 @@ class UpdateShootAction
                         array_keys($requestedPropertyDetails),
                         $clientEditablePropertyDetailKeys
                     );
-                    if (!empty($invalidPropertyDetailKeys)) {
+                    if (! empty($invalidPropertyDetailKeys)) {
                         $this->abortJson('Forbidden', 403);
                     }
                 }
@@ -156,18 +161,18 @@ class UpdateShootAction
                     && count($requestKeys) > 0
                     && count(array_diff($requestKeys, $repEditableKeys)) === 0;
 
-                if (!$onlyPrivateListing && !$onlyRepEditableFields) {
+                if (! $onlyPrivateListing && ! $onlyRepEditableFields) {
                     $this->abortJson('Forbidden', 403);
                 }
 
                 $requestedTourLinks = $request->input('tour_links', []);
                 if ($request->has('tour_links')) {
-                    if (!is_array($requestedTourLinks)) {
+                    if (! is_array($requestedTourLinks)) {
                         $this->abortJson('Invalid tour_links payload', 422);
                     }
 
                     $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $repEditableTourLinkKeys);
-                    if (!empty($invalidTourLinkKeys)) {
+                    if (! empty($invalidTourLinkKeys)) {
                         $this->abortJson('Forbidden', 403);
                     }
                 }
@@ -176,16 +181,16 @@ class UpdateShootAction
                 $onlyPhotographerEditableFields = count($requestKeys) > 0
                     && count(array_diff($requestKeys, $photographerEditableKeys)) === 0;
 
-                if (!$onlyPhotographerEditableFields) {
+                if (! $onlyPhotographerEditableFields) {
                     $this->abortJson('Forbidden', 403);
                 }
             } else {
-                if (!$onlyPrivateListing && !$onlyFeaturedFlag) {
+                if (! $onlyPrivateListing && ! $onlyFeaturedFlag) {
                     $this->abortJson('Forbidden', 403);
                 }
             }
 
-            if (!$ownsShoot && !$assignedRep && !$assignedPhotographer && !$clientCanTogglePrivateListing) {
+            if (! $ownsShoot && ! $assignedRep && ! $assignedPhotographer && ! $clientCanTogglePrivateListing) {
                 $this->abortJson('Forbidden', 403);
             }
         }
@@ -193,25 +198,52 @@ class UpdateShootAction
         $validated = $request->validate(array_merge(
             $this->editablePayloadService->validationRules(),
             [
-            'status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
-            'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
-            'skip_availability_check' => 'nullable|boolean',
-            'is_private_listing' => 'nullable|boolean',
-            'is_listing_hidden' => 'nullable|boolean',
-            'listing_type' => 'nullable|string|in:for_sale,for_rent',
-            'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
-            'ghost_user_ids' => 'nullable|array',
-            'ghost_user_ids.*' => [
-                'integer',
-                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
-            ],
-            'tour_links.realtor_client_id' => [
-                'nullable',
-                'integer',
-                Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
-            ],
+                'status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
+                'workflow_status' => 'nullable|string|in:scheduled,completed,uploaded,editing,delivered,on_hold,cancelled',
+                'skip_availability_check' => 'nullable|boolean',
+                'is_private_listing' => 'nullable|boolean',
+                'is_listing_hidden' => 'nullable|boolean',
+                'listing_type' => 'nullable|string|in:for_sale,for_rent',
+                'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
+                'ghost_user_ids' => 'nullable|array',
+                'ghost_user_ids.*' => [
+                    'integer',
+                    Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
+                ],
+                'tour_links.realtor_client_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'client')),
+                ],
             ]
         ));
+
+        $complimentaryServiceOptions = $validated['complimentary_service_options'] ?? null;
+        if (is_array($complimentaryServiceOptions)
+            && ! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)) {
+            $this->abortJson('Only Admin and Super Admin can add complimentary services.', 403);
+        }
+        if (is_array($complimentaryServiceOptions)) {
+            $separatelySavedFields = array_intersect(
+                [
+                    'ghost_user_ids',
+                    'status',
+                    'workflow_status',
+                    'services',
+                    'service_items',
+                    'service_photographers',
+                    'admin_adjusted_total_quote',
+                ],
+                array_keys($validated)
+            );
+            if ($separatelySavedFields !== []) {
+                throw ValidationException::withMessages([
+                    'complimentary_service_options' => [
+                        'Save standard service, status, pricing, and shared-user changes separately before adding complimentary services.',
+                    ],
+                ]);
+            }
+        }
 
         $serviceChangeRequested = array_key_exists('services', $validated)
             || array_key_exists('service_items', $validated);
@@ -257,7 +289,7 @@ class UpdateShootAction
         $scheduledDateProvidedForAvailability = array_key_exists('scheduled_date', $validated);
         $timeProvidedForAvailability = array_key_exists('time', $validated);
 
-        if (!$scheduledAtProvidedForAvailability && ($scheduledDateProvidedForAvailability || $timeProvidedForAvailability)) {
+        if (! $scheduledAtProvidedForAvailability && ($scheduledDateProvidedForAvailability || $timeProvidedForAvailability)) {
             $normalizedScheduledDate = $this->normalizeScheduledDateForDateTime(
                 $validated['scheduled_date']
                 ?? $shoot->scheduled_date?->toDateString()
@@ -303,7 +335,7 @@ class UpdateShootAction
                 );
             }
 
-            if (!$skipConflictCheck) {
+            if (! $skipConflictCheck) {
                 $this->support->checkServiceItemPhotographerAvailability(
                     $targetServices,
                     $targetPhotographerId ? (int) $targetPhotographerId : null,
@@ -337,7 +369,7 @@ class UpdateShootAction
 
         if (array_key_exists('is_private_listing', $validated)) {
             $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status ?? ''));
-            if (!in_array($currentStatus, [
+            if (! in_array($currentStatus, [
                 'delivered', 'ready_for_client', 'admin_verified', 'ready',
                 'completed', 'workflow_completed', 'client_delivered',
             ], true)) {
@@ -347,7 +379,7 @@ class UpdateShootAction
         }
 
         if (array_key_exists('is_listing_hidden', $validated)) {
-            if (!in_array($user->role, ['admin', 'superadmin'], true)) {
+            if (! in_array($user->role, ['admin', 'superadmin'], true)) {
                 $this->abortJson('Only administrators can hide or unhide listings', 403);
             }
             $shoot->is_listing_hidden = (bool) $validated['is_listing_hidden'];
@@ -428,11 +460,73 @@ class UpdateShootAction
         if ($featuredFlagProvided) {
             unset($validated['is_featured']);
         }
+        unset($validated['complimentary_service_options']);
 
-        $this->editablePayloadService->apply($shoot, $validated, $user);
-        if ($featuredFlagProvided) {
-            $this->applyFeaturedRequestState($shoot, (bool) $requestedFeaturedState, $user, $canApproveFeaturedShoot);
-            $shoot->save();
+        $createdComplimentaryReshoot = null;
+        $complimentaryReshootReplayed = false;
+        try {
+            DB::transaction(function () use (
+                $shoot,
+                $validated,
+                $user,
+                $featuredFlagProvided,
+                $requestedFeaturedState,
+                $canApproveFeaturedShoot,
+                $complimentaryServiceOptions,
+                &$createdComplimentaryReshoot,
+                &$complimentaryReshootReplayed
+            ): void {
+                $this->editablePayloadService->apply($shoot, $validated, $user);
+                if ($featuredFlagProvided) {
+                    $this->applyFeaturedRequestState(
+                        $shoot,
+                        (bool) $requestedFeaturedState,
+                        $user,
+                        $canApproveFeaturedShoot
+                    );
+                    $shoot->save();
+                }
+
+                if (! is_array($complimentaryServiceOptions)) {
+                    return;
+                }
+
+                $isIdempotentReplay = Shoot::query()
+                    ->where(
+                        'complimentary_reshoot_idempotency_key',
+                        $complimentaryServiceOptions['idempotency_key']
+                    )
+                    ->exists();
+                if (! $isIdempotentReplay) {
+                    $this->assertComplimentaryServiceAvailability(
+                        $shoot->fresh(),
+                        $complimentaryServiceOptions
+                    );
+                }
+                $result = $this->complimentaryReshoots->createFromEditOptions(
+                    $shoot->fresh(),
+                    $complimentaryServiceOptions,
+                    $user
+                );
+                $createdComplimentaryReshoot = $result['shoot'];
+                $complimentaryReshootReplayed = (bool) $result['replayed'];
+
+                if (! $complimentaryReshootReplayed) {
+                    $this->auditLog->record(
+                        'complimentary_reshoot.created',
+                        $user,
+                        $createdComplimentaryReshoot,
+                        [
+                            'entry_point' => 'edit_shoot',
+                            'reshoot_of_shoot_id' => $createdComplimentaryReshoot->reshoot_of_shoot_id,
+                            'root_shoot_id' => $createdComplimentaryReshoot->root_shoot_id,
+                            'idempotency_key' => $createdComplimentaryReshoot->complimentary_reshoot_idempotency_key,
+                        ]
+                    );
+                }
+            });
+        } catch (\DomainException $exception) {
+            $this->abortJson($exception->getMessage(), 409);
         }
         if (($scheduledAtProvided || array_key_exists('timezone', $validated)) && $shoot->scheduled_at) {
             $scheduleScope = app(ScheduleDateScopeService::class);
@@ -522,7 +616,7 @@ class UpdateShootAction
                 $changes['tour_links'] = 'updated';
             }
 
-            if (!empty($changes)) {
+            if (! empty($changes)) {
                 $this->activityLogger->log(
                     $shoot,
                     'shoot_updated',
@@ -535,10 +629,10 @@ class UpdateShootAction
                 );
             }
         } catch (\Exception $e) {
-            Log::warning('Failed to log shoot update activity: ' . $e->getMessage());
+            Log::warning('Failed to log shoot update activity: '.$e->getMessage());
         }
 
-        if (!empty($generatedTourLinkKeys)) {
+        if (! empty($generatedTourLinkKeys)) {
             try {
                 $this->activityLogger->log(
                     $shoot,
@@ -552,7 +646,7 @@ class UpdateShootAction
                     $user
                 );
             } catch (\Exception $e) {
-                Log::warning('Failed to log tour link activity: ' . $e->getMessage());
+                Log::warning('Failed to log tour link activity: '.$e->getMessage());
             }
         }
 
@@ -625,9 +719,9 @@ class UpdateShootAction
         $photographerChanged = $originalPhotographerId !== null
             && $originalPhotographerId !== $shoot->photographer_id
             && $shoot->photographer_id !== null;
-        $photographerNewlyAssigned = $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id && !$originalPhotographerId;
+        $photographerNewlyAssigned = $originalPhotographerId !== $shoot->photographer_id && $shoot->photographer_id && ! $originalPhotographerId;
 
-        if (!$onlyFeaturedFlag) {
+        if (! $onlyFeaturedFlag) {
             $this->registerDeferredSideEffects(
                 $shoot->id,
                 $changesSummary,
@@ -651,7 +745,25 @@ class UpdateShootAction
             $scheduleScope->localDateForShoot($shoot),
         ]);
 
-        return $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files', 'ghostUsers']);
+        $updatedShoot = $shoot->fresh(['client', 'photographer', 'service', 'services.category', 'files', 'ghostUsers']);
+        if ($createdComplimentaryReshoot) {
+            // Loading the relation opts the presenter into returning the compact
+            // related-reshoot summary on this response, so Edit Shoot can show
+            // the result without making the admin hunt for a second record.
+            $updatedShoot->load('reshootChildren');
+            $createdSummary = [
+                'id' => $createdComplimentaryReshoot->id,
+                'shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT,
+                'reshoot_of_shoot_id' => $createdComplimentaryReshoot->reshoot_of_shoot_id,
+                'scheduled_at' => $createdComplimentaryReshoot->scheduled_at?->toIso8601String(),
+                'client_charge_total' => 0.0,
+                'replayed' => $complimentaryReshootReplayed,
+            ];
+            $updatedShoot->setAttribute('created_complimentary_reshoot', $createdSummary);
+            $updatedShoot->setAttribute('createdComplimentaryReshoot', $createdSummary);
+        }
+
+        return $updatedShoot;
     }
 
     protected function registerDeferredSideEffects(
@@ -678,6 +790,66 @@ class UpdateShootAction
             $photographerChanged,
             $photographerNewlyAssigned
         )->afterCommit();
+    }
+
+    /**
+     * Validate the return visit exactly like a normal admin booking: configured
+     * working-hour bounds and existing booking conflicts are both enforced for
+     * every service-level photographer/schedule override. This runs inside the
+     * outer Edit Shoot transaction so a failure also rolls back ordinary edits.
+     */
+    protected function assertComplimentaryServiceAvailability(Shoot $sourceShoot, array $options): void
+    {
+        $timezone = $options['timezone'] ?? $sourceShoot->timezone ?? config('app.timezone');
+        $defaultScheduledAt = $options['scheduled_at'] ?? null;
+        if (! $defaultScheduledAt
+            && ! empty($options['scheduled_date'])
+            && ! empty($options['time'])) {
+            $defaultScheduledAt = Carbon::parse(
+                $options['scheduled_date'].' '.$options['time'],
+                $timezone
+            )->format('Y-m-d H:i:s');
+        }
+        $defaultPhotographerId = $options['photographer_id'] ?? $sourceShoot->photographer_id;
+
+        foreach ($options['service_items'] as $index => $item) {
+            $scheduledAt = $item['scheduled_at'] ?? $defaultScheduledAt;
+            $photographerId = $item['photographer_id'] ?? $defaultPhotographerId;
+            if (! $scheduledAt || ! $photographerId) {
+                continue;
+            }
+
+            // scheduled_at is persisted as the local wall-clock value across
+            // the existing booking paths. Keep the same convention here so
+            // conflict comparisons do not shift one side by the IANA offset.
+            $scheduled = Carbon::parse((string) $scheduledAt);
+            // Match CreateShootAction's lock-before-check ordering so concurrent
+            // bookings cannot both pass against the same photographer/day.
+            DB::table('shoots')
+                ->where('photographer_id', (int) $photographerId)
+                ->whereDate('scheduled_at', $scheduled->toDateString())
+                ->lockForUpdate()
+                ->get();
+
+            $durationMinutes = $this->support->calculateShootDurationFromServices([[
+                'id' => (int) $item['service_id'],
+            ]]);
+
+            try {
+                $this->support->assertWithinAvailabilityBounds(
+                    (int) $photographerId,
+                    $scheduled->toDateTime(),
+                    $durationMinutes
+                );
+            } catch (ValidationException $exception) {
+                $message = collect($exception->errors())->flatten()->first()
+                    ?: 'Photographer is not available at the selected time.';
+
+                throw ValidationException::withMessages([
+                    "complimentary_service_options.service_items.{$index}.scheduled_at" => [$message],
+                ]);
+            }
+        }
     }
 
     protected function applyFeaturedRequestState(Shoot $shoot, bool $requestedFeaturedState, User $user, bool $canApproveFeaturedShoot): void
@@ -710,6 +882,7 @@ class UpdateShootAction
             $shoot->featured_requested_by = $user->id;
             $shoot->featured_approved_at = null;
             $shoot->featured_approved_by = null;
+
             return;
         }
 
@@ -726,7 +899,7 @@ class UpdateShootAction
             $tourLinks = json_decode($tourLinks, true) ?: [];
         }
 
-        if (!is_array($tourLinks)) {
+        if (! is_array($tourLinks)) {
             return [];
         }
 
@@ -766,10 +939,10 @@ class UpdateShootAction
                 }
 
                 if (is_array($value)) {
-                    return !empty(array_filter($value, fn ($item) => is_string($item) ? trim($item) !== '' : !empty($item)));
+                    return ! empty(array_filter($value, fn ($item) => is_string($item) ? trim($item) !== '' : ! empty($item)));
                 }
 
-                return is_string($value) ? trim($value) !== '' : !empty($value);
+                return is_string($value) ? trim($value) !== '' : ! empty($value);
             })
             ->keys()
             ->values()

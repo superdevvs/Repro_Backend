@@ -5,9 +5,9 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\ShootActivityLogger;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\InvoiceService;
+use App\Services\ShootActivityLogger;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -55,6 +55,31 @@ class ShootEditablePayloadService
             'service_items.*.delivery_status' => ['nullable', Rule::in(['not_started', 'ready', 'delivered', 'cancelled'])],
             'service_items.*.force_unlock_delivery' => 'nullable|boolean',
             'service_items.*.unlock_reason' => 'nullable|string|max:2000',
+            'complimentary_service_options' => 'nullable|array',
+            'complimentary_service_options.idempotency_key' => 'required_with:complimentary_service_options|uuid',
+            'complimentary_service_options.reason_code' => [
+                'required_with:complimentary_service_options',
+                Rule::in(ComplimentaryReshootReasonPolicy::REASONS),
+            ],
+            'complimentary_service_options.reason_note' => [
+                'nullable',
+                'string',
+                'max:2000',
+                'required_if:complimentary_service_options.reason_code,'.ComplimentaryReshootReasonPolicy::OTHER,
+            ],
+            'complimentary_service_options.pay_photographer' => 'required_with:complimentary_service_options|boolean',
+            'complimentary_service_options.pay_sales_rep' => 'required_with:complimentary_service_options|boolean',
+            'complimentary_service_options.scheduled_at' => 'nullable|date',
+            'complimentary_service_options.scheduled_date' => 'nullable|date',
+            'complimentary_service_options.time' => 'nullable|string|max:40',
+            'complimentary_service_options.timezone' => 'nullable|timezone:all',
+            'complimentary_service_options.photographer_id' => 'nullable|integer|exists:users,id',
+            'complimentary_service_options.service_items' => 'required_with:complimentary_service_options|array|min:1',
+            'complimentary_service_options.service_items.*.source_shoot_service_id' => 'required|integer|distinct|exists:shoot_service,id',
+            'complimentary_service_options.service_items.*.service_id' => 'required|integer|distinct|exists:services,id',
+            'complimentary_service_options.service_items.*.quantity' => 'nullable|integer|min:1|max:100',
+            'complimentary_service_options.service_items.*.photographer_id' => 'nullable|integer|exists:users,id',
+            'complimentary_service_options.service_items.*.scheduled_at' => 'nullable|date',
             'address' => 'nullable|string|max:255',
             'city' => 'nullable|string|max:255',
             'state' => 'nullable|string|max:2',
@@ -345,9 +370,9 @@ class ShootEditablePayloadService
         $shouldRecalculatePricing = $serviceChangeRequested
             || $hasAdjustedTotal
             || (! $paymentFieldsProvided && (
-            array_key_exists('client_id', $validated)
-            || array_key_exists('state', $validated)
-        ));
+                array_key_exists('client_id', $validated)
+                || array_key_exists('state', $validated)
+            ));
 
         $serviceSubtotal = $this->support->calculateBaseQuote($targetServices);
 

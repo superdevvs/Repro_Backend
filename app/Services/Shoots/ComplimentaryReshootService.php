@@ -13,6 +13,7 @@ use Carbon\Carbon;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class ComplimentaryReshootService
@@ -126,6 +127,71 @@ class ComplimentaryReshootService
                 ),
             ],
         ];
+    }
+
+    /**
+     * Translate the deliberately small Edit Shoot toggle contract into the
+     * full audited complimentary-reshoot command. The linked child shoot is an
+     * accounting implementation detail: it preserves a second visit for the
+     * same catalog service without weakening shoot_service's one-service-per-
+     * shoot invariant.
+     *
+     * @return array{shoot: Shoot, replayed: bool}
+     */
+    public function createFromEditOptions(Shoot $sourceShoot, array $options, User $actor): array
+    {
+        $reasonCode = (string) $options['reason_code'];
+        $responsibility = $this->reasonPolicy->suggestedResponsibility($reasonCode)
+            ?? CompReshootItem::RESPONSIBILITY_OTHER;
+        $photographerMode = (bool) $options['pay_photographer']
+            ? ShootCompensation::MODE_STANDARD
+            : ShootCompensation::MODE_NONE;
+        $salesRepMode = (bool) $options['pay_sales_rep']
+            ? ShootCompensation::MODE_STANDARD
+            : ShootCompensation::MODE_NONE;
+        $rawItems = collect($options['service_items']);
+        $scheduledAt = $options['scheduled_at']
+            ?? $rawItems->pluck('scheduled_at')->first(fn ($value) => $value !== null && $value !== '');
+        $defaultPhotographerId = $options['photographer_id']
+            ?? $rawItems->pluck('photographer_id')->first(fn ($value) => $value !== null && $value !== '')
+            ?? $sourceShoot->photographer_id;
+
+        $items = $rawItems
+            ->map(fn (array $item) => [
+                'source_shoot_service_id' => (int) $item['source_shoot_service_id'],
+                'service_id' => (int) $item['service_id'],
+                'quantity' => max((int) ($item['quantity'] ?? 1), 1),
+                'photographer_id' => $item['photographer_id'] ?? $defaultPhotographerId,
+                'editor_id' => null,
+                'scheduled_at' => $item['scheduled_at'] ?? $scheduledAt,
+                'reason_code' => $reasonCode,
+                'reason_note' => $options['reason_note'] ?? null,
+                'responsibility' => $responsibility,
+                'responsible_staff_id' => null,
+                'photographer_compensation' => [
+                    'mode' => $photographerMode,
+                    'amount' => null,
+                ],
+            ])
+            ->values()
+            ->all();
+
+        return $this->create($sourceShoot, [
+            '_idempotency_key' => (string) ($options['idempotency_key'] ?? Str::uuid()),
+            'shoot_type' => Shoot::SHOOT_TYPE_COMPLIMENTARY_RESHOOT,
+            'scheduled_at' => $scheduledAt,
+            'scheduled_date' => $options['scheduled_date'] ?? null,
+            'time' => $options['time'] ?? null,
+            'timezone' => $options['timezone'] ?? $sourceShoot->timezone,
+            'photographer_id' => $defaultPhotographerId,
+            'reason_code' => $reasonCode,
+            'reason_note' => $options['reason_note'] ?? null,
+            'items' => $items,
+            'sales_rep_compensation' => [
+                'mode' => $salesRepMode,
+                'amount' => null,
+            ],
+        ], $actor);
     }
 
     /**
