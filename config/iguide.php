@@ -12,4 +12,10 @@ return [
         // swallowed initial dispatch failure within a practical window.
         'stale_scan_minutes' => 90,
     ],
+
+    'offline_viewer' => [
+        // The URL is a bearer credential embedded in every relative asset path.
+        // Keep it short-lived while leaving enough time for a full tour review.
+        'url_ttl_minutes' => 60,
+    ],
 ];

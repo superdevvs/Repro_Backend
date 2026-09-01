@@ -18,8 +18,9 @@ use ZipArchive;
 /**
  * Validates and tracks an opaque iGUIDE offline package.
  *
- * Packages are deliberately never extracted or served as a web application.
- * A clean package remains an authenticated ZIP download attached to a ShootFile.
+ * Packages are deliberately never extracted into public storage. A clean package
+ * remains an authenticated ZIP download and may be streamed entry-by-entry only
+ * through the short-lived signed offline viewer.
  */
 class IguideOfflinePackageService
 {
@@ -52,7 +53,7 @@ class IguideOfflinePackageService
      * Perform a bounded structural inspection. Only small signature prefixes
      * are read; no archive member is written to disk or executed.
      *
-     * @return array{original_filename:string,size_bytes:int,sha256:string,entry_count:int,expanded_size_bytes:int,wrapper_directory:?string}
+     * @return array{original_filename:string,size_bytes:int,sha256:string,entry_count:int,expanded_size_bytes:int,wrapper_directory:?string,index_entry_path:string}
      */
     public function inspect(UploadedFile $package): array
     {
@@ -190,6 +191,12 @@ class IguideOfflinePackageService
                 'entry_count' => $fileCount,
                 'expanded_size_bytes' => $expandedBytes,
                 'wrapper_directory' => $wrapper,
+                // Preserve the archive's exact case. ZIP lookups are normally
+                // case-sensitive even though validation intentionally accepts
+                // Index.html and rejects case-colliding paths.
+                'index_entry_path' => $wrapper === null
+                    ? $indexPaths[0]
+                    : $wrapper.'/'.$indexPaths[0],
             ];
         } finally {
             $zip->close();
@@ -200,7 +207,7 @@ class IguideOfflinePackageService
      * Record a new upload without discarding any provider data already stored in
      * iguide_data. A prior ready package remains addressable while this one scans.
      *
-     * @param  array{original_filename:string,size_bytes:int,sha256:string,entry_count:int,expanded_size_bytes:int,wrapper_directory:?string}  $inspection
+     * @param  array{original_filename:string,size_bytes:int,sha256:string,entry_count:int,expanded_size_bytes:int,wrapper_directory:?string,index_entry_path?:string}  $inspection
      * @return array<string,mixed>
      */
     public function beginUpload(Shoot $shoot, array $inspection, User $user, ?string $requestedUploadId = null): array
@@ -239,6 +246,10 @@ class IguideOfflinePackageService
                 'entry_count' => $inspection['entry_count'],
                 'expanded_size_bytes' => $inspection['expanded_size_bytes'],
                 'wrapper_directory' => $inspection['wrapper_directory'],
+                'index_entry_path' => $inspection['index_entry_path']
+                    ?? (($inspection['wrapper_directory'] ?? null) === null
+                        ? 'index.html'
+                        : $inspection['wrapper_directory'].'/index.html'),
                 'uploaded_by' => $user->getKey(),
                 'uploaded_at' => now()->toIso8601String(),
                 'queued_at' => now()->toIso8601String(),

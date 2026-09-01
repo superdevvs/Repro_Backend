@@ -549,6 +549,7 @@ class IguideOfflineChunkUploadService
                     'entry_count' => $inspection['entry_count'],
                     'expanded_size_bytes' => $inspection['expanded_size_bytes'],
                     'wrapper_directory' => $inspection['wrapper_directory'],
+                    'index_entry_path' => $inspection['index_entry_path'],
                 ]
             );
         }

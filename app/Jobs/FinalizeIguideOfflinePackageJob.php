@@ -15,7 +15,8 @@ use Throwable;
 
 /**
  * Publishes only the lifecycle pointer for a clean iGUIDE package. The ZIP stays
- * opaque in media storage and is never extracted or hosted as active content.
+ * opaque in private storage; the viewer streams clean members without extracting
+ * them into a public directory.
  */
 class FinalizeIguideOfflinePackageJob implements ShouldQueue
 {

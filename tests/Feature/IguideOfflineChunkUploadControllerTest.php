@@ -353,7 +353,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         ]);
         Sanctum::actingAs($admin);
         $bytes = $this->zipBytes([
-            '9137 Lakeland Valley/index.html' => '<!doctype html><title>Tour</title>',
+            '9137 Lakeland Valley/Index.HTML' => '<!doctype html><title>Tour</title>',
             '9137 Lakeland Valley/assets/app.js' => 'console.log("tour")',
         ]);
         $session = $this->initiate($shoot, strlen($bytes));
@@ -373,6 +373,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         $file = ShootFile::query()->where('shoot_id', $shoot->id)->sole();
         $this->assertSame($file->id, $session->shoot_file_id);
         $this->assertTrue($file->isIguideOfflinePackage());
+        $this->assertSame('9137 Lakeland Valley/Index.HTML', data_get($file->metadata, 'index_entry_path'));
         $this->assertSame(ShootFile::SCAN_STATUS_QUARANTINED, $file->scan_status);
         $this->assertStringStartsWith("secure/iguide-packages/{$shoot->id}/", $file->path);
         Storage::disk('local')->assertExists($file->path);
@@ -381,6 +382,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         $lifecycle = data_get($shoot->fresh()->iguide_data, 'manual_offline_package');
         $this->assertSame((string) $session->id, $lifecycle['upload_id']);
         $this->assertSame('scanning', $lifecycle['status']);
+        $this->assertSame('9137 Lakeland Valley/Index.HTML', $lifecycle['index_entry_path']);
         $this->assertSame(77, $lifecycle['previous_ready']['file_id']);
         $this->assertSame('IG-42', data_get($shoot->fresh()->iguide_data, 'provider_payload.work_order'));
         $this->assertDatabaseCount('iguide_offline_upload_chunks', 0);

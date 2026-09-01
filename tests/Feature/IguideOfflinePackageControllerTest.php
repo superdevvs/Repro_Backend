@@ -59,7 +59,7 @@ class IguideOfflinePackageControllerTest extends TestCase
 
         $response = $this->post("/api/integrations/shoots/{$shoot->id}/iguide/offline-package", [
             'package' => $this->zip([
-                '9137 Lakeland Valley/index.html' => '<!doctype html><title>Tour</title>',
+                '9137 Lakeland Valley/Index.HTML' => '<!doctype html><title>Tour</title>',
                 '9137 Lakeland Valley/assets/app.js' => 'console.log("tour")',
             ], '9137 Lakeland Valley - offline_en.zip'),
         ]);
@@ -67,6 +67,7 @@ class IguideOfflinePackageControllerTest extends TestCase
         $response->assertAccepted()
             ->assertJsonPath('manual_offline_package.status', 'scanning')
             ->assertJsonPath('manual_offline_package.original_filename', '9137 Lakeland Valley - offline_en.zip')
+            ->assertJsonPath('manual_offline_package.index_entry_path', '9137 Lakeland Valley/Index.HTML')
             ->assertJsonPath('manual_offline_package.previous_ready.file_id', 77)
             ->assertJsonPath('iguide_data.provider_payload.work_order', 'IG-123');
 
@@ -75,6 +76,7 @@ class IguideOfflinePackageControllerTest extends TestCase
         $this->assertSame(ShootFile::STAGE_ARCHIVED, $file->workflow_stage);
         $this->assertSame(ShootFile::SCAN_STATUS_QUARANTINED, $file->scan_status);
         $this->assertTrue($file->isIguideOfflinePackage());
+        $this->assertSame('9137 Lakeland Valley/Index.HTML', data_get($file->metadata, 'index_entry_path'));
         $this->assertStringStartsWith("secure/iguide-packages/{$shoot->id}/", $file->path);
         Storage::disk('local')->assertExists($file->path);
         Storage::disk('public')->assertMissing($file->path);

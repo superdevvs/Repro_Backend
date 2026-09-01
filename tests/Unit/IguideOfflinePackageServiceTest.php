@@ -29,7 +29,7 @@ class IguideOfflinePackageServiceTest extends TestCase
     public function it_accepts_a_bounded_package_with_one_optional_wrapper(): void
     {
         $upload = $this->zip([
-            '9137 Lakeland Valley/index.html' => '<!doctype html><title>Tour</title>',
+            '9137 Lakeland Valley/Index.HTML' => '<!doctype html><title>Tour</title>',
             '9137 Lakeland Valley/assets/app.js' => 'console.log("tour")',
             '9137 Lakeland Valley/assets/app.css' => 'body { color: #123; }',
         ], 'tour.zip');
@@ -39,6 +39,7 @@ class IguideOfflinePackageServiceTest extends TestCase
         $this->assertSame('tour.zip', $result['original_filename']);
         $this->assertSame(3, $result['entry_count']);
         $this->assertSame('9137 Lakeland Valley', $result['wrapper_directory']);
+        $this->assertSame('9137 Lakeland Valley/Index.HTML', $result['index_entry_path']);
         $this->assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $result['sha256']);
     }
 

@@ -92,6 +92,8 @@ use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\API\IntegrationController;
 use App\Http\Controllers\API\IguideOfflineChunkUploadController;
 use App\Http\Controllers\API\IguideOfflinePackageController;
+use App\Http\Controllers\API\IguideOfflineViewerAssetController;
+use App\Http\Controllers\API\IguideOfflineViewerLinkController;
 use App\Http\Controllers\StripePaymentController;
 
 
@@ -188,6 +190,16 @@ Route::get('/public/share-links/{token}/download', [PublicShootShareLinkControll
 Route::get('/public/shoot-media/{shoot}/download-zip', [PublicShootMediaArchiveController::class, 'show'])
     ->middleware('signed')
     ->name('api.public.shoot-media.download');
+
+// Short-lived bearer route used by the manual iGUIDE viewer. The signature is
+// deliberately a path segment so index.html's relative asset requests retain it.
+Route::get('/iguide/offline-view/{shootId}/{fileId}/{expires}/{signature}/{path?}', IguideOfflineViewerAssetController::class)
+    ->whereNumber('shootId')
+    ->whereNumber('fileId')
+    ->whereNumber('expires')
+    ->where('signature', '[a-f0-9]{64}')
+    ->where('path', '.*')
+    ->name('api.public.iguide-offline-viewer.asset');
 
 $shootMediaCorsPreflight = function (Request $request) {
     $origin = $request->headers->get('Origin', '*');
@@ -952,6 +964,8 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/property/refresh', [IntegrationController::class, 'refreshPropertyDetails']);
             Route::post('/iguide/sync', [IntegrationController::class, 'syncIguide']);
             Route::post('/iguide/offline-package', [IguideOfflinePackageController::class, 'store'])
+                ->middleware('role:admin,superadmin,editing_manager');
+            Route::post('/iguide/offline-package/view-link', IguideOfflineViewerLinkController::class)
                 ->middleware('role:admin,superadmin,editing_manager');
             Route::middleware('role:admin,superadmin,editing_manager')
                 ->prefix('/iguide/offline-package/uploads')
