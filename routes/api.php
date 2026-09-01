@@ -966,7 +966,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/iguide/offline-package', [IguideOfflinePackageController::class, 'store'])
                 ->middleware('role:admin,superadmin,editing_manager');
             Route::post('/iguide/offline-package/view-link', IguideOfflineViewerLinkController::class)
-                ->middleware('role:admin,superadmin,editing_manager');
+                ->middleware('role:admin,superadmin,editing_manager,client');
             Route::middleware('role:admin,superadmin,editing_manager')
                 ->prefix('/iguide/offline-package/uploads')
                 ->group(function () {

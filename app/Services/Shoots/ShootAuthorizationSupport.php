@@ -329,6 +329,14 @@ class ShootAuthorizationSupport
             return false;
         }
 
+        // The offline iGUIDE ZIP is an implementation package, not client
+        // deliverable media. Non-staff roles may only consume it through the
+        // short-lived, package-scoped viewer.
+        if ($file->isIguideOfflinePackage()
+            && ! $this->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+            return false;
+        }
+
         if ($this->hasRole($user, ['editor'])) {
             return $this->canEditorDownloadRawFile($shoot, $file, $user);
         }

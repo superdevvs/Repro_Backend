@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AccountLink;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
@@ -59,10 +60,80 @@ class IguideOfflineViewerTest extends TestCase
             now()->addMinutes(60)->timestamp,
             Carbon::parse((string) $response->json('expires_at'))->timestamp
         );
+
+        // Trusted staff retain the existing source-package download access.
+        $this->get("/api/images/{$file->id}/download/original")->assertOk();
+        $this->postJson('/api/images/download/batch', ['file_ids' => [$file->id]])->assertOk();
     }
 
     #[Test]
-    public function client_and_editor_roles_cannot_issue_viewer_links(): void
+    public function owning_client_can_view_but_cannot_upload_replace_or_download_the_private_zip(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        [$shoot, $file] = $this->readyPackage();
+        $shoot->update(['client_id' => $client->id]);
+        Sanctum::actingAs($client);
+
+        $this->postJson($this->viewLinkEndpoint($shoot))
+            ->assertOk()
+            ->assertJsonPath('file_id', $file->id)
+            ->assertJsonStructure(['viewer_url', 'expires_at']);
+
+        // Both the legacy one-request upload and the resumable replacement
+        // workflow remain staff-only even for the shoot's owning client.
+        $this->postJson("/api/integrations/shoots/{$shoot->id}/iguide/offline-package")
+            ->assertForbidden();
+        $this->withHeader('Idempotency-Key', (string) Str::uuid())
+            ->postJson("/api/integrations/shoots/{$shoot->id}/iguide/offline-package/uploads", [
+                'filename' => 'replacement.zip',
+                'size_bytes' => 1024,
+            ])
+            ->assertForbidden();
+
+        // The signed viewer streams only validated members from the archive;
+        // it does not grant access to the original private ZIP download route.
+        $this->get("/api/shoots/{$shoot->id}/media/{$file->id}/download")
+            ->assertForbidden();
+        $this->get("/api/images/{$file->id}/download/original")
+            ->assertForbidden();
+        $this->postJson('/api/images/download/batch', ['file_ids' => [$file->id]])
+            ->assertNotFound()
+            ->assertJsonPath('error', 'No files available for download');
+    }
+
+    #[Test]
+    public function linked_and_delivered_ghost_clients_follow_the_existing_shoot_access_scope(): void
+    {
+        $linkedOwner = User::factory()->create(['role' => 'client']);
+        $linkedClient = User::factory()->create(['role' => 'client']);
+        [$linkedShoot] = $this->readyPackage();
+        $linkedShoot->update(['client_id' => $linkedClient->id]);
+        AccountLink::create([
+            'main_account_id' => $linkedOwner->id,
+            'linked_account_id' => $linkedClient->id,
+            'shared_details' => ['shoots' => true],
+            'status' => 'active',
+            'linked_at' => now(),
+            'created_by' => $linkedOwner->id,
+        ]);
+
+        Sanctum::actingAs($linkedOwner);
+        $this->postJson($this->viewLinkEndpoint($linkedShoot))->assertOk();
+
+        $ghost = User::factory()->create(['role' => 'client']);
+        [$ghostShoot] = $this->readyPackage();
+        $ghostShoot->ghostUsers()->attach($ghost->id);
+        $ghostShoot->update(['workflow_status' => Shoot::STATUS_DELIVERED]);
+
+        Sanctum::actingAs($ghost);
+        $this->postJson($this->viewLinkEndpoint($ghostShoot))->assertOk();
+
+        $ghostShoot->update(['workflow_status' => Shoot::STATUS_SCHEDULED]);
+        $this->postJson($this->viewLinkEndpoint($ghostShoot))->assertForbidden();
+    }
+
+    #[Test]
+    public function unrelated_clients_and_editors_cannot_issue_viewer_links(): void
     {
         [$shoot] = $this->readyPackage();
 

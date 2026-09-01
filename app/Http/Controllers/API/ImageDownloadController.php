@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ImageDownloadController extends Controller
@@ -203,7 +204,7 @@ class ImageDownloadController extends Controller
     /**
      * Download multiple files as ZIP
      */
-    public function downloadMultiple(Request $request): JsonResponse|StreamedResponse
+    public function downloadMultiple(Request $request): BinaryFileResponse|JsonResponse|StreamedResponse
     {
         $validator = Validator::make($request->all(), [
             'file_ids' => 'required|array',
@@ -334,6 +335,13 @@ class ImageDownloadController extends Controller
         // Admin/superadmin/editing_manager can download anything
         if (in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
             return true;
+        }
+
+        // Manual iGUIDE archives are private implementation packages. Clients
+        // may view their contents only through the short-lived signed viewer;
+        // never expose the source ZIP through either image download endpoint.
+        if ($file->isIguideOfflinePackage()) {
+            return false;
         }
 
         if ($user->role === 'photographer') {
