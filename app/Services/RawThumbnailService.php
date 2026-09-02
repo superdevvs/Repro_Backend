@@ -186,10 +186,12 @@ class RawThumbnailService
 
         // Try extraction methods in order of preference
         // 1. ExifTool (fastest, extracts embedded JPEG)
-        // 2. dcraw demosaic (slower, but works when no embedded preview exists)
-        // 3. ImageMagick (slowest, full conversion)
+        // 2. ffmpeg (useful for ISO-BMFF/CR3 embedded video/image tracks)
+        // 3. dcraw demosaic (slower, but works when no embedded preview exists)
+        // 4. ImageMagick (slowest, full conversion)
         
         $success = $this->extractWithExiftool($sourcePath, $thumbnailAbsPath)
+            || $this->extractWithFfmpeg($sourcePath, $thumbnailAbsPath)
             || $this->extractWithDcrawDemosaic($sourcePath, $thumbnailAbsPath)
             || $this->extractWithImageMagick($sourcePath, $thumbnailAbsPath);
 
@@ -211,6 +213,7 @@ class RawThumbnailService
         Log::warning('RawThumbnailService: All extraction methods failed', [
             'source' => $sourcePath,
             'exiftool_available' => $this->commandExists('exiftool'),
+            'ffmpeg_available' => $this->commandExists('ffmpeg'),
             'dcraw_available' => $this->commandExists('dcraw'),
             'magick_available' => $this->commandExists('magick') || $this->commandExists('convert'),
         ]);
@@ -267,7 +270,7 @@ class RawThumbnailService
         }
 
         // CORRECT ORDER: JpgFromRaw first (full-size embedded JPEG)
-        $tags = ['JpgFromRaw', 'PreviewImage', 'ThumbnailImage'];
+        $tags = ['JpgFromRaw', 'PreviewImage', 'OtherImage', 'ThumbnailImage'];
 
         foreach ($tags as $tag) {
             // Windows-compatible command (no 2>/dev/null)
@@ -305,6 +308,36 @@ class RawThumbnailService
                     }
                 }
             }
+        }
+
+        return false;
+    }
+
+    /** Extract the first decodable CR3/RAW preview frame through ffmpeg. */
+    protected function extractWithFfmpeg(string $source, string $output): bool
+    {
+        if (! $this->commandExists('ffmpeg')) {
+            return false;
+        }
+
+        $cmd = sprintf(
+            'ffmpeg -y -loglevel error -i %s -frames:v 1 -vf %s -q:v 3 %s 2>&1',
+            escapeshellarg($source),
+            escapeshellarg('scale=800:800:force_original_aspect_ratio=decrease'),
+            escapeshellarg($output)
+        );
+        $outputLines = [];
+        $code = $this->runCommand($cmd, $outputLines);
+
+        if ($code === 0 && $this->isValidThumbnail($output)) {
+            Log::info('RawThumbnailService: Extracted using ffmpeg', [
+                'source' => basename($source),
+            ]);
+            return true;
+        }
+
+        if (file_exists($output)) {
+            @unlink($output);
         }
 
         return false;

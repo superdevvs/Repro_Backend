@@ -4,6 +4,7 @@ namespace App\Services\Scanning;
 
 use App\Exceptions\Scanning\ClamAvUnavailable;
 use InvalidArgumentException;
+use Symfony\Component\Process\Process;
 use Throwable;
 
 /**
@@ -22,7 +23,7 @@ use Throwable;
  */
 class ClamAvClient
 {
-    /** @var array{socket: ?string, host: string, port: int, connect_timeout: int, read_timeout: int, chunk_size: int} */
+    /** @var array{socket: ?string, host: string, port: int, connect_timeout: int, read_timeout: int, chunk_size: int, local_fallback_enabled: bool, local_binary: string, local_max_file_bytes: int, local_timeout: int, local_max_scantime_ms: int} */
     private array $config;
 
     /**
@@ -39,6 +40,15 @@ class ClamAvClient
             'connect_timeout' => (int) ($config['connect_timeout'] ?? 10),
             'read_timeout' => (int) ($config['read_timeout'] ?? 60),
             'chunk_size' => max(1024, (int) ($config['chunk_size'] ?? 8192)),
+            // clamd's INSTREAM default is commonly only 25 MiB, below a normal
+            // modern CR3. When that exact limit is reported, fall back to the
+            // local ClamAV engine with an explicit, bounded max size instead of
+            // retrying the same impossible stream eight times.
+            'local_fallback_enabled' => (bool) ($config['local_fallback_enabled'] ?? true),
+            'local_binary' => (string) ($config['local_binary'] ?? 'clamscan'),
+            'local_max_file_bytes' => max(1, (int) ($config['local_max_file_bytes'] ?? 268435456)),
+            'local_timeout' => max(1, (int) ($config['local_timeout'] ?? 600)),
+            'local_max_scantime_ms' => max(1, (int) ($config['local_max_scantime_ms'] ?? 300000)),
         ];
     }
 
@@ -67,10 +77,18 @@ class ClamAvClient
             }
 
             try {
-                return $this->scanStream($handle);
+                try {
+                    return $this->scanStream($handle);
+                } catch (ClamAvUnavailable $exception) {
+                    if (! $this->shouldUseLocalFallback($exception)) {
+                        throw $exception;
+                    }
+                }
             } finally {
                 fclose($handle);
             }
+
+            return $this->scanWithLocalCli($pathOrStream);
         }
 
         throw new InvalidArgumentException('scan() expects a file path string or a stream resource.');
@@ -253,5 +271,69 @@ class ClamAvClient
         // Anything else (e.g. "... ERROR", size-limit exceeded) is treated as a
         // scan that could not complete -> keep quarantined and retry.
         throw new ClamAvUnavailable("ClamAV reported an error: {$response}");
+    }
+
+    protected function shouldUseLocalFallback(ClamAvUnavailable $exception): bool
+    {
+        return $this->config['local_fallback_enabled']
+            && str_contains(strtolower($exception->getMessage()), 'instream size limit exceeded');
+    }
+
+    /**
+     * Scan a large local file without clamd's INSTREAM transport ceiling.
+     *
+     * The binary is invoked with an argument array (never a shell), a strict
+     * file-size ceiling, and a process timeout. Exit code 0 is clean, 1 is an
+     * infection, and every other result remains fail-closed.
+     */
+    protected function scanWithLocalCli(string $path): ClamAvScanResult
+    {
+        $size = @filesize($path);
+        if ($size === false || $size > $this->config['local_max_file_bytes']) {
+            throw new ClamAvUnavailable('File exceeds the configured local ClamAV fallback size limit.');
+        }
+
+        $command = [
+            $this->config['local_binary'],
+            '--no-summary',
+            '--stdout',
+            '--max-filesize='.$this->config['local_max_file_bytes'],
+            '--max-scansize='.$this->config['local_max_file_bytes'],
+            '--max-scantime='.$this->config['local_max_scantime_ms'],
+            $path,
+        ];
+
+        try {
+            [$exitCode, $stdout, $stderr] = $this->runLocalScan($command);
+        } catch (Throwable $exception) {
+            throw new ClamAvUnavailable(
+                'Local ClamAV fallback could not start: '.$exception->getMessage(),
+                0,
+                $exception
+            );
+        }
+
+        $raw = trim($stdout."\n".$stderr);
+        if ($exitCode === 0) {
+            return ClamAvScanResult::clean($raw !== '' ? $raw : 'local clamscan: OK');
+        }
+
+        if ($exitCode === 1 && preg_match('/^.*:\s*(.+?)\s+FOUND\s*$/im', $raw, $matches)) {
+            return ClamAvScanResult::infected(trim($matches[1]), $raw);
+        }
+
+        throw new ClamAvUnavailable(
+            'Local ClamAV fallback reported an error'.($raw !== '' ? ': '.$raw : '.')
+        );
+    }
+
+    /** @return array{0:int,1:string,2:string} */
+    protected function runLocalScan(array $command): array
+    {
+        $process = new Process($command);
+        $process->setTimeout($this->config['local_timeout']);
+        $process->run();
+
+        return [$process->getExitCode() ?? 2, $process->getOutput(), $process->getErrorOutput()];
     }
 }

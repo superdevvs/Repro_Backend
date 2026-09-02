@@ -78,4 +78,92 @@ class ClamAvClientTest extends TestCase
         $this->assertSame('Eicar-Test-Signature', $result->signature());
         $this->assertStringContainsString('FOUND', $result->raw());
     }
+
+    #[Test]
+    public function local_fallback_marks_a_large_file_clean_after_an_instream_limit(): void
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'clamav_local_clean_');
+        file_put_contents($tmp, 'harmless large raw fixture');
+
+        $client = new class extends ClamAvClient {
+            public function __construct()
+            {
+                parent::__construct(['local_max_file_bytes' => 1024]);
+            }
+
+            public function local(string $path): ClamAvScanResult
+            {
+                return $this->scanWithLocalCli($path);
+            }
+
+            protected function runLocalScan(array $command): array
+            {
+                return [0, $command[array_key_last($command)].': OK', ''];
+            }
+        };
+
+        try {
+            $this->assertTrue($client->local($tmp)->isClean());
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    #[Test]
+    public function local_fallback_preserves_an_infected_verdict_and_signature(): void
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'clamav_local_infected_');
+        file_put_contents($tmp, 'fixture');
+
+        $client = new class extends ClamAvClient {
+            public function __construct()
+            {
+                parent::__construct(['local_max_file_bytes' => 1024]);
+            }
+
+            public function local(string $path): ClamAvScanResult
+            {
+                return $this->scanWithLocalCli($path);
+            }
+
+            protected function runLocalScan(array $command): array
+            {
+                return [1, $command[array_key_last($command)].': Eicar-Test-Signature FOUND', ''];
+            }
+        };
+
+        try {
+            $result = $client->local($tmp);
+            $this->assertTrue($result->isInfected());
+            $this->assertSame('Eicar-Test-Signature', $result->signature());
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    #[Test]
+    public function local_fallback_never_assumes_an_oversize_or_scanner_error_is_clean(): void
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'clamav_local_error_');
+        file_put_contents($tmp, str_repeat('x', 32));
+
+        $oversize = new class extends ClamAvClient {
+            public function __construct()
+            {
+                parent::__construct(['local_max_file_bytes' => 8]);
+            }
+
+            public function local(string $path): ClamAvScanResult
+            {
+                return $this->scanWithLocalCli($path);
+            }
+        };
+
+        try {
+            $this->expectException(ClamAvUnavailable::class);
+            $oversize->local($tmp);
+        } finally {
+            @unlink($tmp);
+        }
+    }
 }

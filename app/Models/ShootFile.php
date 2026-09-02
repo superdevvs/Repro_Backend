@@ -317,7 +317,11 @@ class ShootFile extends Model
                 ? $this->serviceItem
                 : $this->serviceItem()->with('shoot')->first();
 
-            if ($serviceItem?->is_unlocked_for_delivery) {
+            if ($serviceItem?->is_unlocked_for_delivery
+                && in_array($serviceItem->delivery_status, [
+                    ShootService::DELIVERY_READY,
+                    ShootService::DELIVERY_DELIVERED,
+                ], true)) {
                 return false;
             }
         }

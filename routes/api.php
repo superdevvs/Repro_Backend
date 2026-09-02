@@ -779,6 +779,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Retry-scan control: re-enqueue ScanShootFileJob for a file whose scan failed (Req 15.8).
     Route::post('/shoots/{shoot}/files/{file}/rescan', [App\Http\Controllers\API\FileScanController::class, 'rescan'])
         ->middleware('role:admin,superadmin,editing_manager');
+    Route::get('/shoots/{shoot}/files/{file}/scan-failed-original', [App\Http\Controllers\API\FileScanController::class, 'downloadFailedOriginal'])
+        ->middleware('role:superadmin');
+    Route::post('/shoots/{shoot}/files/{file}/rebuild-preview', [App\Http\Controllers\API\FileScanController::class, 'rebuildPreview'])
+        ->middleware('role:superadmin');
     Route::post('/shoots/{shoot}/generate-description', [ShootPublicAssetsController::class, 'generatePropertyDescription']);
     Route::get('/shoots/{shoot}/tour-analytics', [TourAnalyticsController::class, 'summary']);
     Route::patch('/shoots/{shoot}/files/reclassify', [ShootMediaController::class, 'reclassifyFiles']);

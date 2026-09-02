@@ -77,6 +77,32 @@ class ImageProcessingServiceTest extends TestCase
         @unlink($rawPath);
     }
 
+    #[Test]
+    public function an_unextractable_raw_file_is_reported_as_failed_instead_of_becoming_a_fake_thumbnail(): void
+    {
+        Storage::fake('public');
+
+        $tempRawPath = tempnam(sys_get_temp_dir(), 'bad-raw-preview-');
+        $rawPath = $tempRawPath . '.cr3';
+        rename($tempRawPath, $rawPath);
+        file_put_contents($rawPath, 'not-a-decodable-raw-file');
+
+        $rawThumbnailService = new class extends RawThumbnailService {
+            public function generateThumbnail(string $sourcePath, string $thumbnailDir, ?string $thumbnailName = null): ?string
+            {
+                return null;
+            }
+        };
+
+        $generated = (new ImageProcessingService($rawThumbnailService))
+            ->processImageFromPath(457, 'broken.cr3', $rawPath);
+
+        $this->assertSame([], $generated);
+        Storage::disk('public')->assertMissing('shoots/457/thumbnails/broken_thumbnail.jpg');
+
+        @unlink($rawPath);
+    }
+
     /**
      * The `grid` rendition (600px) is what every card and tile displays. It is
      * only useful if the browser can actually fetch it, which means it must land

@@ -82,7 +82,7 @@ class ImageProcessingService
             $isRaw = in_array($extension, self::RAW_FORMATS);
             
             // Extract preview from RAW or read regular image
-            $image = $this->extractImagePreview($sourcePath, $isRaw);
+            $image = $this->extractImagePreview($sourcePath, $isRaw, $extension);
             
             if (!$image) {
                 Log::error("processImageFromPath: Failed to process image: {$fileName}");
@@ -146,7 +146,7 @@ class ImageProcessingService
             $isRaw = in_array($extension, self::RAW_FORMATS);
             
             // Extract preview from RAW or read regular image
-            $image = $this->extractImagePreview($fullPath, $isRaw);
+            $image = $this->extractImagePreview($fullPath, $isRaw, $extension);
             
             if (!$image) {
                 Log::error("Failed to process image: {$fileName}");
@@ -219,37 +219,47 @@ class ImageProcessingService
      * Extract image preview from RAW file or read regular image
      * Uses pure PHP/GD - no external tools like ImageMagick required
      */
-    protected function extractImagePreview(string $filePath, bool $isRaw)
+    protected function extractImagePreview(string $filePath, bool $isRaw, ?string $rawExtension = null)
     {
         if ($isRaw) {
-            // Extract embedded JPEG preview from RAW file using pure PHP
-            // Most RAW files (CR2, NEF, ARW, DNG, etc.) contain embedded JPEG previews
             $image = null;
-            
-            try {
-                $image = $this->extractWithPel($filePath);
-                if ($image) {
-                    Log::info("Successfully extracted RAW preview using pure PHP");
-                    return $image;
+
+            // The source may be an extensionless R2/Dropbox temp file, so the
+            // caller-provided original filename extension is authoritative.
+            $extension = strtolower($rawExtension ?: pathinfo($filePath, PATHINFO_EXTENSION));
+            // CR3 is ISO-BMFF rather than TIFF-based. Running the historical
+            // whole-file PHP JPEG scan first can consume hundreds of MB across
+            // concurrent workers and is less reliable for CR3 containers. Use
+            // the bounded external extraction pipeline first for CR3, while
+            // retaining the pure-PHP path as a fallback and for older formats.
+            $methods = $extension === 'cr3'
+                ? ['raw-thumbnail', 'embedded-jpeg']
+                : ['embedded-jpeg', 'raw-thumbnail'];
+
+            foreach ($methods as $method) {
+                try {
+                    $image = $method === 'raw-thumbnail'
+                        ? $this->extractWithRawThumbnailService($filePath)
+                        : $this->extractWithPel($filePath);
+
+                    if ($image) {
+                        Log::info('Successfully extracted RAW preview', ['method' => $method]);
+                        return $image;
+                    }
+                } catch (Exception $e) {
+                    Log::warning('RAW preview extraction method failed', [
+                        'method' => $method,
+                        'error' => $e->getMessage(),
+                    ]);
                 }
-            } catch (Exception $e) {
-                Log::warning("RAW preview extraction failed: " . $e->getMessage());
-            }
-            
-            // CR3/BMFF and similar formats are more reliable via the dedicated RAW thumbnail pipeline.
-            try {
-                $image = $this->extractWithRawThumbnailService($filePath);
-                if ($image) {
-                    Log::info("Successfully extracted RAW preview using RawThumbnailService");
-                    return $image;
-                }
-            } catch (Exception $e) {
-                Log::warning("RawThumbnailService extraction failed: " . $e->getMessage());
             }
 
-            // Last resort: Create a placeholder for RAW files that don't have extractable previews
-            Log::warning("Could not extract preview from RAW file, using placeholder");
-            return $this->createRawPlaceholder();
+            // A placeholder is not a successful thumbnail. Returning failure
+            // records processing_failed_at, exposes the rebuild control, and
+            // avoids permanently treating a generic RAW icon as a processed
+            // photograph.
+            Log::warning('Could not extract a real preview from RAW file');
+            return false;
             
         } else {
             // Uploaded files are often stored as extensionless temp files, so rely on

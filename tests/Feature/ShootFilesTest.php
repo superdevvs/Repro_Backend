@@ -10,6 +10,9 @@ use App\Jobs\ScanShootFileJob;
 use App\Services\ImageProcessingService;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShootService;
+use App\Models\Payment;
+use App\Models\PaymentServiceAllocation;
 use App\Models\User;
 use App\Services\DropboxWorkflowService;
 use Illuminate\Http\UploadedFile;
@@ -587,6 +590,121 @@ class ShootFilesTest extends TestCase
         $this->assertNull($payload['thumbnail_path']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['original_url']);
+    }
+
+    #[Test]
+    public function partial_shoot_releases_paid_service_files_without_releasing_unpaid_services(): void
+    {
+        Storage::fake('public');
+
+        $shoot = $this->createShoot([
+            'payment_status' => 'partial',
+            'base_quote' => 250.00,
+            'total_quote' => 250.00,
+            'bypass_paywall' => false,
+        ]);
+        $client = User::query()->findOrFail($shoot->client_id);
+        $secondServiceId = DB::table('services')->insertGetId([
+            'name' => 'Second Service ' . uniqid(),
+            'description' => 'Unpaid service',
+            'price' => 125.00,
+            'delivery_time' => 24,
+            'category_id' => DB::table('services')->where('id', $shoot->service_id)->value('category_id'),
+            'photographer_required' => 1,
+            'pricing_type' => 'fixed',
+            'allow_multiple' => 0,
+            'quantity' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $paidItem = ShootService::create([
+            'shoot_id' => $shoot->id,
+            'service_id' => $shoot->service_id,
+            'photographer_id' => $shoot->photographer_id,
+            'price' => 125.00,
+            'quantity' => 1,
+            'workflow_status' => ShootService::WORKFLOW_READY,
+            'delivery_status' => ShootService::DELIVERY_READY,
+            'is_deliverable' => true,
+        ]);
+        $unpaidItem = ShootService::create([
+            'shoot_id' => $shoot->id,
+            'service_id' => $secondServiceId,
+            'photographer_id' => $shoot->photographer_id,
+            'price' => 125.00,
+            'quantity' => 1,
+            'workflow_status' => ShootService::WORKFLOW_READY,
+            'delivery_status' => ShootService::DELIVERY_READY,
+            'is_deliverable' => true,
+        ]);
+        $payment = Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 125.00,
+            'currency' => 'USD',
+            'payment_method' => 'cash',
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+        PaymentServiceAllocation::create([
+            'payment_id' => $payment->id,
+            'shoot_service_id' => $paidItem->id,
+            'amount' => 125.00,
+        ]);
+        $partialPayment = Payment::create([
+            'shoot_id' => $shoot->id,
+            'amount' => 25.00,
+            'currency' => 'USD',
+            'payment_method' => 'cash',
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+        PaymentServiceAllocation::create([
+            'payment_id' => $partialPayment->id,
+            'shoot_service_id' => $unpaidItem->id,
+            'amount' => 25.00,
+        ]);
+
+        $paidFile = $this->createShootFile($shoot, [
+            'shoot_service_id' => $paidItem->id,
+            'filename' => 'paid-service.jpg',
+            'path' => "shoots/{$shoot->id}/completed/paid-service.jpg",
+            'web_path' => "shoots/{$shoot->id}/completed/paid-service-web.jpg",
+            'watermarked_web_path' => "shoots/{$shoot->id}/watermarked/paid-service-web.jpg",
+        ]);
+        $unpaidFile = $this->createShootFile($shoot, [
+            'shoot_service_id' => $unpaidItem->id,
+            'filename' => 'unpaid-service.jpg',
+            'path' => "shoots/{$shoot->id}/completed/unpaid-service.jpg",
+            'web_path' => "shoots/{$shoot->id}/completed/unpaid-service-web.jpg",
+            'watermarked_web_path' => "shoots/{$shoot->id}/watermarked/unpaid-service-web.jpg",
+        ]);
+        foreach ([$paidFile, $unpaidFile] as $file) {
+            Storage::disk('public')->put($file->path, 'original');
+            Storage::disk('public')->put($file->web_path, 'web');
+            Storage::disk('public')->put($file->watermarked_web_path, 'watermarked');
+        }
+
+        Sanctum::actingAs($client);
+        $files = collect($this->getJson("/api/shoots/{$shoot->id}/files?type=edited")
+            ->assertOk()
+            ->json('data'))
+            ->keyBy('filename');
+
+        $this->assertFalse($files['paid-service.jpg']['uses_watermark']);
+        $this->assertStringContainsString('paid-service-web.jpg', $files['paid-service.jpg']['url']);
+        $this->assertTrue($files['unpaid-service.jpg']['uses_watermark']);
+        $this->assertStringContainsString('watermarked/unpaid-service-web.jpg', $files['unpaid-service.jpg']['url']);
+
+        $paidPreview = $this->get("/api/shoots/{$shoot->id}/files/{$paidFile->id}/preview");
+        $paidPreview->assertOk();
+        $this->assertSame('paid-service.jpg', $paidPreview->baseResponse->getFile()->getFilename());
+
+        $partialPreview = $this->get("/api/shoots/{$shoot->id}/files/{$unpaidFile->id}/preview");
+        $partialPreview->assertOk();
+        $this->assertStringContainsString(
+            '/watermarked/unpaid-service-web.jpg',
+            str_replace('\\', '/', $partialPreview->baseResponse->getFile()->getPathname())
+        );
     }
 
     #[Test]

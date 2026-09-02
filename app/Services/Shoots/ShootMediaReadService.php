@@ -560,6 +560,7 @@ class ShootMediaReadService
             'placeholder_path' => $needsWatermark ? null : $file->placeholder_path,
             'uses_watermark' => $needsWatermark,
             'processed_at' => $file->processed_at,
+            'processing_failed_at' => $file->processing_failed_at?->toIso8601String(),
             'created_at' => $file->created_at?->toIso8601String(),
             'uploaded_at' => $file->uploaded_at?->toIso8601String() ?? $file->created_at?->toIso8601String(),
         ];
