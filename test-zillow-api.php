@@ -5,7 +5,7 @@
  * Run: php test-zillow-api.php
  */
 
-$serverToken = '78c8cbd5fbbba256de6dc99f22e77d92';
+$serverToken = 'DUMMY_UNUSED_TOKEN';
 $baseUrl = 'https://api.bridgedataoutput.com/api/v2';
 $query = '10 monroe';
 
