@@ -30,6 +30,7 @@ class PhotographerInvoiceController extends Controller
         }
 
         $invoices = Invoice::where('photographer_id', $user->id)
+            ->where('role', Invoice::ROLE_PHOTOGRAPHER)
             ->with(['items', 'shoots'])
             ->orderByDesc('billing_period_start')
             ->paginate($request->integer('per_page', 15));
@@ -44,7 +45,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -60,7 +61,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -131,7 +132,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -199,7 +200,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -261,7 +262,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -351,7 +352,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -425,7 +426,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -491,7 +492,7 @@ class PhotographerInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role !== 'photographer' || $invoice->photographer_id !== $user->id) {
+        if (! $this->ownsPhotographerPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -540,6 +541,16 @@ class PhotographerInvoiceController extends Controller
             ], 500);
         }
     }
-}
 
+    /**
+     * Client invoices carry photographer_id for shoot attribution, so the
+     * recipient id alone must never grant access to a client's receivable.
+     */
+    private function ownsPhotographerPayoutInvoice(?\App\Models\User $user, Invoice $invoice): bool
+    {
+        return $user?->role === Invoice::ROLE_PHOTOGRAPHER
+            && $invoice->role === Invoice::ROLE_PHOTOGRAPHER
+            && (int) $invoice->photographer_id === (int) $user->id;
+    }
+}
 

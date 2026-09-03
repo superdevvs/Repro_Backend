@@ -346,6 +346,10 @@ class Invoice extends Model
      */
     public function canBeModifiedByPayee(): bool
     {
+        if (! $this->isPayoutInvoice()) {
+            return false;
+        }
+
         $isPaidFlag = filter_var($this->attributes['is_paid'] ?? false, FILTER_VALIDATE_BOOLEAN);
         $paidAt = $this->attributes['paid_at'] ?? null;
 

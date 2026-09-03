@@ -128,7 +128,21 @@ class ClientBillingService
             ?? 0
         );
 
-        [$amountPaid, $balance] = $this->resolveInvoicePaidAndBalance($invoice, $amount, $relatedShoots);
+        $hasPaymentRecords = $invoice->hasRelatedPaymentRecords();
+        $amountPaid = $this->roundMoney($invoice->totalPaid());
+        if (! $hasPaymentRecords && $amountPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
+            $amountPaid = $this->roundMoney($invoice->getAttribute('amount_paid'));
+        }
+        if (! $hasPaymentRecords && $amountPaid <= 0 && $invoice->getAttribute('payments_total') !== null) {
+            $amountPaid = $this->roundMoney($invoice->getAttribute('payments_total'));
+        }
+
+        // balanceDue() already reconciles the live payment/refund ledger. Only
+        // use a stored balance for legacy invoices that have no payment ledger.
+        $balance = $this->roundMoney($invoice->balanceDue());
+        if (! $hasPaymentRecords && $balance <= 0 && $invoice->getAttribute('balance_due') !== null) {
+            $balance = $this->roundMoney($invoice->getAttribute('balance_due'));
+        }
 
         $issueDate = $this->normalizeDate($invoice->issue_date ?? $invoice->billing_period_start ?? $invoice->created_at);
         $paymentRequired = $invoice->requiresPayment();
@@ -181,81 +195,8 @@ class ClientBillingService
             'shoot' => $primaryShoot ? $this->serializeShoot($primaryShoot) : null,
             'shoots' => $relatedShoots->map(fn (Shoot $shoot) => $this->serializeShoot($shoot))->all(),
             'notes' => $invoice->notes,
-            'paidAt' => $this->normalizeDateTime($invoice->paid_at ?: $this->latestRelatedShootPaidAt($relatedShoots)),
+            'paidAt' => $this->normalizeDateTime($invoice->paid_at),
         ];
-    }
-
-
-    /**
-     * @return array{0: float, 1: float}
-     */
-    private function resolveInvoicePaidAndBalance(Invoice $invoice, float $amount, Collection $relatedShoots): array
-    {
-        $invoicePaid = $this->roundMoney($invoice->totalPaid());
-        $shootPaid = $this->roundMoney(
-            $relatedShoots->sum(fn (Shoot $shoot) => $shoot->calculateCanonicalTotalPaid())
-        );
-        // Invoice and shoot payment rows can describe the same cash. Take the
-        // larger live total instead of adding them.
-        $amountPaid = max($invoicePaid, $shootPaid);
-
-        $hasLivePayments = $invoice->hasRelatedPaymentRecords()
-            || $relatedShoots->contains(
-                fn (Shoot $shoot) => $shoot->getCanonicalCompletedPayments()->isNotEmpty()
-            );
-
-        // Stored amount_paid / payments_total are a legacy fallback only when
-        // neither the invoice nor its related shoots have payment records.
-        if (! $hasLivePayments && $amountPaid <= 0 && $invoice->getAttribute('amount_paid') !== null) {
-            $amountPaid = $this->roundMoney($invoice->getAttribute('amount_paid'));
-        }
-        if (! $hasLivePayments && $amountPaid <= 0 && $invoice->getAttribute('payments_total') !== null) {
-            $amountPaid = $this->roundMoney($invoice->getAttribute('payments_total'));
-        }
-
-        if ($this->relatedShootsAreFullyPaid($relatedShoots)) {
-            $amountPaid = max($amountPaid, $amount);
-
-            return [$amountPaid, 0.0];
-        }
-
-        return [$amountPaid, $this->roundMoney(max($amount - $amountPaid, 0))];
-    }
-
-    private function relatedShootsAreFullyPaid(Collection $relatedShoots): bool
-    {
-        return $relatedShoots->isNotEmpty()
-            && $relatedShoots->every(fn (Shoot $shoot) => $this->isShootFullyPaid($shoot));
-    }
-
-    private function isShootFullyPaid(Shoot $shoot): bool
-    {
-        $status = strtolower((string) ($shoot->payment_status ?? ''));
-        if (in_array($status, ['paid', 'full', Shoot::PAYMENT_STATUS_NO_PAYMENT_REQUIRED], true)) {
-            return true;
-        }
-
-        $quote = (float) ($shoot->total_quote ?? 0);
-        if ($quote <= 0.01) {
-            return true;
-        }
-
-        return $shoot->calculateCanonicalTotalPaid() + 0.01 >= $quote;
-    }
-
-    private function latestRelatedShootPaidAt(Collection $relatedShoots): mixed
-    {
-        return $relatedShoots
-            ->map(fn (Shoot $shoot) => $this->latestCompletedPayment($shoot)?->processed_at)
-            ->filter()
-            ->sortByDesc(function ($value) {
-                if ($value instanceof Carbon) {
-                    return $value->timestamp;
-                }
-
-                return strtotime((string) $value) ?: 0;
-            })
-            ->first();
     }
 
     private function buildShootBalanceItem(Shoot $shoot, User $client): ?array

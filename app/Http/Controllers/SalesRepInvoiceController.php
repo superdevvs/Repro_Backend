@@ -32,6 +32,7 @@ class SalesRepInvoiceController extends Controller
         }
 
         $invoices = Invoice::where('sales_rep_id', $user->id)
+            ->where('role', Invoice::ROLE_SALES_REP)
             ->with(['items', 'shoots'])
             ->orderByDesc('billing_period_start')
             ->paginate($request->integer('per_page', 15));
@@ -46,7 +47,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
+        if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -62,7 +63,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
+        if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -132,7 +133,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
+        if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -196,7 +197,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
+        if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -257,7 +258,7 @@ class SalesRepInvoiceController extends Controller
     {
         $user = $request->user();
 
-        if (!$this->isSalesRep($user) || $invoice->sales_rep_id !== $user->id) {
+        if (! $this->ownsSalesRepPayoutInvoice($user, $invoice)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -313,6 +314,17 @@ class SalesRepInvoiceController extends Controller
     private function canBeModifiedBySalesRep(Invoice $invoice): bool
     {
         return $invoice->canBeModifiedByPayee();
+    }
+
+    /**
+     * Client invoices may carry a rep id for attribution and must not become
+     * editable through the sales-rep payout workflow.
+     */
+    private function ownsSalesRepPayoutInvoice($user, Invoice $invoice): bool
+    {
+        return $this->isSalesRep($user)
+            && $invoice->role === Invoice::ROLE_SALES_REP
+            && (int) $invoice->sales_rep_id === (int) $user->id;
     }
 
     private function isSalesRep($user): bool
