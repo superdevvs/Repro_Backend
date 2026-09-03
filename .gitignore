@@ -24,3 +24,11 @@ codex-*.log
 
 create_out.txt
 verify_reel.php
+# Certificate and key material must never be committed.
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
