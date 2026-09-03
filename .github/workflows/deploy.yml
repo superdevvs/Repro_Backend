@@ -19,6 +19,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Fail if env, key, or pem files are tracked
+        run: php scripts/check-tracked-secrets.php
+
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
