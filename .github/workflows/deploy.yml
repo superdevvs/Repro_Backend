@@ -87,7 +87,7 @@ jobs:
     # Desktop releases already run the same quality gate and deploy through the
     # workstation's allowlisted SSH path. Keep CI validation for those commits,
     # but do not start a second hosted deploy that cannot reach the server.
-    if: ${{ !contains(github.event.head_commit.message, '[desktop-deploy]') }}
+    if: false
     runs-on: ubuntu-latest
 
     steps:
