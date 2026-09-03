@@ -64,15 +64,18 @@ jobs:
           # example's integration defaults would let them drift into test runs.
           printf 'APP_ENV=testing\n' > .env
 
+      - name: Generate throwaway CI APP_KEY
+        run: |
+          set -euo pipefail
+          key="base64:$(openssl rand -base64 32)"
+          echo "::add-mask::$key"
+          echo "APP_KEY=$key" >> "$GITHUB_ENV"
+
       - name: Run test suite
         env:
           APP_ENV: testing
-          # Laravel refuses to boot without an encryption key, so every test that
-          # touches encryption, cookies or sessions fails with
-          # MissingAppKeyException. Locally the key comes from .env, which is not
-          # committed, so CI had none. This is a throwaway key used only by this
-          # test step and is unrelated to any deployed environment's key.
-          APP_KEY: base64:6lMq/5Rp/MERfmkNOn2kZk0OhSjmKDNTazouBbBC/Xc=
+          # Fresh throwaway APP_KEY is generated in the previous step so this
+          # repo never stores a key-shaped value. Unrelated to production.
           # DB_CONNECTION / DB_DATABASE are deliberately not set here. Defining
           # them suppressed phpunit.xml's :memory: database, so the suite ran
           # against a persistent sqlite file and tables leaked between tests.
