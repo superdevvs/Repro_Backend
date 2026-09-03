@@ -249,6 +249,108 @@ class ClientBillingControllerTest extends TestCase
         $updated->assertJsonPath('summary.paymentRequiredToReleaseCount', 0);
     }
 
+    public function test_live_payment_balance_wins_over_a_stale_stored_balance(): void
+    {
+        $client = User::factory()->create(['role' => 'client']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $service = $this->createService();
+        $shoot = $this->createShoot($client, $photographer, $service, Carbon::parse('2025-10-01'), 140.00);
+        $invoice = Invoice::factory()->create([
+            'client_id' => $client->id,
+            'shoot_id' => $shoot->id,
+            'invoice_number' => 'INV-STALE-BALANCE',
+            'subtotal' => 140.00,
+            'tax' => 0,
+            'total' => 140.00,
+            'total_amount' => 140.00,
+            'amount_paid' => 0,
+            'payments_total' => 0,
+            'balance_due' => 140.00,
+            'status' => Invoice::STATUS_SENT,
+        ]);
+        Payment::create([
+            'invoice_id' => $invoice->id,
+            'shoot_id' => $shoot->id,
+            'amount' => 140.00,
+            'currency' => 'USD',
+            'payment_method' => 'other',
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+
+        Sanctum::actingAs($client);
+        $response = $this->getJson('/api/client/billing');
+        $response->assertOk();
+        $response->assertJsonPath('summary.dueNow.count', 0);
+        $response->assertJsonPath('summary.paid.count', 1);
+        $response->assertJsonPath('items.0.balance', 0);
+        $response->assertJsonPath('items.0.bucket', 'paid');
+    }
+
+
+    public function test_marking_related_shoot_paid_clears_kline_invoice_00038_balance_and_release_block(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'name' => 'Elizabeth Kline']);
+        $photographer = User::factory()->create(['role' => 'photographer']);
+        $service = $this->createService();
+
+        $shoot = $this->createShoot($client, $photographer, $service, Carbon::parse('2025-10-01'), 1055.00);
+        $shoot->update([
+            'address' => '9137 Lakeland Valley Court',
+            'city' => 'Springfield',
+            'state' => 'VA',
+            'zip' => '22153',
+            'status' => Shoot::STATUS_DELIVERED,
+            'workflow_status' => Shoot::STATUS_DELIVERED,
+            'payment_status' => 'paid',
+        ]);
+
+        $invoice = Invoice::factory()->create([
+            'client_id' => $client->id,
+            'shoot_id' => $shoot->id,
+            'role' => 'legacy',
+            'invoice_number' => '00038',
+            'issue_date' => '2025-10-01',
+            'due_date' => now()->subDay()->toDateString(),
+            'subtotal' => 1055.00,
+            'tax' => 105.30,
+            'total' => 1160.30,
+            'total_amount' => 1160.30,
+            'amount_paid' => 105.30,
+            'status' => Invoice::STATUS_SENT,
+            'is_paid' => false,
+        ]);
+        $invoice->forceFill([
+            'payments_total' => 105.30,
+            'balance_due' => 1055.00,
+        ])->save();
+
+        Payment::create([
+            'shoot_id' => $shoot->id,
+            'invoice_id' => null,
+            'amount' => 1055.00,
+            'currency' => 'USD',
+            'payment_method' => 'other',
+            'status' => Payment::STATUS_COMPLETED,
+            'processed_at' => now(),
+        ]);
+
+        Sanctum::actingAs($client);
+
+        $response = $this->getJson('/api/client/billing');
+
+        $response->assertOk();
+        $item = collect($response->json('items'))->firstWhere('number', '00038');
+        $this->assertNotNull($item);
+        $this->assertSame(0, $item['balance']);
+        $this->assertSame('paid', $item['status']);
+        $this->assertSame('paid', $item['bucket']);
+        $this->assertFalse($item['paymentRequiredToRelease']);
+        $response->assertJsonPath('summary.dueNow.count', 0);
+        $response->assertJsonPath('summary.paid.count', 1);
+        $response->assertJsonPath('summary.paymentRequiredToReleaseCount', 0);
+    }
+
     public function test_client_billing_is_scoped_to_the_authenticated_client(): void
     {
         $client = User::factory()->create(['role' => 'client']);

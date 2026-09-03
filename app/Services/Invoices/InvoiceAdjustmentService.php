@@ -27,7 +27,20 @@ class InvoiceAdjustmentService
     public function clientInvoicesForShoot(Shoot $shoot): Collection
     {
         return Invoice::query()
-            ->where('role', Invoice::ROLE_CLIENT)
+            ->where(function ($query) {
+                $query->whereNull('role')
+                    ->orWhereNotIn('role', [
+                        Invoice::ROLE_PHOTOGRAPHER,
+                        Invoice::ROLE_SALES_REP,
+                    ]);
+            })
+            ->where(function ($query) use ($shoot) {
+                $query->where('role', Invoice::ROLE_CLIENT);
+
+                if ($shoot->client_id) {
+                    $query->orWhere('client_id', $shoot->client_id);
+                }
+            })
             ->where(function ($query) use ($shoot) {
                 $query->where('shoot_id', $shoot->id)
                     ->orWhereHas('shoots', fn ($shootQuery) => $shootQuery->whereKey($shoot->id))
