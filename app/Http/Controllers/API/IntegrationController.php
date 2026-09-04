@@ -175,7 +175,9 @@ class IntegrationController extends Controller
         $params['file_ids'] = $request->input('file_ids', []);
         $params['user'] = $user;
 
+        $returnToken = Str::random(64);
         $payload = $this->mmmService->buildPunchoutPayload($shoot, $params);
+        $payload['url_return'] = $this->appendMmmReturnToken($payload['url_return'] ?? null, $returnToken);
         $result = $this->mmmService->sendPunchoutRequest($payload);
 
         $session = MmmPunchoutSession::create([
@@ -189,6 +191,7 @@ class IntegrationController extends Controller
             'last_name' => $payload['last_name'] ?? null,
             'template_external_number' => $payload['template_external_number'] ?? null,
             'order_number' => $params['order_number'] ?? null,
+            'return_token' => $returnToken,
             'redirect_url' => $result['redirect_url'] ?? null,
             'status' => $result['success'] ? 'redirect_ready' : 'error',
             'redirected_at' => $result['success'] ? now() : null,
@@ -323,6 +326,12 @@ class IntegrationController extends Controller
         $shoot = $session?->shoot;
 
         if ($session) {
+            $requestToken = (string) ($request->query('return_token') ?? $request->input('return_token') ?? '');
+            $sessionToken = (string) ($session->return_token ?? '');
+            if ($sessionToken === '' || $requestToken === '' || !hash_equals($sessionToken, $requestToken)) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+            }
+
             $orderSummary = [
                 'items' => $parsed['items'] ?? [],
                 'subtotal' => $parsed['subtotal'] ?? null,
@@ -1343,6 +1352,26 @@ class IntegrationController extends Controller
         $encoded = implode('/', array_map('rawurlencode', $segments));
         return url('storage/' . $encoded);
     }
+
+    /**
+     * Append a high-entropy return_token query param to the MMM callback URL.
+     */
+    private function appendMmmReturnToken(?string $url, string $returnToken): string
+    {
+        $base = trim((string) $url);
+        if ($base === '') {
+            $base = (string) config('services.mmm.url_return', '');
+        }
+
+        if ($base === '') {
+            return 'return_token=' . urlencode($returnToken);
+        }
+
+        $separator = str_contains($base, '?') ? '&' : '?';
+
+        return $base . $separator . 'return_token=' . urlencode($returnToken);
+    }
+
 }
 
 

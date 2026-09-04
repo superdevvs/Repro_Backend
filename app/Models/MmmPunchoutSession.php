@@ -21,6 +21,7 @@ class MmmPunchoutSession extends Model
         'last_name',
         'template_external_number',
         'order_number',
+        'return_token',
         'redirect_url',
         'status',
         'redirected_at',
