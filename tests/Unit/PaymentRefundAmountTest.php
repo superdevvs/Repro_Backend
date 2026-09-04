@@ -18,11 +18,11 @@ class PaymentRefundAmountTest extends TestCase
 {
     private function paymentWithRefunds(float $amount, array $refundAmounts): Payment
     {
-        $payment = new Payment();
+        $payment = new Payment;
         $payment->forceFill(['amount' => $amount]);
 
         $refunds = new Collection(array_map(function (float $refundAmount) {
-            $refund = new PaymentRefund();
+            $refund = new PaymentRefund;
             $refund->forceFill(['amount' => $refundAmount]);
 
             return $refund;
@@ -70,6 +70,14 @@ class PaymentRefundAmountTest extends TestCase
         $this->assertTrue($payment->isFullyRefunded());
     }
 
+    public function test_one_cent_remainder_is_not_treated_as_fully_refunded(): void
+    {
+        $payment = $this->paymentWithRefunds(100.00, [99.99]);
+
+        $this->assertSame(0.01, $payment->refundableRemainder());
+        $this->assertFalse($payment->isFullyRefunded());
+    }
+
     public function test_net_amount_never_goes_negative(): void
     {
         // Defensive: a data error must not let one payment subtract from others.
@@ -106,5 +114,22 @@ class PaymentRefundAmountTest extends TestCase
         }
 
         $this->assertSame(325.00, $previousRemainder);
+    }
+
+    public function test_only_succeeded_refunds_reduce_the_payment(): void
+    {
+        $payment = new Payment;
+        $payment->forceFill(['amount' => 100.00]);
+
+        $refunds = new Collection([
+            (new PaymentRefund)->forceFill(['amount' => 10.00, 'status' => 'succeeded']),
+            (new PaymentRefund)->forceFill(['amount' => 20.00, 'status' => 'pending']),
+            (new PaymentRefund)->forceFill(['amount' => 30.00, 'status' => 'failed']),
+        ]);
+
+        $payment->setRelation('refunds', $refunds);
+
+        $this->assertSame(10.00, $payment->refundedAmount());
+        $this->assertSame(90.00, $payment->netAmount());
     }
 }

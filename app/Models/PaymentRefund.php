@@ -22,6 +22,8 @@ class PaymentRefund extends Model
         'amount',
         'provider',
         'provider_refund_id',
+        'operation_key',
+        'status',
         'reason',
         'created_by',
     ];

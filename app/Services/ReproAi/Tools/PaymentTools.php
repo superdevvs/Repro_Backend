@@ -3,27 +3,31 @@
 namespace App\Services\ReproAi\Tools;
 
 use App\Models\Shoot;
-use App\Models\Payment;
 use App\Models\User;
+use App\Services\Invoices\InvoiceAuthorizationService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\DB;
 
 class PaymentTools
 {
+    public function __construct(
+        protected PublicPaymentAccessTokenService $paymentTokens,
+        protected InvoiceAuthorizationService $invoiceAuthorization
+    ) {}
+
     /**
      * Create a payment checkout link for a shoot
-     * 
-     * @param array $params Parameters from AI tool call
-     * @param array $context Additional context
+     *
+     * @param  array  $params  Parameters from AI tool call
+     * @param  array  $context  Additional context
      * @return array Payment result
      */
     public function createPaymentLink(array $params, array $context = []): array
     {
         try {
             $shootId = $params['shoot_id'] ?? null;
-            
-            if (!$shootId) {
+
+            if (! $shootId) {
                 return [
                     'success' => false,
                     'error' => 'Shoot ID is required',
@@ -31,16 +35,47 @@ class PaymentTools
             }
 
             $shoot = Shoot::find($shootId);
-            
-            if (!$shoot) {
+
+            if (! $shoot) {
                 return [
                     'success' => false,
                     'error' => 'Shoot not found',
                 ];
             }
 
+            if (! $this->canAccessShoot($shoot, $context)) {
+                return [
+                    'success' => false,
+                    'error' => 'You do not have access to create a payment link for this shoot.',
+                ];
+            }
+
+            // Do not advertise a payable link until the same owner/customer
+            // fields required by Checkout are present. The payment controller
+            // remains the authoritative validation gate when the page opens.
+            $shoot->loadMissing(['payments', 'client']);
+            $client = $shoot->client;
+            $missingDetails = collect([
+                'owner name' => trim((string) ($client?->company_name ?: $client?->name)),
+                'customer email' => filter_var(trim((string) ($client?->email ?? '')), FILTER_VALIDATE_EMAIL)
+                    ? trim((string) $client->email)
+                    : '',
+                'property street' => trim((string) $shoot->address),
+                'property city' => trim((string) $shoot->city),
+                'property state' => trim((string) $shoot->state),
+                'property postal code' => trim((string) $shoot->zip),
+            ])->filter(fn ($value) => $value === '')->keys()->values()->all();
+
+            if ($missingDetails !== []) {
+                return [
+                    'success' => false,
+                    'error' => 'Complete the required Stripe details before creating a payment link: '.implode(', ', $missingDetails).'.',
+                    'missing_details' => $missingDetails,
+                ];
+            }
+
             // Check if already fully paid
-            $amountToPay = $shoot->total_quote - $shoot->total_paid;
+            $amountToPay = max((float) $shoot->total_quote - $shoot->calculateCanonicalTotalPaid(), 0);
             if ($amountToPay <= 0) {
                 return [
                     'success' => true,
@@ -51,53 +86,11 @@ class PaymentTools
                 ];
             }
 
-            // Create payment link using Stripe Checkout
-            $stripeSecretKey = config('services.stripe.secret_key');
-            if (empty($stripeSecretKey)) {
-                return [
-                    'success' => false,
-                    'error' => 'Stripe is not configured. Please set STRIPE_SECRET_KEY in .env.',
-                ];
-            }
-
-            \Stripe\Stripe::setApiKey($stripeSecretKey);
-
-            $amountInCents = (int) round($amountToPay * 100);
-            $currency = strtolower(config('services.stripe.currency', 'USD'));
-            $client = User::find($shoot->client_id);
-            $paymentUrl = app(PublicPaymentAccessTokenService::class)->buildPublicUrl($shoot);
-
-            $sessionParams = [
-                'payment_method_types' => ['card'],
-                'mode' => 'payment',
-                'line_items' => [[
-                    'price_data' => [
-                        'currency' => $currency,
-                        'product_data' => [
-                            'name' => 'Payment for Shoot at ' . $shoot->address,
-                            'metadata' => ['shoot_id' => (string) $shoot->id],
-                        ],
-                        'unit_amount' => $amountInCents,
-                    ],
-                    'quantity' => 1,
-                ]],
-                'metadata' => [
-                    'shoot_id' => (string) $shoot->id,
-                    'type' => 'single',
-                ],
-                'client_reference_id' => 'shoot:' . $shoot->id,
-                'success_url' => $paymentUrl . '?success=true&session_id={CHECKOUT_SESSION_ID}',
-                'cancel_url'  => $paymentUrl,
-            ];
-
-            if ($client && $client->email) {
-                $sessionParams['customer_creation'] = 'always';
-                $sessionParams['customer_email'] = $client->email;
-            }
-
-            $session = \Stripe\Checkout\Session::create($sessionParams);
-
-            $checkoutUrl = $session->url;
+            // Return the canonical signed payment page. That page creates the
+            // Checkout Session through StripePaymentController, so AI-created
+            // links get the same authorization, customer details, metadata,
+            // idempotency, and webhook reconciliation as every other payment.
+            $checkoutUrl = $this->paymentTokens->buildPublicUrl($shoot);
 
             return [
                 'success' => true,
@@ -111,45 +104,52 @@ class PaymentTools
                 'error' => $e->getMessage(),
                 'params' => $params,
             ]);
-            
+
             return [
                 'success' => false,
-                'error' => 'Failed to create payment link: ' . $e->getMessage(),
+                'error' => 'Failed to create payment link: '.$e->getMessage(),
             ];
         }
     }
 
     /**
      * Get payment status for a shoot
-     * 
-     * @param array $params Parameters from AI tool call
-     * @param array $context Additional context
+     *
+     * @param  array  $params  Parameters from AI tool call
+     * @param  array  $context  Additional context
      * @return array Payment status
      */
     public function getPaymentStatus(array $params, array $context = []): array
     {
         try {
             $shootId = $params['shoot_id'] ?? null;
-            
-            if (!$shootId) {
+
+            if (! $shootId) {
                 return [
                     'success' => false,
                     'error' => 'Shoot ID is required',
                 ];
             }
 
-            $shoot = Shoot::with('payments')->find($shootId);
-            
-            if (!$shoot) {
+            $shoot = Shoot::with('payments.refunds')->find($shootId);
+
+            if (! $shoot) {
                 return [
                     'success' => false,
                     'error' => 'Shoot not found',
                 ];
             }
 
-            $totalPaid = $shoot->total_paid ?? 0;
-            $totalQuote = $shoot->total_quote ?? 0;
-            $amountRemaining = $totalQuote - $totalPaid;
+            if (! $this->canAccessShoot($shoot, $context)) {
+                return [
+                    'success' => false,
+                    'error' => 'You do not have access to this shoot.',
+                ];
+            }
+
+            $totalPaid = $shoot->calculateCanonicalTotalPaid();
+            $totalQuote = (float) ($shoot->total_quote ?? 0);
+            $amountRemaining = max($totalQuote - $totalPaid, 0);
             $paymentStatus = $amountRemaining <= 0 ? 'paid' : ($totalPaid > 0 ? 'partial' : 'unpaid');
 
             $payments = $shoot->payments->map(function ($payment) {
@@ -158,7 +158,7 @@ class PaymentTools
                     'amount' => $payment->amount,
                     'status' => $payment->status,
                     'payment_date' => $payment->created_at->toDateString(),
-                    'payment_method' => $payment->payment_method ?? 'Square',
+                    'payment_method' => $payment->payment_method ?? 'unknown',
                 ];
             })->toArray();
 
@@ -176,13 +176,23 @@ class PaymentTools
                 'error' => $e->getMessage(),
                 'params' => $params,
             ]);
-            
+
             return [
                 'success' => false,
                 'error' => $e->getMessage(),
             ];
         }
     }
+
+    protected function canAccessShoot(Shoot $shoot, array $context): bool
+    {
+        $userId = $context['user_id'] ?? auth()->id();
+        $user = $userId ? User::find($userId) : null;
+
+        if (! $user) {
+            return false;
+        }
+
+        return $this->invoiceAuthorization->canViewShootInvoice($shoot, $user);
+    }
 }
-
-

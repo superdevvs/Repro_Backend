@@ -3,10 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\Payment;
+use App\Models\PaymentRefund;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
+use App\Services\Shoots\ShootServiceItemSupport;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -109,6 +111,42 @@ class ShootServicePaymentAllocationTest extends TestCase
             $this->assertSame('paid', $serviceItems->firstWhere('shoot_service_id', $item->id)['payment_status']);
             $this->assertSame('unlocked', $serviceItems->firstWhere('shoot_service_id', $item->id)['unlock_state']);
         }
+    }
+
+    public function test_partial_refund_reduces_service_paid_amount_once_even_after_allocation_rebuild(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin']);
+        [$shoot, $photoItem, $videoItem, $droneItem] = $this->createMultiServiceShoot();
+        Sanctum::actingAs($admin);
+
+        $this->postJson("/api/shoots/{$shoot->id}/mark-paid", [
+            'payment_type' => 'cash',
+            'amount' => 875.00,
+        ])->assertOk();
+
+        $payment = Payment::query()->where('shoot_id', $shoot->id)->firstOrFail();
+        PaymentRefund::create([
+            'payment_id' => $payment->id,
+            'shoot_id' => $shoot->id,
+            'amount' => 437.50,
+            'provider' => 'stripe',
+            'provider_refund_id' => 're_partial_service_allocation',
+            'status' => 'succeeded',
+        ]);
+
+        $support = app(ShootServiceItemSupport::class);
+        $beforeRebuild = collect($support->summaries($shoot->fresh(['payments'])));
+
+        $this->assertSame(87.50, $beforeRebuild->firstWhere('shoot_service_id', $photoItem->id)['paid_amount']);
+        $this->assertSame(212.50, $beforeRebuild->firstWhere('shoot_service_id', $videoItem->id)['paid_amount']);
+        $this->assertSame(137.50, $beforeRebuild->firstWhere('shoot_service_id', $droneItem->id)['paid_amount']);
+
+        $support->reconcileAllocationsAfterServiceChange($shoot->fresh(['payments']));
+        $afterRebuild = collect($support->summaries($shoot->fresh(['payments'])));
+
+        $this->assertSame(87.50, $afterRebuild->firstWhere('shoot_service_id', $photoItem->id)['paid_amount']);
+        $this->assertSame(212.50, $afterRebuild->firstWhere('shoot_service_id', $videoItem->id)['paid_amount']);
+        $this->assertSame(137.50, $afterRebuild->firstWhere('shoot_service_id', $droneItem->id)['paid_amount']);
     }
 
     private function createMultiServiceShoot(): array

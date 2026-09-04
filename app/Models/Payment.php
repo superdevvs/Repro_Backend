@@ -21,7 +21,7 @@ class Payment extends Model
         'stripe_payment_id',
         'stripe_session_id',
         'status',
-        'processed_at'
+        'processed_at',
     ];
 
     protected $casts = [
@@ -32,8 +32,11 @@ class Payment extends Model
 
     // Status constants
     const STATUS_PENDING = 'pending';
+
     const STATUS_COMPLETED = 'completed';
+
     const STATUS_FAILED = 'failed';
+
     const STATUS_REFUNDED = 'refunded';
 
     public function shoot()
@@ -68,7 +71,13 @@ class Payment extends Model
             ? $this->refunds
             : $this->refunds()->get();
 
-        return round((float) $refunds->sum(fn (PaymentRefund $refund) => (float) $refund->amount), 2);
+        return round((float) $refunds
+            ->filter(fn (PaymentRefund $refund) => in_array(
+                strtolower((string) ($refund->status ?: 'succeeded')),
+                ['succeeded', 'completed'],
+                true
+            ))
+            ->sum(fn (PaymentRefund $refund) => (float) $refund->amount), 2);
     }
 
     /**
@@ -91,6 +100,9 @@ class Payment extends Model
     /** True once the whole payment has been returned. */
     public function isFullyRefunded(): bool
     {
-        return $this->refundedAmount() + 0.01 >= (float) $this->amount;
+        $refundedCents = (int) round($this->refundedAmount() * 100);
+        $paymentCents = (int) round(((float) $this->amount) * 100);
+
+        return $refundedCents >= $paymentCents;
     }
 }

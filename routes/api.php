@@ -1,74 +1,65 @@
 <?php
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\API\AuthController;
-use App\Http\Controllers\API\ProfileSecurityController;
-use App\Http\Controllers\API\ShootIssuesController;
-use App\Http\Controllers\API\ShootMediaController;
-use App\Http\Controllers\API\ShootNotesController;
-use App\Http\Controllers\API\ClientDeliveryNotificationController;
-use App\Http\Controllers\API\ShootPaymentsController;
-use App\Http\Controllers\API\ShootPublicAssetsController;
-use App\Http\Controllers\Admin\PermissionController;
 use App\Http\Controllers\Admin\AccountingExpenseController;
-use App\Http\Controllers\Admin\UserController;
+use App\Http\Controllers\Admin\AccountLinkController;
 use App\Http\Controllers\Admin\AccountStatusController;
-use App\Http\Controllers\Admin\ServiceAreaController;
-use App\Http\Controllers\Admin\TestShootController;
 use App\Http\Controllers\Admin\ComplimentaryReshootController;
+use App\Http\Controllers\Admin\PermissionController;
+use App\Http\Controllers\Admin\ServiceAreaController;
 use App\Http\Controllers\Admin\ServiceController;
 use App\Http\Controllers\Admin\ServiceGroupController;
-use App\Http\Controllers\CategoryController;
-use App\Http\Controllers\API\ShootController;
-use App\Http\Controllers\API\ShootWorkflowController;
+use App\Http\Controllers\Admin\TestShootController;
+use App\Http\Controllers\Admin\UserController;
+use App\Http\Controllers\API\Admin\SystemOverviewController;
+use App\Http\Controllers\API\AiChatController;
+use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\API\AutoenhanceController;
+use App\Http\Controllers\API\ClientDeliveryNotificationController;
+use App\Http\Controllers\API\ClientEmailVerificationController;
+use App\Http\Controllers\API\CouponController;
+use App\Http\Controllers\API\CubiCasaController;
 use App\Http\Controllers\API\DashboardController;
-use App\Http\Controllers\PhotographerAvailabilityController;
-use App\Http\Controllers\PhotographerEquipmentController;
-use App\Http\Controllers\PhotographerShootController;
-use App\Http\Controllers\ClientBillingController;
-use App\Http\Controllers\InvoiceController;
-use App\Http\Controllers\DropboxAuthController;
-use App\Http\Controllers\InvoiceReportController;
+use App\Http\Controllers\API\EditingRequestController;
+use App\Http\Controllers\API\EditorRatesController;
+use App\Http\Controllers\API\FeaturedShootController;
+use App\Http\Controllers\API\GoogleCalendarController;
+use App\Http\Controllers\API\HiggsFieldController;
+use App\Http\Controllers\API\IguideOfflineChunkUploadController;
+use App\Http\Controllers\API\IguideOfflinePackageController;
+use App\Http\Controllers\API\IguideOfflineViewerAssetController;
+use App\Http\Controllers\API\IguideOfflineViewerLinkController;
+use App\Http\Controllers\API\ImageDownloadController;
+use App\Http\Controllers\API\ImageProcessingController;
+use App\Http\Controllers\API\IntegrationController;
+use App\Http\Controllers\API\IpLocationController;
+use App\Http\Controllers\API\LegalDocumentController;
+use App\Http\Controllers\API\LinkPreviewController;
+use App\Http\Controllers\API\ListingVideoController;
+use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\Messaging\AutomationController;
 use App\Http\Controllers\API\Messaging\ClientConfirmationRecoveryController;
-use App\Http\Controllers\API\Messaging\EmailOpsSummaryController;
 use App\Http\Controllers\API\Messaging\EmailMessagingController;
-use App\Http\Controllers\API\Messaging\MessagingOverviewController;
+use App\Http\Controllers\API\Messaging\EmailOpsSummaryController;
 use App\Http\Controllers\API\Messaging\MessageTemplateController;
+use App\Http\Controllers\API\Messaging\MessagingOverviewController;
 use App\Http\Controllers\API\Messaging\MessagingSettingsController;
 use App\Http\Controllers\API\Messaging\SmsContactController;
 use App\Http\Controllers\API\Messaging\SmsMessagingController;
 use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
-use App\Http\Controllers\API\TelnyxAi\TelnyxToolBridgeController;
-use App\Http\Controllers\API\Voice\VoiceCallController;
-use App\Http\Controllers\API\Voice\VoiceCallStreamController;
-use App\Http\Controllers\API\Voice\VoiceHandoffController;
-use App\Http\Controllers\API\Voice\VoiceHealthController;
-use App\Http\Controllers\API\Voice\VoiceLlmUsageController;
-use App\Http\Controllers\API\Voice\VoiceMemoryController;
-use App\Http\Controllers\API\Voice\VoiceNumberController;
-use App\Http\Controllers\API\Voice\VoiceScheduleController;
-use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
-use App\Http\Controllers\API\Voice\VoiceSettingsController;
-use App\Http\Controllers\API\Webhooks\TelnyxVoiceWebhookController;
-use App\Http\Controllers\API\Webhooks\VapiWebhookController;
-use App\Http\Controllers\API\CouponController;
-use App\Http\Controllers\API\GoogleCalendarController;
-use App\Http\Controllers\API\ShootMessageController;
-use App\Http\Controllers\API\TourAnalyticsController;
 use App\Http\Controllers\API\OnboardingEventController;
-use App\Http\Controllers\API\ShootRescheduleRequestController;
-use App\Http\Controllers\API\MediaUploadController;
-use App\Http\Controllers\API\EditingRequestController;
-use App\Http\Controllers\API\AiChatController;
-use App\Http\Controllers\API\CubiCasaController;
-use App\Http\Controllers\API\ImageDownloadController;
-use App\Http\Controllers\API\ImageProcessingController;
-use App\Http\Controllers\API\AutoenhanceController;
-use App\Http\Controllers\API\HiggsFieldController;
-use App\Http\Controllers\API\ListingVideoController;
+use App\Http\Controllers\API\ProfileSecurityController;
+use App\Http\Controllers\API\PublicShootMediaArchiveController;
+use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\ReelController;
+use App\Http\Controllers\API\ShootController;
+use App\Http\Controllers\API\ShootIssuesController;
+use App\Http\Controllers\API\ShootMediaController;
+use App\Http\Controllers\API\ShootMessageController;
+use App\Http\Controllers\API\ShootNotesController;
+use App\Http\Controllers\API\ShootPaymentsController;
+use App\Http\Controllers\API\ShootPublicAssetsController;
+use App\Http\Controllers\API\ShootRescheduleRequestController;
+use App\Http\Controllers\API\ShootWorkflowController;
 use App\Http\Controllers\API\StudioBrandController;
 use App\Http\Controllers\API\StudioDeepLinkController;
 use App\Http\Controllers\API\StudioMetricsController;
@@ -77,27 +68,35 @@ use App\Http\Controllers\API\StudioQueueController;
 use App\Http\Controllers\API\StudioSearchController;
 use App\Http\Controllers\API\StudioSourceController;
 use App\Http\Controllers\API\StudioTemplateController;
-use App\Http\Controllers\API\EditorRatesController;
-use App\Http\Controllers\API\PublicShootMediaArchiveController;
-use App\Http\Controllers\API\PublicShootShareLinkController;
-use App\Http\Controllers\API\FeaturedShootController;
-use App\Http\Controllers\API\LinkPreviewController;
-use App\Http\Controllers\API\IpLocationController;
-use App\Http\Controllers\API\WeatherController;
-use App\Http\Controllers\API\SystemTelemetryController;
 use App\Http\Controllers\API\SystemEmailHealthController;
-use App\Http\Controllers\API\ClientEmailVerificationController;
-use App\Http\Controllers\API\LegalDocumentController;
-use App\Http\Controllers\API\Admin\SystemOverviewController;
+use App\Http\Controllers\API\SystemTelemetryController;
+use App\Http\Controllers\API\TelnyxAi\TelnyxToolBridgeController;
+use App\Http\Controllers\API\TourAnalyticsController;
 use App\Http\Controllers\API\UploadSourceController;
-use App\Http\Controllers\Admin\AccountLinkController;
-use App\Http\Controllers\API\IntegrationController;
-use App\Http\Controllers\API\IguideOfflineChunkUploadController;
-use App\Http\Controllers\API\IguideOfflinePackageController;
-use App\Http\Controllers\API\IguideOfflineViewerAssetController;
-use App\Http\Controllers\API\IguideOfflineViewerLinkController;
+use App\Http\Controllers\API\Voice\ScheduledVoiceCallController;
+use App\Http\Controllers\API\Voice\VoiceCallController;
+use App\Http\Controllers\API\Voice\VoiceCallStreamController;
+use App\Http\Controllers\API\Voice\VoiceHandoffController;
+use App\Http\Controllers\API\Voice\VoiceHealthController;
+use App\Http\Controllers\API\Voice\VoiceLlmUsageController;
+use App\Http\Controllers\API\Voice\VoiceMemoryController;
+use App\Http\Controllers\API\Voice\VoiceNumberController;
+use App\Http\Controllers\API\Voice\VoiceScheduleController;
+use App\Http\Controllers\API\Voice\VoiceSettingsController;
+use App\Http\Controllers\API\WeatherController;
+use App\Http\Controllers\API\Webhooks\TelnyxVoiceWebhookController;
+use App\Http\Controllers\API\Webhooks\VapiWebhookController;
+use App\Http\Controllers\CategoryController;
+use App\Http\Controllers\ClientBillingController;
+use App\Http\Controllers\DropboxAuthController;
+use App\Http\Controllers\InvoiceController;
+use App\Http\Controllers\InvoiceReportController;
+use App\Http\Controllers\PhotographerAvailabilityController;
+use App\Http\Controllers\PhotographerEquipmentController;
+use App\Http\Controllers\PhotographerShootController;
 use App\Http\Controllers\StripePaymentController;
-
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 
 Route::get('/user', [AuthController::class, 'currentUser'])->middleware('auth:sanctum');
 
@@ -216,7 +215,7 @@ $shootMediaCorsPreflight = function (Request $request) {
 Route::options('/shoots/{shoot}/editor-download-raw', $shootMediaCorsPreflight);
 Route::options('/shoots/{shoot}/generate-share-link', $shootMediaCorsPreflight);
 
-if (!app()->environment('production')) {
+if (! app()->environment('production')) {
     // Debug route to check PHP upload limits
     Route::get('/php-limits', function () {
         return response()->json([
@@ -242,6 +241,7 @@ Route::get('/ai/health', function () {
 // AI Chat test endpoint (with auth, tests role middleware)
 Route::middleware('auth:sanctum')->get('/ai/test-auth', function (Request $request) {
     $user = $request->user();
+
     return response()->json([
         'status' => 'ok',
         'authenticated' => $user !== null,
@@ -255,17 +255,17 @@ Route::middleware('auth:sanctum')->get('/ai/test-auth', function (Request $reque
 // AI Chat test endpoint (with auth, minimal logic)
 Route::post('/ai/test', function (Request $request) {
     $user = $request->user();
-    if (!$user) {
+    if (! $user) {
         return response()->json(['error' => 'Unauthorized'], 401);
     }
-    
+
     try {
         // Test if we can create a session
         $session = \App\Models\AiChatSession::create([
             'user_id' => $user->id,
             'title' => 'Test session',
         ]);
-        
+
         return response()->json([
             'status' => 'success',
             'session_id' => $session->id,
@@ -284,7 +284,7 @@ Route::post('/ai/test', function (Request $request) {
 Route::prefix('dropbox')->name('dropbox.')->group(function () {
     // Config (public endpoint for frontend)
     Route::get('config', [DropboxAuthController::class, 'getConfig'])->name('config');
-    
+
     // Auth
     Route::get('connect', [DropboxAuthController::class, 'connect'])->name('connect');
     Route::get('callback', [DropboxAuthController::class, 'callback'])->name('callback');
@@ -341,7 +341,7 @@ Route::middleware('external_api_key')->prefix('external')->group(function () {
         ->name('external.services');
 });
 
-if (!app()->environment('production')) {
+if (! app()->environment('production')) {
     Route::get('test/dropbox-config', [App\Http\Controllers\TestDropboxController::class, 'debugConfig']);
     Route::get('test/dropbox-curl', [App\Http\Controllers\TestDropboxController::class, 'testWithCurl']);
     Route::get('test/dropbox-connection', [App\Http\Controllers\TestDropboxController::class, 'testConnection']);
@@ -361,7 +361,7 @@ Route::prefix('address')->group(function () {
     Route::post('distance', [App\Http\Controllers\AddressLookupController::class, 'calculateDistance']);
     Route::get('service-area', [App\Http\Controllers\AddressLookupController::class, 'checkServiceArea']);
     Route::get('nearby-photographers', [App\Http\Controllers\AddressLookupController::class, 'getNearbyPhotographers']);
-    
+
     // Address provider settings (admin only)
     Route::middleware('auth:sanctum')->prefix('provider')->group(function () {
         Route::get('/', [App\Http\Controllers\API\AddressProviderSettingsController::class, 'getProvider']);
@@ -370,7 +370,7 @@ Route::prefix('address')->group(function () {
 });
 
 // Mail test endpoints (remove in production)
-if (!app()->environment('production')) {
+if (! app()->environment('production')) {
     Route::prefix('test/mail')->group(function () {
         Route::get('config', [App\Http\Controllers\TestMailController::class, 'getMailConfig']);
         Route::get('account-created', [App\Http\Controllers\TestMailController::class, 'testAccountCreated']);
@@ -390,7 +390,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/resync', [GoogleCalendarController::class, 'resync']);
     });
     Route::middleware('role:admin,superadmin,editing_manager')->get('/admin/google-calendar/overview', [GoogleCalendarController::class, 'adminOverview']);
-    
+
     // Legacy compatibility route: existing UI still calls create-checkout-link,
     // but checkout is now handled by Stripe.
     Route::post('shoots/{shoot}/create-checkout-link', [StripePaymentController::class, 'createCheckoutSession'])
@@ -424,8 +424,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('payments/stripe-multiple-shoots-embedded', [StripePaymentController::class, 'payMultipleShootsEmbedded'])
         ->name('api.payments.stripe-multiple-shoots-embedded');
 
+    // Stripe: exact-session browser return/reconciliation for single or bulk payments
+    Route::post('payments/stripe-session/confirm', [StripePaymentController::class, 'confirmPaymentSession'])
+        ->name('api.payments.stripe-session.confirm');
+
     // Stripe refund
     Route::post('payments/stripe-refund', [StripePaymentController::class, 'refundPayment'])
+        ->middleware('role:admin,superadmin')
         ->name('api.payments.stripe-refund');
 
 });
@@ -460,13 +465,14 @@ Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
 // Debug route to check current user role
 Route::middleware('auth:sanctum')->get('/debug/user-role', function (Request $request) {
     $user = $request->user();
+
     return response()->json([
         'user_id' => $user->id,
         'email' => $user->email,
         'role' => $user->role,
         'name' => $user->name,
         'can_access_users' => in_array($user->role, ['admin', 'superadmin']),
-        'can_access_account_links' => in_array($user->role, ['admin', 'superadmin'])
+        'can_access_account_links' => in_array($user->role, ['admin', 'superadmin']),
     ]);
 });
 
@@ -474,20 +480,20 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesR
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/admin/permissions', [PermissionController::class, 'index']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permissions', [PermissionController::class, 'update']);
 
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/convert-type', [AccountStatusController::class, 'convertType']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/status', [AccountStatusController::class, 'setStatus'])->withTrashed();
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->get('/admin/users/deleted-accounts', [AccountStatusController::class, 'deletedAccounts']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/convert-type', [AccountStatusController::class, 'convertType']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/status', [AccountStatusController::class, 'setStatus'])->withTrashed();
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->get('/admin/users/deleted-accounts', [AccountStatusController::class, 'deletedAccounts']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users/{id}', [UserController::class, 'show'])->whereNumber('id');
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{user}/restore', [AccountStatusController::class, 'restore'])->withTrashed();
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->post('/admin/users/{id}/resend-verification', [UserController::class, 'resendVerificationEmail']);
-Route::middleware(['auth:sanctum','role:admin,superadmin'])->post('/admin/users/{id}/address-change/approve', [UserController::class, 'approvePhotographerAddressChange']);
-Route::middleware(['auth:sanctum','role:admin,superadmin'])->post('/admin/users/{id}/address-change/reject', [UserController::class, 'rejectPhotographerAddressChange']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager,salesRep'])->put('/admin/users/{id}', [UserController::class, 'update']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,editing_manager'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
-Route::middleware(['auth:sanctum','role:admin,superadmin,salesRep'])->post('/admin/users', [UserController::class, 'store']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->post('/admin/users/{user}/restore', [AccountStatusController::class, 'restore'])->withTrashed();
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/password', [UserController::class, 'resetPassword']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->post('/admin/users/{id}/send-reset-link', [UserController::class, 'sendResetLink']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->post('/admin/users/{id}/resend-verification', [UserController::class, 'resendVerificationEmail']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->post('/admin/users/{id}/address-change/approve', [UserController::class, 'approvePhotographerAddressChange']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->post('/admin/users/{id}/address-change/reject', [UserController::class, 'rejectPhotographerAddressChange']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->put('/admin/users/{id}', [UserController::class, 'update']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->delete('/admin/users/{id}', [UserController::class, 'destroy']);
+Route::middleware(['auth:sanctum', 'role:admin,superadmin,salesRep'])->post('/admin/users', [UserController::class, 'store']);
 
 Route::middleware(['auth:sanctum', 'role:superadmin'])->prefix('admin/system-overview')->group(function () {
     Route::get('/snapshot', [SystemOverviewController::class, 'snapshot']);
@@ -507,7 +513,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesR
     Route::delete('/admin/account-links/{id}', [AccountLinkController::class, 'destroy']);
     Route::get('/admin/account-links/shared-data/{accountId}', [AccountLinkController::class, 'getSharedData']);
     Route::get('/admin/account-links/available-accounts', [AccountLinkController::class, 'getAvailableAccounts']);
-  });
+});
 
 // Account Linking Routes - User-facing endpoints (accessible to all authenticated users)
 Route::middleware(['auth:sanctum'])->group(function () {
@@ -657,7 +663,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     // Invoice approval endpoints
     Route::post('invoices/{invoice}/approve', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'approve']);
     Route::post('invoices/{invoice}/reject', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reject']);
-    
+
     // Payout report endpoints
     Route::get('payout-report', [App\Http\Controllers\PayoutReportController::class, 'index']);
     Route::get('payout-report/download', [App\Http\Controllers\PayoutReportController::class, 'download']);
@@ -669,7 +675,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::post('editors/payouts/mark-paid', [App\Http\Controllers\Admin\EditorPayoutController::class, 'markPaid']);
     Route::get('editors/reports', [App\Http\Controllers\Admin\EditorPayoutController::class, 'report']);
     Route::post('editors/reports/send', [App\Http\Controllers\Admin\EditorPayoutController::class, 'sendReport']);
-    
+
     // Sales report endpoints
     Route::get('sales-reports/{salesRepId}', [App\Http\Controllers\SalesReportController::class, 'salesRepReport']);
     Route::post('sales-reports/send-weekly', [App\Http\Controllers\SalesReportController::class, 'sendWeeklyReports']);
@@ -690,7 +696,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // User branding routes
     Route::get('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'show']);
     Route::put('/users/{user}/branding', [App\Http\Controllers\API\UserBrandingController::class, 'update']);
-    
+
     // Shoot management
     Route::get('/shoots', [ShootController::class, 'index']);
     Route::post('/shoots', [ShootController::class, 'store']);
@@ -715,7 +721,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/put-on-hold', [ShootWorkflowController::class, 'putOnHold']);
     Route::post('/shoots/{shoot}/approve', [ShootController::class, 'approve']);
     Route::post('/shoots/{shoot}/decline', [ShootWorkflowController::class, 'decline']);
-    
+
     // Per-service photographer assignment (multi-photographer per shoot)
     Route::post('/shoots/{shoot}/assign-service-photographer', [ShootController::class, 'assignServicePhotographer']);
     Route::post('/shoots/{shoot}/assign-service-photographers', [ShootController::class, 'assignServicePhotographers']);
@@ -723,7 +729,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Apply stored alternate date to the live schedule (internal update, no notifications)
     Route::post('/shoots/{shoot}/apply-alternate-date', [ShootController::class, 'applyAlternateDate'])
         ->middleware('role:admin,superadmin,editing_manager');
-    
+
     // Cancellation request endpoints
     Route::post('/shoots/{shoot}/request-cancellation', [ShootWorkflowController::class, 'requestCancellation']);
     Route::post('/shoots/{shoot}/withdraw-request', [ShootWorkflowController::class, 'withdrawRequested']);
@@ -735,15 +741,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/reject-hold', [ShootWorkflowController::class, 'rejectHold']);
     // Direct cancel endpoint for admin use
     Route::post('/shoots/{shoot}/cancel', [ShootWorkflowController::class, 'cancel'])->middleware('role:admin,superadmin');
-    
+
     // Photographer availability
     Route::get('/photographers/{id}/availability', [ShootController::class, 'getPhotographerAvailability']);
-    
+
     // Media albums
     Route::post('/shoots/{shoot}/albums', [ShootMediaController::class, 'createAlbum']);
     Route::get('/shoots/{shoot}/albums', [ShootMediaController::class, 'listAlbums']);
     Route::post('/shoots/{shoot}/media', [ShootMediaController::class, 'uploadMedia']);
-    
+
     // Notes
     Route::get('/shoots/{shoot}/notes', [ShootNotesController::class, 'getNotes']);
     Route::post('/shoots/{shoot}/notes', [ShootNotesController::class, 'storeNote']);
@@ -751,11 +757,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/client/delivery-notifications', [ClientDeliveryNotificationController::class, 'index']);
     Route::post('/client/delivery-notifications/{notification}/seen', [ClientDeliveryNotificationController::class, 'seen']);
-    
+
     // Activity Log
     Route::get('/shoots/{shoot}/activity-log', [ShootNotesController::class, 'getActivityLog']);
     Route::delete('/shoots/{shoot}', [ShootController::class, 'destroy'])->middleware('role:admin,superadmin,editing_manager');
-    
+
     // File workflow endpoints
     Route::post('/shoots/{shoot}/upload', [ShootMediaController::class, 'uploadFiles']);
     Route::post('/shoots/{shoot}/upload-from-source', [UploadSourceController::class, 'import']);
@@ -805,7 +811,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('bulk-delete', [ShootMediaController::class, 'bulkDeleteMedia']);
         Route::post('reorder', [ShootMediaController::class, 'reorderMedia']);
     });
-    
+
     // Enhanced file upload endpoints
     Route::post('/shoots/{shoot}/upload-from-pc', [App\Http\Controllers\FileUploadController::class, 'uploadFromPC']);
     Route::post('/shoots/{shoot}/copy-from-dropbox', [App\Http\Controllers\FileUploadController::class, 'copyFromDropbox']);
@@ -823,14 +829,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/finalize', [ShootPaymentsController::class, 'finalize']);
     // Live progress of the queued finalize pipeline (polled by the finalize toast)
     Route::get('/shoots/{shoot}/finalize-progress', [ShootPaymentsController::class, 'finalizeProgress']);
-    
+
     // Shoot approval workflow endpoints
     Route::post('/shoots/{shoot}/mark-issues-resolved', [ShootIssuesController::class, 'markIssuesResolved']);
     Route::get('/shoots/{shoot}/issues', [ShootIssuesController::class, 'getIssues']);
     Route::post('/shoots/{shoot}/issues', [ShootIssuesController::class, 'createIssue']);
     Route::patch('/shoots/{shoot}/issues/{issue}', [ShootIssuesController::class, 'updateIssue']);
     Route::post('/shoots/{shoot}/issues/{issue}/assign', [ShootIssuesController::class, 'assignIssue']);
-    
+
     // Client requests for admin dashboard
     Route::get('/client-requests', [ShootIssuesController::class, 'getClientRequests'])->middleware('role:admin,superadmin,editing_manager,editor,photographer,client');
 
@@ -843,7 +849,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/messages', [ShootMessageController::class, 'store']);
         Route::post('/reschedule', [ShootRescheduleRequestController::class, 'store']);
         Route::get('/reschedule-requests', [ShootRescheduleRequestController::class, 'index']);
-        
+
         // Slideshow endpoints
         Route::get('/slideshows', [App\Http\Controllers\API\SlideshowController::class, 'index']);
         Route::post('/slideshows', [App\Http\Controllers\API\SlideshowController::class, 'store']);
@@ -873,6 +879,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // Test endpoint without role middleware to isolate the issue
         Route::post('/chat-test', function (Request $request) {
             $user = $request->user();
+
             return response()->json([
                 'status' => 'ok',
                 'authenticated' => $user !== null,
@@ -881,7 +888,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 'message' => 'This endpoint works without role middleware',
             ]);
         });
-        
+
         // Actual AI chat endpoints with role middleware
         Route::middleware('role:client,admin,superadmin,editing_manager')->group(function () {
             Route::post('/chat', [AiChatController::class, 'chat']);
@@ -990,7 +997,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('integrations')->group(function () {
         // Property lookup (available to all authenticated users)
         Route::post('/property/lookup', [IntegrationController::class, 'lookupProperty']);
-        
+
         // Shoot-specific integration actions
         Route::prefix('shoots/{shoot}')->group(function () {
             Route::post('/property/refresh', [IntegrationController::class, 'refreshPropertyDetails']);
@@ -1030,7 +1037,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Test connections (admin only)
         Route::middleware('role:admin,superadmin,editing_manager')->post('/test-connection', [IntegrationController::class, 'testConnection']);
-        
+
         // Dropbox status
         Route::get('/dropbox/status', [IntegrationController::class, 'getDropboxStatus']);
     });
@@ -1256,13 +1263,13 @@ Route::middleware(['auth:sanctum'])->group(function () {
 // Public read-only endpoints for client-facing pages
 Route::prefix('public/shoots')->group(function () {
     // Address-based routes (address, city, state, zip query params)
-Route::get('branded', [ShootPublicAssetsController::class, 'publicBranded']);
-Route::get('mls', [ShootPublicAssetsController::class, 'publicMls']);
-Route::get('g-mls', [ShootPublicAssetsController::class, 'publicGenericMls']);
+    Route::get('branded', [ShootPublicAssetsController::class, 'publicBranded']);
+    Route::get('mls', [ShootPublicAssetsController::class, 'publicMls']);
+    Route::get('g-mls', [ShootPublicAssetsController::class, 'publicGenericMls']);
 
-Route::get('{shoot}/branded', [ShootPublicAssetsController::class, 'publicBranded']);
-Route::get('{shoot}/mls', [ShootPublicAssetsController::class, 'publicMls']);
-Route::get('{shoot}/g-mls', [ShootPublicAssetsController::class, 'publicGenericMls']);
+    Route::get('{shoot}/branded', [ShootPublicAssetsController::class, 'publicBranded']);
+    Route::get('{shoot}/mls', [ShootPublicAssetsController::class, 'publicMls']);
+    Route::get('{shoot}/g-mls', [ShootPublicAssetsController::class, 'publicGenericMls']);
 });
 
 // Public tour analytics tracking (unauthenticated, rate-limited)

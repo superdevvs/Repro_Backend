@@ -274,7 +274,11 @@ class ShootServiceItemSupport
         $validItemIds = $items->pluck('id')->map(fn ($id) => (int) $id)->all();
 
         foreach ($allPayments->whereIn('id', $canonicalPaymentIds) as $payment) {
-            $remainingPayment = round($payment->netAmount(), 2);
+            // Allocation rows retain their gross-payment basis. Refunds are
+            // applied proportionally at read time in paidAmountsByItem(); using
+            // netAmount here would apply the same refund twice after a service
+            // change rebuild.
+            $remainingPayment = round((float) $payment->amount, 2);
             $rows = [];
 
             foreach ($existingByPayment->get((int) $payment->id, []) as $existing) {
@@ -347,15 +351,30 @@ class ShootServiceItemSupport
             return [];
         }
 
-        return PaymentServiceAllocation::query()
-            ->select('payment_service_allocations.shoot_service_id', DB::raw('SUM(payment_service_allocations.amount) as paid_amount'))
-            ->join('payments', 'payments.id', '=', 'payment_service_allocations.payment_id')
-            ->whereIn('payment_service_allocations.shoot_service_id', $items->pluck('id')->all())
-            ->where('payments.status', Payment::STATUS_COMPLETED)
-            ->when($excludePaymentId, fn ($query) => $query->where('payments.id', '!=', $excludePaymentId))
-            ->groupBy('payment_service_allocations.shoot_service_id')
-            ->pluck('paid_amount', 'shoot_service_id')
-            ->map(fn ($amount) => round((float) $amount, 2))
+        $allocations = PaymentServiceAllocation::with(['payment.refunds'])
+            ->whereIn('shoot_service_id', $items->pluck('id')->all())
+            ->whereHas('payment', fn ($query) => $query->where('status', Payment::STATUS_COMPLETED))
+            ->when($excludePaymentId, fn ($query) => $query->where('payment_id', '!=', $excludePaymentId))
+            ->get();
+
+        return $allocations
+            ->groupBy('shoot_service_id')
+            ->map(function (Collection $itemAllocations): float {
+                return round((float) $itemAllocations->sum(function (PaymentServiceAllocation $allocation) {
+                    $payment = $allocation->payment;
+                    $grossAmount = (float) ($payment?->amount ?? 0);
+                    if (! $payment || $grossAmount <= 0) {
+                        return 0;
+                    }
+
+                    // Refunds apply to the charge as a whole. Reduce each
+                    // service allocation by the same net/gross ratio so
+                    // partially refunded services no longer appear fully paid.
+                    $netRatio = min(max($payment->netAmount() / $grossAmount, 0), 1);
+
+                    return (float) $allocation->amount * $netRatio;
+                }), 2);
+            })
             ->all();
     }
 
