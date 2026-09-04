@@ -315,42 +315,46 @@ class IntegrationController extends Controller
         $buyerCookie = $parsed['buyer_cookie'] ?? null;
         $orderNumber = $parsed['order_number'] ?? null;
 
-        $sessionQuery = MmmPunchoutSession::query();
-        if ($buyerCookie) {
-            $sessionQuery->where('buyer_cookie', $buyerCookie);
-        } elseif ($orderNumber) {
-            $sessionQuery->where('order_number', $orderNumber);
+        // Require BuyerCookie and resolve session only by exact cookie match (never unconstrained latest()).
+        if ($buyerCookie === null || $buyerCookie === '') {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
 
-        $session = $sessionQuery->latest()->first();
-        $shoot = $session?->shoot;
+        $session = MmmPunchoutSession::query()
+            ->where('buyer_cookie', $buyerCookie)
+            ->latest()
+            ->first();
 
-        if ($session) {
-            $requestToken = (string) ($request->query('return_token') ?? $request->input('return_token') ?? '');
-            $sessionToken = (string) ($session->return_token ?? '');
-            if ($sessionToken === '' || $requestToken === '' || !hash_equals($sessionToken, $requestToken)) {
-                return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
-            }
-
-            $orderSummary = [
-                'items' => $parsed['items'] ?? [],
-                'subtotal' => $parsed['subtotal'] ?? null,
-                'tax' => $parsed['tax'] ?? null,
-                'shipping' => $parsed['shipping'] ?? null,
-                'total' => $parsed['total'] ?? null,
-                'currency' => $parsed['currency'] ?? null,
-            ];
-
-            $session->update([
-                'order_number' => $orderNumber ?? $session->order_number,
-                'status' => 'returned',
-                'returned_at' => now(),
-                'response_payload' => array_merge($session->response_payload ?? [], [
-                    'order_xml' => $xml,
-                    'order' => $orderSummary,
-                ]),
-            ]);
+        if (!$session) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
         }
+
+        $requestToken = (string) ($request->query('return_token') ?? $request->input('return_token') ?? '');
+        $sessionToken = (string) ($session->return_token ?? '');
+        if ($sessionToken === '' || $requestToken === '' || !hash_equals($sessionToken, $requestToken)) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 401);
+        }
+
+        $shoot = $session->shoot;
+
+        $orderSummary = [
+            'items' => $parsed['items'] ?? [],
+            'subtotal' => $parsed['subtotal'] ?? null,
+            'tax' => $parsed['tax'] ?? null,
+            'shipping' => $parsed['shipping'] ?? null,
+            'total' => $parsed['total'] ?? null,
+            'currency' => $parsed['currency'] ?? null,
+        ];
+
+        $session->update([
+            'order_number' => $orderNumber ?? $session->order_number,
+            'status' => 'returned',
+            'returned_at' => now(),
+            'response_payload' => array_merge($session->response_payload ?? [], [
+                'order_xml' => $xml,
+                'order' => $orderSummary,
+            ]),
+        ]);
 
         if ($shoot) {
             $shoot->mmm_status = 'order_returned';
