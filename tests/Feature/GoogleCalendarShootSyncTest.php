@@ -13,6 +13,7 @@ use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\PhotographerAvailabilityService;
+use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
@@ -106,13 +107,22 @@ class GoogleCalendarShootSyncTest extends TestCase
 
         // The sync service now emits one calendar event per scheduled service item
         // (per-service architecture via buildForServiceItem), so assert both events.
-        $assertServiceEventSent = function (string $service) {
-            Http::assertSent(function (Request $request) use ($service) {
+        $expectedStart = Carbon::parse($scheduledAt, 'America/New_York');
+        $assertServiceEventSent = function (string $service) use ($expectedStart) {
+            Http::assertSent(function (Request $request) use ($service, $expectedStart) {
                 $description = (string) ($request['description'] ?? '');
 
                 return $request->method() === 'POST'
                     && str_contains($request->url(), '/calendars/primary/events')
                     && ($request['summary'] ?? null) === $service
+                    && ($request['start'] ?? null) === [
+                        'dateTime' => $expectedStart->toRfc3339String(),
+                        'timeZone' => 'America/New_York',
+                    ]
+                    && ($request['end'] ?? null) === [
+                        'dateTime' => $expectedStart->copy()->addMinutes(120)->toRfc3339String(),
+                        'timeZone' => 'America/New_York',
+                    ]
                     && ($request['location'] ?? null) === '100 Sync Street, Baltimore, MD 21201'
                     && str_contains($description, "Service\n" . $service)
                     && str_contains($description, 'Use side door. Gate code 1234.')

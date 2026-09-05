@@ -393,11 +393,13 @@ class GoogleCalendarShootSyncService
 
     /**
      * Compute the broadened sync fingerprint from a canonical signature of the underlying
-     * shoot/connection fields rather than the rendered payload, so update detection is
+     * shoot/connection fields rather than the full rendered payload, so update detection is
      * robust against payload formatting tweaks (Req 9.1-9.3). The signature captures every
      * tracked field: client name/phone/email, full address, schedule, photographer,
      * services, per-service times, notes, status, workflow status, cancellation state, and
-     * the target calendar id. The same fingerprint is applied to both the whole-shoot path
+     * the target calendar id. Resolved event start/end also capture timezone and calculated
+     * duration changes, which may change without editing the stored schedule. The same
+     * fingerprint is applied to both the whole-shoot path
      * (syncShoot) and the per-service-item path (syncServiceItemEvent).
      *
      * The address reuses the already-built payload location (formatFullAddress output) to
@@ -413,6 +415,8 @@ class GoogleCalendarShootSyncService
             'client_email' => $client?->email,
             'address' => $payload['location'] ?? null,
             'scheduled_at' => optional($shoot->scheduled_at)?->toIso8601String(),
+            'event_start' => $payload['start'] ?? null,
+            'event_end' => $payload['end'] ?? null,
             'photographer' => $connection->user_id,
             'services' => $shoot->services->pluck('name')->sort()->values()->all(),
             'service_times' => $shoot->serviceItems

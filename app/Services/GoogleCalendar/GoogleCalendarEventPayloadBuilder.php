@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootService;
 use App\Models\User;
 use App\Services\Shoots\ShootMutationSupportService;
+use Carbon\Carbon;
 use RuntimeException;
 
 class GoogleCalendarEventPayloadBuilder
@@ -48,8 +49,8 @@ class GoogleCalendarEventPayloadBuilder
             throw new RuntimeException('Scheduled shoots are required for Google Calendar sync.');
         }
 
-        $timezone = $user?->timezone ?: config('app.timezone', 'UTC');
-        $start = $shoot->scheduled_at->copy()->timezone($timezone);
+        $timezone = $this->calendarTimezone($shoot, $user);
+        $start = $this->calendarStart($shoot, $shoot->scheduled_at, $timezone);
         // Req 4.1/4.2: end = start + estimated duration. calculateShootDurationFromShoot()
         // returns the shoot duration in minutes, clamped to the 60-240 range and defaulting
         // to 120 when no duration can be derived. No behavior change here; documented only.
@@ -87,8 +88,8 @@ class GoogleCalendarEventPayloadBuilder
             throw new RuntimeException('Scheduled service items are required for Google Calendar sync.');
         }
 
-        $timezone = $user?->timezone ?: config('app.timezone', 'UTC');
-        $start = $scheduledAt->copy()->timezone($timezone);
+        $timezone = $this->calendarTimezone($shoot, $user);
+        $start = $this->calendarStart($shoot, $scheduledAt, $timezone);
         $end = $start->copy()->addMinutes($this->calculateServiceItemDuration($serviceItem));
 
         return array_filter([
@@ -112,6 +113,31 @@ class GoogleCalendarEventPayloadBuilder
                 ]),
             ],
         ], static fn ($value) => $value !== null && $value !== '');
+    }
+
+    protected function calendarTimezone(Shoot $shoot, ?User $user): string
+    {
+        foreach ([$user?->timezone, $shoot->timezone, config('app.timezone', 'UTC')] as $timezone) {
+            $timezone = trim((string) $timezone);
+            if ($timezone !== '') {
+                return $timezone;
+            }
+        }
+
+        return 'UTC';
+    }
+
+    protected function calendarStart(Shoot $shoot, Carbon $scheduledAt, string $timezone): Carbon
+    {
+        $start = $scheduledAt->copy();
+
+        // Existing bookings without a shoot timezone store the selected local clock
+        // in scheduled_at; the UTC model cast does not make it a UTC appointment.
+        // Anchor that clock in the photographer's zone only at the Google boundary.
+        // Explicitly zoned shoots already carry an absolute instant, so preserve it.
+        return trim((string) $shoot->timezone) === ''
+            ? $start->shiftTimezone($timezone)
+            : $start->setTimezone($timezone);
     }
 
     protected function buildTitle(Shoot $shoot): string
@@ -190,7 +216,7 @@ class GoogleCalendarEventPayloadBuilder
                     $serviceName = 'Service';
                 }
 
-                $time = $scheduledAt->copy()->timezone($timezone)->format('D, M j Y g:i A');
+                $time = $this->calendarStart($shoot, $scheduledAt, $timezone)->format('D, M j Y g:i A');
 
                 return "- {$serviceName}: {$time}";
             })
