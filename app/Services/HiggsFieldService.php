@@ -31,7 +31,7 @@ class HiggsFieldService
             $this->imageModel = $settings['imageModel'] ?? config('services.higgsfield.image_model', 'higgsfield-ai/soul/reference');
         } catch (\Exception $e) {
             Log::warning('HiggsFieldService constructor error, using defaults', [
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::diagnostic($e),
             ]);
             $this->apiKey = config('services.higgsfield.api_key') ?? env('HIGGSFIELD_API_KEY') ?? '';
             $this->apiSecret = config('services.higgsfield.api_secret') ?? env('HIGGSFIELD_API_SECRET') ?? '';
@@ -56,7 +56,7 @@ class HiggsFieldService
         } catch (\Exception $e) {
             Log::warning('Could not load HiggsField settings from database', [
                 'key' => $key,
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::diagnostic($e),
             ]);
         }
         return [];
@@ -140,7 +140,7 @@ class HiggsFieldService
                 if (!$response->successful()) {
                     Log::error('HiggsField: Vertical conversion submission failed', [
                         'status' => $response->status(),
-                        'body' => $response->body(),
+                        'response_status' => $response->status(),
                         'variant_index' => $i,
                     ]);
                     continue;
@@ -158,7 +158,7 @@ class HiggsFieldService
                 }
             } catch (\Exception $e) {
                 Log::error('HiggsField: Exception submitting vertical conversion', [
-                    'error' => $e->getMessage(),
+                    'error' => ApiErrorResponder::diagnostic($e),
                     'variant_index' => $i,
                 ]);
             }
@@ -220,7 +220,7 @@ class HiggsFieldService
             if (!$response->successful()) {
                 Log::error('HiggsField: Video generation submission failed', [
                     'status' => $response->status(),
-                    'body' => $response->body(),
+                    'response_status' => $response->status(),
                 ]);
                 return null;
             }
@@ -239,8 +239,8 @@ class HiggsFieldService
             ];
         } catch (\Exception $e) {
             Log::error('HiggsField: Exception submitting video generation', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'error' => ApiErrorResponder::diagnostic($e),
+                'exception' => $e::class,
             ]);
             return null;
         }
@@ -273,7 +273,7 @@ class HiggsFieldService
                 Log::warning('HiggsField: Failed to get request status', [
                     'request_id' => $requestId,
                     'status' => $response->status(),
-                    'body' => $response->body(),
+                    'response_status' => $response->status(),
                 ]);
                 return null;
             }
@@ -285,13 +285,13 @@ class HiggsFieldService
                 'request_id' => $data['request_id'] ?? $requestId,
                 'video_url' => $data['video']['url'] ?? null,
                 'image_urls' => array_map(fn($img) => $img['url'] ?? null, $data['images'] ?? []),
-                'error' => $data['error'] ?? null,
-                'data' => $data,
+                'error' => !empty($data['error']) ? 'The provider could not complete this generation. Please retry.' : null,
+                'data' => !empty($data['error']) ? ['status' => $data['status'] ?? 'failed', 'request_id' => $requestId] : $data,
             ];
         } catch (\Exception $e) {
             Log::error('HiggsField: Exception getting request status', [
                 'request_id' => $requestId,
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::diagnostic($e),
             ]);
             return null;
         }
@@ -330,13 +330,13 @@ class HiggsFieldService
             Log::warning('HiggsField: Failed to cancel request', [
                 'request_id' => $requestId,
                 'status' => $response->status(),
-                'body' => $response->body(),
+                'response_status' => $response->status(),
             ]);
             return false;
         } catch (\Exception $e) {
             Log::error('HiggsField: Exception cancelling request', [
                 'request_id' => $requestId,
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::diagnostic($e),
             ]);
             return false;
         }
@@ -366,7 +366,7 @@ class HiggsFieldService
             return $presets->toArray();
         } catch (\Exception $e) {
             Log::warning('HiggsField: Could not load presets from database, using defaults', [
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::diagnostic($e),
             ]);
             return $this->getDefaultPresets();
         }
@@ -506,7 +506,7 @@ class HiggsFieldService
         } catch (\Exception $e) {
             return [
                 'success' => false,
-                'message' => 'Connection error: ' . $e->getMessage(),
+                'message' => 'The provider connection failed. Please check the configuration and try again.',
             ];
         }
     }

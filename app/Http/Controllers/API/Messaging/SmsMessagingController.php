@@ -86,7 +86,7 @@ class SmsMessagingController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'sms_send_failed',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 422);
         } catch (\Throwable $e) {
             report($e);
@@ -138,7 +138,7 @@ class SmsMessagingController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'sms_send_failed',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 422);
         } catch (\Throwable $e) {
             report($e);

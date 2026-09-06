@@ -80,10 +80,7 @@ class EditingRequestController extends Controller
             ]);
         } catch (\Exception $e) {
             // Log the error but don't fail the request - the editing request was created successfully
-            Log::error('Failed to send editing request email', [
-                'tracking_code' => $trackingCode,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
         }
 
         return response()->json([

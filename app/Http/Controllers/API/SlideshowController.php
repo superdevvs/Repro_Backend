@@ -141,11 +141,7 @@ class SlideshowController extends Controller
             ], 201);
 
         } catch (\Exception $e) {
-            Log::error('Error creating slideshow', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['error' => 'Failed to create slideshow'], 500);
         }

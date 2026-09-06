@@ -475,12 +475,14 @@ class IguideOfflineChunkUploadService
                 'received_chunk_indexes' => $received,
                 'received_chunks' => $receivedChunks,
                 'expires_at' => $session->expires_at?->toIso8601String(),
-                'error' => $session->error,
+                'error' => IguideDataVisibilityService::publicOfflineFailure($session->error),
                 'retryable' => (bool) $session->retryable,
             ],
         ];
 
-        $iguideData = is_array($shoot?->iguide_data) ? $shoot->iguide_data : [];
+        $iguideData = app(IguideDataVisibilityService::class)->operatorData(
+            is_array($shoot?->iguide_data) ? $shoot->iguide_data : [],
+        );
         $lifecycle = $iguideData['manual_offline_package'] ?? null;
         $lifecycleId = is_array($lifecycle) ? ($lifecycle['upload_id'] ?? $lifecycle['id'] ?? null) : null;
         if ($lifecycleId === (string) $session->getKey()) {
@@ -673,7 +675,7 @@ class IguideOfflineChunkUploadService
 
         $updates = [
             'status' => IguideOfflineUploadSession::STATUS_FAILED,
-            'error' => Str::limit(trim($message), 500, ''),
+            'error' => IguideDataVisibilityService::publicOfflineFailure($message),
             'retryable' => false,
             'last_activity_at' => now(),
             'expires_at' => now()->addDays((int) config('iguide.offline_upload.terminal_retention_days', 7)),
@@ -1111,7 +1113,7 @@ class IguideOfflineChunkUploadService
             ])
             ->update([
                 'status' => IguideOfflineUploadSession::STATUS_FAILED,
-                'error' => Str::limit(trim($message), 500, ''),
+                'error' => IguideDataVisibilityService::publicOfflineFailure($message),
                 'retryable' => $retryable,
                 'completed_at' => now(),
                 'last_activity_at' => now(),

@@ -491,7 +491,7 @@ class IguideService
             return [
                 'success' => false,
                 'status' => 0,
-                'message' => 'Connection error: ' . $e->getMessage(),
+                'message' => 'The provider connection failed. Please check the configuration and try again.',
             ];
         }
     }

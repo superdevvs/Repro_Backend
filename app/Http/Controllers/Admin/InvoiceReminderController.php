@@ -57,11 +57,7 @@ class InvoiceReminderController extends Controller
         try {
             $message = $this->automationService->sendPaymentReminder($shoot);
         } catch (\Throwable $exception) {
-            Log::error('Manual payment reminder failed', [
-                'invoice_id' => $invoice->id,
-                'shoot_id' => $shoot->id,
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'error');
 
             return response()->json([
                 'message' => 'The reminder could not be sent. Please try again.',

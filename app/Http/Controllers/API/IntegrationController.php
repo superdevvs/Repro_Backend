@@ -91,14 +91,11 @@ class IntegrationController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Property lookup failed', [
-                'address' => $request->address,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to lookup property: ' . $e->getMessage(),
+                'message' => 'Failed to lookup property: ' . \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -195,7 +192,7 @@ class IntegrationController extends Controller
             'redirect_url' => $result['redirect_url'] ?? null,
             'status' => $result['success'] ? 'redirect_ready' : 'error',
             'redirected_at' => $result['success'] ? now() : null,
-            'last_error' => $result['success'] ? null : ($result['error'] ?? $result['status_text'] ?? 'MMM punchout failed'),
+            'last_error' => $result['success'] ? null : 'MMM could not start the print session. Check the integration settings and try again.',
             'request_payload' => [
                 'payload' => $payload,
                 'xml' => $result['request_xml'] ?? null,
@@ -213,7 +210,7 @@ class IntegrationController extends Controller
         $shoot->mmm_buyer_cookie = $payload['buyer_cookie'] ?? $shoot->mmm_buyer_cookie;
         $shoot->mmm_redirect_url = $result['redirect_url'] ?? $shoot->mmm_redirect_url;
         $shoot->mmm_last_punchout_at = now();
-        $shoot->mmm_last_error = $result['success'] ? null : ($result['error'] ?? $result['status_text'] ?? 'MMM punchout failed');
+        $shoot->mmm_last_error = $result['success'] ? null : 'MMM could not start the print session. Check the integration settings and try again.';
         $shoot->save();
 
         return response()->json([
@@ -222,7 +219,7 @@ class IntegrationController extends Controller
             'redirect_url' => $result['redirect_url'] ?? null,
             'session_id' => $session->id,
             'buyer_cookie' => $payload['buyer_cookie'] ?? null,
-            'message' => $result['success'] ? 'MMM punchout created' : ($result['error'] ?? $result['status_text'] ?? 'MMM punchout failed'),
+            'message' => $result['success'] ? 'MMM punchout created' : 'MMM could not start the print session. Check the integration settings and try again.',
         ], $result['success'] ? 200 : 400);
     }
 
@@ -275,7 +272,7 @@ class IntegrationController extends Controller
                 'redirect_url' => $session->redirect_url,
                 'redirected_at' => optional($session->redirected_at)->toIso8601String(),
                 'returned_at' => optional($session->returned_at)->toIso8601String(),
-                'last_error' => $session->last_error,
+                'last_error' => \App\Services\ApiErrorResponder::storedFailure($session->last_error),
                 'employee_email' => $session->employee_email,
                 'username' => $session->username,
                 'first_name' => $session->first_name,
@@ -296,7 +293,7 @@ class IntegrationController extends Controller
                 'mmm_redirect_url' => $shoot->mmm_redirect_url,
                 'mmm_last_punchout_at' => optional($shoot->mmm_last_punchout_at)->toIso8601String(),
                 'mmm_last_order_at' => optional($shoot->mmm_last_order_at)->toIso8601String(),
-                'mmm_last_error' => $shoot->mmm_last_error,
+                'mmm_last_error' => \App\Services\ApiErrorResponder::storedFailure($shoot->mmm_last_error),
             ],
         ]);
     }
@@ -420,10 +417,7 @@ class IntegrationController extends Controller
             ], 404);
 
         } catch (\Exception $e) {
-            Log::error('Refresh property details failed', [
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -471,14 +465,15 @@ class IntegrationController extends Controller
 
             return response()->json([
                 'success' => true,
-                'data' => $iguideData,
+                'data' => app(\App\Services\IguideDataVisibilityService::class)->operatorData($iguideData),
                 'shoot' => [
                     'id' => $shoot->id,
                     'iguide_tour_url' => $shoot->iguide_tour_url,
                     'iguide_property_id' => $shoot->iguide_property_id,
                     'iguide_work_order_id' => $shoot->iguide_work_order_id,
                     'iguide_floorplans' => $shoot->iguide_floorplans,
-                    'iguide_data' => $shoot->iguide_data,
+                    'iguide_data' => is_array($shoot->iguide_data)
+                        ? app(\App\Services\IguideDataVisibilityService::class)->operatorData($shoot->iguide_data) : $shoot->iguide_data,
                     'iguide_last_synced_at' => optional($shoot->iguide_last_synced_at)->toIso8601String(),
                 ],
                 'queued_assets' => $shouldIngest ? count($floorplans) : 0,
@@ -486,10 +481,7 @@ class IntegrationController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error('iGUIDE sync failed', [
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -600,10 +592,7 @@ class IntegrationController extends Controller
             ]);
 
         } catch (\Throwable $e) {
-            Log::error('CubiCasa sync failed', [
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -696,10 +685,7 @@ class IntegrationController extends Controller
             ]);
 
         } catch (\Throwable $e) {
-            Log::error('CubiCasa create failed', [
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -741,10 +727,7 @@ class IntegrationController extends Controller
                 ],
             ]);
         } catch (\Throwable $e) {
-            Log::error('CubiCasa saveCubicasaIdentifiers failed', [
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to save CubiCasa identifiers',
@@ -834,17 +817,18 @@ class IntegrationController extends Controller
                         $request->user()
                     );
                 } catch (\Exception $activityException) {
-                    Log::warning('Failed to log Bright MLS publish activity', [
-                        'shoot_id' => $shoot->id,
-                        'error' => $activityException->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($activityException, 'warning');
                 }
             }
 
-            $message = $result['error'] ?? $result['message'] ?? ($result['success'] ? 'Published to Bright MLS' : 'Bright MLS publish failed');
+            $publicResult = \App\Support\BrightMlsPublicResult::from($result);
+            if ($publicResult['success'] && !empty($publicResult['manifest_id'])) {
+                $publicResult['redirect_url'] = $this->brightMlsService->getRedirectUrl((string) $publicResult['manifest_id']);
+            }
+            $message = $publicResult['message'];
 
             // Append detailed validation errors if present
-            $validationErrors = $result['validation_errors'] ?? [];
+            $validationErrors = $publicResult['validation_errors'];
             if (!empty($validationErrors)) {
                 $message .= ' — Details: ' . implode('; ', $validationErrors);
             }
@@ -854,14 +838,11 @@ class IntegrationController extends Controller
                 'status' => $result['status'],
                 'message' => $message,
                 'validation_errors' => $validationErrors,
-                'data' => $result,
+                'data' => $publicResult,
             ], $result['success'] ? 200 : 400);
 
         } catch (\Exception $e) {
-            Log::error('Bright MLS publish failed', [
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -926,7 +907,7 @@ class IntegrationController extends Controller
                     'redirect_url' => $shoot->bright_mls_manifest_id
                         ? $this->brightMlsService->getRedirectUrl($shoot->bright_mls_manifest_id)
                         : null,
-                    'response' => $parsedResponse,
+                    'response' => \App\Support\BrightMlsPublicResult::from($parsedResponse),
                 ];
             });
 
@@ -936,9 +917,7 @@ class IntegrationController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Get MLS queue failed', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -984,7 +963,7 @@ class IntegrationController extends Controller
                     'data' => ['success' => $success, 'message' => $message],
                 ]);
             } catch (\Throwable $e) {
-                Log::warning('Dropbox connection test could not complete.', ['exception' => get_class($e)]);
+                \App\Services\ApiErrorResponder::log($e, 'warning');
 
                 return response()->json([
                     'success' => false,
@@ -1010,21 +989,23 @@ class IntegrationController extends Controller
                 case 'mmm':
                     $configError = $this->mmmService->validateConfig();
                     $result = $configError
-                        ? ['success' => false, 'message' => $configError['error'] ?? 'MMM configuration error', 'details' => $configError]
+                        ? ['success' => false, 'message' => 'Complete the MMM configuration in integration settings.']
                         : ['success' => true, 'message' => 'MMM configuration looks valid'];
                     break;
             }
 
+            $success = ($result['success'] ?? false) === true;
+            $message = $success ? 'Connection successful' : 'Connection could not be verified. Check the integration settings and try again.';
             return response()->json([
-                'success' => $result['success'] ?? false,
-                'message' => $result['message'] ?? ($result['success'] ? 'Connection successful' : 'Connection failed'),
-                'data' => $result,
+                'success' => $success,
+                'message' => $message,
+                'data' => ['success' => $success, 'message' => $message],
             ]);
 
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Test failed: ' . $e->getMessage(),
+                'message' => 'Test failed: ' . \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }

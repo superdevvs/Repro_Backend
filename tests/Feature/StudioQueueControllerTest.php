@@ -56,7 +56,7 @@ class StudioQueueControllerTest extends TestCase
         ]);
         $failed = $this->photoJob($editor, $shoot, [
             'status' => AiEditingJob::STATUS_FAILED,
-            'error_message' => 'Provider rejected the source image.',
+            'error_message' => 'Provider rejected the source image; token=studio-queue-secret-canary.',
             'completed_at' => now()->subHours(2),
         ]);
         $oldTerminal = $this->videoJob($editor, $shoot, [
@@ -100,7 +100,11 @@ class StudioQueueControllerTest extends TestCase
         $this->assertSame('/media/queue.jpg', $videoRecord['thumbnailUrl']);
 
         $failedRecord = $records['photo-' . $failed->id];
-        $this->assertSame('Provider rejected the source image.', $failedRecord['failureReason']);
+        $this->assertSame('This operation failed. Please try again or contact support.', $failedRecord['failureReason']);
+        $this->assertSame('Provider rejected the source image; token=studio-queue-secret-canary.', $failed->fresh()->error_message);
+        $this->assertArrayNotHasKey('error_message', $failedRecord);
+        $this->assertArrayNotHasKey('provider_result', $failedRecord);
+        $this->assertStringNotContainsString('studio-queue-secret-canary', $response->getContent());
         $this->assertSame($failed->completed_at->toISOString(), $failedRecord['terminalAt']);
         $this->assertNull($failedRecord['eta']);
     }

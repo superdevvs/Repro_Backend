@@ -50,7 +50,7 @@ class PermissionController extends Controller
             $saved = $this->permissions->updatePermissions($validated);
         } catch (\InvalidArgumentException $exception) {
             return response()->json([
-                'message' => $exception->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($exception),
             ], 422);
         }
 

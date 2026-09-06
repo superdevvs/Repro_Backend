@@ -116,16 +116,19 @@ class DropboxIntegrationTestConnectionSecurityTest extends TestCase
         $this->assertSame(503, $response->getStatusCode());
         $this->assertSame('Dropbox connection test is temporarily unavailable.', $response->getData(true)['message']);
         $this->assertStringNotContainsString('test-token-in-exception', $response->getContent());
-        Log::shouldHaveReceived('warning')->once()->with('Dropbox connection test could not complete.', ['exception' => \RuntimeException::class]);
+        Log::shouldHaveReceived('log')->once()->with('warning', 'API operation failed.', Mockery::on(
+            fn ($context) => ($context['exception'] ?? null) === \RuntimeException::class
+                && !str_contains(json_encode($context), 'test-token-in-exception')
+        ));
         Http::assertNothingSent();
     }
 
-    public function test_non_dropbox_provider_response_contract_is_preserved(): void
+    public function test_non_dropbox_provider_diagnostics_are_excluded_from_connection_results(): void
     {
         $dropbox = Mockery::mock(DropboxWorkflowService::class);
         $dropbox->shouldNotReceive('testConnection');
         $iguide = Mockery::mock(IguideService::class);
-        $result = ['success' => true, 'message' => 'iGUIDE connection verified', 'details' => ['available' => true]];
+        $result = ['success' => true, 'message' => 'provider-secret-canary', 'details' => ['token' => 'provider-secret-canary']];
         $iguide->shouldReceive('testConnection')->once()->andReturn($result);
         $request = $this->testRequest('editing_manager');
         $request->merge(['service' => 'iguide']);
@@ -133,7 +136,8 @@ class DropboxIntegrationTestConnectionSecurityTest extends TestCase
         $response = $this->controller($dropbox, $iguide)->testConnection($request);
 
         $this->assertSame(200, $response->getStatusCode());
-        $this->assertSame($result, $response->getData(true)['data']);
+        $this->assertSame(['success' => true, 'message' => 'Connection successful'], $response->getData(true)['data']);
+        $this->assertStringNotContainsString('provider-secret-canary', $response->getContent());
         Http::assertNothingSent();
     }
 

@@ -51,13 +51,13 @@ class AutomationWorkflowExecutor
             } catch (\Throwable $exception) {
                 $errors[] = [
                     'automation_id' => $rule->id,
-                    'message' => $exception->getMessage(),
+                    'message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ];
 
                 Log::error('Automation workflow event dispatch failed', [
                     'trigger_type' => $triggerType,
                     'automation_id' => $rule->id,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
             }
         }
@@ -121,13 +121,13 @@ class AutomationWorkflowExecutor
             $run->update([
                 'status' => 'failed',
                 'completed_at' => now(),
-                'error_message' => $exception->getMessage(),
+                'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
             ]);
 
             Log::error('Automation workflow execution failed', [
                 'automation_id' => $automation->id,
                 'run_id' => $run->id,
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
             ]);
         }
 
@@ -215,13 +215,13 @@ class AutomationWorkflowExecutor
             $step->update([
                 'status' => 'failed',
                 'completed_at' => now(),
-                'error_message' => $exception->getMessage(),
+                'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
             ]);
 
             $run->update([
                 'status' => 'failed',
                 'completed_at' => now(),
-                'error_message' => $exception->getMessage(),
+                'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
             ]);
 
             throw $exception;
@@ -323,7 +323,7 @@ class AutomationWorkflowExecutor
                 $step->update([
                     'status' => 'failed',
                     'completed_at' => now(),
-                    'error_message' => $exception->getMessage(),
+                    'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
 
                 throw $exception;

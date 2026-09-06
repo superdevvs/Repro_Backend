@@ -259,6 +259,7 @@ class ShootActivityLogDetailsTest extends TestCase
             'environment' => 'sandbox',
         ]);
         $brightMls->shouldReceive('applyPublishResultToShoot')->once();
+        $brightMls->shouldReceive('getRedirectUrl')->once()->with('manifest-123')->andReturn('https://bright.test/manifest-123');
         $this->app->instance(BrightMlsService::class, $brightMls);
 
         Sanctum::actingAs($admin);

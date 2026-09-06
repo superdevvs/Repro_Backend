@@ -414,16 +414,11 @@ class PhotographerAvailabilityController extends Controller
 
             return response()->json(['data' => $allSlots]);
         } catch (\Exception $e) {
-            \Log::error('[Availability Check] Error', [
-                'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'photographer_id' => $request->input('photographer_id'),
-                'date' => $request->input('date'),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to check availability',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -1327,7 +1322,7 @@ class PhotographerAvailabilityController extends Controller
             $parsed = \Carbon\Carbon::parse($time);
             return $parsed->format('H:i');
         } catch (\Exception $e) {
-            \Log::warning('Failed to convert time to 24-hour format', ['time' => $time, 'error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
             return $time;
         }
     }
@@ -1375,9 +1370,7 @@ class PhotographerAvailabilityController extends Controller
             // Cache driver doesn't support tags (like file cache)
             // We can't easily clear all related keys, but that's okay
             // The cache will expire naturally after 5 minutes
-            \Log::info("Cache tags not supported, cache will expire naturally", [
-                'photographer_id' => $photographerId
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'info');
         }
     }
 

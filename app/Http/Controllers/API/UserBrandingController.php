@@ -41,7 +41,7 @@ class UserBrandingController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Error fetching user branding', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to fetch branding'], 500);
         }
     }
@@ -146,7 +146,7 @@ class UserBrandingController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Error updating user branding', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to update branding'], 500);
         }
     }

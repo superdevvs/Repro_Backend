@@ -33,7 +33,7 @@ class AddressProviderSettingsController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to get address provider setting',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -93,7 +93,7 @@ class AddressProviderSettingsController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update address provider',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }

@@ -84,7 +84,12 @@ class StudioDeepLinkControllerTest extends TestCase
                         'code' => 'studio_record_not_found',
                         'message' => 'The requested Studio record was not found.',
                     ],
+                    'code' => 'not_found',
+                    'message' => 'The requested item was not found.',
+                    'request_id' => $response->json('request_id'),
                 ]);
+            $this->assertTrue(\Illuminate\Support\Str::isUuid($response->json('request_id')));
+            $response->assertHeader('X-Request-Id', $response->json('request_id'));
         }
     }
 
@@ -115,9 +120,16 @@ class StudioDeepLinkControllerTest extends TestCase
                         'code' => 'studio_record_forbidden',
                         'message' => 'You are not authorized to access the requested Studio record.',
                     ],
+                    'code' => 'forbidden',
+                    'message' => 'You do not have permission to perform this action.',
+                    'request_id' => $response->json('request_id'),
                 ]);
+            $this->assertTrue(\Illuminate\Support\Str::isUuid($response->json('request_id')));
+            $response->assertHeader('X-Request-Id', $response->json('request_id'));
             $this->assertStringNotContainsString('Restricted Secret', $response->getContent());
-            $this->assertStringNotContainsString($recordId, $response->getContent());
+            // Random correlation IDs may coincidentally contain a numeric record
+            // ID. Check the actual error payload for record disclosure instead.
+            $this->assertStringNotContainsString($recordId, json_encode(\Illuminate\Support\Arr::except($response->json(), ['request_id']), JSON_THROW_ON_ERROR));
         }
     }
 

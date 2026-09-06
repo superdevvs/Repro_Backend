@@ -249,7 +249,7 @@ class ShootEditingAssignmentService
                 : $this->resolveEditorForLane($lane);
 
             if (!$editor && $servicesMissingEditor->isNotEmpty()) {
-                throw new \InvalidArgumentException("No {$lane} editor account is configured.");
+                throw new \App\Exceptions\PublicBusinessRuleException("No {$lane} editor account is configured.");
             }
 
             if ($editor && $servicesMissingEditor->isNotEmpty()) {
@@ -318,7 +318,7 @@ class ShootEditingAssignmentService
         }
 
         if (empty($serviceIds)) {
-            throw new \InvalidArgumentException('No editing lanes are assigned to this user for the shoot.');
+            throw new \App\Exceptions\PublicBusinessRuleException('No editing lanes are assigned to this user for the shoot.');
         }
 
         DB::table('shoot_service')

@@ -66,15 +66,11 @@ class AddressLookupController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error('Address search controller error', [
-                'query' => $request->input('query'),
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             
             return response()->json([
                 'error' => 'Address search failed',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
                 'hint' => str_contains($e->getMessage(), 'LocationIQ') 
                     ? 'LocationIQ API key may not be configured. Please set LOCATIONIQ_API_KEY in your .env file. See LOCATIONIQ_SETUP.md for instructions.'
                     : 'Please check your API configuration and try again.'
@@ -141,7 +137,7 @@ class AddressLookupController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'error' => 'Address details lookup failed',
-                'message' => $e->getMessage()
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -178,7 +174,7 @@ class AddressLookupController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'error' => 'Address validation failed',
-                'message' => $e->getMessage()
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -256,7 +252,7 @@ class AddressLookupController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'error' => 'Distance calculation failed',
-                'message' => $e->getMessage()
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }

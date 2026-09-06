@@ -140,7 +140,7 @@ class IguideOfflineChunkUploadController extends Controller
         $payload = $exception->uploadSession !== null
             ? $uploads->payload($exception->uploadSession)
             : ['upload' => null];
-        $payload['message'] = $exception->getMessage();
+        $payload['message'] = \App\Services\ApiErrorResponder::publicMessage($exception);
         $payload['error_type'] = $exception->errorType;
 
         return response()->json(array_merge($payload, $exception->details), $exception->httpStatus);

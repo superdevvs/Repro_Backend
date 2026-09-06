@@ -2,13 +2,13 @@
 
 Work proceeds one finding at a time, with focused regression checks before advancing.
 
-## Completed local step: #2 shoot access
+## Released: #2 shoot access
 
 Implementation and review complete locally. Assignment and sharing rules are centralized in `ShootAuthorizationSupport`, with coverage for details, listings/filter metadata, history, media/previews/archives, messages, issues, workflow, rescheduling, activity logs, tour analytics, scheduling and approval. Restricted actors bypass authorization-sensitive list caches. Per-service media, counts and hero images follow the same file permissions.
 
 Final combined validation passed on 2026-09-06: **224 tests, 2,709 assertions**, with warnings and risky tests treated as failures. All 24 changed/new PHP files passed syntax validation. The suite uses PHP 8.4.25 and in-memory SQLite; the JUnit result is `output/security-validation/step-2-final.xml` from the workspace root. Tests cover five new security suites and existing listing/history, upload, media, workflow, reschedule, presenter, notes, iGUIDE, mutation and assignment behavior.
 
-See `shoot-access-security.md` for the access matrix, compatibility changes and release checks. No deployment has occurred. No migration or credential rotation is needed for this step. The private-listing discovery projection omits media/contact data; existing portal cards use thumbnail/agent placeholders and retain their public-tour action.
+See `shoot-access-security.md` for the access matrix, compatibility changes and release checks. Backend release `76904ae6e6296e0fb28807a41cb383ccbc932ffb` is verified live. No migration or credential rotation is needed for this step. The private-listing discovery projection omits media/contact data; existing portal cards use thumbnail/agent placeholders and retain their public-tour action.
 
 ### Files for the #2 release review
 
@@ -39,13 +39,13 @@ Paths below are relative to `backend/`. Include the two documentation files with
 - `tests/Feature/ImageEndpointAuthorizationTest.php`
 - `tests/Feature/ShootRescheduleRequestWorkflowTest.php`
 
-## Completed local step: #5 Dropbox
+## Released: #5 Dropbox
 
 Studio connection management is primary-admin-only and rejects impersonation. OAuth uses one-use browser-bound state, PKCE, initiating-token checks and connection versions. Tokens stay server-side with encrypted writes and legacy migration support; disconnect remains effective if provider revocation fails. Shared upload-source rebind/browse bypasses and generic Dropbox credential settings are closed. Public webhook POSTs require exact-body signatures. The frontend now uses the secure administrator flow and supports pending-revocation retry; legacy browser token setup/debug helpers are retired.
 
 Validation: **346 backend tests / 3,474 assertions** passed, including the prior #2 suite and existing MMM regressions; **25 frontend tests** passed. TypeScript checking, the production frontend build and the frontend lint baseline gate passed. Syntax checks passed for all 18 PHP files in this step. The JUnit result is `output/security-validation/step-5-final.xml` from the workspace root. Existing report-only lint notices concern unrelated preview files; no baseline regression was introduced.
 
-Nothing has been deployed, no credentials have been rotated, and migration/recovery commands have only run in isolated tests. See `dropbox-security.md` for cache/cookie/provider configuration, legacy encryption and failed-revocation recovery instructions.
+Backend `76904ae6e6296e0fb28807a41cb383ccbc932ffb` and frontend `d5d482d9d9c51d0ace4add7640453bf239e03709` were deployed from isolated reviewed checkouts. Backend health is successful; signed-out Dropbox configuration returns 401, the legacy GET connect method returns 405, unsigned webhook POST returns 403, and signed-out photographer shoots returns 401. The ciphertext-compatible code was deployed before running the legacy encryption dry run and apply command: zero OAuth rows required migration. No provider credentials have been rotated or rebound. Real browser consent remains an acceptance dependency because the browser connection is unavailable. See `dropbox-security.md` for configuration and recovery instructions.
 
 ### Files for the #5 release review
 
@@ -86,18 +86,20 @@ Include `docs/dropbox-security.md` and this progress document in the review. Bui
 
 ## Remaining steps
 
-- #8 provider webhooks: partial, unwired authentication/idempotency helpers and configuration entries exist. Controllers and routes remain unchanged.
-- #6 tax documents: private storage, authorized downloads and metadata filtering pending.
-- #10 errors/debug routes: safe error contract and production route cleanup pending.
-- #7 recovery seeders: replacement recovery command and tested runbook pending.
-- #9 authentication: assess existing throttle/MFA implementation, strengthen new-password policy, and prepare staged enforcement.
-- #3 archive credentials: quarantine remains closed; credential inventory, revocation/rotation and APP_KEY migration runbooks pending. No credentials have been rotated.
-- #4 MMM: existing deployed protection reported by the user; local return/punchout regressions pass in the #5 validation. No MMM behavior changed or live deployment verification performed.
+- #6 tax documents: backend `650563484eed6444008eab1ab5d68f1e7cb95a1f` and frontend `8a1d833c21f3606b6c99053ae08d9bbf771e5e99` are verified live. Initial focused checks passed 34 backend tests / 198 assertions, eight frontend tests, TypeScript and production build. The private-file permission correction additionally passed 12 Linux checks and CI. Read-only production acceptance passed 43 checks; migration inventory found zero legacy references, private documents or orphaned files. The permanent Nginx guard requires administrator sudo and remains an acceptance condition; a 404 for a nonexistent old URL alone does not close this finding.
+- #10 errors/debug routes: safe error contract, provider-response sanitization, telemetry and diagnostic route retirement are implemented and under regression review; not yet live.
+- #9 authentication: eight-character new-password policy, rate limits, atomic reset consumption, optional MFA and phased verification are implemented and under regression review; pilot has not started.
+- #3 archive credentials: packaging exclusions and generated-archive path scanning are deployed. Read-only credential inventory and the strict APP_KEY migration/restore runbook are prepared. Provider-side credential issuance, revocation capability and external consumers are being verified; some operations require provider-console access. No rotations have occurred; APP_KEY cutover remains deferred.
+- #7 recovery seeders/shared passwords/account provisioning: paused by user decision; remains open and unchanged.
+- #8 provider webhooks: paused by user decision; partial unwired helpers/config remain outside releases, and existing callback behavior is preserved.
+- #4 MMM: existing live return protection is preserved; return/punchout regressions pass in the #2/#5 validation.
+- #1 remains excluded.
 
 The remaining paused #8 drafts are `app/Services/Webhooks/ProviderWebhookAuthenticator.php`, `app/Services/Webhooks/WebhookDeliveryGuard.php`, and provider webhook entries in `config/services.php`. These helpers are unwired and unvalidated; keep them out of the #2/#5 release. The earlier Dropbox drafts have now been completed and tested under #5.
 
 ## Workspace and validation notes
 
-- No deployment or live account/provider mutation has been performed.
-- Backend/frontend Git metadata is now available. Verified live bases: backend df2ede1370f38b9a31ecab1fb564fade6bf9971d (deployment log plus matching source hashes), frontend c4fbde3351ba0f75dba6c8a1de0c7d63f8693b1c (live release marker). Separate release checkouts exclude paused drafts.
+- No real account changes, provider credential rotations or APP_KEY changes have been performed. Deployment and no-op legacy token migration are recorded above.
+- Original verified live bases were backend `df2ede1370f38b9a31ecab1fb564fade6bf9971d` and frontend `c4fbde3351ba0f75dba6c8a1de0c7d63f8693b1c`. Current release checkouts descend from the verified release markers; the main working directories retain their accumulated uncommitted work and paused drafts.
+- The first backend deployment encountered runtime permissions from a restrictive backup umask. Runtime permissions were restored, the global umask was removed, backup directories alone were restricted, and the corrected release passed CI and live health checks. The packaging regression test guards this distinction.
 - A portable PHP runtime was downloaded from the official Windows PHP release service and its published SHA-256 verified. It resides under `output/security-validation/php`; it is a local validation dependency, not a release artifact.

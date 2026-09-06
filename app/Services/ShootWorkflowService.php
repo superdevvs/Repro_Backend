@@ -516,7 +516,7 @@ class ShootWorkflowService
         $allowedTransitions = self::VALID_TRANSITIONS[$currentStatus] ?? [];
 
         if (! in_array($targetStatus, $allowedTransitions)) {
-            throw new \InvalidArgumentException(
+            throw new \App\Exceptions\PublicBusinessRuleException(
                 "Cannot transition from {$currentStatus} to {$targetStatus}. ".
                 'Allowed transitions: '.implode(', ', $allowedTransitions)
             );

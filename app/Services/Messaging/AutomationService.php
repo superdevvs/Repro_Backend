@@ -260,7 +260,7 @@ class AutomationService
             } catch (\Throwable $exception) {
                 Log::error('Payment reminder email send failed', [
                     'shoot_id' => $shoot->id,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
             }
         } else {
@@ -288,7 +288,7 @@ class AutomationService
             } catch (\Throwable $exception) {
                 Log::warning('Payment reminder SMS send failed or suppressed', [
                     'shoot_id' => $shoot->id,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
             }
         } else {
@@ -328,10 +328,10 @@ class AutomationService
         } catch (\Throwable $exception) {
             Log::error('Automation event dispatch failed before workflow execution completed', [
                 'trigger_type' => $triggerType,
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
             ]);
 
-            return $this->emptyDispatchSummary($triggerType, $exception->getMessage());
+            return $this->emptyDispatchSummary($triggerType, \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'));
         }
     }
 
@@ -382,7 +382,7 @@ class AutomationService
                 Log::error('Automation rule execution failed', [
                     'rule_id' => $rule->id,
                     'recipient' => $recipient['email'] ?? $recipient['phone'] ?? 'unknown',
-                    'error' => $e->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::publicMessage($e, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
             }
         }

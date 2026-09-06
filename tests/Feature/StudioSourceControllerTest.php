@@ -122,7 +122,15 @@ class StudioSourceControllerTest extends TestCase
             '/api/studio/shoots/999999/media?workflow=photo-enhancement'
         )->assertNotFound();
 
-        $this->assertSame($missing->json(), $unauthorized->json());
+        $this->assertSame(
+            \Illuminate\Support\Arr::except($missing->json(), ['request_id']),
+            \Illuminate\Support\Arr::except($unauthorized->json(), ['request_id']),
+        );
+        foreach ([$missing, $unauthorized] as $response) {
+            $response->assertJsonPath('code', 'not_found')->assertHeader('X-Request-Id', $response->json('request_id'));
+            $this->assertTrue(\Illuminate\Support\Str::isUuid($response->json('request_id')));
+        }
+        $this->assertNotSame($missing->json('request_id'), $unauthorized->json('request_id'));
         $this->assertStringNotContainsString('Restricted Source House', $unauthorized->getContent());
     }
 

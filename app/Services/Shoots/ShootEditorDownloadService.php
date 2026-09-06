@@ -90,7 +90,7 @@ class ShootEditorDownloadService
                     ]), $request);
                 }
             } catch (\Exception $e) {
-                Log::warning('Failed to get Dropbox ZIP link, trying fallback', ['error' => $e->getMessage()]);
+                \App\Services\ApiErrorResponder::log($e, 'warning');
             }
         }
 
@@ -113,7 +113,7 @@ class ShootEditorDownloadService
                         ])->deleteFileAfterSend(true), $request);
                     }
                 } catch (\Exception $dropboxError) {
-                    Log::warning('Dropbox generateZipOnFly failed', ['error' => $dropboxError->getMessage()]);
+                    \App\Services\ApiErrorResponder::log($dropboxError, 'warning');
                 }
             }
 
@@ -123,13 +123,10 @@ class ShootEditorDownloadService
                 'has_dropbox_folder' => $dropboxEnabled && !empty($folderPath),
             ], 404), $request);
         } catch (\Exception $e) {
-            Log::error('Failed to generate ZIP for editor download', [
-                'error' => $e->getMessage(),
-                'shoot_id' => $shoot->id,
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return $this->withCors(
-                response()->json(['error' => 'Failed to generate ZIP file: ' . $e->getMessage()], 500),
+                response()->json(['error' => 'The ZIP download could not be prepared. Please try again.'], 500),
                 $request,
             );
         }

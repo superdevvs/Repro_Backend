@@ -25,7 +25,7 @@ return [
 
     'allowed_headers' => ['*', 'X-Impersonate-User-Id'],
 
-    'exposed_headers' => ['X-Impersonate-User-Id', 'Content-Disposition'],
+    'exposed_headers' => ['X-Impersonate-User-Id', 'Content-Disposition', 'X-Trace-Id', 'X-Request-Id'],
 
     'max_age' => 0,
 

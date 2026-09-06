@@ -58,7 +58,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -78,7 +78,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -100,7 +100,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -120,7 +120,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -140,7 +140,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -160,7 +160,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -198,7 +198,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services', 'editor'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -220,7 +220,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\Exception $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -240,7 +240,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -260,7 +260,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -280,7 +280,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -300,7 +300,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -320,7 +320,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 
@@ -340,7 +340,7 @@ class ShootWorkflowController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services', 'editor'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         }
     }
 

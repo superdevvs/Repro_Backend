@@ -195,7 +195,7 @@ class StudioQueueController extends StudioController
             'progress' => $progress,
             'eta' => $this->eta($job, $progress, $calculatedAt),
             'failureReason' => $job->status === AiEditingJob::STATUS_FAILED
-                ? ($job->error_message ?: null)
+                ? \App\Services\ApiErrorResponder::storedFailure($job->error_message)
                 : null,
             'terminalAt' => $terminalAt?->toISOString(),
             'version' => ($job->updated_at ?? $job->created_at)?->toISOString(),

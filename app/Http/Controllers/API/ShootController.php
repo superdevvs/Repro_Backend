@@ -99,16 +99,11 @@ class ShootController extends Controller
                 'errors' => $e->errors(),
             ], 422);
         } catch (\Exception $e) {
-            \Log::error('Error creating shoot', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'validated' => $request->validated(),
-                'user_id' => $user->id ?? null,
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
-                'message' => 'Failed to create shoot: ' . $e->getMessage(),
-                'error' => config('app.debug') ? $e->getTraceAsString() : 'Internal server error',
+                'message' => 'Failed to create shoot: ' . \App\Services\ApiErrorResponder::publicMessage($e),
+                'error' => config('app.debug') ? null : 'Internal server error',
             ], 500);
         }
     }
@@ -156,7 +151,7 @@ class ShootController extends Controller
                 'data' => new ShootResource($shoot),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         } catch (ValidationException $e) {
             $errors = $e->errors();
             if (isset($errors['scheduled_at'][0]) && $errors['scheduled_at'][0] === 'scheduled_at is required') {
@@ -188,7 +183,7 @@ class ShootController extends Controller
                 'data' => new ShootResource($shoot->load(['client', 'rep', 'photographer', 'services'])),
             ]);
         } catch (\InvalidArgumentException $e) {
-            return response()->json(['message' => $e->getMessage()], 422);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e)], 422);
         } catch (ValidationException $e) {
             return response()->json(['message' => 'Validation failed', 'errors' => $e->errors()], 422);
         }
@@ -209,7 +204,7 @@ class ShootController extends Controller
             $shoot = $this->updateShootAction->execute($request, $shoot, $user);
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
                 'errors' => $e->errors(),
             ], 422);
         }
@@ -282,7 +277,7 @@ class ShootController extends Controller
             $shoot = $this->applyAlternateDateAction->execute($shoot, $scope, $user);
         } catch (ValidationException $e) {
             return response()->json([
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
                 'errors' => $e->errors(),
             ], 422);
         }

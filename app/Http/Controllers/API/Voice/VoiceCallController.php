@@ -131,14 +131,11 @@ class VoiceCallController extends Controller
         try {
             $call = $service->startOutbound($data, (int) $request->user()->id);
         } catch (\Throwable $exception) {
-            \Log::warning('Outbound voice dial failed', [
-                'error' => $exception->getMessage(),
-                'to' => $data['to'] ?? null,
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
 
             return response()->json([
                 'message' => 'Unable to start call.',
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($exception),
             ], 502);
         }
 
@@ -152,7 +149,7 @@ class VoiceCallController extends Controller
         } catch (\Throwable $exception) {
             return response()->json([
                 'message' => 'Unable to hang up call.',
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($exception),
             ], 502);
         }
 

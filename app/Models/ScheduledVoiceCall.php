@@ -49,6 +49,19 @@ class ScheduledVoiceCall extends Model
         'metadata' => 'array',
     ];
 
+    public function attributesToArray(): array
+    {
+        $attributes = parent::attributesToArray();
+        if (array_key_exists('last_error', $attributes)) {
+            $attributes['last_error'] = \App\Services\ApiErrorResponder::storedFailure(
+                $attributes['last_error'],
+                'The scheduled call could not be completed. Please retry or contact support.',
+            );
+        }
+
+        return $attributes;
+    }
+
     public function callerUser(): BelongsTo
     {
         return $this->belongsTo(User::class, 'caller_user_id');

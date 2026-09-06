@@ -92,14 +92,12 @@ class ReelController extends Controller
                 'data' => $this->presentJob($job),
             ], 201);
         } catch (\Throwable $e) {
-            Log::error('ReelController: failed to submit reel', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to submit reel job.',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -232,7 +230,7 @@ class ReelController extends Controller
             'selected_files' => $orderedFiles,
             'status' => $job->status,
             'outputs' => $job->outputs,
-            'error_message' => $job->error_message,
+            'error_message' => \App\Services\ApiErrorResponder::storedFailure($job->error_message),
             'started_at' => $job->started_at,
             'completed_at' => $job->completed_at,
             'created_at' => $job->created_at,

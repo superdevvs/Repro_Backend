@@ -173,7 +173,7 @@ class ImportController extends Controller
                             'notification_delivery' => $notificationDelivery,
                         ];
                     } catch (\Exception $e) {
-                        $errors[] = "Row {$row}: Failed to import {$email} - " . $e->getMessage();
+                        $errors[] = "Row {$row}: Failed to import {$email} - " . \App\Services\ApiErrorResponder::publicMessage($e);
                         $skipped++;
                     }
                 } else {
@@ -202,9 +202,9 @@ class ImportController extends Controller
                 'errors' => array_slice($errors, 0, 20),
             ]);
         } catch (\Exception $e) {
-            Log::error('Account import failed: ' . $e->getMessage());
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json([
-                'error' => 'Import failed: ' . $e->getMessage(),
+                'error' => 'Import failed: ' . \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -370,7 +370,7 @@ class ImportController extends Controller
                         ];
                     }
                 } catch (\Exception $e) {
-                    $errors[] = "Row {$row}: " . $e->getMessage();
+                    $errors[] = "Row {$row}: " . \App\Services\ApiErrorResponder::publicMessage($e);
                     $skipped++;
                 }
             }
@@ -389,9 +389,9 @@ class ImportController extends Controller
                 'errors' => array_slice($errors, 0, 20),
             ]);
         } catch (\Exception $e) {
-            Log::error('Shoot import failed: ' . $e->getMessage());
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json([
-                'error' => 'Import failed: ' . $e->getMessage(),
+                'error' => 'Import failed: ' . \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }

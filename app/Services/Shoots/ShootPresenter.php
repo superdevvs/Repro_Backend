@@ -301,7 +301,7 @@ class ShootPresenter
         $rawOfflinePackage = data_get($shoot->iguide_data, 'manual_offline_package');
         $visibleOfflinePackage = $this->iguideDataVisibility->canManage($requestingUser)
             && is_array($rawOfflinePackage)
-                ? $rawOfflinePackage
+                ? $this->iguideDataVisibility->operatorPackage($rawOfflinePackage)
                 : $this->iguideDataVisibility->safePackage($rawOfflinePackage);
         $shoot->setAttribute('iguide_data', $visibleIguideData);
         $shoot->setAttribute('iguide_manual_offline_package', $visibleOfflinePackage);
@@ -579,7 +579,7 @@ class ShootPresenter
         $shoot->cubicasaLastSyncedAt = $shoot->cubicasa_last_synced_at;
         $shoot->cubicasa_sync_status = $shoot->cubicasa_sync_status;
         $shoot->cubicasaSyncStatus = $shoot->cubicasa_sync_status;
-        $shoot->cubicasa_last_sync_error = $shoot->cubicasa_last_sync_error;
+        $shoot->cubicasa_last_sync_error = \App\Services\ApiErrorResponder::storedFailure($shoot->cubicasa_last_sync_error, 'CubiCasa synchronization failed. Try syncing again.');
         $shoot->cubicasaLastSyncError = $shoot->cubicasa_last_sync_error;
         $shoot->is_private_listing = $shoot->is_private_listing ?? false;
         $shoot->is_featured = $shoot->is_featured ?? false;
@@ -606,7 +606,7 @@ class ShootPresenter
         $shoot->mmm_redirect_url = $shoot->mmm_redirect_url;
         $shoot->mmm_last_punchout_at = $shoot->mmm_last_punchout_at;
         $shoot->mmm_last_order_at = $shoot->mmm_last_order_at;
-        $shoot->mmm_last_error = $shoot->mmm_last_error;
+        $shoot->mmm_last_error = \App\Services\ApiErrorResponder::storedFailure($shoot->mmm_last_error);
         $shoot->tour_links = $tourLinks;
         $shoot->setAttribute('editor_assignments', $editorAssignments);
         $shoot->setAttribute('editorAssignments', $editorAssignments);

@@ -20,7 +20,7 @@ class WithdrawRequestedShootAction
     {
         $currentStatus = strtolower((string) ($shoot->workflow_status ?? $shoot->status));
         if ($currentStatus !== strtolower(Shoot::STATUS_REQUESTED)) {
-            throw new \InvalidArgumentException('Only requested shoots can be withdrawn immediately');
+            throw new \App\Exceptions\PublicBusinessRuleException('Only requested shoots can be withdrawn immediately');
         }
 
         $validated = $request->validate([

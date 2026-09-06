@@ -81,7 +81,7 @@ class UploadSourceController extends Controller
             );
         } catch (Throwable $e) {
             return response(
-                '<!doctype html><title>Connection failed</title><body style="font-family:system-ui;padding:32px">Could not connect upload source: '.e($provider === 'dropbox' ? 'Start the Dropbox connection again from the upload source picker. Studio connections are managed in Integrations.' : $e->getMessage()).'</body>',
+                '<!doctype html><title>Connection failed</title><body style="font-family:system-ui;padding:32px">Could not connect upload source: '.e($provider === 'dropbox' ? 'Start the Dropbox connection again from the upload source picker. Studio connections are managed in Integrations.' : \App\Services\ApiErrorResponder::publicMessage($e)).'</body>',
                 400,
                 ['Content-Type' => 'text/html']
             );
@@ -110,7 +110,7 @@ class UploadSourceController extends Controller
         } catch (Throwable $e) {
             return response()->json([
                 'error_type' => 'source_unavailable',
-                'message' => $provider === 'dropbox' ? 'Dropbox is unavailable. Connect an authorized account and try again.' : $e->getMessage(),
+                'message' => $provider === 'dropbox' ? 'Dropbox is unavailable. Connect an authorized account and try again.' : \App\Services\ApiErrorResponder::publicMessage($e),
             ], 409);
         }
     }
@@ -250,7 +250,7 @@ class UploadSourceController extends Controller
                     'filename' => $entry['name'] ?? $entry['url'] ?? 'Source file',
                     'file_name' => $entry['name'] ?? $entry['url'] ?? 'Source file',
                     'error_type' => 'source_import_failed',
-                    'message' => $e->getMessage(),
+                    'message' => \App\Services\ApiErrorResponder::publicMessage($e),
                     'retryable' => true,
                 ];
             } finally {

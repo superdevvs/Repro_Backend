@@ -39,9 +39,7 @@ class AiChatController extends Controller
             $llmClient = app(LlmClient::class);
             $this->openAiOrchestrator = $openAiOrchestrator ?? new ReproAiOrchestrator($llmClient);
         } catch (\Exception $e) {
-            Log::warning('Failed to initialize OpenAI orchestrator, will use rule-based fallback', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
             $this->openAiOrchestrator = null;
         }
     }
@@ -111,10 +109,7 @@ class AiChatController extends Controller
                     $session = AiChatSession::create($sessionData);
                 }
             } catch (\Exception $e) {
-                Log::error('Failed to create/load session', [
-                    'error' => $e->getMessage(),
-                    'user_id' => $user->id,
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'error');
                 throw $e; // Re-throw to be caught by outer handler
             }
 
@@ -129,11 +124,7 @@ class AiChatController extends Controller
                     ]);
                 });
             } catch (\Exception $e) {
-                Log::error('Failed to save user message', [
-                    'error' => $e->getMessage(),
-                    'session_id' => $session->id,
-                    'user_id' => $user->id,
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'error');
             }
 
             // Check if we're already in a rule-based flow (session has a step set)
@@ -197,10 +188,7 @@ class AiChatController extends Controller
                 $serverContext['robbie_config'] = $this->robbieConfigService
                     ->getMergedConfigForRole($user->role);
             } catch (\Exception $configError) {
-                Log::warning('Failed to load Robbie config, using defaults', [
-                    'error' => $configError->getMessage(),
-                    'user_id' => $user->id,
-                ]);
+                \App\Services\ApiErrorResponder::log($configError, 'warning');
                 $serverContext['robbie_config'] = $this->robbieConfigService->getDefaultConfig();
             }
 
@@ -274,11 +262,7 @@ class AiChatController extends Controller
                         ],
                     ];
                 } catch (\Exception $openAiError) {
-                    Log::warning('OpenAI orchestrator failed, falling back to rule-based', [
-                        'error' => $openAiError->getMessage(),
-                        'session_id' => $session->id,
-                        'detected_intent' => $detectedIntent,
-                    ]);
+                    \App\Services\ApiErrorResponder::log($openAiError, 'warning');
                     // Fall through to rule-based orchestrator
                     $useOpenAI = false;
                     $shouldUseRuleBased = true; // Force rule-based on OpenAI failure
@@ -294,10 +278,7 @@ class AiChatController extends Controller
                         try {
                             $this->ruleOrchestrator = app(RuleBasedOrchestrator::class);
                         } catch (\Exception $diError) {
-                            Log::error('Failed to instantiate orchestrator', [
-                                'error' => $diError->getMessage(),
-                                'trace' => $diError->getTraceAsString(),
-                            ]);
+                            \App\Services\ApiErrorResponder::log($diError, 'error');
                             throw new \RuntimeException('Failed to initialize AI service: ' . $diError->getMessage());
                         }
                     }
@@ -339,10 +320,7 @@ class AiChatController extends Controller
                                 }
                             });
                         } catch (\Exception $handoffError) {
-                            Log::warning('OpenAI handoff failed, returning fallback response', [
-                                'error' => $handoffError->getMessage(),
-                                'session_id' => $session->id,
-                            ]);
+                            \App\Services\ApiErrorResponder::log($handoffError, 'warning');
 
                             AiMessage::create([
                                 'chat_session_id' => $session->id,
@@ -373,9 +351,7 @@ class AiChatController extends Controller
                         ];
                     }
                 } catch (\Exception $ruleError) {
-                    Log::error('Rule-based orchestrator also failed', [
-                        'error' => $ruleError->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($ruleError, 'error');
                     throw $ruleError;
                 }
             }
@@ -394,16 +370,7 @@ class AiChatController extends Controller
         } catch (\Throwable $e) {
             // Log the full error
             try {
-                Log::error('AI chat error', [
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString(),
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'user_id' => $user->id ?? null,
-                    'session_id' => $session->id ?? null,
-                    'message' => $validated['message'] ?? null,
-                    'context' => $validated['context'] ?? [],
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'error');
             } catch (\Exception $logError) {
                 // Even logging failed, but continue
             }
@@ -417,12 +384,8 @@ class AiChatController extends Controller
             // Return error with CORS headers
             return response()->json([
                 'message' => 'Failed to process chat message',
-                'error' => config('app.debug') ? $e->getMessage() : 'An error occurred while processing your message',
-                'debug' => config('app.debug') ? [
-                    'file' => $e->getFile(),
-                    'line' => $e->getLine(),
-                    'class' => get_class($e),
-                ] : null,
+                'error' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'An error occurred while processing your message',
+                'debug' => null,
             ], 500)
             ->header('Access-Control-Allow-Origin', $origin)
             ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -730,14 +693,10 @@ class AiChatController extends Controller
         } catch (\Illuminate\Http\Exceptions\HttpResponseException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            Log::error('Robbie shoot operator action failed', [
-                'error' => $e->getMessage(),
-                'payload' => $validated,
-                'user_id' => $user->id,
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
-                'message' => config('app.debug') ? $e->getMessage() : 'Robbie could not complete that shoot action.',
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Robbie could not complete that shoot action.',
             ], 500);
         }
     }

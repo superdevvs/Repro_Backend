@@ -139,16 +139,16 @@ class RolePermissionService
         foreach ($payload as $roleId => $permissionIds) {
             $normalizedRoleId = $this->normalizeRole((string) $roleId);
             if (! in_array($normalizedRoleId, $roleIds, true)) {
-                throw new \InvalidArgumentException("Unknown role [{$roleId}]");
+                throw new \App\Exceptions\PublicBusinessRuleException('Select a valid role.');
             }
 
             if (! is_array($permissionIds)) {
-                throw new \InvalidArgumentException("Permissions for [{$roleId}] must be an array");
+                throw new \App\Exceptions\PublicBusinessRuleException('Permissions must be supplied as a list.');
             }
 
             foreach ($permissionIds as $permissionId) {
                 if (! is_string($permissionId) || ! in_array($permissionId, $catalogIds, true)) {
-                    throw new \InvalidArgumentException("Unknown permission id [{$permissionId}]");
+                    throw new \App\Exceptions\PublicBusinessRuleException('Select valid permissions.');
                 }
             }
 

@@ -9,6 +9,10 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class AutomationDispatch extends Model
 {
     use HasFactory;
+    use \App\Models\Concerns\HasSafeAutomationError;
+
+    // Console output belongs to restricted operator diagnostics.
+    protected $hidden = ['output'];
 
     protected $fillable = [
         'automation_rule_id',

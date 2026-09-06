@@ -229,9 +229,7 @@ class ServiceGroupController extends Controller
 
             return ServiceGroup::isFeatureAvailable();
         } catch (\Throwable $exception) {
-            Log::warning('Service groups unavailable in ServiceGroupController.', [
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
 
             return false;
         }

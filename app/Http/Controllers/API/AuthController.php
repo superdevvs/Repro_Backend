@@ -289,7 +289,7 @@ class AuthController extends Controller
             } catch (\Throwable $e) {
                 Log::warning('Failed to refresh onboarding eligibility on user fetch.', [
                     'user_id' => $user->id,
-                    'error' => $e->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::diagnostic($e),
                 ]);
             }
         }
@@ -562,7 +562,7 @@ class AuthController extends Controller
                 Log::warning('Failed to send account email verification email after self-service profile update', [
                     'user_id' => $user->id,
                     'email' => $user->email,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
                 ]);
             }
 
@@ -661,9 +661,10 @@ class AuthController extends Controller
                 'throw_on_failure' => true,
             ]);
         } catch (\Throwable $sendException) {
+            \App\Services\ApiErrorResponder::log($sendException, 'warning');
             return response()->json([
                 'sent' => false,
-                'message' => 'Unable to send a verification email: ' . $sendException->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($sendException, 'Unable to send a verification email right now. Please try again.'),
             ], 422);
         }
 
@@ -955,7 +956,7 @@ class AuthController extends Controller
             Log::warning('Unable to persist authentication activity.', [
                 'user_id' => $user->getKey(),
                 'event_type' => $eventType,
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
             ]);
         }
     }

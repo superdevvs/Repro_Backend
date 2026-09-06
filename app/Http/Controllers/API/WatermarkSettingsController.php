@@ -331,10 +331,7 @@ class WatermarkSettingsController extends Controller
                 try {
                     GenerateWatermarkedImageJob::dispatch($file, $regenerationId)->onQueue('watermarks');
                 } catch (\Exception $e) {
-                    Log::warning('Failed to queue watermark regeneration', [
-                        'file_id' => $file->id,
-                        'error' => $e->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($e, 'warning');
                 }
             }
         }

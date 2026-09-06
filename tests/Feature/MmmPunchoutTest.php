@@ -287,19 +287,19 @@ class MmmPunchoutTest extends TestCase
 
         $response->assertStatus(400)
             ->assertJsonPath('success', false)
-            ->assertJsonPath('message', 'Rejected');
+            ->assertJsonPath('message', 'MMM could not start the print session. Check the integration settings and try again.');
 
         $shoot->refresh();
         $session = $shoot->mmmPunchoutSessions()->latest()->first();
 
         $this->assertNotNull($session);
         $this->assertSame('error', $session->status);
-        $this->assertSame('Rejected', $session->last_error);
+        $this->assertSame('MMM could not start the print session. Check the integration settings and try again.', $session->last_error);
         $this->assertNull($session->redirect_url);
 
         $this->assertSame('error', $shoot->mmm_status);
         $this->assertSame('https://repro.mymarketingmatters.com/session/existing', $shoot->mmm_redirect_url);
-        $this->assertSame('Rejected', $shoot->mmm_last_error);
+        $this->assertSame('MMM could not start the print session. Check the integration settings and try again.', $shoot->mmm_last_error);
         $this->assertNotNull($shoot->mmm_buyer_cookie);
         $this->assertNotNull($shoot->mmm_last_punchout_at);
     }

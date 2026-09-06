@@ -138,7 +138,7 @@ class ShootShareLinkService
         $fileCount = $files->count();
 
         if (!empty($fileIds) && $fileCount === 0) {
-            throw new \InvalidArgumentException("No {$stageLabel} files found for selected IDs");
+            throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found for selected IDs");
         }
 
         $dropboxEnabled = $this->dropboxService->isEnabled();
@@ -166,7 +166,7 @@ class ShootShareLinkService
 
         if (!$shareLink) {
             if ($files->isEmpty()) {
-                throw new \InvalidArgumentException("No {$stageLabel} files found to share");
+                throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found to share");
             }
 
             $zipPath = $this->generateFilesZipWithDropboxFallback($shoot, $files);

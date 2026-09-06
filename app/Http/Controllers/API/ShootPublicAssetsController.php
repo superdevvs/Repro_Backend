@@ -232,13 +232,10 @@ class ShootPublicAssetsController extends Controller
                 'characters_used' => mb_strlen($description),
             ]);
         } catch (\Exception $e) {
-            Log::error('AI property description generation failed', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
-                'message' => 'Failed to generate description: '.$e->getMessage(),
+                'message' => 'Failed to generate description: '.\App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }

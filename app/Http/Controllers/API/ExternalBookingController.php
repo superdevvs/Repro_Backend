@@ -207,10 +207,7 @@ class ExternalBookingController extends Controller
             try {
                 $this->notificationService->notifyIfNeeded($shoot, $mapping, $warnings);
             } catch (\Throwable $exception) {
-                Log::warning('External booking review notification failed.', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $exception->getMessage(),
-                ]);
+                \App\Services\ApiErrorResponder::log($exception, 'warning');
             }
 
             return response()->json([
@@ -228,15 +225,11 @@ class ExternalBookingController extends Controller
             ], 201);
 
         } catch (\Exception $e) {
-            Log::error('External booking failed', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'payload' => $validated,
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to create booking. Please try again.',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+                'error' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error',
             ], 500);
         }
     }
@@ -338,9 +331,7 @@ class ExternalBookingController extends Controller
 
             return ServiceGroup::isFeatureAvailable();
         } catch (\Throwable $exception) {
-            Log::warning('Service groups unavailable in ExternalBookingController.', [
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
 
             return false;
         }

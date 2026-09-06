@@ -42,7 +42,7 @@ class StudioWorkspaceSourceController extends StudioSourceController
                 throw $exception;
             }
             report($exception);
-            abort(422, 'This RAW image has no supported browser preview.');
+            throw new \App\Exceptions\PublicApiException('This RAW image has no supported browser preview.', 'raw_preview_unavailable', 422, previous: $exception);
         }
 
         return response($bytes, 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);

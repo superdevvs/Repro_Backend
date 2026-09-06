@@ -203,14 +203,11 @@ class InvoiceApprovalController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to approve invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to approve invoice',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -258,14 +255,11 @@ class InvoiceApprovalController extends Controller
                 'invoice' => $invoice->fresh(['items', 'photographer', 'salesRep', 'shoots']),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to reject invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to reject invoice',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }

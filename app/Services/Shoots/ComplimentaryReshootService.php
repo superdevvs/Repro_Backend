@@ -544,7 +544,7 @@ class ComplimentaryReshootService
             foreach ($compensations as $compensation) {
                 $update = $updatesById[(int) $compensation->id];
                 if ($compensation->locked_at || $compensation->isSettlementLocked()) {
-                    throw new \DomainException(
+                    throw new \App\Exceptions\PublicConflictException(
                         'Compensation is locked because the work was earned or its payout was approved.',
                         409
                     );
@@ -552,7 +552,7 @@ class ComplimentaryReshootService
 
                 if (! empty($update['expected_updated_at'])
                     && ! Carbon::parse($update['expected_updated_at'])->equalTo($compensation->updated_at)) {
-                    throw new \DomainException('Compensation changed in another session. Refresh and try again.', 409);
+                    throw new \App\Exceptions\PublicConflictException('Compensation changed in another session. Refresh and try again.', 409);
                 }
 
                 $mode = (string) $update['mode'];
@@ -645,7 +645,7 @@ class ComplimentaryReshootService
                 ->first();
             if ($replayed) {
                 if ((string) data_get($replayed->metadata, 'adjustment_request_hash') !== $requestHash) {
-                    throw new \DomainException(
+                    throw new \App\Exceptions\PublicConflictException(
                         'This Idempotency-Key was already used for a different compensation adjustment.',
                         409
                     );
@@ -741,7 +741,7 @@ class ComplimentaryReshootService
         if (! $shoot->isComplimentaryReshoot()
             || (int) $shoot->reshoot_of_shoot_id !== (int) $sourceShoot->id
             || ! hash_equals((string) $shoot->complimentary_reshoot_request_hash, $requestHash)) {
-            throw new \DomainException('This Idempotency-Key was already used for a different reshoot request.', 409);
+            throw new \App\Exceptions\PublicConflictException('This Idempotency-Key was already used for a different reshoot request.', 409);
         }
     }
 

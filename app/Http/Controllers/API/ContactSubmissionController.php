@@ -75,10 +75,7 @@ class ContactSubmissionController extends Controller
                 ]
             ], 201);
         } catch (\Exception $e) {
-            Log::error('Failed to submit contact form', [
-                'client_id' => $client->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to send your message. Please try again.',
@@ -118,11 +115,7 @@ class ContactSubmissionController extends Controller
                 'submission_id' => $submission->id,
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to send contact notification email', [
-                'client_id' => $client->id,
-                'submission_id' => $submission->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
         }
     }
 
@@ -151,10 +144,7 @@ class ContactSubmissionController extends Controller
                 'sender_email' => $submission->sender_email,
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to send contact confirmation email', [
-                'submission_id' => $submission->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
         }
     }
 

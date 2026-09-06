@@ -346,7 +346,11 @@ class IguideOfflinePackageService
     /** @return array<string,mixed>|null */
     public function markFailed(ShootFile $file, ?string $reason = null): ?array
     {
-        $message = Str::limit(trim((string) ($reason ?: 'The package could not be scanned.')), 500, '');
+        $message = IguideDataVisibilityService::publicOfflineFailure(
+            $file->scan_status === ShootFile::SCAN_STATUS_INFECTED
+                ? 'The uploaded package did not pass its security scan.'
+                : ($reason ?: 'The package could not be scanned.'),
+        );
         $failedUploadId = data_get($file->metadata, 'upload_id');
         $lifecycle = $this->mutateForFile($file, function (array $lifecycle) use ($message, $file): array {
             if (($lifecycle['status'] ?? null) === 'ready') {
@@ -370,7 +374,7 @@ class IguideOfflinePackageService
     /** @return array<string,mixed>|null */
     public function markUploadFailed(int $shootId, string $uploadId, ?string $reason = null): ?array
     {
-        $message = Str::limit(trim((string) ($reason ?: 'The package could not be stored.')), 500, '');
+        $message = IguideDataVisibilityService::publicOfflineFailure($reason ?: 'The package could not be stored.');
         $lifecycle = $this->mutate($shootId, $uploadId, function (array $lifecycle) use ($message): array {
             if (($lifecycle['status'] ?? null) === 'ready') {
                 return $lifecycle;
@@ -395,7 +399,7 @@ class IguideOfflinePackageService
         $data = is_array($model?->iguide_data) ? $model->iguide_data : [];
         $lifecycle = $data['manual_offline_package'] ?? null;
 
-        return is_array($lifecycle) ? $lifecycle : null;
+        return is_array($lifecycle) ? app(IguideDataVisibilityService::class)->operatorPackage($lifecycle) : null;
     }
 
     /** @param callable(array<string,mixed>):array<string,mixed> $callback */

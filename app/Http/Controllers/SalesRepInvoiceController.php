@@ -114,14 +114,11 @@ class SalesRepInvoiceController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to add expense to sales rep invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to add expense',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -176,15 +173,11 @@ class SalesRepInvoiceController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to remove expense from sales rep invoice', [
-                'invoice_id' => $invoice->id,
-                'item_id' => $item->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to remove expense',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -239,14 +232,11 @@ class SalesRepInvoiceController extends Controller
                 'invoice' => $invoice->fresh(['items']),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to submit changed sales rep invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to submit invoice changes for review',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -296,14 +286,11 @@ class SalesRepInvoiceController extends Controller
                 'invoice' => $invoice->fresh(['items']),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to submit sales rep invoice for approval', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to submit invoice for approval',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }

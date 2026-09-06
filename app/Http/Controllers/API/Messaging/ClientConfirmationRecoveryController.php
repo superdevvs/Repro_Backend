@@ -81,7 +81,7 @@ class ClientConfirmationRecoveryController extends Controller
             'last_attempted_at' => $delivery->last_attempted_at?->toIso8601String(),
             'sent_at' => $delivery->sent_at?->toIso8601String(),
             'recovered_at' => $delivery->recovered_at?->toIso8601String(),
-            'last_error_message' => $delivery->last_error_message,
+            'last_error_message' => \App\Services\ApiErrorResponder::storedFailure($delivery->last_error_message),
             'last_message_id' => $delivery->last_message_id,
             'shoot' => $shoot ? [
                 'id' => $shoot->id,

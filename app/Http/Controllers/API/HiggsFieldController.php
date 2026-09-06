@@ -49,9 +49,7 @@ class HiggsFieldController extends Controller
                 'data' => $presets,
             ]);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error getting presets', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => true,
@@ -94,9 +92,7 @@ class HiggsFieldController extends Controller
                 'data' => $preset,
             ], 201);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error creating preset', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -142,10 +138,7 @@ class HiggsFieldController extends Controller
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Preset not found'], 404);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error updating preset', [
-                'id' => $id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -170,10 +163,7 @@ class HiggsFieldController extends Controller
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Preset not found'], 404);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error deleting preset', [
-                'id' => $id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -279,15 +269,12 @@ class HiggsFieldController extends Controller
             ], 201);
 
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error submitting video generation', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to submit video generation job',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -327,9 +314,7 @@ class HiggsFieldController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error listing jobs', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -361,10 +346,7 @@ class HiggsFieldController extends Controller
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Job not found'], 404);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error getting job status', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -449,10 +431,7 @@ class HiggsFieldController extends Controller
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Job or variant not found'], 404);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error selecting variants', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -504,10 +483,7 @@ class HiggsFieldController extends Controller
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Job not found'], 404);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error regenerating variants', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -561,10 +537,7 @@ class HiggsFieldController extends Controller
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Job not found'], 404);
         } catch (\Exception $e) {
-            Log::error('HiggsFieldController: Error cancelling job', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -612,7 +585,7 @@ class HiggsFieldController extends Controller
                 ]),
             'video_url' => $job->video_url,
             'video_thumbnail_url' => $job->video_thumbnail_url,
-            'error_message' => $job->error_message,
+            'error_message' => \App\Services\ApiErrorResponder::storedFailure($job->error_message),
             'created_at' => $job->created_at,
             'updated_at' => $job->updated_at,
         ];
@@ -748,10 +721,7 @@ class HiggsFieldController extends Controller
 
                     return "data:{$mimeType};base64,{$base64}";
                 } catch (\Exception $e) {
-                    Log::warning('HiggsFieldController: Failed to read image file', [
-                        'path' => $diskPath,
-                        'error' => $e->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($e, 'warning');
                 }
             }
         }
@@ -826,10 +796,7 @@ class HiggsFieldController extends Controller
             return ['base64' => base64_encode($contents), 'mime' => 'image/jpeg'];
         } catch (\Exception $e) {
             ini_set('memory_limit', $oldLimit);
-            Log::warning('HiggsFieldController: Image resize failed', [
-                'path' => $path,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
             return null;
         }
     }

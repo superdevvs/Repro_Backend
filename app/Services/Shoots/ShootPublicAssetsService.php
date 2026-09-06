@@ -1026,11 +1026,7 @@ class ShootPublicAssetsService
 
                     return $thumbnailUrl !== '' ? $thumbnailUrl : null;
                 } catch (\Throwable $exception) {
-                    Log::warning('Failed to resolve Vimeo thumbnail for public video page', [
-                        'video_url' => $videoUrl,
-                        'vimeo_id' => $vimeoId,
-                        'error' => $exception->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($exception, 'warning');
 
                     return null;
                 }

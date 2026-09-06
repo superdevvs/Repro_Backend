@@ -123,10 +123,10 @@ class PaymentController extends Controller
             ]);
 
         } catch (ApiException $e) {
-            Log::error("Square API Exception: " . $e->getMessage(), ['response_body' => $e->getResponseBody()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Could not create payment link. Please try again later.'], 500);
         } catch (\Exception $e) {
-            Log::error("Generic Exception in createCheckoutLink: " . $e->getMessage());
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'An unexpected error occurred.'], 500);
         }
     }
@@ -208,10 +208,10 @@ class PaymentController extends Controller
             ]);
 
         } catch (ApiException $e) {
-            Log::error("Square API Exception (multiple shoots): " . $e->getMessage(), ['response_body' => $e->getResponseBody()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Could not create payment link. Please try again later.'], 500);
         } catch (\Exception $e) {
-            Log::error("Generic Exception in payMultipleShoots: " . $e->getMessage());
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'An unexpected error occurred.'], 500);
         }
     }
@@ -353,10 +353,7 @@ class PaymentController extends Controller
                             null
                         );
                     } catch (\Exception $e) {
-                        Log::error('Failed to send payment confirmation email', [
-                            'shoot_id' => $shoot->id,
-                            'error' => $e->getMessage(),
-                        ]);
+                        \App\Services\ApiErrorResponder::log($e, 'error');
                     }
                 }
 
@@ -369,14 +366,10 @@ class PaymentController extends Controller
                 return response()->json(['status' => 'success'], 200);
             });
         } catch (\Exception $e) {
-            Log::error('Square webhook processing error', [
-                'payment_id' => $paymentId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             // Return success to Square to prevent retries for non-recoverable errors
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 200);
+            return response()->json(['status' => 'error', 'message' => \App\Services\ApiErrorResponder::publicMessage($e)], 200);
         }
     }
 
@@ -421,10 +414,7 @@ class PaymentController extends Controller
                 'order_id' => $orderId,
             ]);
         } catch (\Exception $e) {
-            Log::error('Error processing failed payment webhook', [
-                'payment_id' => $paymentId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
         }
 
         return response()->json(['status' => 'success'], 200);
@@ -586,10 +576,7 @@ class PaymentController extends Controller
                             try {
                                 $this->mailService->sendPaymentConfirmationEmail($client, $shoot, $paymentRecord);
                             } catch (\Exception $e) {
-                                Log::error('Failed to send payment confirmation email after direct Square payment', [
-                                    'shoot_id' => $shoot->id,
-                                    'error' => $e->getMessage(),
-                                ]);
+                                \App\Services\ApiErrorResponder::log($e, 'error');
                             }
                         }
 
@@ -615,11 +602,10 @@ class PaymentController extends Controller
             }
 
             // Payment failed
-            $errors = $response->getErrors();
+            $errors = \App\Support\SquarePublicErrors::from($response->getErrors());
             Log::error('Square payment failed', [
-                'errors' => $errors,
-                'amount' => $amountCents,
-                'currency' => $currency,
+                'error_codes' => array_column($errors, 'code'),
+                'request_id' => \App\Services\RequestCorrelation::id($request),
             ]);
 
             return response()->json([
@@ -629,29 +615,22 @@ class PaymentController extends Controller
             ], 400);
 
         } catch (ApiException $e) {
-            Log::error('Square API Exception in createPayment', [
-                'message' => $e->getMessage(),
-                'errors' => $e->getErrors(),
-                'response_body' => $e->getResponseBody(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'status' => 'error',
                 'message' => 'Payment processing failed',
-                'error' => $e->getMessage(),
-                'errors' => $e->getErrors(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
+                'errors' => \App\Support\SquarePublicErrors::from($e->getErrors()),
             ], 500);
 
         } catch (\Exception $e) {
-            Log::error('Exception in createPayment', [
-                'message' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'status' => 'error',
                 'message' => 'An unexpected error occurred',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -724,7 +703,7 @@ class PaymentController extends Controller
             return response()->json(['error' => 'Refund was not successful.', 'refund_status' => $refund->getStatus()], 400);
 
         } catch (ApiException $e) {
-            Log::error("Square Refund API Exception: " . $e->getMessage(), ['response_body' => $e->getResponseBody()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to process refund.'], 500);
         }
     }

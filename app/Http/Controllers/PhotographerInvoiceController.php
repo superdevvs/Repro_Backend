@@ -113,14 +113,11 @@ class PhotographerInvoiceController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to add expense to invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to add expense',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -176,15 +173,11 @@ class PhotographerInvoiceController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to remove expense from invoice', [
-                'invoice_id' => $invoice->id,
-                'item_id' => $item->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to remove expense',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -242,14 +235,11 @@ class PhotographerInvoiceController extends Controller
                 'invoice' => $invoice->fresh(['items']),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to submit changed photographer invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to submit invoice changes for review',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -332,15 +322,11 @@ class PhotographerInvoiceController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to update invoice item', [
-                'invoice_id' => $invoice->id,
-                'item_id' => $item->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to update item',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -407,14 +393,11 @@ class PhotographerInvoiceController extends Controller
             ], 201);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to add charge to invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to add service',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -472,15 +455,11 @@ class PhotographerInvoiceController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to remove charge from invoice', [
-                'invoice_id' => $invoice->id,
-                'item_id' => $item->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to remove service',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -530,14 +509,11 @@ class PhotographerInvoiceController extends Controller
                 'invoice' => $invoice->fresh(['items']),
             ]);
         } catch (\Exception $e) {
-            Log::error('Failed to submit invoice for approval', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to submit invoice for approval',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }

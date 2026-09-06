@@ -16,6 +16,9 @@ class Shoot extends Model
 {
     use HasFactory;
 
+    // Stored upstream diagnostics are not part of the public shoot representation.
+    protected $hidden = ['bright_mls_response'];
+
     protected $fillable = [
         'client_id',
         'rep_id',

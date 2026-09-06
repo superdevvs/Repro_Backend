@@ -260,9 +260,11 @@ class FinalizeProgressTracker
 
             $stages[] = [
                 'key' => $stage['key'],
-                'label' => $stored['label'] ?? $stage['label'],
+                'label' => $stage['label'],
                 'status' => $stored['status'] ?? self::STATUS_PENDING,
-                'message' => $stored['message'] ?? null,
+                'message' => ($stored['status'] ?? null) === self::STATUS_FAILED
+                    ? $this->publicFailure($stored['message'] ?? null, $stage['key'])
+                    : ($stored['message'] ?? null),
                 'processed' => $stored['processed'] ?? null,
                 'total' => $stored['total'] ?? null,
                 'indeterminate' => ($stored['status'] ?? null) === self::STATUS_RUNNING
@@ -271,8 +273,43 @@ class FinalizeProgressTracker
         }
 
         $progress['stages'] = $stages;
+        if (($progress['status'] ?? null) === self::STATUS_FAILED) {
+            $progress['message'] = $this->publicFailure($progress['error'] ?? $progress['message'] ?? null);
+        }
+        if (array_key_exists('error', $progress) && $progress['error'] !== null && $progress['error'] !== '') {
+            $progress['error'] = $this->publicFailure($progress['error']);
+        }
+        $labels = array_column($this->blueprint(), 'label', 'key');
+        $progress['failures'] = array_map(function (array $failure) use ($labels): array {
+            $stage = (string) ($failure['stage'] ?? '');
+            $failure['label'] = $labels[$stage] ?? 'Finalize task';
+            $failure['error'] = $this->publicFailure($failure['error'] ?? null, $stage);
+
+            return $failure;
+        }, is_array($progress['failures'] ?? null) ? $progress['failures'] : []);
 
         return $progress;
+    }
+
+    private function publicFailure(mixed $value, ?string $stage = null): string
+    {
+        if (in_array($value, [
+            'No edited files to finalize',
+            'Selected service item does not belong to this shoot',
+            'Finalize aborted: shoot not found',
+        ], true)) {
+            return $value;
+        }
+        if (is_string($value) && str_starts_with($value, 'Invalid shoot status for finalization: ')) {
+            return 'This shoot is not ready to be finalized. Refresh its status and try again.';
+        }
+
+        return match ($stage) {
+            self::STAGE_LOCAL_CACHE => 'Some delivered files could not be cached. Please retry or contact support.',
+            self::STAGE_MLS_PUBLISH => 'Bright MLS publication failed. Please retry or check the integration settings.',
+            self::STAGE_DELIVERY_EMAIL => 'The delivery email could not be sent. Please retry or contact support.',
+            default => 'The shoot could not be finalized. Please retry or contact support.',
+        };
     }
 
     /**

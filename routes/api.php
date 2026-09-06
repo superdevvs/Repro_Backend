@@ -215,19 +215,6 @@ $shootMediaCorsPreflight = function (Request $request) {
 Route::options('/shoots/{shoot}/editor-download-raw', $shootMediaCorsPreflight);
 Route::options('/shoots/{shoot}/generate-share-link', $shootMediaCorsPreflight);
 
-if (! app()->environment('production')) {
-    // Debug route to check PHP upload limits
-    Route::get('/php-limits', function () {
-        return response()->json([
-            'upload_max_filesize' => ini_get('upload_max_filesize'),
-            'post_max_size' => ini_get('post_max_size'),
-            'memory_limit' => ini_get('memory_limit'),
-            'max_execution_time' => ini_get('max_execution_time'),
-            'max_file_uploads' => ini_get('max_file_uploads'),
-        ]);
-    });
-}
-
 // AI Chat health check (no auth required)
 Route::get('/ai/health', function () {
     return response()->json([
@@ -237,49 +224,6 @@ Route::get('/ai/health', function () {
         'routes_loaded' => true,
     ]);
 });
-
-// AI Chat test endpoint (with auth, tests role middleware)
-Route::middleware('auth:sanctum')->get('/ai/test-auth', function (Request $request) {
-    $user = $request->user();
-
-    return response()->json([
-        'status' => 'ok',
-        'authenticated' => $user !== null,
-        'user_id' => $user?->id,
-        'user_role' => $user?->role,
-        'allowed_roles' => ['client', 'admin', 'superadmin'],
-        'has_access' => $user && in_array($user->role, ['client', 'admin', 'superadmin']),
-    ]);
-});
-
-// AI Chat test endpoint (with auth, minimal logic)
-Route::post('/ai/test', function (Request $request) {
-    $user = $request->user();
-    if (! $user) {
-        return response()->json(['error' => 'Unauthorized'], 401);
-    }
-
-    try {
-        // Test if we can create a session
-        $session = \App\Models\AiChatSession::create([
-            'user_id' => $user->id,
-            'title' => 'Test session',
-        ]);
-
-        return response()->json([
-            'status' => 'success',
-            'session_id' => $session->id,
-            'message' => 'Basic functionality works',
-        ]);
-    } catch (\Exception $e) {
-        return response()->json([
-            'status' => 'error',
-            'error' => $e->getMessage(),
-            'file' => $e->getFile(),
-            'line' => $e->getLine(),
-        ], 500);
-    }
-})->middleware('auth:sanctum');
 
 Route::prefix('dropbox')->name('dropbox.')->group(function () {
     // Studio connection controls require explicit administrator authentication.
@@ -360,18 +304,6 @@ Route::prefix('address')->group(function () {
         Route::put('/', [App\Http\Controllers\API\AddressProviderSettingsController::class, 'updateProvider']);
     });
 });
-
-// Mail test endpoints (remove in production)
-if (! app()->environment('production')) {
-    Route::prefix('test/mail')->group(function () {
-        Route::get('config', [App\Http\Controllers\TestMailController::class, 'getMailConfig']);
-        Route::get('account-created', [App\Http\Controllers\TestMailController::class, 'testAccountCreated']);
-        Route::get('shoot-scheduled', [App\Http\Controllers\TestMailController::class, 'testShootScheduled']);
-        Route::get('shoot-ready', [App\Http\Controllers\TestMailController::class, 'testShootReady']);
-        Route::get('payment-confirmation', [App\Http\Controllers\TestMailController::class, 'testPaymentConfirmation']);
-        Route::get('all', [App\Http\Controllers\TestMailController::class, 'testAllEmails']);
-    });
-}
 
 // Group of routes that require user authentication (e.g., using Sanctum)
 Route::middleware('auth:sanctum')->group(function () {
@@ -456,20 +388,6 @@ Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
     Route::delete('/security/two-factor', [ProfileSecurityController::class, 'disableTwoFactor'])->middleware('throttle:5,1');
     Route::delete('/security/sessions/others', [ProfileSecurityController::class, 'revokeOtherSessions'])->middleware('throttle:10,1');
     Route::delete('/security/sessions/{tokenId}', [ProfileSecurityController::class, 'revokeSession'])->whereNumber('tokenId')->middleware('throttle:10,1');
-});
-
-// Debug route to check current user role
-Route::middleware('auth:sanctum')->get('/debug/user-role', function (Request $request) {
-    $user = $request->user();
-
-    return response()->json([
-        'user_id' => $user->id,
-        'email' => $user->email,
-        'role' => $user->role,
-        'name' => $user->name,
-        'can_access_users' => in_array($user->role, ['admin', 'superadmin']),
-        'can_access_account_links' => in_array($user->role, ['admin', 'superadmin']),
-    ]);
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users', [UserController::class, 'index']);
@@ -872,19 +790,6 @@ Route::middleware('auth:sanctum')->group(function () {
     // Robbie Chat endpoints
     // Note: OPTIONS requests are handled by HandleCors middleware automatically
     Route::prefix('ai')->group(function () {
-        // Test endpoint without role middleware to isolate the issue
-        Route::post('/chat-test', function (Request $request) {
-            $user = $request->user();
-
-            return response()->json([
-                'status' => 'ok',
-                'authenticated' => $user !== null,
-                'user_id' => $user?->id,
-                'user_role' => $user?->role,
-                'message' => 'This endpoint works without role middleware',
-            ]);
-        });
-
         // Actual AI chat endpoints with role middleware
         Route::middleware('role:client,admin,superadmin,editing_manager')->group(function () {
             Route::post('/chat', [AiChatController::class, 'chat']);
@@ -1074,7 +979,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/presets', [App\Http\Controllers\API\WatermarkSettingsController::class, 'presets']);
         Route::post('/regenerate', [App\Http\Controllers\API\WatermarkSettingsController::class, 'regenerate']);
         Route::get('/regeneration-progress/{regenerationId}', [App\Http\Controllers\API\WatermarkSettingsController::class, 'regenerationProgress']);
-        Route::get('/debug-files', [App\Http\Controllers\API\WatermarkSettingsController::class, 'debugFiles']);
     });
 
     // Robbie health: is the language model actually being used, or is every reply

@@ -175,14 +175,11 @@ class StripePaymentController extends Controller
             ]);
 
         } catch (\RuntimeException $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => \App\Services\ApiErrorResponder::publicMessage($e)], 500);
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Exception $e) {
-            Log::error('Stripe createCheckoutSession error', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['error' => 'Could not create payment link. Please try again later.'], 500);
         }
@@ -263,14 +260,11 @@ class StripePaymentController extends Controller
             ]);
 
         } catch (\RuntimeException $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => \App\Services\ApiErrorResponder::publicMessage($e)], 500);
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Exception $e) {
-            Log::error('Stripe createEmbeddedCheckoutSession error', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['error' => 'Could not create embedded checkout. Please try again later.'], 500);
         }
@@ -381,12 +375,9 @@ class StripePaymentController extends Controller
         } catch (ValidationException $e) {
             throw $e;
         } catch (\RuntimeException $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => \App\Services\ApiErrorResponder::publicMessage($e)], 500);
         } catch (\Exception $e) {
-            Log::error('Stripe payMultipleShoots error', [
-                'shoot_ids' => $validated['shoot_ids'],
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['error' => 'Could not create payment link. Please try again later.'], 500);
         }
@@ -499,12 +490,9 @@ class StripePaymentController extends Controller
         } catch (ValidationException $e) {
             throw $e;
         } catch (\RuntimeException $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => \App\Services\ApiErrorResponder::publicMessage($e)], 500);
         } catch (\Exception $e) {
-            Log::error('Stripe payMultipleShootsEmbedded error', [
-                'shoot_ids' => $validated['shoot_ids'],
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['error' => 'Could not create embedded checkout. Please try again later.'], 500);
         }
@@ -661,11 +649,7 @@ class StripePaymentController extends Controller
                 'data' => $result,
             ]);
         } catch (\Exception $e) {
-            Log::error('Stripe checkout session confirmation failed', [
-                'shoot_id' => $shoot->id,
-                'session_id' => $validated['session_id'],
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Could not confirm Stripe payment session.',
@@ -718,11 +702,7 @@ class StripePaymentController extends Controller
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Exception $e) {
-            Log::error('Stripe payment session confirmation failed', [
-                'session_id' => $validated['session_id'],
-                'user_id' => $request->user()?->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Could not confirm Stripe payment session.',
@@ -1144,12 +1124,7 @@ class StripePaymentController extends Controller
 
             return $processed;
         } catch (\Exception $e) {
-            Log::error('Stripe webhook single shoot processing error', [
-                'session_id' => $sessionId,
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return false;
         }
@@ -1328,12 +1303,7 @@ class StripePaymentController extends Controller
 
             return $processed;
         } catch (\Exception $e) {
-            Log::error('Stripe webhook multi-shoot processing error', [
-                'session_id' => $sessionId,
-                'shoot_ids' => $shootIdsStr,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return false;
         }
@@ -1545,13 +1515,7 @@ class StripePaymentController extends Controller
                             }
                         }
 
-                        Log::error('Automatic stale Checkout refund failed.', [
-                            'session_id' => data_get($session, 'id'),
-                            'payment_intent_id' => $paymentIntentId,
-                            'operation_key' => $operationKey,
-                            'definitive_failure' => $isDefinitiveFailure,
-                            'error' => $exception->getMessage(),
-                        ]);
+                        \App\Services\ApiErrorResponder::log($exception, 'error');
 
                         return false;
                     }
@@ -1892,21 +1856,13 @@ class StripePaymentController extends Controller
                         $this->automationService->handleEvent('PAYMENT_REFUNDED', $context);
                     }
                 } catch (\Throwable $sideEffectException) {
-                    Log::error('Committed Stripe refund side effect failed.', [
-                        'refund_id' => $refundId,
-                        'payment_id' => $effect['payment_id'],
-                        'error' => $sideEffectException->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($sideEffectException, 'error');
                 }
             }
 
             return true;
         } catch (\Throwable $exception) {
-            Log::error('Stripe refund webhook reconciliation failed.', [
-                'refund_id' => $refundId,
-                'payment_intent_id' => $paymentIntentId,
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'error');
 
             return false;
         } finally {
@@ -2165,14 +2121,14 @@ class StripePaymentController extends Controller
                     if ($isMissing) {
                         $activeAttempt->update([
                             'status' => StripeCheckoutAttempt::STATUS_FAILED,
-                            'failure_message' => Str::limit($exception->getMessage(), 2000, ''),
+                            'failure_message' => Str::limit(\App\Services\ApiErrorResponder::publicMessage($exception), 2000, ''),
                         ]);
 
                         continue;
                     }
 
                     $activeAttempt->update([
-                        'failure_message' => Str::limit($exception->getMessage(), 2000, ''),
+                        'failure_message' => Str::limit(\App\Services\ApiErrorResponder::publicMessage($exception), 2000, ''),
                     ]);
                     throw new \RuntimeException(
                         'Stripe could not verify the previous payment Session. Please retry in a moment.',
@@ -2293,7 +2249,7 @@ class StripePaymentController extends Controller
                     'status' => $isDefinitiveFailure
                         ? StripeCheckoutAttempt::STATUS_FAILED
                         : StripeCheckoutAttempt::STATUS_CREATING,
-                    'failure_message' => Str::limit($exception->getMessage(), 2000, ''),
+                    'failure_message' => Str::limit(\App\Services\ApiErrorResponder::publicMessage($exception), 2000, ''),
                 ]);
                 throw $exception;
             }
@@ -2471,11 +2427,7 @@ class StripePaymentController extends Controller
                 return true;
             });
         } catch (\Throwable $exception) {
-            Log::error('Stripe checkout attempt validation failed.', [
-                'checkout_attempt_id' => $attemptId,
-                'session_id' => data_get($session, 'id'),
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'error');
 
             return false;
         }
@@ -2928,10 +2880,7 @@ class StripePaymentController extends Controller
                 return $createdCustomer->id;
             }
         } catch (\Exception $e) {
-            Log::warning('Failed to resolve Stripe customer for checkout session', [
-                'user_id' => $client->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
         }
 
         return null;
@@ -3141,10 +3090,7 @@ class StripePaymentController extends Controller
                     null
                 );
             } catch (\Exception $e) {
-                Log::error('Failed to send Stripe payment confirmation email', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'error');
             }
         }
 
@@ -3722,10 +3668,7 @@ class StripePaymentController extends Controller
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Exception $e) {
-            Log::error('Stripe refund error', [
-                'payment_id' => $request->input('payment_id'),
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['error' => 'Failed to process refund.'], 500);
         } finally {

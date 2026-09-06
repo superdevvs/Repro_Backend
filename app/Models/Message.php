@@ -60,6 +60,35 @@ class Message extends Model
         'metadata' => 'array',
     ];
 
+    public function attributesToArray(): array
+    {
+        $attributes = parent::attributesToArray();
+        if (array_key_exists('error_message', $attributes)) {
+            $attributes['error_message'] = $this->publicDeliveryFailure($attributes['error_message']);
+        }
+        if (is_array($attributes['metadata']['delivery'] ?? null)
+            && array_key_exists('error', $attributes['metadata']['delivery'])) {
+            $attributes['metadata']['delivery']['error'] = $this->publicDeliveryFailure($attributes['metadata']['delivery']['error']);
+        }
+
+        return $attributes;
+    }
+
+    private function publicDeliveryFailure(mixed $value): ?string
+    {
+        // Keep only the reviewed SMS guidance; old provider text stays private.
+        if (in_array($value, [
+            'SMS could not be sent: the Telnyx sending number is not verified.',
+            'SMS could not be sent due to a provider error.',
+        ], true)) {
+            return $value;
+        }
+
+        return \App\Services\ApiErrorResponder::storedFailure(
+            $value, 'The message could not be delivered. Please retry or contact support.',
+        );
+    }
+
     public function thread(): BelongsTo
     {
         return $this->belongsTo(MessageThread::class, 'thread_id');

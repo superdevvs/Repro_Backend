@@ -457,6 +457,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         );
 
         $file = ShootFile::query()->where('shoot_id', $shoot->id)->sole();
+        $file->forceFill(['scan_status' => ShootFile::SCAN_STATUS_INFECTED])->save();
         app(IguideOfflinePackageService::class)->markFailed($file, 'Eicar-Test-Signature');
 
         $restored = data_get($shoot->fresh()->iguide_data, 'manual_offline_package');
@@ -466,16 +467,16 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         $this->assertSame('/api/shoots/999/media/77/download', $restored['download_url']);
         $this->assertSame((string) $session->id, $restored['last_replacement_failure']['upload_id']);
         $this->assertSame($file->id, $restored['last_replacement_failure']['file_id']);
-        $this->assertSame('Eicar-Test-Signature', $restored['last_replacement_failure']['error']);
+        $this->assertSame('The uploaded package did not pass its security scan.', $restored['last_replacement_failure']['error']);
 
         $session->refresh();
         $this->assertSame(IguideOfflineUploadSession::STATUS_FAILED, $session->status);
         $this->assertSame($file->id, $session->shoot_file_id);
-        $this->assertSame('Eicar-Test-Signature', $session->error);
+        $this->assertSame('The uploaded package did not pass its security scan.', $session->error);
         $this->getJson($this->uploadUrl($shoot, $session))
             ->assertOk()
             ->assertJsonPath('upload.status', 'failed')
-            ->assertJsonPath('upload.error', 'Eicar-Test-Signature')
+            ->assertJsonPath('upload.error', 'The uploaded package did not pass its security scan.')
             ->assertJsonMissingPath('manual_offline_package');
     }
 
@@ -605,10 +606,10 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         $restored = data_get($shoot->fresh()->iguide_data, 'manual_offline_package');
         $this->assertSame('ready', $restored['status']);
         $this->assertSame(88, $restored['file_id']);
-        $this->assertSame('private storage unavailable', $restored['last_replacement_failure']['error']);
+        $this->assertSame('The offline package could not be processed. Retry the upload or contact support.', $restored['last_replacement_failure']['error']);
         $this->assertSame((string) $session->id, $restored['last_replacement_failure']['upload_id']);
         $this->assertSame(IguideOfflineUploadSession::STATUS_FAILED, $session->fresh()->status);
-        $this->assertSame('private storage unavailable', $session->fresh()->error);
+        $this->assertSame('The offline package could not be processed. Retry the upload or contact support.', $session->fresh()->error);
     }
 
     #[Test]

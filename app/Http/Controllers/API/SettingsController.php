@@ -51,10 +51,7 @@ class SettingsController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Error fetching setting', [
-                'key' => $key,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -122,10 +119,7 @@ class SettingsController extends Controller
                 'message' => 'Setting saved successfully',
             ]);
         } catch (\Exception $e) {
-            Log::error('Error saving setting', [
-                'key' => $request->key,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
@@ -209,7 +203,7 @@ class SettingsController extends Controller
                 try {
                     $data[$field] = Crypt::decryptString(substr($data[$field], 4));
                 } catch (\Exception $e) {
-                    Log::warning('Failed to decrypt setting field', ['field' => $field]);
+                    \App\Services\ApiErrorResponder::log($e, 'warning');
                     $data[$field] = ''; // Clear corrupted value
                 }
             }

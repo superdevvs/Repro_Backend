@@ -4,7 +4,7 @@ namespace App\Services\Users;
 
 use App\Models\User;
 use App\Services\Messaging\MessagingService;
-use Illuminate\Support\Facades\Log;
+use App\Services\ApiErrorResponder;
 
 class PhoneNumberChangedNotificationService
 {
@@ -70,13 +70,11 @@ class PhoneNumberChangedNotificationService
 
             return ['sent' => true, 'error' => null];
         } catch (\Throwable $exception) {
-            Log::warning('Failed to send phone number change SMS', [
-                'user_id' => $user->id,
-                'send_source' => $source,
-                'error' => $exception->getMessage(),
-            ]);
+            ApiErrorResponder::log($exception, 'warning');
 
-            return ['sent' => false, 'error' => $exception->getMessage()];
+            return ['sent' => false, 'error' => ApiErrorResponder::publicMessage(
+                $exception, 'The phone change notification could not be sent. Please contact support.',
+            )];
         }
     }
 

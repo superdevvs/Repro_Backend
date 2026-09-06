@@ -278,11 +278,7 @@ class InvoiceController extends Controller
                 try {
                     app(MailService::class)->sendPaymentConfirmationEmail($clientForEmail, $shootForEmail, $clientPayment);
                 } catch (\Throwable $emailError) {
-                    Log::warning('Failed to send shoot paid email from admin invoice mark-paid', [
-                        'invoice_id' => $invoice->id,
-                        'shoot_id' => $shootForEmail->id,
-                        'error' => $emailError->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($emailError, 'warning');
                 }
             }
         }
@@ -499,14 +495,11 @@ class InvoiceController extends Controller
             throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to add misc item to invoice', [
-                'invoice_id' => $invoice->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to add misc item',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -635,15 +628,11 @@ class InvoiceController extends Controller
             throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to update misc item on invoice', [
-                'invoice_id' => $invoice->id,
-                'item_id' => $item->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to update misc item',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -704,15 +693,11 @@ class InvoiceController extends Controller
             ]);
         } catch (\Exception $e) {
             DB::rollBack();
-            Log::error('Failed to remove misc item from invoice', [
-                'invoice_id' => $invoice->id,
-                'item_id' => $item->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to remove misc item',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }

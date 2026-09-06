@@ -284,7 +284,7 @@ class BrightMlsService
         } catch (\Exception $e) {
             Log::warning('Could not load settings from database', [
                 'key' => $key,
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::publicMessage($e, 'Bright MLS could not complete this request.'),
             ]);
         }
         return [];
@@ -453,37 +453,21 @@ class BrightMlsService
                 Log::error('Bright MLS publish failed', [
                     'mls_id' => $manifestData['mlsId'] ?? null,
                     'status' => $response->status(),
-                    'response' => $errorBody,
+                    'response' => ['http_status' => $response->status()],
                 ]);
 
-                // Parse Bright MLS error format:
-                // New API: { success, message, description, error: [{path, message}] }
-                // Legacy:  { statusCode, message, body: [{path, message}] }
-                $errorMessage = $errorBody['description'] ?? $errorBody['message'] ?? $errorBody['error'] ?? 'Unknown error';
-
-                // Detect auth rejection
-                if ($response->status() === 401 || $response->status() === 403) {
-                    $errorMessage = 'Authentication failed — check your API Key and Vendor/Customer ID. '
-                        . 'HTTP ' . $response->status() . ': ' . ($errorBody['message'] ?? 'Unauthorized');
-                }
-
+                // Upstream error text can contain credentials or echoed request data.
+                $errorMessage = in_array($response->status(), [401, 403], true)
+                    ? 'Authentication failed. Check your API Key and Vendor/Customer ID.'
+                    : 'Bright MLS could not publish this listing. Check the listing data and try again.';
                 $validationErrors = [];
-                // New API uses 'error' array, Legacy uses 'body' array
-                $errorDetails = $errorBody['error'] ?? $errorBody['body'] ?? [];
-                if (is_array($errorDetails)) {
-                    foreach ($errorDetails as $detail) {
-                        if (!is_array($detail)) continue;
-                        $path = is_array($detail['path'] ?? null) ? implode('.', $detail['path']) : ($detail['path'] ?? '');
-                        $validationErrors[] = ($path ? "[{$path}] " : '') . ($detail['message'] ?? 'Validation error');
-                    }
-                }
 
                 return [
                     'success' => false,
                     'status' => 'error',
                     'error' => $errorMessage,
                     'validation_errors' => $validationErrors,
-                    'response' => $errorBody,
+                    'response' => ['http_status' => $response->status()],
                     'mode' => $this->mode,
                     'environment' => $this->environment,
                     'api_url' => $effectiveApiUrl,
@@ -513,14 +497,14 @@ class BrightMlsService
         } catch (\Exception $e) {
             Log::error('Bright MLS publish exception', [
                 'mls_id' => $manifestData['mlsId'] ?? null,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'error' => ApiErrorResponder::publicMessage($e, 'Bright MLS could not complete this request.'),
+                'exception' => $e::class,
             ]);
 
             return [
                 'success' => false,
                 'status' => 'error',
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::publicMessage($e, 'Bright MLS could not complete this request.'),
                 'response' => null,
                 'mode' => $this->mode,
                 'environment' => $this->environment,
@@ -786,7 +770,7 @@ class BrightMlsService
             // 401/403 = bad credentials
             if ($status === 401 || $status === 403) {
                 $body = $response->json() ?? [];
-                $serverMsg = $body['message'] ?? 'Unauthorized';
+                $serverMsg = 'Unauthorized';
                 $message = 'Authentication failed (HTTP ' . $status . ': ' . $serverMsg . '). '
                     . 'Check your API Key and Customer/Vendor ID.';
                 return [
@@ -811,7 +795,7 @@ class BrightMlsService
             return [
                 'success' => false,
                 'status' => 0,
-                'message' => 'Connection error: ' . $e->getMessage(),
+                'message' => 'The provider connection failed. Please check the configuration and try again.',
                 'mode' => $this->mode,
                 'environment' => $this->environment,
             ];
@@ -1016,12 +1000,12 @@ class BrightMlsService
         } catch (\Exception $e) {
             Log::error('Bright MLS auto-publish exception', [
                 'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::publicMessage($e, 'Bright MLS could not complete this request.'),
             ]);
             return [
                 'success' => false,
                 'status' => 'error',
-                'error' => $e->getMessage(),
+                'error' => ApiErrorResponder::publicMessage($e, 'Bright MLS could not complete this request.'),
             ];
         }
     }

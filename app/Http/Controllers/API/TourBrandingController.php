@@ -38,7 +38,7 @@ class TourBrandingController extends Controller
 
             return response()->json(['data' => $brandings]);
         } catch (\Exception $e) {
-            Log::error('Error fetching tour brandings', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to fetch brandings'], 500);
         }
     }
@@ -97,7 +97,7 @@ class TourBrandingController extends Controller
                 ],
             ], 201);
         } catch (\Exception $e) {
-            Log::error('Error creating tour branding', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to create branding'], 500);
         }
     }
@@ -161,7 +161,7 @@ class TourBrandingController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Error updating tour branding', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to update branding'], 500);
         }
     }
@@ -180,7 +180,7 @@ class TourBrandingController extends Controller
 
             return response()->json(['message' => 'Branding deleted successfully']);
         } catch (\Exception $e) {
-            Log::error('Error deleting tour branding', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json(['error' => 'Failed to delete branding'], 500);
         }
     }

@@ -34,6 +34,7 @@ class SystemOverviewTelemetryService
         'api/admin/system-overview',
         'api/system-telemetry',
         'api/broadcasting/auth',
+        'api/profile/tax-document',
     ];
 
     private const EVENT_TYPES = [
@@ -119,8 +120,8 @@ class SystemOverviewTelemetryService
                 'domain' => $this->resolveDomain($request),
                 'route_name' => optional($request->route())->getName(),
                 'method' => strtoupper($request->method()),
-                'path' => '/'.$request->path(),
-                'current_route' => $request->headers->get('X-System-Current-Route'),
+                'path' => $this->routeTemplate($request),
+                'current_route' => $this->safeLabel($request->headers->get('X-System-Current-Route')),
                 'controller_action' => $this->resolveControllerAction($request->route()),
                 'status_code' => $response->getStatusCode(),
                 'duration_ms' => $durationMs,
@@ -133,7 +134,8 @@ class SystemOverviewTelemetryService
                 'response_payload_summary' => $this->responseSummary($response),
                 'metadata' => [
                     'ip' => $request->ip(),
-                    'route_parameters' => $request->route()?->parameters() ?? [],
+                    'route_parameter_names' => array_keys($request->route()?->parameters() ?? []),
+                    'client_correlation_id' => $request->attributes->get('api.client_correlation_id'),
                 ],
                 'occurred_at' => now(),
             ],
@@ -179,21 +181,22 @@ class SystemOverviewTelemetryService
                 'domain' => $this->resolveDomain($request),
                 'route_name' => optional($request->route())->getName(),
                 'method' => strtoupper($request->method()),
-                'path' => '/'.$request->path(),
-                'current_route' => $request->headers->get('X-System-Current-Route'),
+                'path' => $this->routeTemplate($request),
+                'current_route' => $this->safeLabel($request->headers->get('X-System-Current-Route')),
                 'controller_action' => $this->resolveControllerAction($request->route()),
                 'status_code' => $status,
                 'duration_ms' => $durationMs,
                 'request_bytes' => strlen((string) $request->getContent()),
                 'response_bytes' => 0,
                 'blocker_type' => 'error',
-                'blocker_message' => $exception->getMessage(),
+                'blocker_message' => ApiErrorResponder::defaultMessage($status),
                 'error_class' => $exception::class,
                 'request_payload_summary' => $this->requestSummary($request),
                 'response_payload_summary' => null,
                 'metadata' => [
                     'ip' => $request->ip(),
-                    'route_parameters' => $request->route()?->parameters() ?? [],
+                    'route_parameter_names' => array_keys($request->route()?->parameters() ?? []),
+                    'client_correlation_id' => $request->attributes->get('api.client_correlation_id'),
                 ],
                 'occurred_at' => now(),
             ],
@@ -206,31 +209,31 @@ class SystemOverviewTelemetryService
             'trace_id' => $traceId,
             'source' => 'backend',
             'severity' => $status >= 500 ? 'critical' : 'warning',
-            'route_path' => '/'.$request->path(),
+            'route_path' => $this->routeTemplate($request),
             'component_name' => null,
             'blocker_type' => 'error',
             'error_class' => $exception::class,
-            'message' => $exception->getMessage(),
+            'message' => ApiErrorResponder::defaultMessage($status),
             'context_summary' => [
-                'line' => $exception->getLine(),
-                'file' => Str::after($exception->getFile(), base_path().DIRECTORY_SEPARATOR),
+                'line' => ApiErrorResponder::diagnosticContext($exception)['line'],
+                'file' => ApiErrorResponder::diagnosticContext($exception)['file'],
                 'trace_id' => $traceId,
             ],
             'occurred_at' => now(),
         ]);
 
         $this->touchSession($session, [
-            'last_api_path' => '/'.$request->path(),
+            'last_api_path' => $this->routeTemplate($request),
             'last_trace_id' => $traceId,
             'blocker_state' => 'error',
-            'blocker_message' => $exception->getMessage(),
+            'blocker_message' => ApiErrorResponder::defaultMessage($status),
         ]);
 
         $this->broadcast('error', [
             'traceId' => $traceId,
-            'path' => '/'.$request->path(),
+            'path' => $this->routeTemplate($request),
             'statusCode' => $status,
-            'message' => Str::limit($exception->getMessage(), 180),
+            'message' => ApiErrorResponder::defaultMessage($status),
             'userName' => $session?->user_name,
             'currentRoute' => $session?->current_route,
         ]);
@@ -248,7 +251,18 @@ class SystemOverviewTelemetryService
         }
 
         $occurredAt = isset($event['occurredAt']) ? Carbon::parse($event['occurredAt']) : now();
-        $event['traceId'] = (string) ($event['traceId'] ?? $this->resolveTraceId($request));
+        // A browser may correlate only to a server-issued trace owned by this user.
+        $requestedTrace = $event['traceId'] ?? null;
+        $event['traceId'] = is_string($requestedTrace) && Str::isUuid($requestedTrace)
+            && $request->user() && SystemOverviewRequestTrace::query()
+                ->where('trace_id', $requestedTrace)->where('user_id', $request->user()->id)->exists()
+            ? $requestedTrace : $this->resolveTraceId($request);
+        $event['message'] = in_array($type, ['error', 'blocker'], true) ? 'A browser operation could not be completed.' : null;
+        $event['blockerMessage'] = $event['message'];
+        $event['errorClass'] = in_array($type, ['error', 'blocker'], true) ? 'ClientOperationError' : null;
+        foreach (['routePath', 'pageKey', 'componentName', 'actionName', 'severity', 'blockerState', 'blockerType'] as $field) {
+            $event[$field] = $this->safeLabel($event[$field] ?? null);
+        }
         $session = $this->upsertSessionFromRequest($request, [
             'current_route' => $event['routePath'] ?? $request->headers->get('X-System-Current-Route'),
             'current_page' => $event['pageKey'] ?? null,
@@ -449,7 +463,7 @@ class SystemOverviewTelemetryService
                     'currentAction' => $session->current_action,
                     'componentStack' => $session->component_stack ?? [],
                     'blockerState' => $session->blocker_state,
-                    'blockerMessage' => $session->blocker_message,
+                    'blockerMessage' => $session->blocker_message ? 'An operation needs attention. Use its request ID for support.' : null,
                     'lastApiPath' => $session->last_api_path,
                     'lastTraceId' => $session->last_trace_id,
                     'lastActivityAt' => optional($session->last_activity_at)->toIso8601String(),
@@ -529,7 +543,7 @@ class SystemOverviewTelemetryService
                         'componentName' => $event->component_name,
                         'actionName' => $event->action_name,
                         'severity' => $event->severity,
-                        'payloadSummary' => $event->payload_summary,
+                        'payloadSummary' => $this->summarizePayload($event->payload_summary),
                         'occurredAt' => optional($event->occurred_at)->toIso8601String(),
                     ])
                     ->values()
@@ -561,7 +575,7 @@ class SystemOverviewTelemetryService
 
     private function shouldTrackRequest(Request $request): bool
     {
-        if (!$request->is('api/*')) {
+        if (!$request->is('api/*') || $request->is('api/admin/users/*/tax-document*')) {
             return false;
         }
 
@@ -579,9 +593,12 @@ class SystemOverviewTelemetryService
         $sessionKey = $request->headers->get('X-System-Session-Id');
         $user = $request->user();
 
-        if (!$sessionKey || !$user) {
+        if (!is_string($sessionKey) || !preg_match('/\A[A-Za-z0-9_-]{1,80}\z/', $sessionKey) || !$user) {
             return null;
         }
+
+        // Client session identifiers are scoped to their authenticated owner.
+        $sessionKey = hash('sha256', $user->id.':'.$sessionKey);
 
         $session = SystemOverviewSession::query()->firstOrNew([
             'session_key' => $sessionKey,
@@ -593,10 +610,10 @@ class SystemOverviewTelemetryService
             'user_role' => $user->role,
             'is_authenticated' => true,
             'is_active' => true,
-            'current_route' => $overrides['current_route'] ?? $request->headers->get('X-System-Current-Route'),
-            'current_page' => $overrides['current_page'] ?? $session->current_page,
-            'current_action' => $overrides['current_action'] ?? $session->current_action ?? 'request',
-            'metadata' => array_merge($session->metadata ?? [], $overrides['metadata'] ?? ['user_agent' => $request->userAgent()]),
+            'current_route' => $this->safeLabel($overrides['current_route'] ?? $request->headers->get('X-System-Current-Route')),
+            'current_page' => $this->safeLabel($overrides['current_page'] ?? $session->current_page),
+            'current_action' => $this->safeLabel($overrides['current_action'] ?? $session->current_action ?? 'request'),
+            'metadata' => ['source' => 'browser'],
             'last_activity_at' => now(),
         ]);
 
@@ -713,8 +730,16 @@ class SystemOverviewTelemetryService
 
         $result = [];
 
-        foreach ($value as $key => $item) {
+        foreach (array_slice($value, 0, 40, true) as $key => $item) {
             $normalizedKey = strtolower((string) $key);
+            // Payload field names can themselves contain user data. Only retain
+            // reviewed envelope/schema names; all values are represented by type.
+            $key = is_int($key) ? $key : (in_array($normalizedKey, [
+                'data', 'errors', 'message', 'code', 'status', 'success', 'request_id',
+                'items', 'id', 'type', 'name', 'email', 'role', 'metadata', 'file',
+                'files', 'upload', 'upload_session', 'error_type', 'total', 'page',
+                ...self::REDACTED_KEYS,
+            ], true) ? $normalizedKey : 'field_'.count($result));
             if (in_array($normalizedKey, self::REDACTED_KEYS, true)) {
                 $result[$key] = '[REDACTED]';
                 continue;
@@ -729,14 +754,15 @@ class SystemOverviewTelemetryService
     private function sanitizeScalar(mixed $value): mixed
     {
         if (is_string($value)) {
-            return Str::limit(trim($value), 140);
+            return '[STRING]';
         }
 
-        if (is_numeric($value) || is_bool($value) || $value === null) {
-            return $value;
-        }
-
-        return Str::limit((string) $value, 140);
+        return match (true) {
+            is_int($value), is_float($value) => '[NUMBER]',
+            is_bool($value) => '[BOOLEAN]',
+            $value === null => null,
+            default => '[OBJECT]',
+        };
     }
 
     private function previewPayload(mixed $payload): ?string
@@ -825,9 +851,31 @@ class SystemOverviewTelemetryService
 
     private function resolveTraceId(Request $request): string
     {
-        return (string) ($request->attributes->get('system_overview.trace_id')
-            ?? $request->headers->get('X-Trace-Id')
-            ?? Str::uuid());
+        return RequestCorrelation::id($request);
+    }
+
+    private function routeTemplate(Request $request): string
+    {
+        $route = $request->route();
+        return $route instanceof Route ? '/'.ltrim($route->uri(), '/') : '/api/unmatched';
+    }
+
+    private function safeLabel(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        if (str_starts_with($value, '/')) {
+            $value = preg_split('/[?#]/', $value, 2)[0];
+            $first = explode('/', trim($value, '/'))[0] ?? '';
+            // Browser routes are page locations, not arbitrary URLs/token paths.
+            $value = in_array($first, ['', 'dashboard', 'shoots', 'accounts', 'accounting', 'messaging', 'settings', 'reset-password', 'calendar', 'scheduling', 'studio', 'inbox', 'book-shoot', 'shoot-history', 'availability', 'calls', 'invoices', 'integrations', 'mls-publishing-queue', 'chat-with-reproai', 'ai-editing', 'cubicasa-scanning', 'permission-settings', 'scheduling-settings'], true)
+                ? ($first === '' ? '/' : '/'.$first) : '/unmatched';
+        } elseif (preg_match('/\A(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\//', $value, $match)) {
+            $value = $match[1].' API request';
+        }
+        // No URL query strings, control characters, or free-form diagnostic text.
+        return preg_match('/\A[A-Za-z0-9_\/. :{}-]{1,160}\z/', $value) ? $value : null;
     }
 
     private function formatTrace(SystemOverviewRequestTrace $trace): array
@@ -847,10 +895,10 @@ class SystemOverviewTelemetryService
             'requestBytes' => $trace->request_bytes,
             'responseBytes' => $trace->response_bytes,
             'blockerType' => $trace->blocker_type,
-            'blockerMessage' => $trace->blocker_message,
+            'blockerMessage' => $trace->blocker_message ? ApiErrorResponder::defaultMessage((int) $trace->status_code) : null,
             'errorClass' => $trace->error_class,
-            'requestPayloadSummary' => $trace->request_payload_summary,
-            'responsePayloadSummary' => $trace->response_payload_summary,
+            'requestPayloadSummary' => $this->summarizePayload($trace->request_payload_summary),
+            'responsePayloadSummary' => $this->summarizePayload($trace->response_payload_summary),
             'occurredAt' => optional($trace->occurred_at)->toIso8601String(),
         ];
     }
@@ -867,8 +915,8 @@ class SystemOverviewTelemetryService
             'componentName' => $error->component_name,
             'blockerType' => $error->blocker_type,
             'errorClass' => $error->error_class,
-            'message' => $error->message,
-            'contextSummary' => $error->context_summary,
+            'message' => 'An operation could not be completed. Use the request ID for support.',
+            'contextSummary' => $this->summarizePayload($error->context_summary),
             'occurredAt' => optional($error->occurred_at)->toIso8601String(),
         ];
     }

@@ -10,6 +10,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 class AutomationRun extends Model
 {
     use HasFactory;
+    use \App\Models\Concerns\HasSafeAutomationError;
+
+    // Execution context can contain password-reset links and other action inputs.
+    protected $hidden = ['context_json'];
 
     protected $fillable = [
         'automation_rule_id',

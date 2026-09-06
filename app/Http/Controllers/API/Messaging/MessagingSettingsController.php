@@ -205,18 +205,15 @@ class MessagingSettingsController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'error' => 'Validation failed',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
                 'errors' => $e->errors(),
             ], 422);
         } catch (\Exception $e) {
-            Log::error('Failed to save SMS settings: ' . $e->getMessage(), [
-                'exception' => $e,
-                'request_data' => $request->all(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to save SMS settings',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -290,7 +287,7 @@ class MessagingSettingsController extends Controller
 
             return response()->json(['status' => 'sent']);
         } catch (\Exception $e) {
-            return response()->json(['error' => $e->getMessage()], 500);
+            return response()->json(['error' => \App\Services\ApiErrorResponder::publicMessage($e)], 500);
         }
     }
 
@@ -343,14 +340,11 @@ class MessagingSettingsController extends Controller
                 'to' => $data['to'],
             ]);
         } catch (\Exception $e) {
-            Log::error('Test SMS send failed', [
-                'error' => $e->getMessage(),
-                'to' => $data['to'],
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }

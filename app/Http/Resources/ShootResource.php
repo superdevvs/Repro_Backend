@@ -119,7 +119,7 @@ class ShootResource extends JsonResource
         $visibleIguideData = $iguideVisibility->forUser($this->iguide_data, $requestingUser);
         $rawOfflinePackage = data_get($this->iguide_data, 'manual_offline_package');
         $visibleOfflinePackage = $canManageIguide && is_array($rawOfflinePackage)
-            ? $rawOfflinePackage
+            ? $iguideVisibility->operatorPackage($rawOfflinePackage)
             : $iguideVisibility->safePackage($rawOfflinePackage);
         $isOwningClient = $requestingRole === 'client'
             && $requestingUser
@@ -570,13 +570,13 @@ class ShootResource extends JsonResource
             'cubicasa_sync_status' => $this->cubicasa_sync_status ?? null,
             'cubicasa_sync_job_id' => $this->cubicasa_sync_job_id ?? null,
             'cubicasa_sync_started_at' => $this->cubicasa_sync_started_at?->toIso8601String(),
-            'cubicasa_last_sync_error' => $this->cubicasa_last_sync_error ?? null,
+            'cubicasa_last_sync_error' => \App\Services\ApiErrorResponder::storedFailure($this->cubicasa_last_sync_error),
             'cubicasa_sync' => [
                 'sync_status' => $this->cubicasa_sync_status ?? null,
                 'sync_job_id' => $this->cubicasa_sync_job_id ?? null,
                 'sync_started_at' => $this->cubicasa_sync_started_at?->toIso8601String(),
                 'last_synced_at' => $this->cubicasa_last_synced_at?->toIso8601String(),
-                'last_sync_error' => $this->cubicasa_last_sync_error ?? null,
+                'last_sync_error' => \App\Services\ApiErrorResponder::storedFailure($this->cubicasa_last_sync_error),
             ],
             'is_private_listing' => (bool) ($this->is_private_listing ?? false),
             'isPrivateListing' => (bool) ($this->is_private_listing ?? false),

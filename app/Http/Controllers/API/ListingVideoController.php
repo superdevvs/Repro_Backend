@@ -97,14 +97,12 @@ class ListingVideoController extends Controller
                 'data' => $this->presentJob($job),
             ], 201);
         } catch (\Throwable $e) {
-            Log::error('ListingVideoController: failed to submit listing video', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to submit listing video job.',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -246,7 +244,8 @@ class ListingVideoController extends Controller
             'outputs' => $job->outputs,
             'provider_request_ids' => $job->provider_request_ids,
             'estimated_cost' => (float) $job->estimated_cost,
-            'error_message' => $job->error_message,
+            'error_message' => $job->error_message === 'Video generation stopped responding and was closed. Please try again.'
+                ? $job->error_message : \App\Services\ApiErrorResponder::storedFailure($job->error_message),
             'started_at' => $job->started_at,
             'completed_at' => $job->completed_at,
             'created_at' => $job->created_at,

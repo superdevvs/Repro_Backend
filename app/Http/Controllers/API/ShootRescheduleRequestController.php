@@ -156,7 +156,7 @@ class ShootRescheduleRequestController extends Controller
 
             return response()->json([
                 'message' => 'Unable to update reschedule request.',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
 
@@ -253,7 +253,7 @@ class ShootRescheduleRequestController extends Controller
                 ],
             ]);
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('Failed to log reschedule request: ' . $e->getMessage());
+            \App\Services\ApiErrorResponder::log($e, 'warning');
         }
     }
 
@@ -283,7 +283,7 @@ class ShootRescheduleRequestController extends Controller
                 ],
             ]);
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('Failed to log reschedule activity: ' . $e->getMessage());
+            \App\Services\ApiErrorResponder::log($e, 'warning');
         }
     }
 

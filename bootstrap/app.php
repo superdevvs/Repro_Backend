@@ -72,6 +72,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $schedule->command('model:prune')->dailyAt('03:45')->withoutOverlapping()->onOneServer();
     })
     ->withMiddleware(function (Middleware $middleware) {
+        $middleware->prepend(\App\Http\Middleware\ApiRequestContextMiddleware::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
         $middleware->trustProxies(
             at: '*',
@@ -102,6 +103,13 @@ return Application::configure(basePath: dirname(__DIR__))
         ['prefix' => 'api', 'middleware' => ['api', 'auth:sanctum']],
     )
     ->withExceptions(function (Exceptions $exceptions) {
+        // API diagnostics are deliberately redacted by the response/telemetry services.
+        $exceptions->report(function (\Throwable $exception) {
+            if (request()->is('api/*')) {
+                return false;
+            }
+        });
+
         // Add CORS headers to all error responses
         $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
             // Only handle API routes
@@ -118,46 +126,19 @@ return Application::configure(basePath: dirname(__DIR__))
                     $origin = config('app.frontend_url');
                 }
 
-                $status = method_exists($e, 'getStatusCode') ? $e->getStatusCode() : 500;
-                if ($e instanceof \Illuminate\Auth\Access\AuthorizationException) {
-                    $status = 403;
-                } elseif ($e instanceof \Illuminate\Validation\ValidationException) {
-                    $status = 422;
-                } elseif ($e instanceof \Illuminate\Routing\Exceptions\InvalidSignatureException) {
-                    $status = 403;
-                } elseif ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
-                    $status = 404;
-                } elseif ($e instanceof \Illuminate\Auth\AuthenticationException) {
-                    $status = 401;
-                }
-
+                $responder = app(\App\Services\ApiErrorResponder::class);
+                $status = $responder->status($e);
                 if ($request->user()) {
                     try {
                         app(SystemOverviewTelemetryService::class)->recordException($request, $e, $status);
                     } catch (\Throwable $telemetryError) {
-                        // Never let telemetry capture break the error response.
+                        // Telemetry must not replace the actual error response.
                     }
                 }
 
-                $payload = [
-                    'message' => $e->getMessage() ?: 'An error occurred',
-                    'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-                    'debug' => config('app.debug') ? [
-                        'file' => $e->getFile(),
-                        'line' => $e->getLine(),
-                        'class' => get_class($e),
-                    ] : null,
-                ];
-
-                // Preserve Laravel's validation field map so rule-driven rejections
-                // still identify the invalid field(s) for API clients.
-                if ($e instanceof \Illuminate\Validation\ValidationException) {
-                    $payload['errors'] = $e->errors();
-                }
-
-                return response()->json($payload, $status)
+                return $responder->render($e, $request)
                     ->header('Access-Control-Allow-Origin', $origin)
-                    ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+                    ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
                     ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-Impersonate-User-Id, X-Trace-Id, X-System-Session-Id, X-System-Current-Route, Idempotency-Key, Content-Range, X-Chunk-SHA256')
                     ->header('Access-Control-Allow-Credentials', 'true');
             }

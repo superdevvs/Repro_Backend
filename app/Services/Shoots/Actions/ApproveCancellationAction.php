@@ -23,7 +23,7 @@ class ApproveCancellationAction
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
         if (!$shoot->cancellation_requested_at) {
-            throw new \InvalidArgumentException('No cancellation request pending for this shoot');
+            throw new \App\Exceptions\PublicBusinessRuleException('No cancellation request pending for this shoot');
         }
 
         $validated = $request->validate([

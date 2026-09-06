@@ -58,9 +58,9 @@ class RobbieHealthController extends Controller
 
             $result['engine'] = 'rule_based';
             $result['detail'] = $this->classify($message);
-            $result['error'] = $message;
+            $result['error'] = 'language_model_unavailable';
 
-            Log::warning('Robbie health check failed', ['error' => $message]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
         }
 
         return response()->json($result, 200);

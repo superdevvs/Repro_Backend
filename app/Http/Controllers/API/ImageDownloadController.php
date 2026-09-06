@@ -110,15 +110,11 @@ class ImageDownloadController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error("Error downloading file", [
-                'file_id' => $fileId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to download file',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }
@@ -195,14 +191,11 @@ class ImageDownloadController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error("Error downloading web image", [
-                'file_id' => $fileId,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to download image',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }
@@ -321,14 +314,11 @@ class ImageDownloadController extends Controller
             ])->deleteFileAfterSend(true);
 
         } catch (\Exception $e) {
-            Log::error("Error in bulk download", [
-                'error' => $e->getMessage(),
-                'file_ids' => $request->input('file_ids')
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to create download',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }
@@ -366,10 +356,7 @@ class ImageDownloadController extends Controller
             ], 404);
 
         } catch (\Exception $e) {
-            Log::error("Error downloading from Dropbox", [
-                'file_id' => $shootFile->id,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to download file from backup'

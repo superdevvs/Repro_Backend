@@ -134,11 +134,11 @@ class ShootPaymentsController extends Controller
                 'progress' => $this->finalizeProgress->get((int) $shoot->id),
             ], 202);
         } catch (\Exception $e) {
-            $this->finalizeProgress->fail((int) $shoot->id, 'Failed to queue finalize job: '.$e->getMessage());
+            $this->finalizeProgress->fail((int) $shoot->id, 'Failed to queue finalize job: '.\App\Services\ApiErrorResponder::publicMessage($e));
 
             return response()->json([
                 'message' => 'Failed to queue finalize job',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -206,10 +206,7 @@ class ShootPaymentsController extends Controller
                     ->applyResolvedPaymentMetadata(),
             ]);
         } catch (\Exception $e) {
-            Log::error('Error getting/creating invoice for shoot', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json(['message' => 'Failed to get or create invoice'], 500);
         }
@@ -349,15 +346,11 @@ class ShootPaymentsController extends Controller
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Exception $e) {
-            Log::error('Error marking shoot as paid', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to mark shoot as paid',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -414,10 +407,7 @@ class ShootPaymentsController extends Controller
                 auth()->user()
             );
         } catch (\Exception $logError) {
-            Log::warning('Failed to log activity for payment', [
-                'shoot_id' => $shoot->id,
-                'error' => $logError->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($logError, 'warning');
         }
 
         $this->shootPaymentStatusSupport->clearShootCachesAfterPayment($shoot);
@@ -444,11 +434,7 @@ class ShootPaymentsController extends Controller
                 }
             }
         } catch (\Throwable $emailError) {
-            Log::warning('Failed to queue payment confirmation email', [
-                'shoot_id' => $shoot->id,
-                'payment_id' => $payment->id,
-                'error' => $emailError->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($emailError, 'warning');
         }
 
         return [
@@ -546,10 +532,7 @@ class ShootPaymentsController extends Controller
             try {
                 $invoice = $this->invoiceService->generateForShoot($shoot);
             } catch (\Throwable $e) {
-                Log::warning('Failed to ensure invoice during payment intent creation', [
-                    'shoot_id' => $shoot->id,
-                    'error' => $e->getMessage(),
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'warning');
                 $invoice = null;
             }
         }
@@ -579,20 +562,13 @@ class ShootPaymentsController extends Controller
                 $user
             );
         } catch (\Throwable $logError) {
-            Log::warning('Failed to log payment intent submission', [
-                'shoot_id' => $shoot->id,
-                'error' => $logError->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($logError, 'warning');
         }
 
         try {
             $this->mailService->sendOfflinePaymentIntentSubmittedEmail($shoot, $payment, $user);
         } catch (\Throwable $emailError) {
-            Log::warning('Failed to send offline payment intent submitted email', [
-                'shoot_id' => $shoot->id,
-                'payment_id' => $payment->id,
-                'error' => $emailError->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($emailError, 'warning');
         }
 
         return response()->json([
@@ -697,15 +673,11 @@ class ShootPaymentsController extends Controller
         } catch (ValidationException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            Log::error('Failed to confirm payment intent', [
-                'shoot_id' => $shoot->id,
-                'payment_id' => $payment->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to confirm payment intent.',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -760,10 +732,7 @@ class ShootPaymentsController extends Controller
                 $user
             );
         } catch (\Throwable $logError) {
-            Log::warning('Failed to log payment intent decline', [
-                'shoot_id' => $shoot->id,
-                'error' => $logError->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($logError, 'warning');
         }
 
         try {
@@ -771,11 +740,7 @@ class ShootPaymentsController extends Controller
                 $this->mailService->sendOfflinePaymentIntentDeclinedEmail($shoot, $payment, $details['decline_reason'] ?? null);
             }
         } catch (\Throwable $emailError) {
-            Log::warning('Failed to send offline payment intent declined email', [
-                'shoot_id' => $shoot->id,
-                'payment_id' => $payment->id,
-                'error' => $emailError->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($emailError, 'warning');
         }
 
         return response()->json([

@@ -741,11 +741,7 @@ class DashboardController extends Controller
             return Carbon::parse($dateTimeString);
         } catch (\Throwable $e) {
             // Log the error for debugging but don't fail the request
-            \Log::warning('Failed to parse date/time', [
-                'date' => $date,
-                'time' => $time,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
 
             // Final fallback to default time if parsing still fails
             try {
@@ -879,10 +875,7 @@ class DashboardController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            \Log::error('Failed to fetch notifications', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to load notifications',

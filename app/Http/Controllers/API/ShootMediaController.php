@@ -195,7 +195,7 @@ class ShootMediaController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Failed to move file to completed folder',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -221,7 +221,7 @@ class ShootMediaController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Failed to verify file',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -331,14 +331,11 @@ class ShootMediaController extends Controller
 
             return response()->json(['message' => 'Media order updated successfully']);
         } catch (\Exception $e) {
-            Log::error('Failed to reorder media', [
-                'shoot_id' => $shoot->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to update media order',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -363,11 +360,11 @@ class ShootMediaController extends Controller
         try {
             return response()->json($this->deleteShootMediaAction->execute($shoot, $file));
         } catch (\Exception $e) {
-            Log::error('Failed to delete file', ['error' => $e->getMessage()]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'message' => 'Failed to delete file',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -698,17 +695,14 @@ class ShootMediaController extends Controller
             );
         } catch (\InvalidArgumentException $e) {
             return $this->withCors(
-                response()->json(['error' => $e->getMessage()], 404),
+                response()->json(['error' => \App\Services\ApiErrorResponder::publicMessage($e)], 404),
                 $request,
             );
         } catch (\Exception $e) {
-            Log::error('Failed to generate share link', [
-                'error' => $e->getMessage(),
-                'shoot_id' => $shoot->id,
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return $this->withCors(
-                response()->json(['error' => 'Failed to generate share link: '.$e->getMessage()], 500),
+                response()->json(['error' => 'Failed to generate share link: '.\App\Services\ApiErrorResponder::publicMessage($e)], 500),
                 $request,
             );
         }

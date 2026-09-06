@@ -88,7 +88,7 @@ class CakemailProvider implements EmailProviderInterface
             }, array_keys($customAttributes), array_values($customAttributes));
         }
 
-        $response = Http::withoutVerifying()
+        $response = Http::withOptions(['verify' => true])
             ->withToken($token)
             ->timeout(30)
             ->post("{$this->baseUrl}/transactional-email-templates/{$templateId}/send", $payload);
@@ -131,7 +131,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->asForm()
                 ->timeout(30)
                 ->post("{$this->baseUrl}/token", [
@@ -174,7 +174,7 @@ class CakemailProvider implements EmailProviderInterface
             ]);
         } catch (\Exception $e) {
             Log::error('Cakemail: Failed to get access token', [
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e, 'The email provider could not complete this request.'),
             ]);
         }
 
@@ -194,7 +194,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->asForm()
                 ->timeout(30)
                 ->post("{$this->baseUrl}/token", [
@@ -219,7 +219,7 @@ class CakemailProvider implements EmailProviderInterface
             }
         } catch (\Exception $e) {
             Log::warning('Cakemail: Failed to refresh token, getting new one', [
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e, 'The email provider could not complete this request.'),
             ]);
         }
 
@@ -239,7 +239,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->get("{$this->baseUrl}/brands/default/senders");
@@ -266,7 +266,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->post("{$this->baseUrl}/brands/default/senders", [
@@ -310,7 +310,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->get("{$this->baseUrl}/lists");
@@ -351,7 +351,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->post("{$this->baseUrl}/lists/{$listId}/contacts", $payload);
@@ -374,7 +374,7 @@ class CakemailProvider implements EmailProviderInterface
         } catch (\Exception $e) {
             Log::error('Cakemail: Contact upsert error', [
                 'email' => $email,
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e, 'The email provider could not complete this request.'),
             ]);
         }
 
@@ -411,7 +411,7 @@ class CakemailProvider implements EmailProviderInterface
         ];
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(60)
                 ->post("{$this->baseUrl}/lists/{$listId}/import-contacts", $payload);
@@ -425,12 +425,12 @@ class CakemailProvider implements EmailProviderInterface
 
             return [
                 'success' => false,
-                'error' => $response->body(),
+                'error' => 'The email provider could not complete this request.',
             ];
         } catch (\Exception $e) {
             return [
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e, 'The email provider could not complete this request.'),
             ];
         }
     }
@@ -447,7 +447,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->get("{$this->baseUrl}/transactional-email-templates");
@@ -484,7 +484,7 @@ class CakemailProvider implements EmailProviderInterface
         ];
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->post("{$this->baseUrl}/transactional-email-templates", $payload);
@@ -526,7 +526,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->get("{$this->baseUrl}/logs", $params);
@@ -553,7 +553,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->post("{$this->baseUrl}/webhooks", [
@@ -601,7 +601,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         try {
-            $response = Http::withoutVerifying()
+            $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
                 ->get("{$this->baseUrl}/accounts/self");
@@ -620,12 +620,12 @@ class CakemailProvider implements EmailProviderInterface
 
             return [
                 'success' => false,
-                'error' => 'Failed to get account info: ' . $response->body(),
+                'error' => 'Failed to get account information. Check the provider configuration and try again.',
             ];
         } catch (\Exception $e) {
             return [
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e, 'The email provider could not complete this request.'),
             ];
         }
     }
@@ -720,7 +720,7 @@ class CakemailProvider implements EmailProviderInterface
             'sender_id' => $senderId,
         ]);
 
-        $response = Http::withoutVerifying()
+        $response = Http::withOptions(['verify' => true])
             ->withToken($token)
             ->timeout(30)
             ->post("{$this->baseUrl}/v2/emails", $emailPayload);
@@ -844,10 +844,7 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         if (!filter_var($this->baseUrl, FILTER_VALIDATE_URL)) {
-            return sprintf(
-                'Cakemail base URL "%s" is invalid. Set CAKEMAIL_BASE_URL to a valid absolute URL before sending transactional email.',
-                $this->baseUrl
-            );
+            return 'Cakemail base URL is invalid. Set CAKEMAIL_BASE_URL to a valid absolute URL before sending transactional email.';
         }
 
         return null;

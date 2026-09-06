@@ -51,7 +51,7 @@ class GoogleCalendarController extends Controller
             ], 422);
         } catch (Throwable $exception) {
             return response()->json([
-                'message' => $exception->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($exception),
             ], 422);
         }
     }
@@ -127,7 +127,7 @@ class GoogleCalendarController extends Controller
                     $redirectPath,
                     [
                         'google_calendar' => 'error',
-                        'message' => $exception->getMessage(),
+                        'message' => \App\Services\ApiErrorResponder::publicMessage($exception),
                     ]
                 )
             );
@@ -153,7 +153,7 @@ class GoogleCalendarController extends Controller
                     'calendar_id' => $connection?->calendar_id,
                     'sync_enabled' => (bool) ($connection?->sync_enabled ?? false),
                     'last_synced_at' => $connection?->last_synced_at?->toIso8601String(),
-                    'last_error' => $connection?->last_error,
+                    'last_error' => \App\Services\ApiErrorResponder::storedFailure($connection?->last_error),
                 ],
             ]);
         } catch (ValidationException $exception) {

@@ -10,7 +10,7 @@ use App\Models\ShootService;
 use App\Models\ShootUploadAttempt;
 use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
-use Illuminate\Http\Exceptions\HttpResponseException;
+use App\Exceptions\PublicApiResponseException;
 
 class ShootServiceChangeGuard
 {
@@ -60,7 +60,7 @@ class ShootServiceChangeGuard
             ->values();
 
         if ($targetServiceIds->isEmpty() && ! $this->canRemoveAllServices($shoot, $actor)) {
-            throw new HttpResponseException(response()->json([
+            throw new PublicApiResponseException(response()->json([
                 'message' => 'Only Admin and Super Admin can save a pre-delivery shoot without services.',
                 'errors' => ['services' => ['At least one service must be selected.']],
             ], 422));
@@ -75,7 +75,7 @@ class ShootServiceChangeGuard
         }
 
         if (! in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true)) {
-            throw new HttpResponseException(response()->json([
+            throw new PublicApiResponseException(response()->json([
                 'message' => 'Services cannot be removed after delivery or from a cancelled or declined shoot.',
                 'errors' => ['services' => ['Service removal is only available before delivery.']],
             ], 422));
@@ -92,7 +92,7 @@ class ShootServiceChangeGuard
         $expectedToken = $this->confirmationToken($shoot, $actor, $targetServices, $impact);
 
         if (! $confirmed || ! is_string($confirmationToken) || ! hash_equals($expectedToken, $confirmationToken)) {
-            throw new HttpResponseException(response()->json([
+            throw new PublicApiResponseException(response()->json([
                 'message' => 'Confirm service removal before saving this shoot.',
                 'code' => 'service_detach_confirmation_required',
                 'confirmation_token' => $expectedToken,

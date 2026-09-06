@@ -578,7 +578,7 @@ class PhotographerEquipmentController extends Controller
         }
 
         if (!$equipment->purchase_date) {
-            throw new \InvalidArgumentException('Purchase date is required when adding equipment as an expense.');
+            throw new \App\Exceptions\PublicBusinessRuleException('Purchase date is required when adding equipment as an expense.');
         }
 
         $expense = $equipment->expense_id

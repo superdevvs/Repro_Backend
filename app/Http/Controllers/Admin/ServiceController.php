@@ -91,7 +91,7 @@ class ServiceController extends Controller
             DB::rollBack();
             return response()->json([
                 'message' => 'Failed to create service.',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -111,9 +111,7 @@ class ServiceController extends Controller
                 ->orderBy('name')
                 ->get();
         } catch (\Throwable $exception) {
-            Log::warning('Falling back to plain services catalog.', [
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
 
             $services = Service::query()
                 ->with(['category', 'sqftRanges'])
@@ -241,7 +239,7 @@ class ServiceController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update service.',
-                'error' => $e->getMessage()
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -322,9 +320,7 @@ class ServiceController extends Controller
 
             return ServiceGroup::isFeatureAvailable();
         } catch (\Throwable $exception) {
-            Log::warning('Service groups unavailable in ServiceController.', [
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
 
             return false;
         }

@@ -96,7 +96,7 @@ class WeatherController extends Controller
 
             return response()->json([
                 'error' => 'Weather lookup failed',
-                'message' => $e->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -106,10 +106,7 @@ class WeatherController extends Controller
         try {
             return Cache::get($key);
         } catch (\Throwable $e) {
-            Log::warning('Weather response cache read failed', [
-                'key' => $key,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
 
             return null;
         }
@@ -120,10 +117,7 @@ class WeatherController extends Controller
         try {
             Cache::put($key, $value, now()->addMinutes(self::CACHE_TTL_MINUTES));
         } catch (\Throwable $e) {
-            Log::warning('Weather response cache write failed', [
-                'key' => $key,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
         }
     }
 
@@ -132,10 +126,7 @@ class WeatherController extends Controller
         try {
             Cache::forget($key);
         } catch (\Throwable $e) {
-            Log::warning('Weather response cache forget failed', [
-                'key' => $key,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
         }
     }
 }

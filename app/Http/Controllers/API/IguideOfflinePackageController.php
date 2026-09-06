@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\DropboxWorkflowService;
 use App\Services\IguideOfflinePackageService;
+use App\Services\IguideDataVisibilityService;
 use App\Services\UploadValidationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -67,15 +68,11 @@ class IguideOfflinePackageController extends Controller
                 'message' => ($lifecycle['status'] ?? null) === 'ready'
                     ? 'iGUIDE offline package is ready.'
                     : 'iGUIDE offline package accepted and queued for malware scanning.',
-                'manual_offline_package' => $lifecycle,
-                'iguide_data' => $shoot->fresh()?->iguide_data,
+                'manual_offline_package' => app(IguideDataVisibilityService::class)->operatorPackage($lifecycle),
+                'iguide_data' => app(IguideDataVisibilityService::class)->forUser($shoot->fresh()?->iguide_data, $request->user()),
             ], ($lifecycle['status'] ?? null) === 'ready' ? 201 : 202);
         } catch (Throwable $exception) {
-            Log::error('Unable to store iGUIDE offline package.', [
-                'shoot_id' => $shoot->id,
-                'upload_id' => $lifecycle['upload_id'],
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'error');
 
             $packages->markUploadFailed(
                 (int) $shoot->id,

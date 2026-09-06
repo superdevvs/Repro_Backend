@@ -511,11 +511,7 @@ class InvoiceController extends Controller
                 try {
                     app(MailService::class)->sendPaymentConfirmationEmail($clientForEmail, $shootForEmail, $clientPayment);
                 } catch (\Throwable $emailError) {
-                    Log::warning('Failed to send shoot paid email from invoice mark-paid', [
-                        'invoice_id' => $invoice->id,
-                        'shoot_id' => $shootForEmail->id,
-                        'error' => $emailError->getMessage(),
-                    ]);
+                    \App\Services\ApiErrorResponder::log($emailError, 'warning');
                 }
             }
         }

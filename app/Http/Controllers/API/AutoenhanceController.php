@@ -38,10 +38,7 @@ class AutoenhanceController extends Controller
                     : $this->autoenhanceService->testConnection(),
             ]);
         } catch (\Exception $e) {
-            Log::warning('AutoenhanceController: connection status error', [
-                'provider' => $provider,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
 
             return response()->json([
                 'success' => false,
@@ -68,11 +65,7 @@ class AutoenhanceController extends Controller
                     : $this->autoenhanceService->getEditingTypes(),
             ]);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error getting editing types', [
-                'provider' => $provider,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => true,
@@ -170,15 +163,12 @@ class AutoenhanceController extends Controller
                 'skipped' => $skipped,
             ], 201);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error submitting editing', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to submit AI editing job',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -352,14 +342,11 @@ class AutoenhanceController extends Controller
                 'skipped' => $skipped,
             ], 201);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error submitting bracket editing', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to submit bracket job',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -468,11 +455,8 @@ class AutoenhanceController extends Controller
                     'storage_path' => $storedPath,
                 ];
             } catch (\Throwable $e) {
-                Log::warning('AutoenhanceController: stage upload failed', [
-                    'index' => $index,
-                    'error' => $e->getMessage(),
-                ]);
-                $skipped[] = ['index' => $index, 'reason' => $e->getMessage()];
+                \App\Services\ApiErrorResponder::log($e, 'warning');
+                $skipped[] = ['index' => $index, 'reason' => \App\Services\ApiErrorResponder::publicMessage($e)];
             }
         }
 
@@ -563,7 +547,7 @@ class AutoenhanceController extends Controller
                 try {
                     $contents = Storage::disk('public')->get($storedPath);
                 } catch (\Throwable $readError) {
-                    $skipped[] = ['staged_id' => $stagedId, 'reason' => $readError->getMessage()];
+                    $skipped[] = ['staged_id' => $stagedId, 'reason' => \App\Services\ApiErrorResponder::publicMessage($readError)];
                     continue;
                 }
                 $name = basename($storedPath);
@@ -604,10 +588,7 @@ class AutoenhanceController extends Controller
                 try {
                     Storage::disk('public')->put($storedPath, $contents, 'public');
                 } catch (\Throwable $storageError) {
-                    Log::warning('AutoenhanceController: Failed to persist quick-edit upload', [
-                        'error' => $storageError->getMessage(),
-                        'name' => $originalName,
-                    ]);
+                    \App\Services\ApiErrorResponder::log($storageError, 'warning');
                 }
                 $publicUrl = null;
                 try { $publicUrl = Storage::disk('public')->url($storedPath); } catch (\Throwable $e) {
@@ -679,7 +660,7 @@ class AutoenhanceController extends Controller
                         $editingJob->provider_payload = $result;
                         $editingJob->save();
                     }
-                    $skipped[] = ['index' => $index, 'name' => $originalName, 'reason' => $editingJob->error_message ?? 'submission_failed'];
+                    $skipped[] = ['index' => $index, 'name' => $originalName, 'reason' => 'AI editing submission failed. Please try again.'];
                     continue;
                 }
 
@@ -695,15 +676,11 @@ class AutoenhanceController extends Controller
 
                 $jobs[] = $editingJob;
             } catch (\Throwable $e) {
-                Log::error('AutoenhanceController: quickEdit per-file error', [
-                    'index' => $index,
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString(),
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'error');
                 $skipped[] = [
                     'index' => $index,
                     'name' => $originalName ?? null,
-                    'reason' => $e->getMessage(),
+                    'reason' => \App\Services\ApiErrorResponder::publicMessage($e),
                 ];
             }
         }
@@ -802,10 +779,7 @@ class AutoenhanceController extends Controller
                     $job->save();
                 }
             } catch (\Throwable $e) {
-                Log::warning('AutoenhanceController: pollProcessingJobs error', [
-                    'job_id' => $job->id,
-                    'error' => $e->getMessage(),
-                ]);
+                \App\Services\ApiErrorResponder::log($e, 'warning');
             }
         }
 
@@ -884,10 +858,7 @@ class AutoenhanceController extends Controller
 
             return $publicPath;
         } catch (\Throwable $e) {
-            Log::warning('AutoenhanceController: persistEnhancedImageForJob failed', [
-                'job_id' => $job->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
             return null;
         }
     }
@@ -925,14 +896,12 @@ class AutoenhanceController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error listing jobs', [
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to retrieve AI editing jobs',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -971,15 +940,12 @@ class AutoenhanceController extends Controller
                 'message' => 'Job not found',
             ], 404);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error getting job status', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to retrieve Autoenhance job status',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -1066,15 +1032,12 @@ class AutoenhanceController extends Controller
                 'message' => 'Job not found',
             ], 404);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error retrying job', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to retry Autoenhance job',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -1116,15 +1079,12 @@ class AutoenhanceController extends Controller
                 'message' => 'Job not found',
             ], 404);
         } catch (\Exception $e) {
-            Log::error('AutoenhanceController: Error cancelling job', [
-                'job_id' => $jobId,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to cancel Autoenhance job',
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -1230,10 +1190,7 @@ class AutoenhanceController extends Controller
                 return $resolved;
             }
         } catch (\Throwable $e) {
-            Log::warning('AutoenhanceController: ShootFileAccessService failed, using fallback', [
-                'file_id' => $shootFile->id,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'warning');
         }
 
         $url = $shootFile->url ?? $shootFile->storage_path ?? $shootFile->dropbox_path ?? $shootFile->path;
@@ -1293,7 +1250,7 @@ class AutoenhanceController extends Controller
             'editing_params' => $job->editing_params,
             'original_image_url' => $job->original_image_url,
             'edited_image_url' => $job->edited_image_url,
-            'error_message' => $job->error_message,
+            'error_message' => \App\Services\ApiErrorResponder::storedFailure($job->error_message),
             'retry_count' => $job->retry_count,
             'started_at' => $job->started_at,
             'completed_at' => $job->completed_at,

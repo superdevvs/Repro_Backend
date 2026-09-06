@@ -38,15 +38,19 @@ class TaxDocumentService
     public function store(User $user, UploadedFile $file, ?string $notes): UserTaxDocument
     {
         return $this->locked($user->id, function () use ($user, $file, $notes) {
-            abort_unless($user->fresh()?->isAccountEligibleForAuthentication()
-                && !request()->attributes->get('is_impersonating', false), 403, 'Tax documents are unavailable for this session.');
+            if (!$user->fresh()?->isAccountEligibleForAuthentication() || request()->attributes->get('is_impersonating', false)) {
+                throw new \App\Exceptions\PublicApiException('Tax documents are unavailable for this session.', 'tax_document_session_unavailable', 403);
+            }
             $existing = $this->current($user);
             $oldPath = $existing?->path;
             $metadata = $user->fresh()->metadata ?? [];
-            abort_if($existing?->legacy_public_path || (!$existing && !empty($metadata['tax_document_path'])),
-                409, 'Your previous tax document must be secured before it can be replaced. Contact an administrator.');
+            if ($existing?->legacy_public_path || (!$existing && !empty($metadata['tax_document_path']))) {
+                throw new \App\Exceptions\PublicApiException('Your previous tax document must be secured before it can be replaced. Contact an administrator.', 'tax_document_migration_required', 409);
+            }
             $mime = (new \finfo(FILEINFO_MIME_TYPE))->file($file->getRealPath());
-            abort_unless(isset(self::MIME_EXTENSIONS[$mime]), 422, 'Choose a PDF, PNG or JPG document.');
+            if (!isset(self::MIME_EXTENSIONS[$mime])) {
+                throw new \App\Exceptions\PublicApiException('Choose a PDF, PNG or JPG document.', 'tax_document_format_invalid', 422);
+            }
             $extension = self::MIME_EXTENSIONS[$mime];
             $path = $user->id.'/'.Str::uuid().'.'.$extension;
             $disk = Storage::disk(self::DISK);
@@ -59,7 +63,9 @@ class TaxDocumentService
                 if ($hash !== $this->checksum(self::DISK, $path)) { throw new RuntimeException('Private tax document verification failed.'); }
                 $document = DB::transaction(function () use ($user, $existing, $path, $file, $extension, $mime, $hash, $notes) {
                     $owner = User::whereKey($user->id)->lockForUpdate()->firstOrFail();
-                    abort_unless($owner->isAccountEligibleForAuthentication(), 403, 'Tax documents are unavailable for this session.');
+                    if (!$owner->isAccountEligibleForAuthentication()) {
+                        throw new \App\Exceptions\PublicApiException('Tax documents are unavailable for this session.', 'tax_document_session_unavailable', 403);
+                    }
                     $document = $existing ?: new UserTaxDocument(['user_id' => $owner->id]);
                     $document->fill([
                         'path' => $path, 'original_name' => $this->safeName($file->getClientOriginalName(), $extension),

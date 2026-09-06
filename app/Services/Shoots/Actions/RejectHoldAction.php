@@ -16,7 +16,7 @@ class RejectHoldAction
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
         if (!$shoot->hold_requested_at) {
-            throw new \InvalidArgumentException('No hold request pending for this shoot');
+            throw new \App\Exceptions\PublicBusinessRuleException('No hold request pending for this shoot');
         }
 
         $validated = $request->validate([

@@ -83,10 +83,10 @@ class AccountStatusEndpointTest extends TestCase
 
         Sanctum::actingAs($admin);
 
-        // AC 16.5 — self lock is rejected; AuthorizationException maps to 403.
+        // Keep reviewed guidance while arbitrary authorization exception text is hidden.
         $this->patchJson("/api/admin/users/{$admin->id}/status", [
             'status' => AccountStatusService::STATUS_LOCKED,
-        ])->assertStatus(403);
+        ])->assertStatus(403)->assertJsonPath('message', 'You cannot lock or delete your own account.');
 
         $this->assertNull($admin->fresh()->locked_at);
     }

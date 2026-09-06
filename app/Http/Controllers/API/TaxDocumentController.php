@@ -16,7 +16,9 @@ class TaxDocumentController extends Controller
     public function store(Request $request)
     {
         $user = $request->user();
-        abort_unless($user && $this->policy->upload($user, $user), 403, 'Tax documents are unavailable for this session.');
+        if (!$user || !$this->policy->upload($user, $user)) {
+            throw new \App\Exceptions\PublicApiException('Tax documents are unavailable for this session.', 'tax_document_session_unavailable', 403);
+        }
         $validated = $request->validate([
             'document' => 'required|file|mimes:pdf,png,jpg,jpeg|max:10240',
             'notes' => 'nullable|string|max:1000',
@@ -33,18 +35,26 @@ class TaxDocumentController extends Controller
 
     public function showForUser(Request $request, User $user)
     {
-        abort_unless($this->policy->view($request->user(), $user), 403, 'You cannot access this tax document.');
+        if (!$this->policy->view($request->user(), $user)) {
+            throw new \App\Exceptions\PublicApiException('You cannot access this tax document.', 'tax_document_forbidden', 403);
+        }
         return response()->json(['tax_document' => $this->documents->summary($user)])
             ->header('Cache-Control', 'private, no-store');
     }
 
     public function downloadForUser(Request $request, User $user)
     {
-        abort_unless($this->policy->view($request->user(), $user), 403, 'You cannot access this tax document.');
+        if (!$this->policy->view($request->user(), $user)) {
+            throw new \App\Exceptions\PublicApiException('You cannot access this tax document.', 'tax_document_forbidden', 403);
+        }
         $document = $this->documents->current($user);
-        abort_unless($document && $this->documents->validPrivatePath($document), 404, 'Tax document not found.');
+        if (!$document || !$this->documents->validPrivatePath($document)) {
+            throw new \App\Exceptions\PublicApiException('Tax document not found.', 'tax_document_not_found', 404);
+        }
         $disk = Storage::disk(TaxDocumentService::DISK);
-        abort_unless($disk->exists($document->path), 404, 'Tax document not found.');
+        if (!$disk->exists($document->path)) {
+            throw new \App\Exceptions\PublicApiException('Tax document not found.', 'tax_document_not_found', 404);
+        }
         return $disk->download($document->path, $document->original_name, [
             'Content-Type' => $document->mime_type, 'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff', 'Content-Security-Policy' => "default-src 'none'; sandbox",

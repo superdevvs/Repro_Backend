@@ -22,7 +22,7 @@ use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMutationSupportService;
 use App\Services\Shoots\ShootServiceChangeGuard;
 use Carbon\Carbon;
-use Illuminate\Http\Exceptions\HttpResponseException;
+use App\Exceptions\PublicApiResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -543,7 +543,7 @@ class UpdateShootAction
                 }
             });
         } catch (\DomainException $exception) {
-            $this->abortJson($exception->getMessage(), 409);
+                    $this->abortJson(\App\Services\ApiErrorResponder::publicMessage($exception), 409);
         }
         if (($scheduledAtProvided || array_key_exists('timezone', $validated)) && $shoot->scheduled_at) {
             $scheduleScope = app(ScheduleDateScopeService::class);
@@ -1035,6 +1035,6 @@ class UpdateShootAction
 
     protected function abortJson(string $message, int $status): never
     {
-        throw new HttpResponseException(response()->json(['message' => $message], $status));
+        throw new PublicApiResponseException(response()->json(['message' => $message], $status));
     }
 }

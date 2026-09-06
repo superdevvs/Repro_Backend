@@ -152,7 +152,10 @@ class StudioWorkspaceTest extends TestCase
 
             return $path;
         });
-        $this->getJson($url)->assertUnprocessable()->assertJsonPath('message', 'This RAW image has no supported browser preview.');
+        $unavailable = $this->getJson($url)->assertUnprocessable()
+            ->assertJsonPath('message', 'This RAW image has no supported browser preview.')
+            ->assertJsonPath('code', 'raw_preview_unavailable');
+        $this->assertTrue(\Illuminate\Support\Str::isUuid($unavailable->json('request_id')));
         $this->assertCount(0, Storage::disk('local')->allFiles('studio/previews'));
         $this->get($url)->assertOk()->assertHeader('Content-Type', 'image/jpeg');
         Queue::assertNothingPushed();

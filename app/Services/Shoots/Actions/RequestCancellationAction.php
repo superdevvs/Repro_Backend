@@ -29,21 +29,21 @@ class RequestCancellationAction
         ];
 
         if (in_array($currentStatus, [strtolower(Shoot::STATUS_CANCELLED), strtolower(Shoot::STATUS_DECLINED)], true)) {
-            throw new \InvalidArgumentException('This shoot cannot be cancelled');
+            throw new \App\Exceptions\PublicBusinessRuleException('This shoot cannot be cancelled');
         }
         if (!in_array($currentStatus, $allowedStatuses, true)) {
-            throw new \InvalidArgumentException('Cancellation requests are only available for scheduled or in-progress shoots');
+            throw new \App\Exceptions\PublicBusinessRuleException('Cancellation requests are only available for scheduled or in-progress shoots');
         }
         if ($user->role === 'client' && !in_array($currentStatus, [
             strtolower(Shoot::STATUS_SCHEDULED),
             'booked',
             strtolower(Shoot::STATUS_ON_HOLD),
         ], true)) {
-            throw new \InvalidArgumentException('Client cancellation requests are only available for scheduled shoots');
+            throw new \App\Exceptions\PublicBusinessRuleException('Client cancellation requests are only available for scheduled shoots');
         }
 
         if ($shoot->cancellation_requested_at) {
-            throw new \InvalidArgumentException('A cancellation request is already pending for this shoot');
+            throw new \App\Exceptions\PublicBusinessRuleException('A cancellation request is already pending for this shoot');
         }
 
         $validated = $request->validate([
@@ -52,7 +52,7 @@ class RequestCancellationAction
         ]);
         $isWithinFeeWindow = $this->isWithinCancellationFeeWindow($shoot);
         if ($user->role === 'client' && $isWithinFeeWindow && !($validated['cancellation_fee_notice_acknowledged'] ?? false)) {
-            throw new \InvalidArgumentException('Please acknowledge the cancellation fee notice before submitting this request.');
+            throw new \App\Exceptions\PublicBusinessRuleException('Please acknowledge the cancellation fee notice before submitting this request.');
         }
 
         $shoot->cancellation_requested_at = now();

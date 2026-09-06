@@ -9,6 +9,33 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class AutomationRunStep extends Model
 {
     use HasFactory;
+    use \App\Models\Concerns\HasSafeAutomationError {
+        attributesToArray as private safeErrorAttributesToArray;
+    }
+
+    protected $hidden = ['input_json'];
+
+    public function attributesToArray(): array
+    {
+        $attributes = $this->safeErrorAttributesToArray();
+        if (array_key_exists('output_json', $attributes)) {
+            $output = is_array($attributes['output_json']) ? $attributes['output_json'] : [];
+            $safe = [];
+            foreach (['resumed_immediately', 'ended', 'passthrough', 'skipped', 'protected'] as $key) {
+                if (is_bool($output[$key] ?? null)) $safe[$key] = $output[$key];
+            }
+            if (in_array($output['branch'] ?? null, ['true', 'false'], true)) $safe['branch'] = $output['branch'];
+            if (in_array($output['channel'] ?? null, ['email', 'sms', 'internal'], true)) $safe['channel'] = $output['channel'];
+            foreach (['sent_to', 'delivered_to'] as $key) {
+                if (is_array($output[$key] ?? null)) {
+                    $safe[$key] = array_values(array_filter(array_slice($output[$key], 0, 100), fn ($value) => is_string($value) && strlen($value) <= 254
+                        && (filter_var($value, FILTER_VALIDATE_EMAIL) || preg_match('/\A\+?[0-9]{7,15}\z/', $value))));
+                }
+            }
+            $attributes['output_json'] = $safe;
+        }
+        return $attributes;
+    }
 
     protected $fillable = [
         'automation_run_id',

@@ -26,14 +26,14 @@ class RequestHoldAction
         ];
 
         if (in_array($currentStatus, [strtolower(Shoot::STATUS_CANCELLED), strtolower(Shoot::STATUS_DECLINED), strtolower(Shoot::STATUS_ON_HOLD)], true)) {
-            throw new \InvalidArgumentException('This shoot cannot be placed on hold');
+            throw new \App\Exceptions\PublicBusinessRuleException('This shoot cannot be placed on hold');
         }
         if (!in_array($currentStatus, $allowedStatuses, true)) {
-            throw new \InvalidArgumentException('Hold requests are only available for requested, scheduled, or in-progress shoots');
+            throw new \App\Exceptions\PublicBusinessRuleException('Hold requests are only available for requested, scheduled, or in-progress shoots');
         }
 
         if ($shoot->hold_requested_at) {
-            throw new \InvalidArgumentException('A hold request is already pending for this shoot');
+            throw new \App\Exceptions\PublicBusinessRuleException('A hold request is already pending for this shoot');
         }
 
         $validated = $request->validate([

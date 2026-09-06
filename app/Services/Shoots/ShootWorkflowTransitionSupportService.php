@@ -273,11 +273,11 @@ class ShootWorkflowTransitionSupportService
         if ($editorId) {
             $selectedEditor = User::find($editorId);
             if (!$selectedEditor || $selectedEditor->role !== 'editor') {
-                throw new \InvalidArgumentException('Selected user is not an editor');
+                throw new \App\Exceptions\PublicBusinessRuleException('Selected user is not an editor');
             }
 
             if ($lane && !$selectedEditor->canEditLane($lane)) {
-                throw new \InvalidArgumentException("Selected editor cannot handle {$lane} editing.");
+                throw new \App\Exceptions\PublicBusinessRuleException("Selected editor cannot handle {$lane} editing.");
             }
 
             return $selectedEditor;
@@ -295,7 +295,7 @@ class ShootWorkflowTransitionSupportService
         }
 
         if ($editors->isEmpty()) {
-            throw new \InvalidArgumentException($lane ? "No {$lane} editors available" : 'No editors available');
+            throw new \App\Exceptions\PublicBusinessRuleException($lane ? "No {$lane} editors available" : 'No editors available');
         }
 
         $editorIds = $editors->pluck('id');

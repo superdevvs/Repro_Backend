@@ -913,7 +913,7 @@ class UserController extends Controller
                 \Log::warning('Failed to send role change email after account update', [
                     'user_id' => $user->id,
                     'email' => $user->email,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
                 ]);
             }
         }
@@ -955,7 +955,7 @@ class UserController extends Controller
                 \Log::warning('Failed to send account email verification email after update', [
                     'user_id' => $user->id,
                     'email' => $user->email,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
                 ]);
             }
 
@@ -1064,7 +1064,7 @@ class UserController extends Controller
                 \Log::warning('Failed to send role change email', [
                     'user_id' => $user->id,
                     'email' => $user->email,
-                    'error' => $e->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::diagnostic($e),
                 ]);
             }
         }
@@ -1236,9 +1236,10 @@ class UserController extends Controller
                 'throw_on_failure' => true,
             ]);
         } catch (\Throwable $sendException) {
+            \App\Services\ApiErrorResponder::log($sendException, 'warning');
             return response()->json([
                 'sent' => false,
-                'message' => 'Failed to send verification email: ' . $sendException->getMessage(),
+                'message' => \App\Services\ApiErrorResponder::publicMessage($sendException, 'Failed to send verification email. Please try again.'),
             ], 422);
         }
 
@@ -1996,7 +1997,7 @@ class UserController extends Controller
             return ServiceGroup::isFeatureAvailable();
         } catch (\Throwable $exception) {
             \Log::warning('Service groups unavailable in UserController.', [
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
             ]);
 
             return false;
@@ -2038,7 +2039,7 @@ class UserController extends Controller
             \Log::warning('Unable to persist user activity log.', [
                 'user_id' => $user->id,
                 'event_type' => $eventType,
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
             ]);
         }
     }
@@ -2550,7 +2551,7 @@ class UserController extends Controller
             app(\App\Services\AccountStatusService::class)
                 ->setStatus($user, \App\Services\AccountStatusService::STATUS_DELETED, $viewer);
         } catch (\Illuminate\Auth\Access\AuthorizationException $e) {
-            return response()->json(['message' => $e->getMessage()], 403);
+            return response()->json(['message' => \App\Services\ApiErrorResponder::publicMessage($e, 'You are not authorized to delete this account.')], 403);
         }
 
         return response()->json([

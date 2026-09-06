@@ -83,14 +83,11 @@ class ImageProcessingController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error("Error starting image processing", [
-                'file_id' => $fileId,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to start image processing',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }
@@ -147,10 +144,7 @@ class ImageProcessingController extends Controller
                     $processedCount++;
 
                 } catch (\Exception $e) {
-                    Log::error("Error processing file in batch", [
-                        'file_id' => $fileId,
-                        'error' => $e->getMessage()
-                    ]);
+                    \App\Services\ApiErrorResponder::log($e, 'error');
                     $failedCount++;
                 }
             }
@@ -166,14 +160,11 @@ class ImageProcessingController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error("Error in batch image processing", [
-                'error' => $e->getMessage(),
-                'file_ids' => $request->input('file_ids')
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to process images',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }
@@ -229,14 +220,11 @@ class ImageProcessingController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error("Error getting image processing status", [
-                'file_id' => $fileId,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to get status',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }
@@ -308,14 +296,11 @@ class ImageProcessingController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            Log::error("Error starting image reprocessing", [
-                'file_id' => $fileId,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to start image reprocessing',
-                'message' => config('app.debug') ? $e->getMessage() : 'Internal server error'
+                'message' => config('app.debug') ? \App\Services\ApiErrorResponder::publicMessage($e) : 'Internal server error'
             ], 500);
         }
     }

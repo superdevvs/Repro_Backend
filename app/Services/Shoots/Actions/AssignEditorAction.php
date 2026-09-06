@@ -35,7 +35,7 @@ class AssignEditorAction
                 ->first(fn ($lane) => !$selectedEditor->canEditLane($lane));
 
             if ($unsupportedLane) {
-                throw new \InvalidArgumentException("Selected editor cannot handle the {$unsupportedLane} editing lane.");
+                throw new \App\Exceptions\PublicBusinessRuleException("Selected editor cannot handle the {$unsupportedLane} editing lane.");
             }
 
             foreach ($trackedAssignments as $assignment) {

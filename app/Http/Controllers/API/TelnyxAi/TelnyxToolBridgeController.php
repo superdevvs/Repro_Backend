@@ -101,11 +101,7 @@ class TelnyxToolBridgeController extends Controller
                 $confirmationToken,
             ));
         } catch (Throwable $exception) {
-            Log::warning('Telnyx tool lock or execution failed', [
-                'tool' => $tool,
-                'voice_call_id' => $voiceCall->id,
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'warning');
 
             return response()->json(['ok' => false, 'error' => 'tool_temporarily_unavailable'], 200);
         }
@@ -184,11 +180,7 @@ class TelnyxToolBridgeController extends Controller
 
             return response()->json($response, 200);
         } catch (Throwable $exception) {
-            Log::error('Telnyx voice tool failed', [
-                'tool' => $tool,
-                'audit_id' => $invocation->id,
-                'error' => $exception->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($exception, 'error');
             $response = [
                 'ok' => false,
                 'error' => 'tool_failed',

@@ -106,14 +106,11 @@ class CakemailController extends Controller
                 'message_id' => $messageId,
             ]);
         } catch (\Exception $e) {
-            Log::error('Cakemail test email failed', [
-                'to' => $to,
-                'error' => $e->getMessage(),
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }
@@ -144,7 +141,7 @@ class CakemailController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'error' => $e->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::publicMessage($e),
             ], 500);
         }
     }

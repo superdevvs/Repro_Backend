@@ -264,7 +264,7 @@ class TourAnalyticsController extends Controller
                     }
                 }
             } catch (\Exception $e) {
-                Log::debug('Geo lookup failed for IP: ' . $ip, ['error' => $e->getMessage()]);
+                \App\Services\ApiErrorResponder::log($e, 'debug');
             }
             return ['country' => null, 'city' => null];
         });

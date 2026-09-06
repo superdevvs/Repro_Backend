@@ -157,7 +157,7 @@ class ComplimentaryReshootController extends Controller
     private function conflict(\DomainException $exception): JsonResponse
     {
         return response()->json([
-            'message' => $exception->getMessage(),
+            'message' => \App\Services\ApiErrorResponder::publicMessage($exception),
         ], 409);
     }
 }

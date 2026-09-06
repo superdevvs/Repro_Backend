@@ -308,7 +308,7 @@ class ReturnVisitBookingService
         if ($shoot->shoot_type !== Shoot::SHOOT_TYPE_STANDARD
             || (int) $shoot->reshoot_of_shoot_id !== (int) $sourceShoot->id
             || ! hash_equals((string) $shoot->complimentary_reshoot_request_hash, $requestHash)) {
-            throw new \DomainException('This Idempotency-Key was already used for a different return-visit request.', 409);
+            throw new \App\Exceptions\PublicConflictException('This Idempotency-Key was already used for a different return-visit request.', 409);
         }
     }
 

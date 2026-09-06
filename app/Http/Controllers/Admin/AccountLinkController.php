@@ -187,7 +187,7 @@ class AccountLinkController extends Controller
             } catch (\Throwable $exception) {
                 $errors[] = [
                     'accountId' => (string) $clientId,
-                    'message' => $exception->getMessage(),
+                    'message' => \App\Services\ApiErrorResponder::publicMessage($exception),
                 ];
             }
         }

@@ -56,47 +56,32 @@ class CubiCasaController extends Controller
                 return response()->json($response->json(), $response->status());
             }
 
-            $responseBody = $response->body();
-            $responseData = $response->json();
-
             Log::error('CubiCasa API error', [
-                'endpoint' => $endpoint,
-                'url' => $url,
                 'status' => $response->status(),
-                'response' => $responseBody,
-                'headers' => $response->headers()
+                'request_id' => \App\Services\RequestCorrelation::id(request()),
             ]);
 
             return response()->json([
                 'error' => 'CubiCasa API request failed',
-                'message' => $responseData['message'] ?? $responseData['error'] ?? 'API request failed',
+                'message' => 'CubiCasa could not complete this request. Check the integration settings and try again.',
                 'status' => $response->status(),
-                'details' => $responseData
+                'code' => 'cubicasa_request_failed',
             ], $response->status());
 
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            Log::error('CubiCasa API connection exception', [
-                'endpoint' => $endpoint,
-                'url' => $url,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to connect to CubiCasa API',
                 'message' => 'Unable to reach CubiCasa servers. Please check your internet connection and try again.',
-                'details' => $e->getMessage()
+                'details' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         } catch (\Exception $e) {
-            Log::error('CubiCasa API exception', [
-                'endpoint' => $endpoint,
-                'url' => $url,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to connect to CubiCasa API',
-                'message' => $e->getMessage()
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -153,14 +138,11 @@ class CubiCasaController extends Controller
             // For now, return all orders and filter client-side if needed
             return $response;
         } catch (\Exception $e) {
-            Log::error('CubiCasa listOrders exception', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to list orders',
-                'message' => $e->getMessage()
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }
@@ -234,15 +216,11 @@ class CubiCasaController extends Controller
             ], 500);
 
         } catch (\Exception $e) {
-            Log::error('Failed to link CubiCasa order to shoot', [
-                'order_id' => $orderId,
-                'shoot_id' => $shootId,
-                'error' => $e->getMessage()
-            ]);
+            \App\Services\ApiErrorResponder::log($e, 'error');
 
             return response()->json([
                 'error' => 'Failed to link order to shoot',
-                'message' => $e->getMessage()
+                'message' => \App\Services\ApiErrorResponder::publicMessage($e)
             ], 500);
         }
     }

@@ -96,12 +96,13 @@ class IguideOfflinePackageControllerTest extends TestCase
         // A failed replacement promotes the prior clean package, and a late
         // markScanning callback cannot hide that restored download.
         $packages = app(IguideOfflinePackageService::class);
+        $file->forceFill(['scan_status' => ShootFile::SCAN_STATUS_INFECTED])->save();
         $packages->markFailed($file, 'infected');
         $packages->markScanning($file);
         $restored = data_get($shoot->fresh()->iguide_data, 'manual_offline_package');
         $this->assertSame('ready', $restored['status']);
         $this->assertSame(77, $restored['file_id']);
-        $this->assertSame('infected', $restored['last_replacement_failure']['error']);
+        $this->assertSame('The uploaded package did not pass its security scan.', $restored['last_replacement_failure']['error']);
         $this->assertSame($file->id, $restored['last_replacement_failure']['file_id']);
     }
 

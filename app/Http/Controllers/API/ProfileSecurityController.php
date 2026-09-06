@@ -296,7 +296,7 @@ class ProfileSecurityController extends Controller
             Log::warning('Unable to persist profile security activity.', [
                 'user_id' => $user->getKey(),
                 'event_type' => $type,
-                'error' => $exception->getMessage(),
+                'error' => \App\Services\ApiErrorResponder::diagnostic($exception),
             ]);
         }
     }

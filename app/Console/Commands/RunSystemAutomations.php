@@ -104,7 +104,7 @@ class RunSystemAutomations extends Command
                 $dispatch->update([
                     'status' => $exitCode === 0 ? 'completed' : 'failed',
                     'output' => $output,
-                    'error_message' => $exitCode === 0 ? null : $output,
+                    'error_message' => $exitCode === 0 ? null : 'Automation command failed. Review its configuration and try again.',
                     'completed_at' => now(),
                 ]);
 
@@ -114,7 +114,7 @@ class RunSystemAutomations extends Command
                         'rule_id' => $rule->id,
                         'trigger_type' => $rule->trigger_type,
                         'command' => $commandString,
-                        'output' => $output,
+                        'exit_code' => $exitCode,
                     ]);
                     continue;
                 }
@@ -124,7 +124,7 @@ class RunSystemAutomations extends Command
             } catch (\Throwable $exception) {
                 $dispatch->update([
                     'status' => 'failed',
-                    'error_message' => $exception->getMessage(),
+                    'error_message' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                     'completed_at' => now(),
                 ]);
 
@@ -132,7 +132,7 @@ class RunSystemAutomations extends Command
                     'rule_id' => $rule->id,
                     'trigger_type' => $rule->trigger_type,
                     'command' => $commandString,
-                    'error' => $exception->getMessage(),
+                    'error' => \App\Services\ApiErrorResponder::publicMessage($exception, 'Automation could not complete. Review its configuration and try again.'),
                 ]);
 
                 $this->error("Automation crashed: {$rule->name}");
