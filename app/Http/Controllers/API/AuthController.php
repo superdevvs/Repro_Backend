@@ -45,6 +45,7 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
+        \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'username' => 'nullable|string|max:255|unique:users',
@@ -301,6 +302,7 @@ class AuthController extends Controller
      */
     public function updateProfile(Request $request)
     {
+        \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $user = $request->user();
 
         if ($request->has('email')) {
@@ -727,51 +729,7 @@ class AuthController extends Controller
      */
     public function uploadTaxDocument(Request $request)
     {
-        $user = $request->user();
-
-        $validated = $request->validate([
-            'document' => 'required|file|mimes:pdf,jpg,jpeg,png,doc,docx|max:10240',
-            'notes' => 'nullable|string|max:1000',
-        ]);
-
-        $metadata = $user->metadata ?? [];
-        if (is_string($metadata)) {
-            $metadata = json_decode($metadata, true) ?? [];
-        }
-
-        $existingPath = $metadata['tax_document_path'] ?? null;
-        if (is_string($existingPath) && $existingPath !== '' && Storage::disk('public')->exists($existingPath)) {
-            Storage::disk('public')->delete($existingPath);
-        }
-
-        $file = $validated['document'];
-        $filename = sprintf(
-            'user-%s-tax-document-%s.%s',
-            $user->id,
-            now()->format('YmdHis'),
-            $file->getClientOriginalExtension()
-        );
-
-        $path = $file->storeAs('tax-documents', $filename, 'public');
-
-        $metadata['tax_document_name'] = $file->getClientOriginalName();
-        $metadata['tax_document_path'] = $path;
-        $metadata['tax_document_url'] = Storage::disk('public')->url($path);
-        $metadata['tax_document_notes'] = $validated['notes'] ?? null;
-        $metadata['tax_document_submitted_at'] = now()->toISOString();
-
-        $user->metadata = $metadata;
-        $user->save();
-
-        Log::info('[Auth] Tax document uploaded', [
-            'user_id' => $user->id,
-            'path' => $path,
-        ]);
-
-        return response()->json([
-            'message' => 'Tax document submitted successfully',
-            'user' => $user->fresh(),
-        ]);
+        return app(\App\Http\Controllers\API\TaxDocumentController::class)->store($request);
     }
 
     /**

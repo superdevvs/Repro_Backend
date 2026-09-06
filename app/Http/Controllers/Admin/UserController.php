@@ -152,6 +152,7 @@ class UserController extends Controller
 
      public function store(Request $request)
     {
+        \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $admin = $request->user();
 
         if (!$this->userHasAnyRole($admin, ['admin', 'superadmin', 'salesRep'])) {
@@ -623,6 +624,7 @@ class UserController extends Controller
      */
     public function update(Request $request, $id)
     {
+        \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $admin = $request->user();
         if (!$this->userHasAnyRole($admin, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -762,11 +764,15 @@ class UserController extends Controller
             $metadata = $request->input('metadata');
             if (is_string($metadata)) {
                 $decoded = json_decode($metadata, true);
-                $metadata = json_last_error() === JSON_ERROR_NONE ? $decoded : null;
+                if (json_last_error() !== JSON_ERROR_NONE || (!is_array($decoded) && $decoded !== null)) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['metadata' => 'Metadata must be an object.']);
+                }
+                $metadata = $decoded;
             }
-            if (is_array($metadata)) {
-                $validated['metadata'] = $this->filterMetadataForWriter($metadata, $admin);
+            if ($metadata !== null && !is_array($metadata)) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['metadata' => 'Metadata must be an object.']);
             }
+            $validated['metadata'] = $this->filterMetadataForWriter($metadata ?? [], $admin, $user);
         }
 
         if (array_key_exists('preferences', $validated) && is_array($validated['preferences'])) {
@@ -1645,8 +1651,12 @@ class UserController extends Controller
         return $payload;
     }
 
-    protected function filterMetadataForWriter(array $metadata, User $viewer): array
+    protected function filterMetadataForWriter(array $metadata, User $viewer, ?User $subject = null): array
     {
+        \App\Support\TaxDocumentMetadata::assertWritable($metadata);
+        if ($subject) {
+            $metadata = \App\Support\TaxDocumentMetadata::preserveLegacy($subject->metadata ?? [], $metadata);
+        }
         if ($this->viewerIsSuperAdmin($viewer)) {
             return $metadata;
         }

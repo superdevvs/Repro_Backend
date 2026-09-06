@@ -16,7 +16,20 @@ class MediaUploadController extends Controller
             'folder' => 'nullable|string|max:100',
         ]);
 
-        $folder = trim($request->input('folder', 'uploads'), '/');
+        try {
+            $folder = (new \League\Flysystem\WhitespacePathNormalizer)->normalizePath(
+                (string) $request->input('folder', 'uploads')
+            );
+        } catch (\League\Flysystem\PathTraversalDetected $exception) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'folder' => ['Choose a valid upload folder.'],
+            ]);
+        }
+        if (in_array('tax-documents', explode('/', strtolower($folder)), true)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'folder' => ['Tax documents must use the private tax-document upload.'],
+            ]);
+        }
         $path = $request->file('file')->store($folder, 'public');
 
         $url = Storage::disk('public')->url($path);

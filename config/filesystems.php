@@ -30,6 +30,16 @@ return [
 
     'disks' => [
 
+        // Tax forms are served only by the authenticated document controller.
+        'tax_documents' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/tax-documents'),
+            'visibility' => 'private',
+            'serve' => false,
+            'throw' => true,
+            'report' => false,
+        ],
+
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),

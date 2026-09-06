@@ -113,6 +113,15 @@ class User extends Authenticatable
         'email_health',
     ];
 
+    public function attributesToArray()
+    {
+        $attributes = parent::attributesToArray();
+        if (isset($attributes['metadata'])) {
+            $attributes['metadata'] = \App\Support\TaxDocumentMetadata::strip($attributes['metadata']);
+        }
+        return $attributes;
+    }
+
     /**
      * Get the attributes that should be cast.
      *
