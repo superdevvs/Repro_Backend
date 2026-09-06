@@ -244,6 +244,32 @@ class StudioProjectCreationTest extends TestCase
         Queue::assertNothingPushed();
     }
 
+    public function test_reel_requests_and_templates_cannot_seed_server_runtime_fields(): void
+    {
+        Queue::fake();
+        Storage::fake('public');
+        config(['studio_uploads.disk' => 'public']);
+        $user = $this->user();
+        Sanctum::actingAs($user);
+        $ref = "studio/uploads/701/{$user->id}/source.jpg";
+        Storage::disk('public')->put($ref, 'source fixture');
+        $unsafe = [
+            'transition' => 'fade', '_studioRuntime' => ['clips' => ['http://127.0.0.1/private']],
+            'studioWorkspace' => true, 'studioWorkspaceId' => (string) \Illuminate\Support\Str::uuid(), 'sourceDisk' => 'local',
+        ];
+        $template = Template::create(['team_id' => 701, 'created_by' => $user->id, 'name' => 'Imported reel', 'workflow_id' => 'reel-generator', 'config' => $unsafe]);
+        foreach ([null, $template->id] as $index => $templateId) {
+            $response = $this->postJson('/api/studio/projects', [
+                'request_id' => 'reserved-config-'.$index, 'workflow_id' => 'reel-generator', 'source_type' => 'upload',
+                'media_refs' => [$ref], 'workflow_config' => $unsafe, 'template_id' => $templateId,
+            ])->assertCreated();
+            $project = Project::findOrFail($response->json('data.projectId'));
+            $this->assertSame(['transition' => 'fade'], $project->workflow_config);
+            $this->assertSame(['transition' => 'fade'], AiReelJob::where('project_id', $project->id)->firstOrFail()->workflow_config);
+        }
+        Queue::assertPushed(GenerateReel::class, 2);
+    }
+
     private function user(): User
     {
         return User::factory()->create([

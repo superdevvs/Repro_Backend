@@ -57,7 +57,7 @@ trait AuthorizesStudioRequests
             throw new AuthenticationException('Unauthenticated.');
         }
 
-        if (!in_array($this->userRole($user), self::STUDIO_ROLES, true)) {
+        if (!in_array($this->userRole($user), static::STUDIO_ROLES, true)) {
             throw new AuthorizationException('This action is not authorized.');
         }
 

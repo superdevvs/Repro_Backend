@@ -1,0 +1,39 @@
+# Local SQLite development only. Existing configuration and media stay in the workspace.
+# Run from backend: docker compose -f docker/compose.studio-local.yml up --build -d
+name: repro-studio-local
+services:
+  api:
+    image: repro-studio:local
+    build:
+      context: ..
+      dockerfile: docker/StudioWorker.Dockerfile
+    container_name: codex-v4-api
+    command: [php, artisan, serve, --host=0.0.0.0, --port=8000]
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment: &local-environment
+      APP_ENV: local
+      APP_DEBUG: "false"
+      APP_URL: http://127.0.0.1:8000
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /app/database/database.sqlite
+      DB_BUSY_TIMEOUT: "5000"
+    volumes:
+      # Code/dependencies run from the image; rebuild after PHP changes. Mount
+      # only persistent data to avoid Windows file-lookup latency on each request.
+      - ../.env:/app/.env:ro
+      - ../database:/app/database
+      - ../storage:/app/storage
+      # Mount explicitly because a Windows junction is not readable inside Linux.
+      - ../storage/app/public:/app/public/storage
+  worker:
+    image: repro-studio:local
+    container_name: codex-v4-worker
+    command: [php, artisan, "queue:work", studio, --queue=studio, --sleep=2, --tries=3, --timeout=7200]
+    environment: *local-environment
+    volumes:
+      - ../.env:/app/.env:ro
+      - ../database:/app/database
+      - ../storage:/app/storage
+    depends_on:
+      - api

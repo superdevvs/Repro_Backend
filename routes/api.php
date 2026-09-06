@@ -937,6 +937,28 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // AI Editing Studio endpoints. Endpoint-specific behavior is implemented by
     // the focused controllers while this group preserves one auth/role boundary.
+    // V4 workspaces grant clients only their own drafts and authorized, delivered media.
+    // The existing Studio administration endpoints retain their original role boundary.
+    Route::prefix('studio/workspaces')->middleware('role:admin,superadmin,editing_manager,editor,client')->group(function () {
+        $controller = \App\Http\Controllers\API\StudioWorkspaceController::class;
+        $sources = \App\Http\Controllers\API\StudioWorkspaceSourceController::class;
+        Route::get('/sources/shoots', [$sources, 'searchShoots']);
+        Route::get('/sources/shoots/{shoot}/media', [$sources, 'shootMedia']);
+        Route::post('/sources/uploads', [$sources, 'upload']);
+        Route::get('/sources/uploads/preview', [$sources, 'uploadPreview']);
+        Route::post('/sources/resolve', [$sources, 'resolve']);
+        Route::get('/', [$controller, 'index']);
+        Route::post('/', [$controller, 'store']);
+        Route::get('/{workspace}', [$controller, 'show']);
+        Route::get('/{workspace}/outputs/{output}/download', [$controller, 'download']);
+        Route::patch('/{workspace}', [$controller, 'update']);
+        Route::post('/{workspace}/prepare', [$controller, 'prepare']);
+        Route::post('/{workspace}/generate', [$controller, 'generate']);
+        Route::post('/{workspace}/revisions', [$controller, 'revisions']);
+        Route::post('/{workspace}/segments', [$controller, 'segments']);
+        Route::post('/{workspace}/cancel', [$controller, 'cancel']);
+    });
+
     Route::prefix('studio')
         ->middleware('role:admin,superadmin,editing_manager,editor')
         ->name('studio.')

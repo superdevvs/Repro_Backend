@@ -92,7 +92,9 @@ class StudioProjectSubmissionService
             ]);
         }
 
-        $workflowConfig = $template?->config ?? $validated['workflow_config'];
+        $workflowConfig = \Illuminate\Support\Arr::except($template?->config ?? $validated['workflow_config'], [
+            '_studioRuntime', 'studioWorkspace', 'studioWorkspaceId', 'sourceDisk',
+        ]);
         $brandState = in_array($validated['workflow_id'], ['listing-video', 'reel-generator'], true)
             ? BrandState::latestCommittedForTeam($teamId)?->settings
             : null;

@@ -1,0 +1,15 @@
+.git
+.env*
+node_modules
+vendor
+bootstrap/cache/*.php
+database/*.sqlite*
+storage/app/*
+storage/logs/*
+storage/framework/cache/*
+storage/framework/sessions/*
+storage/framework/views/*
+tests
+repro-backend
+repro-frontend
+*.log

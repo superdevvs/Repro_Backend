@@ -224,7 +224,7 @@ return [
                     'action' => 'view',
                     'label' => 'AI Editing',
                     'description' => 'Open the AI editing workspace.',
-                    'default_roles' => ['superadmin', 'admin', 'editing_manager'],
+                    'default_roles' => ['superadmin', 'admin', 'editing_manager', 'editor', 'client'],
                 ],
                 [
                     'resource' => 'cubicasa-scanning',

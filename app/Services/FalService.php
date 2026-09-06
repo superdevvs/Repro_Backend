@@ -248,6 +248,48 @@ class FalService
         ];
     }
 
+    /** Explicit model queue support for Studio outpainting. Model names are server-owned. */
+    public function submitModel(string $model, array $payload): string
+    {
+        $response = $this->postQueue($model, $payload);
+        if (!$response->successful() || !$response->json('request_id')) {
+            throw new RuntimeException('fal.ai could not queue this image operation (HTTP '.$response->status().').');
+        }
+        return (string) $response->json('request_id');
+    }
+
+    public function modelStatus(string $model, string $requestId): string
+    {
+        $response = $this->getQueueStatus($model, $requestId);
+        if (!$response->successful()) throw new RuntimeException('fal.ai status is temporarily unavailable.');
+        return strtoupper((string) $response->json('status', 'IN_PROGRESS'));
+    }
+
+    public function modelImageResult(string $model, string $requestId): string
+    {
+        $data = $this->fetchQueueResult($model, $requestId);
+        $url = data_get($data, 'images.0.url') ?? data_get($data, 'image.url') ?? data_get($data, 'image_url');
+        if (!$url) throw new RuntimeException('fal.ai returned no prepared image.');
+        return (string) $url;
+    }
+
+    public function modelVideoResult(string $model, string $requestId): string
+    {
+        $data = $this->fetchQueueResult($model, $requestId);
+        $url = data_get($data, 'video.url') ?? data_get($data, 'video_url');
+        if (!$url) throw new RuntimeException('fal.ai returned no generated video.');
+        return (string) $url;
+    }
+
+    public function submitWalkthroughClip(string $imageUrl, ?string $endImageUrl, string $prompt): string
+    {
+        $model = (string) config('services.fal.walkthrough_model');
+        if ($model === '') throw new RuntimeException('The walkthrough start/end-frame model is not configured.');
+        $payload = ['image_url' => $imageUrl, 'prompt' => $prompt, 'duration' => '5', 'negative_prompt' => 'cuts, jump cuts, distortion, morphing architecture, blur, text'];
+        if ($endImageUrl !== null) $payload['tail_image_url'] = $endImageUrl;
+        return $this->submitModel($model, $payload);
+    }
+
     private function postQueue(string $model, array $payload)
     {
         $this->ensureConfigured();
