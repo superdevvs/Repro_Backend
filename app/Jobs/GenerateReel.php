@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\FalTerminalException;
 use App\Models\AiReelJob;
 use App\Models\ShootFile;
 use App\Services\FalService;
@@ -124,10 +125,23 @@ class GenerateReel implements ShouldQueue
                     $deadline = microtime(true) + (int) config('services.fal.video_poll_timeout', 900);
                     while (true) {
                         $this->stopIfCancelled($job);
-                        $status = $walkthroughModel !== '' ? $fal->modelStatus($walkthroughModel, $requestId) : $fal->status($requestId);
+                        try {
+                            $status = $walkthroughModel !== '' ? $fal->modelStatus($walkthroughModel, $requestId) : $fal->status($requestId);
+                            $clipUrl = $status === 'COMPLETED'
+                                ? ($walkthroughModel !== '' ? $fal->modelVideoResult($walkthroughModel, $requestId) : $fal->result($requestId))
+                                : null;
+                        } catch (FalTerminalException $exception) {
+                            // A completed queue request can still have a rejected result (422).
+                            // Keep other scenes and in-flight requests available for a manual retry.
+                            if ($exception->canDiscardRequest()) {
+                                $config = $job->workflow_config ?? [];
+                                unset($config['_studioRuntime']['requests'][$index]);
+                                $job->update(['workflow_config' => $config]);
+                            }
+                            throw $exception;
+                        }
 
                         if ($status === 'COMPLETED') {
-                            $clipUrl = $walkthroughModel !== '' ? $fal->modelVideoResult($walkthroughModel, $requestId) : $fal->result($requestId);
                             $clipSources[$index] = $clipUrl;
                             $config = $job->workflow_config ?? [];
                             $config['_studioRuntime']['clips'][$index] = $clipUrl;

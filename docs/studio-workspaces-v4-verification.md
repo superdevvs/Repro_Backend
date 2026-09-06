@@ -43,3 +43,13 @@ The source mapper sends canonical `fileId`/`shootId` or upload `mediaRef`, and t
 Photo-batch duration and zero-effect-duration payload mismatches are corrected, along with PATCH-success/POST-failure version recovery. Backend optional-string normalization covers Laravel's actual `ConvertEmptyStringsToNull` middleware. Existing Studio authorization uses the same role/team/owner check for every action string; there is no separate baseline create-vs-view permission policy to apply.
 
 Cross-version reel reuse stores original motion clips privately before finishing and persists an internal workspace/job association. Cache access requires the persisted association and matching owner; copied runtime metadata alone is insufficient. Legacy project requests and template configurations strip reserved workspace/runtime fields before creating jobs. Passing tests cover six initial walkthrough clips, zero new clips for styling, only scenes 3–4 regenerated after scene 4 changes, input/model fingerprint invalidation, forged runtime data and cross-workspace isolation. These cases are included in the final 48-test suite above.
+# September 6 provider failure fixes
+
+Production logs identified an outpaint canvas of1600×2845 exceeding fal's2560-pixel limit, and a90×480 region below the image editor's256-pixel minimum. The processor now bounds the entire extended canvas and normalizes small edits without changing their final scope. Terminal provider rejections discard only the rejected request checkpoint and stop automatic retries; transient errors keep existing request IDs. Provider payloads and URLs are excluded from failure messages.
+
+Video responses now include submitted/completed scene counts and rendering phase. Rejected video results can be retried without restarting unaffected requests. The frontend exposes a failed-preparation retry and prevents stale polling responses from rolling back newer state.
+
+- Focused backend aggregate:61 tests,511 assertions passed, including geometry, rejected-result recovery, credential/transient failures, clip reuse and progress isolation.
+- Frontend:10 focused unit tests and2 desktop/mobile Playwright flows passed; TypeScript and changed-scope ESLint passed.
+- Real configured fal calls through `WorkspaceProcessor`, using an isolated local database and public fixture:1600×1067 landscape extended to900×1600;90×480 region revision returned the original1600×1067 frame. Resumable check: `scripts/studio-provider-fix-check.php`.
+- Read-only inspection confirmed existing WAN requests completed. Production FFmpeg assembled two existing clips into a10-second1080×1920 MP4. No new video provider requests were submitted, and the cancelled workspace/job stayed cancelled.

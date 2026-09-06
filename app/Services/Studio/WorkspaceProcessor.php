@@ -2,6 +2,7 @@
 
 namespace App\Services\Studio;
 
+use App\Exceptions\FalTerminalException;
 use App\Jobs\GenerateReel;
 use App\Models\AiReelJob;
 use App\Models\StudioWorkspace;
@@ -12,10 +13,17 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 use Intervention\Image\ImageManager;
+use Intervention\Image\Interfaces\ImageInterface;
 use RuntimeException;
 
 class WorkspaceProcessor
 {
+    private const OUTPAINT_MAX_EDGE = 2560;
+
+    private const EDIT_MIN_EDGE = 256;
+
+    private const EDIT_MAX_EDGE = 2048;
+
     private ImageManager $images;
 
     public function __construct(private WorkspaceMediaService $media, private FalService $fal)
@@ -96,6 +104,11 @@ class WorkspaceProcessor
             return (string) $image->contain($width, $height, '101828')->toJpeg(92);
         }
         // Expand only missing edges; preserve the complete source within the new canvas.
+        // Bound the expanded canvas, not just the source: landscape -> portrait
+        // can otherwise turn a 1600px source into a rejected 2845px output.
+        $canvasWidth = $targetRatio >= 1 ? self::OUTPAINT_MAX_EDGE : (int) floor(self::OUTPAINT_MAX_EDGE * $targetRatio);
+        $canvasHeight = $targetRatio >= 1 ? (int) floor(self::OUTPAINT_MAX_EDGE / $targetRatio) : self::OUTPAINT_MAX_EDGE;
+        $image->scaleDown(width: $canvasWidth, height: $canvasHeight);
         $sourceWidth = $image->width();
         $sourceHeight = $image->height();
         $expandedWidth = max($sourceWidth, (int) ceil($sourceHeight * $targetRatio));
@@ -111,7 +124,9 @@ class WorkspaceProcessor
         });
         $this->poll($w, $operationId, $item['id'], fn () => $this->fal->modelStatus($model, $id));
 
-        return (string) $this->images->read($this->download($this->fal->modelImageResult($model, $id)))->cover($width, $height)->toJpeg(92);
+        $url = $this->providerCall($w, $operationId, $item['id'], fn () => $this->fal->modelImageResult($model, $id));
+
+        return (string) $this->images->read($this->download($url))->cover($width, $height)->toJpeg(92);
     }
 
     private function editImage(StudioWorkspace $w, string $operationId, array $item, string $bytes, string $type): string
@@ -134,13 +149,24 @@ class WorkspaceProcessor
             $prompt .= ' Requested visual adjustments: '.json_encode($w->config['adjustments']).'.';
         }
         $prompt .= ' Preserve the actual property structure, perspective, materials, and photorealism. Only make the requested changes.';
+        [$source, $padding] = $this->normalizeEditSource($source);
         $id = $this->requestId($w, $operationId, $item['id'], function () use ($source, $prompt): string {
-            $submission = $this->fal->submitImageEditFromBuffer((string) $source->scaleDown(width: 2048, height: 2048)->toJpeg(94), 'property.jpg', 'image/jpeg', 'enhance', ['prompt' => $prompt]);
+            $submission = $this->fal->submitImageEditFromBuffer((string) $source->toJpeg(94), 'property.jpg', 'image/jpeg', 'enhance', ['prompt' => $prompt]);
 
             return $submission['request_id'];
         });
         $this->poll($w, $operationId, $item['id'], fn () => strtoupper($this->fal->imageEditStatus($id)['status'] ?? 'PROCESSING'));
-        $edited = $this->images->read($this->download($this->fal->imageEditResult($id)['edited_image_url']));
+        $result = $this->providerCall($w, $operationId, $item['id'], fn () => $this->fal->imageEditResult($id));
+        $edited = $this->images->read($this->download($result['edited_image_url']));
+        if ($padding) {
+            // Provider output resolution can differ from its input. Remove only
+            // the temporary padding before returning to the original edit scope.
+            $x = (int) floor($padding['x'] * $edited->width());
+            $y = (int) floor($padding['y'] * $edited->height());
+            $width = min($edited->width() - $x, max(1, (int) round($padding['width'] * $edited->width())));
+            $height = min($edited->height() - $y, max(1, (int) round($padding['height'] * $edited->height())));
+            $edited->crop($width, $height, $x, $y);
+        }
         if ($bounds) {
             [$x, $y, $width, $height] = $bounds;
             $image->place($edited->cover($width, $height), 'top-left', $x, $y);
@@ -149,6 +175,28 @@ class WorkspaceProcessor
         }
 
         return (string) $edited->toJpeg(94);
+    }
+
+    /** @return array{ImageInterface, ?array{x: float, y: float, width: float, height: float}} */
+    private function normalizeEditSource(ImageInterface $source): array
+    {
+        $scale = min(
+            max(1, self::EDIT_MIN_EDGE / $source->width(), self::EDIT_MIN_EDGE / $source->height()),
+            self::EDIT_MAX_EDGE / $source->width(),
+            self::EDIT_MAX_EDGE / $source->height()
+        );
+        $source->resize(max(1, (int) round($source->width() * $scale)), max(1, (int) round($source->height() * $scale)));
+        $width = max(self::EDIT_MIN_EDGE, $source->width());
+        $height = max(self::EDIT_MIN_EDGE, $source->height());
+        if ($width === $source->width() && $height === $source->height()) {
+            return [$source, null];
+        }
+        // Very thin selections cannot meet both model limits by scaling alone.
+        $x = (int) floor(($width - $source->width()) / 2);
+        $y = (int) floor(($height - $source->height()) / 2);
+        $canvas = $this->images->create($width, $height)->fill('101828')->place($source, 'top-left', $x, $y);
+
+        return [$canvas, ['x' => $x / $width, 'y' => $y / $height, 'width' => $source->width() / $width, 'height' => $source->height() / $height]];
     }
 
     private function reel(StudioWorkspace $w, string $operationId): void
@@ -256,7 +304,7 @@ class WorkspaceProcessor
             if (! $this->active($w, $operationId)) {
                 throw new RuntimeException('Workspace operation cancelled.');
             }
-            $state = strtoupper($status());
+            $state = strtoupper($this->providerCall($w, $operationId, $mediaId, $status));
             if ($state === 'COMPLETED') {
                 return;
             }
@@ -272,6 +320,22 @@ class WorkspaceProcessor
             sleep(max(1, (int) config('services.fal.video_poll_interval', 5)));
         } while (microtime(true) < $deadline);
         throw new RuntimeException('The provider is taking longer than expected. Retry to resume this request.');
+    }
+
+    private function providerCall(StudioWorkspace $w, string $operationId, string $mediaId, callable $call): mixed
+    {
+        try {
+            return $call();
+        } catch (FalTerminalException $exception) {
+            if ($exception->canDiscardRequest()) {
+                $this->mutate($w, $operationId, function ($w) use ($mediaId): void {
+                    $operation = $w->operation;
+                    unset($operation['requests'][$mediaId]);
+                    $w->operation = $operation;
+                });
+            }
+            throw $exception;
+        }
     }
 
     private function active(StudioWorkspace $w, string $operationId): bool

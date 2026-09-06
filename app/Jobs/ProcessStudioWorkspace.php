@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\FalTerminalException;
 use App\Models\StudioWorkspace;
 use App\Services\Studio\WorkspaceProcessor;
 use Illuminate\Bus\Queueable;
@@ -39,14 +40,24 @@ class ProcessStudioWorkspace implements ShouldQueue
         if (! $workspace || data_get($workspace->operation, 'id') !== $this->operationId || ! $workspace->isBusy()) {
             return;
         }
-        $processor->process($workspace, $this->operationId);
+        try {
+            $processor->process($workspace, $this->operationId);
+        } catch (FalTerminalException $exception) {
+            // Invalid provider requests will not recover on the next queue attempt.
+            // Persist the friendly failure even when handle() runs without a queue job.
+            $this->failed($exception);
+            $this->fail($exception);
+        }
     }
 
     public function failed(?\Throwable $exception): void
     {
         $workspace = StudioWorkspace::find($this->workspaceId);
         if ($workspace?->isBusy() && data_get($workspace->operation, 'id') === $this->operationId) {
-            $workspace->update(['status' => 'failed', 'error' => 'The image provider or video renderer could not finish this operation. Retry to resume saved progress.', 'version' => $workspace->version + 1]);
+            $message = $exception instanceof FalTerminalException
+                ? $exception->getMessage()
+                : 'The image provider or video renderer could not finish this operation. Retry to resume saved progress.';
+            $workspace->update(['status' => 'failed', 'error' => $message, 'version' => $workspace->version + 1]);
         }
     }
 }

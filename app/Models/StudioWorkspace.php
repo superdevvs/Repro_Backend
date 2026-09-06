@@ -44,10 +44,13 @@ class StudioWorkspace extends Model
 
     public function present(): array
     {
+        $generation = $this->generationProgress();
+
         return [
             'id' => $this->id, 'name' => $this->name, 'presetId' => $this->preset_id,
             'media' => array_map([\App\Services\Studio\WorkspaceMediaService::class, 'withUploadPreview'], $this->media ?? []), 'config' => self::normalizeConfigStrings($this->config ?? []), 'status' => $this->status,
-            'progress' => $this->progress, 'error' => $this->error, 'version' => $this->version,
+            'progress' => $generation['progress'] ?? $this->progress, 'generation' => $generation ? \Illuminate\Support\Arr::except($generation, ['progress']) : null,
+            'error' => $this->error, 'version' => $this->version,
             'outputs' => array_map(fn ($output) => \Illuminate\Support\Arr::except($output, ['reelJobId']), $this->outputs ?? []), 'preparedFrames' => $this->prepared_frames ?? [],
             'history' => array_map(fn ($event) => \Illuminate\Support\Arr::except($event, ['reelJobId']), $this->history ?? []),
             'createdAt' => $this->created_at?->toIso8601String(),
@@ -58,5 +61,24 @@ class StudioWorkspace extends Model
                 'startEndFrameConditioning' => filled(config('services.fal.walkthrough_model')),
                 'textStyles' => ['none', 'minimal', 'editorial', 'lower-third', 'graphic']],
         ];
+    }
+
+    private function generationProgress(): ?array
+    {
+        if ($this->status !== 'generating' || ! $this->isVideo() || ($this->operation['type'] ?? null) !== 'generate') {
+            return null;
+        }
+        $total = count($this->config['frames'] ?? []) ?: count($this->media ?? []);
+        $job = AiReelJob::whereKey($this->operation['reelJobId'] ?? 0)->where('user_id', $this->created_by)->first();
+        if (! $job || ($job->workflow_config['studioWorkspaceId'] ?? null) !== $this->id) {
+            return ['phase' => 'submitting', 'total' => $total, 'submitted' => 0, 'completed' => 0, 'progress' => 0];
+        }
+        $runtime = $job->workflow_config['_studioRuntime'] ?? [];
+        $completed = min($total, count(array_unique(array_merge(array_keys($runtime['clips'] ?? []), array_keys($runtime['localClips'] ?? [])))));
+        $submitted = min($total, count(array_unique(array_merge(array_keys($runtime['requests'] ?? []), array_keys($runtime['clips'] ?? []), array_keys($runtime['localClips'] ?? [])))));
+        $phase = in_array($job->status, [AiReelJob::STATUS_STITCHING, AiReelJob::STATUS_COMPLETED], true) ? 'rendering' : ($submitted < $total ? 'submitting' : 'generating');
+        $progress = $phase === 'rendering' ? 95 : (int) round(20 * $submitted / max(1, $total) + 70 * $completed / max(1, $total));
+
+        return compact('phase', 'total', 'submitted', 'completed', 'progress');
     }
 }
