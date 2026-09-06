@@ -82,6 +82,7 @@ class TaxDocumentLegacyMigration
         $private = Storage::disk(TaxDocumentService::DISK);
         $committed = false;
         try {
+            $this->documents->prepareOwnerDirectory($user->id);
             $sourceHash = $this->documents->checksum('public', $source);
             $size = $public->size($source);
             $stream = $public->readStream($source);

@@ -262,6 +262,9 @@ rsync -rltD --omit-dir-times --delete --no-owner --no-group --no-perms \
   --exclude='public/storage' --exclude='fix-db-perms.sh' "$stage/" "$app/"
 
 cd "$app"
+if [ -f "$app/scripts/deploy/provision-tax-document-storage.sh" ]; then
+  bash "$app/scripts/deploy/provision-tax-document-storage.sh"
+fi
 composer install --no-dev --optimize-autoloader --no-interaction
 if [ "$run_migrations" = "1" ]; then
   php artisan migrate --force --no-interaction

@@ -2,6 +2,21 @@
 
 Tax documents use the dedicated `user_tax_documents` table and the private `tax_documents` disk at `storage/app/private/tax-documents`. This disk must stay outside the web root, have no public symlink or URL, and be readable only by the application and authorized backup operators. The existing `public` disk remains for ordinary public media.
 
+On the production Unix host, provision the tax root as `maverick:www-data` with mode `02770`. Files use `0660`; owner directories use `02770`. The setgid bit preserves the shared `www-data` group when either the PHP web service or the authorized CLI operator creates a document. Other Unix users have no access through this root, and application access still requires the controller policy. Membership in `www-data` is therefore restricted to trusted service/operator accounts.
+
+As `maverick`, who is a member of `www-data`, an initially absent root can be provisioned without sudo:
+
+The prepared deployment wrapper runs `scripts/deploy/provision-tax-document-storage.sh` during maintenance, before reopening the application. It validates an existing root without recursively changing files. This prevents the previous code from creating owner-only subdirectories between provisioning and the corrected release.
+
+```sh
+install -d -m 2770 -g www-data /var/www/backend/storage/app/private/tax-documents
+stat -c '%U:%G %a' /var/www/backend/storage/app/private/tax-documents
+```
+
+The expected result is `maverick:www-data 2770`. Inspect an existing directory's ownership before running a corrective command; do not recursively change permissions or ownership on existing documents. If a directory belongs to another Unix owner and needs correction, that owner or a server administrator must perform the reviewed correction. No nginx configuration change is needed for these filesystem modes, and the nginx installer remains a separate administrator operation.
+
+The private disk explicitly maps private files to `0660` and directories to `02770`. The upload and migration service applies directory visibility immediately after creating each owner directory, because `mkdir` alone obeys the process umask and can otherwise remove group write. It does not change the process-wide umask. Existing directories must already have the expected mode and root group; the service checks them and fails safely instead of attempting to chmod a directory owned by the other process. The tax root must be provisioned before either upload or migration. An accidental request for public visibility on this disk maps to owner-only modes, never world-readable modes.
+
 An active owner may upload, inspect their submission summary, and download their own document. An active user whose **primary** role is `admin` or `superadmin` may inspect and download another user's document. Sales, clients, editors, other photographers, secondary administrator roles, locked/inactive users, and impersonation sessions receive no cross-user access. Uploads always target the authenticated user; an administrator cannot submit on somebody else's behalf through this endpoint.
 
 The current upload contract is multipart `POST /api/profile/tax-document`, with `document` and optional `notes` (up to 1,000 characters). New documents must be PDF, PNG or JPG, at most 10 MiB. Server-side file-content detection determines the stored extension; a filename or browser MIME declaration does not establish the type. New files receive a random name under the owner's directory. Notes are stored encrypted in the dedicated table and are excluded from responses and logs.
@@ -27,7 +42,7 @@ An existing legacy public reference or pending legacy cleanup receipt blocks rep
 
 ## Deployment and legacy migration
 
-Release preparation on 2026-09-06 used isolated backend base `76904ae6e6296e0fb28807a41cb383ccbc932ffb` and frontend base `d5d482d9d9c51d0ace4add7640453bf239e03709`, both verified live. Production inspection returned zero legacy tax references and no public tax directory. The private-storage code can therefore be released without moving existing documents; the permanent Nginx block remains a required acceptance condition. The prepared installer is `scripts/deploy/install-tax-document-deny.sh`; it requires a server administrator because the deployment account lacks sudo. Do not close finding #6 until the block is installed and verified.
+No production migration, file movement, storage inspection or web-server change was performed as part of this implementation. Run these operations only in the authorized deployment window, with a verified backup/recovery path for both the database and private storage.
 
 1. Block `/storage/tax-documents` and every alternate direct public path to the same directory at the web server/object origin **before** deploying the new upload flow. The rule must cover the directory itself, children, case/normalization variants accepted by the server, and direct origin access. Keep this block permanently. Invalidate previously cached copies at any CDN/cache in front of the origin. An application controller cannot protect a file that the web server serves directly.
 2. Provision the private disk permissions and shared lock store. Deploy the table migration, backend endpoints/filtering and photographer UI together. Do not create a symlink to private storage. Existing database `APP_KEY` encryption must remain readable; changing that key is a separate controlled operation.
@@ -52,6 +67,10 @@ After migration, backups may still contain historical public files or metadata. 
 
 ## Validation
 
+The permission correction passed 30 portable tests / 156 assertions with three Unix-only skips. A separate isolated fixture executed with the production host's PHP 8.3 runtime passed all 12 checks for restrictive umask, file/directory modes, shared-group inheritance and rejection of incorrect existing permissions. It loaded candidate code and vendor only, without production application bootstrap, database access or real documents.
+
 All validation used synthetic files, isolated SQLite and fake public/private disks; HTTP calls were forbidden. `TaxDocumentPrivacyTest`, `TaxDocumentMigrationTest` and existing `Auth/UpdateProfileTest` passed together: **25 tests, 180 assertions**. Coverage includes role isolation, guest/inactive/impersonation denial, authenticated attachment headers, false file types, oversized files, replacement failure, metadata write/serialization filtering, null metadata preservation, migration dry run/idempotency, owner/path validation, failed copy verification, changed public sources, missing private copies, retry receipts and deleted owners.
 
 Frontend `TaxDocumentCard.test.tsx` and `taxDocuments.test.ts` passed: **8 tests**. They cover authenticated summary/blob requests, temporary URL cleanup, impersonation, replacement, input validation and safe failure messages. TypeScript project build also passed. Production web-server rules, backups, filesystem permissions and real-data migration remain deployment checks.
+
+`TaxDocumentStoragePermissionsTest` additionally checks the configured converter and, on Unix filesystems, creation under umask `0077`, inherited group, exact file/directory modes, existing-directory validation and rejection of an unprovisioned root. The three actual Unix mode tests skip on Windows and must be run on a Unix filesystem before relying on cross-process group access.

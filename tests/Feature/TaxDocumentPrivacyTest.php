@@ -24,7 +24,8 @@ class TaxDocumentPrivacyTest extends TestCase
     {
         parent::setUp();
         Storage::fake('public');
-        Storage::fake(TaxDocumentService::DISK);
+        Storage::fake(TaxDocumentService::DISK, config('filesystems.disks.'.TaxDocumentService::DISK));
+        if (PHP_OS_FAMILY !== 'Windows') { chmod(Storage::disk(TaxDocumentService::DISK)->path(''), 02770); }
         Http::preventStrayRequests();
         Notification::fake();
         Queue::fake();

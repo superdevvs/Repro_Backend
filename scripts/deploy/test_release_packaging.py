@@ -43,6 +43,8 @@ class ReleaseArchiveTest(unittest.TestCase):
         self.assertIn('if [ "$configure_stripe" = "1" ]; then', workflow)
         self.assertIn('if (-not $PreparedRelease)', workflow)
         self.assertIn("@('push', 'origin', 'HEAD:main')", workflow)
+        self.assertIn('chmod 0700 "$backup"', workflow)
+        self.assertNotIn('umask 077', workflow)
 
 
 if __name__ == '__main__':

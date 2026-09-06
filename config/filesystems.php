@@ -35,6 +35,11 @@ return [
             'driver' => 'local',
             'root' => storage_path('app/private/tax-documents'),
             'visibility' => 'private',
+            'directory_visibility' => 'private',
+            'permissions' => [
+                'file' => ['public' => 0600, 'private' => 0660],
+                'dir' => ['public' => 0700, 'private' => 02770],
+            ],
             'serve' => false,
             'throw' => true,
             'report' => false,

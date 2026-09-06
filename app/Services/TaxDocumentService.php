@@ -52,6 +52,7 @@ class TaxDocumentService
             $disk = Storage::disk(self::DISK);
             $committed = false;
             try {
+                $this->prepareOwnerDirectory($user->id);
                 $stored = $disk->putFileAs((string) $user->id, $file, basename($path));
                 if ($stored !== $path) { throw new RuntimeException('Private tax document write failed.'); }
                 $hash = hash_file('sha256', $file->getRealPath());
@@ -84,6 +85,36 @@ class TaxDocumentService
     public function validPrivatePath(UserTaxDocument $document): bool
     {
         return preg_match('/^'.preg_quote((string) $document->user_id, '/').'\/[a-f0-9-]{36}\.(pdf|png|jpg|jpeg|doc|docx)$/D', $document->path) === 1;
+    }
+
+    /** Call under the owner lock before writing; never change another Unix owner's directory mode. */
+    public function prepareOwnerDirectory(int $userId): void
+    {
+        $disk = Storage::disk(self::DISK);
+        $root = realpath($disk->path(''));
+        if (!$root || !is_dir($root)) { throw new RuntimeException('Private tax document storage is not ready.'); }
+        clearstatcache(true, $root);
+        if (PHP_OS_FAMILY !== 'Windows' && (fileperms($root) & 07777) !== 02770) {
+            throw new RuntimeException('Private tax document storage permissions need operator review.');
+        }
+        $directory = (string) $userId;
+        $fullPath = $disk->path($directory);
+        if (!$disk->directoryExists($directory)) {
+            $disk->makeDirectory($directory);
+            // mkdir obeys umask. chmod after creation restores group write and
+            // setgid without changing the process-wide umask used by other disks.
+            $disk->setVisibility($directory, 'private');
+        }
+        clearstatcache(true, $fullPath);
+        $resolved = realpath($fullPath);
+        if (!$resolved || is_link($fullPath) || dirname($resolved) !== $root
+            || !is_readable($fullPath) || !is_writable($fullPath)) {
+            throw new RuntimeException('Private tax document owner directory is unavailable.');
+        }
+        if (PHP_OS_FAMILY !== 'Windows' && ((fileperms($fullPath) & 07777) !== 02770
+            || filegroup($fullPath) !== filegroup($root))) {
+            throw new RuntimeException('Private tax document owner permissions need operator review.');
+        }
     }
 
     public function checksum(string $disk, string $path): string
