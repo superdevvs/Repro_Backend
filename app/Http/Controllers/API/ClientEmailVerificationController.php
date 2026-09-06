@@ -27,6 +27,15 @@ class ClientEmailVerificationController extends Controller
 
     public function __invoke(Request $request, User $user, string $hash): Response|RedirectResponse
     {
+        $result = \Illuminate\Support\Facades\DB::transaction(function () use ($request, $user, $hash) {
+            $fresh = \App\Services\Users\AccountSecurityMutation::lockUser($user->getKey());
+            return $this->verifyLockedEmail($request, $fresh, $hash);
+        }, 3);
+        return is_array($result) ? $this->finishVerifiedEmail($result['user'], $result['verification_result']) : $result;
+    }
+
+    private function verifyLockedEmail(Request $request, User $user, string $hash): Response|array
+    {
         $verificationResult = null;
         $token = $request->query('token');
         $expires = $this->clientEmailVerificationLinkService->resolveExpiryTimestamp($request->query('expires'));
@@ -103,9 +112,20 @@ class ClientEmailVerificationController extends Controller
             'The account holder confirmed their email address and can now receive normal dashboard notifications.'
         );
 
-        if (!$this->mailService->sendClientEmailVerifiedEmail($user, [
+        return ['user' => $user, 'verification_result' => $verificationResult];
+    }
+
+    private function finishVerifiedEmail(User $user, ?\App\Services\Users\ClientEmailVerificationResult $verificationResult): Response|RedirectResponse
+    {
+        try {
+            $sent = $this->mailService->sendClientEmailVerifiedEmail($user, [
             'verification_token_id' => $verificationResult?->token?->id ?? null,
-        ])) {
+            ]);
+        } catch (\Throwable $exception) {
+            $sent = false;
+            Log::warning('Post-verification confirmation failed.', ['user_id' => $user->id, 'exception_class' => $exception::class]);
+        }
+        if (!$sent) {
             Log::warning('Failed to send post-verification confirmation email', [
                 'user_id' => $user->id,
                 'verification_token_id' => $verificationResult?->token?->id ?? null,
@@ -125,7 +145,7 @@ class ClientEmailVerificationController extends Controller
 
     protected function passwordCreationUrl(User $user): string
     {
-        return $this->mailService->generateStoredPasswordCreationLink($user);
+        return $this->mailService->generateStoredPasswordCreationLink($user, (string) $user->email);
     }
 
     protected function resolveFailureReason(Request $request, ?int $expires, mixed $signatureVersion): string

@@ -32,10 +32,8 @@ class ImpersonationMiddleware
         }
 
         // Resolve the authenticated user directly via the sanctum guard.
-        // This middleware runs in the api middleware group which executes
-        // BEFORE route-level auth:sanctum middleware, so $request->user()
-        // would return null at this point. By querying the sanctum guard
-        // explicitly we can resolve the user from the Bearer token.
+        // The explicit middleware priority resolves bearer authentication first.
+        // Resolve the original actor before any target account is substituted.
         $authUser = auth('sanctum')->user();
 
         \Log::debug('ImpersonationMiddleware check', [
@@ -48,34 +46,39 @@ class ImpersonationMiddleware
         ]);
 
         if ($authUser && in_array($authUser->role, ['admin', 'superadmin'])) {
-            $impersonatedUser = User::find($impersonateUserId);
-
-            if ($impersonatedUser) {
-                // Store original admin for audit purposes
-                $request->attributes->set('original_admin_user', $authUser);
-                $request->attributes->set('is_impersonating', true);
-
-                // Swap the authenticated user on both the sanctum guard
-                // (used by auth:sanctum routes) and the default guard,
-                // so all downstream code sees the impersonated user.
-                auth('sanctum')->setUser($impersonatedUser);
-                auth()->setUser($impersonatedUser);
-
-                // Update the request's user resolver so $request->user()
-                // returns the impersonated user even before Authenticate
-                // middleware runs.
-                $request->setUserResolver(function ($guard = null) use ($impersonatedUser) {
-                    return $impersonatedUser;
+            $request->setUserResolver(fn ($guard = null) => $authUser);
+            // Apply the same gates to the original actor before the swap. The
+            // normal downstream middleware then checks the target account too.
+            return app(EnsureAuthenticatedUserIsActive::class)->handle($request, function (Request $request) use ($authUser, $impersonateUserId, $next): Response {
+                return app(EnforceEmailVerificationPilot::class)->handle($request, function (Request $request) use ($authUser, $impersonateUserId, $next): Response {
+                    return $this->continueAsTarget($request, $authUser, $impersonateUserId, $next);
                 });
+            });
+        }
 
-                \Log::debug('Impersonation active', [
-                    'admin_id' => $authUser->id,
-                    'admin_name' => $authUser->name,
-                    'impersonated_id' => $impersonatedUser->id,
-                    'impersonated_name' => $impersonatedUser->name,
-                    'impersonated_role' => $impersonatedUser->role,
-                ]);
-            }
+        return $next($request);
+    }
+
+    private function continueAsTarget(Request $request, User $authUser, string $impersonateUserId, Closure $next): Response
+    {
+        $impersonatedUser = User::find($impersonateUserId);
+
+        if ($impersonatedUser) {
+            $request->attributes->set('original_admin_user', $authUser);
+            $request->attributes->set('is_impersonating', true);
+
+            // Both guards and the request resolver use the target downstream.
+            auth('sanctum')->setUser($impersonatedUser);
+            auth()->setUser($impersonatedUser);
+            $request->setUserResolver(fn ($guard = null) => $impersonatedUser);
+
+            \Log::debug('Impersonation active', [
+                'admin_id' => $authUser->id,
+                'admin_name' => $authUser->name,
+                'impersonated_id' => $impersonatedUser->id,
+                'impersonated_name' => $impersonatedUser->name,
+                'impersonated_role' => $impersonatedUser->role,
+            ]);
         }
 
         return $next($request);

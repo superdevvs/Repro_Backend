@@ -200,7 +200,7 @@ class UserEmailHealthTest extends TestCase
     public function test_admin_can_resend_client_email_verification_from_admin_tools(): void
     {
         $admin = User::factory()->admin()->create();
-        $client = User::factory()->create([
+        $client = User::factory()->unverified()->create([
             'role' => 'client',
             'email' => 'needs-verification@example.com',
             'email_status' => 'unverified',
@@ -595,7 +595,7 @@ class UserEmailHealthTest extends TestCase
 
     public function test_resend_flow_generates_a_v2_verification_link_that_can_be_opened(): void
     {
-        $client = User::factory()->create([
+        $client = User::factory()->unverified()->create([
             'role' => 'client',
             'email' => 'resend-client@gmail.com',
             'email_status' => 'unverified',

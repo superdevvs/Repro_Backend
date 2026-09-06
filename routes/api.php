@@ -361,7 +361,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
 Route::post('/register', [AuthController::class, 'register']);
 
-Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+Route::post('/login', [AuthController::class, 'login']);
 
 // Password Reset Routes (public)
 Route::post('/password/forgot', [AuthController::class, 'forgotPassword']);
@@ -374,6 +374,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/system/email
 // Self profile update (authenticated user updates their own profile)
 Route::middleware('auth:sanctum')->put('/profile', [AuthController::class, 'updateProfile']);
 Route::middleware('auth:sanctum')->post('/profile/email-verification/resend', [AuthController::class, 'resendEmailVerification']);
+Route::middleware('auth:sanctum')->post('/profile/email-verification/correct', [AuthController::class, 'correctVerificationEmail']);
 Route::middleware('auth:sanctum')->post('/profile/tax-document', [App\Http\Controllers\API\TaxDocumentController::class, 'store']);
 Route::middleware('auth:sanctum')->get('/profile/tax-document', [App\Http\Controllers\API\TaxDocumentController::class, 'show']);
 Route::middleware('auth:sanctum')->get('/profile/tax-document/download', [App\Http\Controllers\API\TaxDocumentController::class, 'download']);
@@ -382,12 +383,12 @@ Route::middleware('auth:sanctum')->get('/admin/users/{user}/tax-document/downloa
 Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
     Route::get('/activity', [ProfileSecurityController::class, 'activity']);
     Route::get('/security', [ProfileSecurityController::class, 'status']);
-    Route::post('/security/two-factor/setup', [ProfileSecurityController::class, 'beginTwoFactorSetup'])->middleware('throttle:5,1');
-    Route::post('/security/two-factor/confirm', [ProfileSecurityController::class, 'confirmTwoFactorSetup'])->middleware('throttle:10,1');
-    Route::post('/security/two-factor/recovery-codes', [ProfileSecurityController::class, 'regenerateRecoveryCodes'])->middleware('throttle:5,1');
-    Route::delete('/security/two-factor', [ProfileSecurityController::class, 'disableTwoFactor'])->middleware('throttle:5,1');
-    Route::delete('/security/sessions/others', [ProfileSecurityController::class, 'revokeOtherSessions'])->middleware('throttle:10,1');
-    Route::delete('/security/sessions/{tokenId}', [ProfileSecurityController::class, 'revokeSession'])->whereNumber('tokenId')->middleware('throttle:10,1');
+    Route::post('/security/two-factor/setup', [ProfileSecurityController::class, 'beginTwoFactorSetup']);
+    Route::post('/security/two-factor/confirm', [ProfileSecurityController::class, 'confirmTwoFactorSetup']);
+    Route::post('/security/two-factor/recovery-codes', [ProfileSecurityController::class, 'regenerateRecoveryCodes']);
+    Route::delete('/security/two-factor', [ProfileSecurityController::class, 'disableTwoFactor']);
+    Route::delete('/security/sessions/others', [ProfileSecurityController::class, 'revokeOtherSessions']);
+    Route::delete('/security/sessions/{tokenId}', [ProfileSecurityController::class, 'revokeSession'])->whereNumber('tokenId');
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users', [UserController::class, 'index']);

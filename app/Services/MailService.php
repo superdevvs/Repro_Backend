@@ -2411,21 +2411,16 @@ class MailService
             ->buildPublicUrl($shoot);
     }
 
-    public function generateStoredPasswordResetLink(User $user): string
+    public function generateStoredPasswordResetLink(User $user, ?string $expectedVerifiedEmail = null): string
     {
-        $token = Str::random(64);
-
-        DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $user->email],
-            ['token' => Hash::make($token), 'created_at' => now()]
-        );
+        $token = app(\App\Services\Users\PasswordRecoveryService::class)->issue($user, $expectedVerifiedEmail);
 
         return $this->generatePasswordResetLink($user, $token);
     }
 
-    public function generateStoredPasswordCreationLink(User $user): string
+    public function generateStoredPasswordCreationLink(User $user, ?string $expectedVerifiedEmail = null): string
     {
-        return $this->passwordCreationLink($this->generateStoredPasswordResetLink($user));
+        return $this->passwordCreationLink($this->generateStoredPasswordResetLink($user, $expectedVerifiedEmail));
     }
 
     public function passwordCreationLink(string $resetLink): string

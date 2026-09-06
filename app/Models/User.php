@@ -131,6 +131,8 @@ class User extends Authenticatable
     {
         return [
             'email_verified_at' => 'datetime',
+            'email_verification_required_at' => 'datetime',
+            'email_verified_email' => 'string',
             'verification_sent_at' => 'datetime',
             'email_last_delivery_attempt_at' => 'datetime',
             'email_last_bounced_at' => 'datetime',

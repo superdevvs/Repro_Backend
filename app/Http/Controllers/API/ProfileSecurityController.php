@@ -10,7 +10,6 @@ use DomainException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
@@ -97,10 +96,14 @@ class ProfileSecurityController extends Controller
 
     public function beginTwoFactorSetup(Request $request): JsonResponse
     {
+        return $this->securityMutation($request, fn () => $this->beginTwoFactorSetupLocked($request));
+    }
+
+    private function beginTwoFactorSetupLocked(Request $request): JsonResponse
+    {
         $this->ensureNotImpersonating($request);
         $validated = $request->validate(['current_password' => 'required|string']);
         $user = $request->user();
-        $this->ensurePasswordMatches($user, $validated['current_password']);
 
         if ($this->twoFactor->enabled($user)) {
             throw ValidationException::withMessages([
@@ -116,13 +119,17 @@ class ProfileSecurityController extends Controller
 
     public function confirmTwoFactorSetup(Request $request): JsonResponse
     {
+        return $this->securityMutation($request, fn () => $this->confirmTwoFactorSetupLocked($request));
+    }
+
+    private function confirmTwoFactorSetupLocked(Request $request): JsonResponse
+    {
         $this->ensureNotImpersonating($request);
         $validated = $request->validate([
             'current_password' => 'required|string',
             'code' => 'required|string|max:32',
         ]);
         $user = $request->user();
-        $this->ensurePasswordMatches($user, $validated['current_password']);
 
         try {
             [$recoveryCodes, $revokedSessions] = DB::transaction(function () use ($user, $validated): array {
@@ -156,13 +163,17 @@ class ProfileSecurityController extends Controller
 
     public function disableTwoFactor(Request $request): JsonResponse
     {
+        return $this->securityMutation($request, fn () => $this->disableTwoFactorLocked($request));
+    }
+
+    private function disableTwoFactorLocked(Request $request): JsonResponse
+    {
         $this->ensureNotImpersonating($request);
         $validated = $request->validate([
             'current_password' => 'required|string',
             'code' => 'required|string|max:32',
         ]);
         $user = $request->user();
-        $this->ensurePasswordMatches($user, $validated['current_password']);
 
         if (! $this->twoFactor->enabled($user)) {
             throw ValidationException::withMessages([
@@ -201,13 +212,17 @@ class ProfileSecurityController extends Controller
 
     public function regenerateRecoveryCodes(Request $request): JsonResponse
     {
+        return $this->securityMutation($request, fn () => $this->regenerateRecoveryCodesLocked($request));
+    }
+
+    private function regenerateRecoveryCodesLocked(Request $request): JsonResponse
+    {
         $this->ensureNotImpersonating($request);
         $validated = $request->validate([
             'current_password' => 'required|string',
             'code' => 'required|string|max:32',
         ]);
         $user = $request->user();
-        $this->ensurePasswordMatches($user, $validated['current_password']);
 
         if (! $this->twoFactor->enabled($user) || ! $this->twoFactor->verifyUserCode($user, $validated['code'])) {
             throw ValidationException::withMessages([
@@ -226,10 +241,14 @@ class ProfileSecurityController extends Controller
 
     public function revokeSession(Request $request, string $tokenId): JsonResponse
     {
+        return $this->securityMutation($request, fn () => $this->revokeSessionLocked($request, $tokenId));
+    }
+
+    private function revokeSessionLocked(Request $request, string $tokenId): JsonResponse
+    {
         $this->ensureNotImpersonating($request);
         $validated = $request->validate(['current_password' => 'required|string']);
         $user = $request->user();
-        $this->ensurePasswordMatches($user, $validated['current_password']);
         $currentTokenId = (string) $user->currentAccessToken()?->getKey();
         if ($currentTokenId === $tokenId) {
             throw ValidationException::withMessages([
@@ -248,10 +267,14 @@ class ProfileSecurityController extends Controller
 
     public function revokeOtherSessions(Request $request): JsonResponse
     {
+        return $this->securityMutation($request, fn () => $this->revokeOtherSessionsLocked($request));
+    }
+
+    private function revokeOtherSessionsLocked(Request $request): JsonResponse
+    {
         $this->ensureNotImpersonating($request);
         $validated = $request->validate(['current_password' => 'required|string']);
         $user = $request->user();
-        $this->ensurePasswordMatches($user, $validated['current_password']);
         $currentTokenId = $user->currentAccessToken()?->getKey();
         $query = $user->tokens();
         if ($currentTokenId) {
@@ -269,19 +292,25 @@ class ProfileSecurityController extends Controller
         ]);
     }
 
+    private function securityMutation(Request $request, \Closure $callback): JsonResponse
+    {
+        $this->ensureNotImpersonating($request);
+        $limiter = app(\App\Services\Users\AuthSecurityLimiter::class);
+        $limiter->consume('security-ip', (string) $request->ip(), 10, 900);
+        $limiter->consume('security-account', (string) $request->user()->getKey(), 10, 900);
+        $validated = $request->validate(['current_password' => 'required|string']);
+        $token = $request->user()->currentAccessToken();
+        abort_unless($token && method_exists($token, 'getKey'), 401, 'Please sign in again.');
+        return app(\App\Services\Users\AccountSecurityMutation::class)->run($request, $validated['current_password'], function (User $user) use ($request, $callback) {
+            $request->setUserResolver(fn () => $user);
+            return $callback();
+        });
+    }
+
     private function ensureNotImpersonating(Request $request): void
     {
         if ($request->attributes->get('is_impersonating')) {
             abort(403, 'Security details are unavailable while impersonating another account.');
-        }
-    }
-
-    private function ensurePasswordMatches(User $user, string $password): void
-    {
-        if (! Hash::check($password, (string) $user->password)) {
-            throw ValidationException::withMessages([
-                'current_password' => ['The current password is incorrect.'],
-            ]);
         }
     }
 

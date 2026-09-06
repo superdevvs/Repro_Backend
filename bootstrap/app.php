@@ -48,6 +48,7 @@ return Application::configure(basePath: dirname(__DIR__))
             ->withoutOverlapping()
             ->onOneServer();
         $schedule->command('system-overview:prune')->hourly();
+        $schedule->command('auth:prune-security-limits --limit=1000')->hourly()->withoutOverlapping();
         $schedule->command('telnyx:prune-webhook-events')->dailyAt('02:30');
         $schedule->command('messages:retry-stuck --minutes=5 --max-attempts=3 --limit=100')
             ->everyFiveMinutes()
@@ -74,8 +75,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->prepend(\App\Http\Middleware\ApiRequestContextMiddleware::class);
         $middleware->prepend(\Illuminate\Http\Middleware\HandleCors::class);
+        $middleware->replace(\Illuminate\Http\Middleware\TrustProxies::class, \App\Http\Middleware\TrustConfiguredProxies::class);
         $middleware->trustProxies(
-            at: '*',
             headers: Request::HEADER_X_FORWARDED_TRAEFIK,
         );
         $middleware->validateCsrfTokens(except: [
@@ -87,8 +88,14 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(append: [
             ImpersonationMiddleware::class,
             EnsureAuthenticatedUserIsActive::class,
+            \App\Http\Middleware\EnforceEmailVerificationPilot::class,
             SystemOverviewTelemetryMiddleware::class,
         ]);
+
+        // Ensure bearer authentication and impersonation resolve before account gates.
+        $middleware->appendToPriorityList(\Illuminate\Auth\Middleware\Authenticate::class, ImpersonationMiddleware::class);
+        $middleware->appendToPriorityList(ImpersonationMiddleware::class, EnsureAuthenticatedUserIsActive::class);
+        $middleware->appendToPriorityList(EnsureAuthenticatedUserIsActive::class, \App\Http\Middleware\EnforceEmailVerificationPilot::class);
 
         $middleware->alias([
             'role' => RoleMiddleware::class,

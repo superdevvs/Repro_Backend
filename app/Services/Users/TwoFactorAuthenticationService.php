@@ -6,6 +6,7 @@ use App\Models\User;
 use DomainException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -26,7 +27,12 @@ class TwoFactorAuthenticationService
     public function beginSetup(User $user): array
     {
         $secret = $this->base32Encode(random_bytes(20));
-        Cache::put($this->setupCacheKey($user), $secret, now()->addMinutes(self::SETUP_TTL_MINUTES));
+        Cache::put($this->setupCacheKey($user), Crypt::encryptString(json_encode([
+            'secret' => $secret,
+            'binding' => $this->setupBinding($user),
+            'credential_version' => hash('sha256', (string) $user->getRawOriginal('password')),
+            'expires_at' => now()->addMinutes(self::SETUP_TTL_MINUTES)->timestamp,
+        ], JSON_THROW_ON_ERROR)), now()->addMinutes(self::SETUP_TTL_MINUTES));
 
         $issuer = (string) config('app.name', 'Repro Photos');
         $label = rawurlencode($issuer.':'.strtolower((string) $user->email));
@@ -50,10 +56,19 @@ class TwoFactorAuthenticationService
      */
     public function confirmSetup(User $user, string $code): array
     {
-        $secret = Cache::get($this->setupCacheKey($user));
-        if (! is_string($secret) || $secret === '') {
+        $encrypted = Cache::get($this->setupCacheKey($user));
+        try {
+            $setup = is_string($encrypted) ? json_decode(Crypt::decryptString($encrypted), true, 16, JSON_THROW_ON_ERROR) : null;
+        } catch (\Throwable) {
+            $setup = null;
+        }
+        if (!is_array($setup) || !is_string($setup['secret'] ?? null)
+            || ($setup['expires_at'] ?? 0) <= now()->timestamp
+            || !hash_equals($this->setupBinding($user), (string) ($setup['binding'] ?? ''))
+            || !hash_equals(hash('sha256', (string) $user->getRawOriginal('password')), (string) ($setup['credential_version'] ?? ''))) {
             throw new DomainException('This setup has expired. Start two-factor setup again.');
         }
+        $secret = $setup['secret'];
 
         $acceptedStep = $this->matchingTotpStep($secret, $code);
         if ($acceptedStep === null) {
@@ -64,7 +79,7 @@ class TwoFactorAuthenticationService
         $confirmedAt = now();
 
         DB::transaction(function () use ($user, $secret, $hashedCodes, $confirmedAt, $acceptedStep): void {
-            $lockedUser = User::query()->whereKey($user->getKey())->lockForUpdate()->firstOrFail();
+            $lockedUser = AccountSecurityMutation::lockUser($user->getKey());
             if ($this->enabled($lockedUser)) {
                 throw new DomainException('Two-factor authentication is already enabled.');
             }
@@ -134,7 +149,7 @@ class TwoFactorAuthenticationService
         }
 
         return DB::transaction(function () use ($user, $candidateHash) {
-            $lockedUser = User::query()->whereKey($user->getKey())->lockForUpdate()->first();
+            $lockedUser = AccountSecurityMutation::lockUser($user->getKey());
             if (! $lockedUser) {
                 return false;
             }
@@ -162,7 +177,7 @@ class TwoFactorAuthenticationService
     private function consumeTotpStep(User $user, string $code): bool
     {
         return DB::transaction(function () use ($user, $code): bool {
-            $lockedUser = User::query()->whereKey($user->getKey())->lockForUpdate()->first();
+            $lockedUser = AccountSecurityMutation::lockUser($user->getKey());
             if (! $lockedUser || ! $this->enabled($lockedUser)) {
                 return false;
             }
@@ -258,7 +273,16 @@ class TwoFactorAuthenticationService
 
     private function setupCacheKey(User $user): string
     {
-        return 'profile-security:two-factor-setup:'.$user->getKey();
+        return 'profile-security:two-factor-setup:v2:'.$user->getKey().':'.hash('sha256', $this->setupBinding($user));
+    }
+
+    private function setupBinding(User $user): string
+    {
+        $token = $user->currentAccessToken();
+        if ($token && method_exists($token, 'getKey')) {
+            return 'token:'.$token->getKey();
+        }
+        throw new DomainException('A dashboard session is required to set up two-factor authentication.');
     }
 
     private function base32Encode(string $value): string

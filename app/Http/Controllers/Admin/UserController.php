@@ -1085,13 +1085,25 @@ class UserController extends Controller
      */
     public function resetPassword(Request $request, $id)
     {
+        $actor = $request->user();
+        abort_unless($actor && in_array($actor->role, ['admin', 'superadmin'], true), 403, 'Unauthorized');
+        $target = User::findOrFail($id);
+        app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'reset', (string) $target->email);
+        return app(\App\Services\Users\AccountSecurityMutation::class)->run($request, null, function (User $admin) use ($request, $id) {
+            $request->setUserResolver(fn () => $admin);
+            return $this->resetPasswordLocked($request, $id);
+        });
+    }
+
+    private function resetPasswordLocked(Request $request, $id)
+    {
         $admin = $request->user();
         if (!$admin || !in_array($admin->role, ['admin', 'superadmin'])) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $validated = $request->validate([
-            'password' => 'required|string|min:8',
+            'password' => ['required', 'string', new \App\Rules\NewAccountPassword],
         ]);
 
         $user = User::findOrFail($id);
@@ -1099,7 +1111,10 @@ class UserController extends Controller
             return response()->json(['message' => 'Only a superadmin can reset a superadmin password.'], 403);
         }
 
-        DB::transaction(function () use ($user, $validated): void {
+        DB::transaction(function () use ($user, $validated, $admin): void {
+            $locked = \App\Services\Users\AccountSecurityMutation::lockUser($user->getKey());
+            abort_if($locked->role === 'superadmin' && $admin->role !== 'superadmin', 403, 'Only a superadmin can reset a superadmin password.');
+            $user->setRawAttributes($locked->getAttributes(), true);
             $user->password = $validated['password'];
             $user->password_changed_at = now();
             $user->password_reset_required = false;
@@ -1121,7 +1136,13 @@ class UserController extends Controller
         } else {
             $context['client'] = $user;
         }
-        app(AutomationService::class)->handleEvent('PASSWORD_RESET', $context);
+        \App\Services\Users\AccountSecurityMutation::afterCommit($request, function () use ($context, $user): void {
+            try {
+                app(AutomationService::class)->handleEvent('PASSWORD_RESET', $context);
+            } catch (\Throwable $exception) {
+                Log::warning('Password changed but reset notification failed.', ['user_id' => $user->id, 'exception_class' => $exception::class]);
+            }
+        });
 
         $this->logUserActivity(
             $user,
@@ -1151,18 +1172,10 @@ class UserController extends Controller
         if ($user->role === 'superadmin' && $admin->role !== 'superadmin') {
             return response()->json(['message' => 'Only a superadmin can send a reset link to a superadmin.'], 403);
         }
+        app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'forgot', (string) $user->email);
         
         // Generate a password reset token
-        $token = Str::random(64);
-        
-        // Store the token in password_reset_tokens table
-        DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $user->email],
-            [
-                'token' => Hash::make($token),
-                'created_at' => now(),
-            ]
-        );
+        $token = app(\App\Services\Users\PasswordRecoveryService::class)->issue($user);
         
         // Generate the reset link and send email
         $mailService = app(MailService::class);
@@ -1206,7 +1219,9 @@ class UserController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if (!$this->shouldRequireEmailVerificationForRole($user->role)) {
+        app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'resend', (string) $user->email);
+
+        if (!$this->shouldRequireEmailVerificationForRole($user->role) && !$user->email_verification_required_at) {
             return response()->json([
                 'sent' => false,
                 'message' => 'Verification emails are not required for this account role.',
@@ -1220,7 +1235,7 @@ class UserController extends Controller
             ], 422);
         }
 
-        if (strtolower((string) $user->email_status) === EmailHealthService::STATUS_VERIFIED) {
+        if (app(\App\Services\Users\EmailVerificationPilot::class)->verified($user)) {
             return response()->json([
                 'sent' => false,
                 'message' => 'This email address is already verified.',

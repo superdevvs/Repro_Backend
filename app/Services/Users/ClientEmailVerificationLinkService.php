@@ -41,6 +41,15 @@ class ClientEmailVerificationLinkService
 
     public function issueVerificationToken(User $user, array $context = []): ClientEmailVerificationToken
     {
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($user, $context) {
+            $fresh = AccountSecurityMutation::lockUser($user->getKey());
+            $user->setRawAttributes($fresh->getAttributes(), true);
+            return $this->issueLockedToken($user, $context);
+        }, 3);
+    }
+
+    private function issueLockedToken(User $user, array $context): ClientEmailVerificationToken
+    {
         $emailSnapshot = Str::lower((string) $user->email);
         $emailHash = $this->emailHashForUser($user);
         $plainToken = Str::random(80);
@@ -91,6 +100,15 @@ class ClientEmailVerificationLinkService
     }
 
     public function consumeVerificationToken(User $user, string $hash, ?string $plainToken): ClientEmailVerificationResult
+    {
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($user, $hash, $plainToken) {
+            $fresh = AccountSecurityMutation::lockUser($user->getKey());
+            $user->setRawAttributes($fresh->getAttributes(), true);
+            return $this->consumeLockedToken($user, $hash, $plainToken);
+        }, 3);
+    }
+
+    private function consumeLockedToken(User $user, string $hash, ?string $plainToken): ClientEmailVerificationResult
     {
         if (!is_string($plainToken) || trim($plainToken) === '') {
             return new ClientEmailVerificationResult(false, 'token_missing');

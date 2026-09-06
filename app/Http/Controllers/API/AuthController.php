@@ -10,7 +10,6 @@ use App\Models\UserActivityLog;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use App\Services\MailService;
@@ -50,7 +49,7 @@ class AuthController extends Controller
             'name' => 'required|string|max:255',
             'username' => 'nullable|string|max:255|unique:users',
             'email' => 'required|email|unique:users',
-            'password' => 'required|string|min:6|confirmed',
+            'password' => ['required', 'string', 'confirmed', new \App\Rules\NewAccountPassword],
             'phonenumber' => 'nullable|string|max:20',
             'company_name' => 'nullable|string|max:255',
             'avatar' => 'nullable|url',
@@ -142,7 +141,7 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => $deliveryFailed ? 'User registered, but one or more notifications failed.' : 'User registered successfully.',
-            'user' => $user->fresh(),
+            'user' => $this->presentAuthenticatedUser($user->fresh()),
             'token' => $token,
             'notification_delivery' => $notificationDelivery,
         ], 201);
@@ -150,9 +149,15 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
+        return app(\App\Services\Users\AuthSecurityLimiter::class)->login($request,
+            fn () => $this->performLogin($request));
+    }
+
+    private function performLogin(Request $request)
+    {
         $request->validate([
             'email' => 'required|email',
-            'password' => 'required',
+            'password' => 'required|string',
             'two_factor_code' => 'nullable|string|max:32',
         ]);
 
@@ -166,6 +171,13 @@ class AuthController extends Controller
             return response()->json([
                 'message' => 'Invalid credentials'
             ], 401);
+        }
+
+        return DB::transaction(function () use ($user, $request, $email) {
+        $snapshot = (string) $user->getRawOriginal('password');
+        $user = \App\Services\Users\AccountSecurityMutation::lockUser($user->getKey());
+        if (!hash_equals($snapshot, (string) $user->getRawOriginal('password'))) {
+            return response()->json(['message' => 'Invalid credentials'], 401);
         }
 
         if (!$user->isAccountEligibleForAuthentication()) {
@@ -242,12 +254,21 @@ class AuthController extends Controller
 
         return response()->json([
             'message' => 'Login successful',
-            'user' => $user,
+            'user' => $this->presentAuthenticatedUser($user),
             'token' => $token
         ]);
+        }, 3);
     }
 
     public function logout(Request $request)
+    {
+        return app(\App\Services\Users\AccountSecurityMutation::class)->run($request, null, function (User $user) use ($request) {
+            $request->setUserResolver(fn () => $user);
+            return $this->logoutLocked($request);
+        });
+    }
+
+    private function logoutLocked(Request $request)
     {
         $user = $request->user();
         $currentToken = $user->currentAccessToken();
@@ -303,6 +324,38 @@ class AuthController extends Controller
     public function updateProfile(Request $request)
     {
         \App\Support\TaxDocumentMetadata::assertWritable($request->all());
+        $credentialChange = filled($request->input('new_password'))
+            || ($request->has('email') && mb_strtolower(trim((string) $request->input('email'))) !== mb_strtolower(trim((string) $request->user()->email)));
+        if (filled($request->input('new_password'))) {
+            app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'reset', (string) $request->user()->email);
+        } elseif ($credentialChange) {
+            $limiter = app(\App\Services\Users\AuthSecurityLimiter::class);
+            $limiter->consume('security-ip', (string) $request->ip(), 10, 900);
+            $limiter->consume('security-account', (string) $request->user()->getKey(), 10, 900);
+        }
+        if ($request->has('email') && mb_strtolower(trim((string) $request->input('email'))) !== mb_strtolower(trim((string) $request->user()->email))) {
+            $request->validate(['email' => 'required|email|max:255']);
+            $mutation = $this->resolveEmailHealthMutation((string) $request->input('email'), $request->boolean('email_warning_override'));
+            if ($mutation['response']) {
+                return $mutation['response'];
+            }
+            $request->attributes->set('profile_email_health_mutation', $mutation);
+        }
+        return app(\App\Services\Users\AccountSecurityMutation::class)->run($request, $credentialChange ? (string) $request->input('current_password') : null, function (User $user) use ($request) {
+            $request->setUserResolver(fn () => $user);
+            return $this->saveProfile($request);
+        });
+    }
+
+    public function correctVerificationEmail(Request $request)
+    {
+        $request->validate(['email' => 'required|email|max:255', 'current_password' => 'required|string']);
+        $request->replace($request->only(['email', 'current_password', 'email_warning_override']));
+        return $this->updateProfile($request);
+    }
+
+    private function saveProfile(Request $request)
+    {
         $user = $request->user();
 
         if ($request->has('email')) {
@@ -366,7 +419,7 @@ class AuthController extends Controller
             // an assignment that already recorded its own size.
             'default_bracket_mode' => 'nullable|integer|in:3,5',
             'current_password' => 'nullable|string',
-            'new_password' => 'nullable|string|min:8|confirmed',
+            'new_password' => ['nullable', 'string', 'confirmed', new \App\Rules\NewAccountPassword],
             'new_password_confirmation' => 'nullable|string',
             'preferences' => 'sometimes|array',
             'preferences.preferredPhotographer' => 'nullable|string|max:255',
@@ -398,16 +451,10 @@ class AuthController extends Controller
         $previousEmail = $currentEmail;
         $previousEmailStatus = strtolower((string) ($user->email_status ?? ''));
 
-        if (($emailChanged || $passwordChanged) && !Hash::check((string) ($validated['current_password'] ?? ''), (string) $user->password)) {
-            throw ValidationException::withMessages([
-                'current_password' => ['The current password is incorrect.'],
-            ]);
-        }
-
         $emailHealthMutation = null;
         if ($emailChanged) {
             if ($this->shouldRequireEmailVerificationForRole($user->role)) {
-                $emailHealthMutation = $this->resolveEmailHealthMutation(
+                $emailHealthMutation = $request->attributes->get('profile_email_health_mutation') ?? $this->resolveEmailHealthMutation(
                     (string) $incomingEmail,
                     $request->boolean('email_warning_override')
                 );
@@ -494,7 +541,7 @@ class AuthController extends Controller
                 // revocation helper for a password or email change.
                 $user->tokens()->delete();
             }
-            if ($passwordChanged) {
+            if ($reauthRequired) {
                 DB::table('password_reset_tokens')
                     ->whereIn('email', array_values(array_unique([
                         $previousEmail,
@@ -548,6 +595,7 @@ class AuthController extends Controller
         }
 
         if ($emailChanged && $this->shouldRequireEmailVerificationForRole($user->role)) {
+            \App\Services\Users\AccountSecurityMutation::afterCommit($request, function () use ($user, $previousEmailStatus, $previousEmail): void {
             $verificationSent = false;
 
             try {
@@ -592,6 +640,7 @@ class AuthController extends Controller
                     ]
                 );
             }
+            });
         }
 
         if ($termsAccepted) {
@@ -605,8 +654,14 @@ class AuthController extends Controller
             if (empty($metadata['terms_accepted_at'])) {
                 $metadata['terms_accepted_at'] = now()->toISOString();
 
-                $this->mailService->sendTermsAcceptedEmail($user);
-                $this->automationService->handleEvent('TERMS_ACCEPTED', $this->buildUserContext($user));
+                \App\Services\Users\AccountSecurityMutation::afterCommit($request, function () use ($user): void {
+                    try {
+                        $this->mailService->sendTermsAcceptedEmail($user);
+                        $this->automationService->handleEvent('TERMS_ACCEPTED', $this->buildUserContext($user));
+                    } catch (\Throwable $exception) {
+                        Log::warning('Profile saved but terms notification failed.', ['user_id' => $user->getKey(), 'exception_class' => $exception::class]);
+                    }
+                });
             }
 
             $user->metadata = $metadata;
@@ -633,6 +688,7 @@ class AuthController extends Controller
     public function resendEmailVerification(Request $request)
     {
         $user = $request->user();
+        app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'resend', (string) $user?->email);
 
         if (!$user) {
             return response()->json(['message' => 'Unauthorized'], 401);
@@ -646,7 +702,7 @@ class AuthController extends Controller
             ], 422);
         }
 
-        if (strtolower((string) ($user->email_status ?? '')) === EmailHealthService::STATUS_VERIFIED) {
+        if (app(\App\Services\Users\EmailVerificationPilot::class)->verified($user)) {
             return response()->json([
                 'sent' => false,
                 'message' => 'This email address is already verified.',
@@ -721,6 +777,7 @@ class AuthController extends Controller
         $payload['phone'] = $payload['phonenumber'] ?? $user->phonenumber;
         $payload['email_health'] = $user->email_health;
         $payload['legal_status'] = app(LegalDocumentService::class)->statusFor($user);
+        $payload['email_verification'] = app(\App\Services\Users\EmailVerificationPilot::class)->status($user);
 
         return app(PhotographerAddressPolicy::class)->presentSubjectForViewer($payload, $user, $user);
     }
@@ -738,6 +795,7 @@ class AuthController extends Controller
      */
     public function forgotPassword(Request $request)
     {
+        app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'forgot');
         $validated = $request->validate([
             'email' => 'required|email',
         ]);
@@ -746,27 +804,24 @@ class AuthController extends Controller
         $user = User::where('email', $email)->first();
 
         // Always return success for security (don't reveal if email exists)
-        if (!$user) {
+        if (!$user || !$user->isAccountEligibleForAuthentication()) {
             return response()->json([
                 'message' => 'If your email is registered, you will receive a password reset link.',
             ]);
         }
 
         // Generate a password reset token
-        $token = \Illuminate\Support\Str::random(64);
+        try {
+            $token = app(\App\Services\Users\PasswordRecoveryService::class)->issue($user);
         
         // Store the token in password_reset_tokens table
-        \DB::table('password_reset_tokens')->updateOrInsert(
-            ['email' => $user->email],
-            [
-                'token' => Hash::make($token),
-                'created_at' => now(),
-            ]
-        );
         
         // Generate the reset link and send email
         $resetLink = $this->mailService->generatePasswordResetLink($user, $token);
-        $sent = $this->mailService->sendPasswordResetEmail($user, $resetLink);
+            $sent = $this->mailService->sendPasswordResetEmail($user, $resetLink);
+        } catch (\Throwable) {
+            $sent = false;
+        }
 
         if ($sent) {
             Log::info('[Auth] Password reset link sent successfully', ['email' => $email]);
@@ -784,58 +839,21 @@ class AuthController extends Controller
      */
     public function resetPasswordWithToken(Request $request)
     {
+        app(\App\Services\Users\AuthSecurityLimiter::class)->recovery($request, 'reset');
         $validated = $request->validate([
             'email' => 'required|email',
-            'token' => 'required|string',
-            'password' => 'required|string|min:6|confirmed',
+            'token' => 'required|string|max:255',
+            'password' => ['required', 'string', 'confirmed', new \App\Rules\NewAccountPassword],
         ]);
 
         $email = strtolower(trim($validated['email']));
         
-        // Find the password reset token
-        $resetRecord = \DB::table('password_reset_tokens')
-            ->where('email', $email)
-            ->first();
-
-        if (!$resetRecord) {
-            return response()->json([
-                'message' => 'Invalid or expired reset link.',
-            ], 400);
-        }
-
-        // Check if token is valid
-        if (!Hash::check($validated['token'], $resetRecord->token)) {
-            return response()->json([
-                'message' => 'Invalid or expired reset link.',
-            ], 400);
-        }
-
-        // Check if token is expired (60 minutes)
-        $createdAt = \Carbon\Carbon::parse($resetRecord->created_at);
-        if ($createdAt->diffInMinutes(now()) > 60) {
-            // Delete expired token
-            \DB::table('password_reset_tokens')->where('email', $email)->delete();
-            return response()->json([
-                'message' => 'Reset link has expired. Please request a new one.',
-            ], 400);
-        }
-
-        // Find user and update password
-        $user = User::where('email', $email)->first();
+        $user = app(\App\Services\Users\PasswordRecoveryService::class)->consume($email, $validated['token'], $validated['password']);
         if (!$user) {
             return response()->json([
-                'message' => 'User not found.',
-            ], 404);
+                'message' => 'Invalid or expired reset link.',
+            ], 400);
         }
-
-        DB::transaction(function () use ($user, $validated, $email): void {
-            $user->password = $validated['password'];
-            $user->password_changed_at = now();
-            $user->password_reset_required = false;
-            $user->save();
-            $user->tokens()->delete();
-            DB::table('password_reset_tokens')->where('email', $email)->delete();
-        });
 
         $this->recordUserActivity(
             $user,
@@ -922,7 +940,7 @@ class AuthController extends Controller
 
     protected function shouldRequireEmailVerificationForRole(?string $role): bool
     {
-        return !in_array($role, ['admin', 'superadmin'], true);
+        return true;
     }
 
     /**

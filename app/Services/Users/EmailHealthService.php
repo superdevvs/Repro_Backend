@@ -236,6 +236,7 @@ class EmailHealthService
         $user->forceFill([
             'email_status' => self::STATUS_VERIFIED,
             'email_verified_at' => now(),
+            'email_verified_email' => mb_strtolower(trim($user->email)),
             'email_warning_code' => null,
             'email_warning_message' => null,
             'email_suggested_correction' => null,

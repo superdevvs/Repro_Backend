@@ -35,6 +35,7 @@ class AppServiceProvider extends ServiceProvider
         // Resolve soft-deleted users during token authentication so they are explicitly rejected
         // (Req 17.5) rather than being treated as an absent/unknown user.
         Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
+        \App\Models\User::observe(\App\Observers\UserEmailVerificationObserver::class);
 
         // Explicit route model binding for ShootFile
         Route::model('file', ShootFile::class);
