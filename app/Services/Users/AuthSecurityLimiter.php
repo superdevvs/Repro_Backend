@@ -34,7 +34,7 @@ class AuthSecurityLimiter
         }, 3);
         if ($retry > 0) {
             if ($report) {
-                \Illuminate\Support\Facades\Log::notice('Authentication rate limit exceeded.', [
+                \Illuminate\Support\Facades\Log::channel('auth-security')->notice('Authentication rate limit exceeded.', [
                     'scope' => substr($scope, 0, 64),
                     'request_id' => \App\Services\RequestCorrelation::id(request()),
                 ]);

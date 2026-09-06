@@ -379,17 +379,100 @@ class AuthHardeningTest extends TestCase
     public function test_signed_out_rate_limit_events_are_redacted_and_reported_once_per_window(): void
     {
         \Illuminate\Support\Facades\Log::spy();
+        $securityLog = \Mockery::spy(\Psr\Log\LoggerInterface::class);
+        \Illuminate\Support\Facades\Log::shouldReceive('channel')->with('auth-security')->andReturn($securityLog);
         for ($i = 0; $i < 10; $i++) {
             $this->postJson('/api/login', ['email' => "unknown{$i}@example.com", 'password' => 'do-not-log-this'])->assertUnauthorized();
         }
         for ($i = 0; $i < 3; $i++) {
             $this->postJson('/api/login', ['email' => 'unknown@example.com', 'password' => 'do-not-log-this'])->assertStatus(429);
         }
-        \Illuminate\Support\Facades\Log::shouldHaveReceived('notice')->once()->withArgs(function ($message, $context) {
+        $securityLog->shouldHaveReceived('notice')->once()->withArgs(function ($message, $context) {
             return $message === 'Authentication rate limit exceeded.'
                 && array_keys($context) === ['scope', 'request_id']
                 && $context['scope'] === 'login-ip'
                 && is_string($context['request_id']) && $context['request_id'] !== '';
         });
+    }
+
+    public function test_bounded_security_notice_is_written_when_general_logs_require_error_severity(): void
+    {
+        $directory = sys_get_temp_dir().'/repro-auth-security-'.bin2hex(random_bytes(8));
+        $this->assertTrue(mkdir($directory, 0700));
+        $previousLogger = \Illuminate\Support\Facades\Log::getFacadeRoot();
+        $previousLogging = config('logging');
+        $previousEnvironment = $this->app['env'];
+        $previousRequest = $this->app->make('request');
+        $manager = null;
+        try {
+            $this->app['env'] = 'production';
+            config([
+                'logging.default' => 'single',
+                'logging.channels.single.level' => 'error',
+                'logging.channels.single.path' => $directory.'/general.log',
+                'logging.channels.auth-security.path' => $directory.'/auth-security.log',
+            ]);
+            $this->assertSame('notice', config('logging.channels.auth-security.level'));
+            $this->assertSame(14, config('logging.channels.auth-security.days'));
+            $this->assertSame(0660, config('logging.channels.auth-security.permission'));
+            $this->assertContains(\App\Logging\PrivacyLogTap::class, config('logging.channels.auth-security.tap'));
+            $request = Request::create('/api/login', 'POST', [
+                'email' => 'do-not-log@example.invalid', 'password' => 'password-canary-secret',
+            ], [], [], ['REMOTE_ADDR' => '192.0.2.81', 'HTTP_AUTHORIZATION' => 'Bearer token-canary-secret']);
+            $request->headers->set('X-Request-Id', 'client-chosen-canary');
+            $request->attributes->set('api.server_request_id', '6922f56b-9985-48e7-bf01-ce8b35914187');
+            $this->app->instance('request', $request);
+            $manager = new \App\Logging\PrivacyLogManager($this->app);
+            \Illuminate\Support\Facades\Log::swap($manager);
+
+            // The ordinary logger still drops a notice at its error threshold.
+            \Illuminate\Support\Facades\Log::notice('Authentication rate limit exceeded.', ['scope' => 'login-ip']);
+            $limiter = app(\App\Services\Users\AuthSecurityLimiter::class);
+            $reservation = $limiter->consume('login-account', 'do-not-log@example.invalid', 1, 900);
+            for ($attempt = 0; $attempt < 3; $attempt++) {
+                try {
+                    $limiter->consume('login-account', 'do-not-log@example.invalid', 1, 900);
+                    $this->fail('The exhausted authentication counter must reject the attempt.');
+                } catch (\App\Exceptions\PublicApiResponseException $exception) {
+                    $this->assertSame(429, $exception->getResponse()->getStatusCode());
+                }
+            }
+            $manager->channel('auth-security')->getLogger()->close();
+            $manager->channel('single')->getLogger()->close();
+            $files = glob($directory.'/auth-security-*.log');
+            $this->assertCount(1, $files);
+            $contents = file_get_contents($files[0]);
+            $this->assertSame(1, substr_count($contents, 'Authentication rate limit exceeded.'));
+            $this->assertStringContainsString('.NOTICE:', $contents);
+            $this->assertStringContainsString('"scope":"login-account"', $contents);
+            $this->assertStringContainsString('"request_id":"6922f56b-9985-48e7-bf01-ce8b35914187"', $contents);
+            foreach (['do-not-log@example.invalid', '192.0.2.81', 'password-canary-secret', 'token-canary-secret', 'client-chosen-canary', $reservation['key']] as $sensitive) {
+                $this->assertStringNotContainsString($sensitive, $contents);
+            }
+            $this->assertTrue(!is_file($directory.'/general.log') || file_get_contents($directory.'/general.log') === '');
+            $this->assertSame('error', config('logging.channels.single.level'));
+            $row = DB::table('auth_security_limits')->where('key', $reservation['key'])->first();
+            $this->assertSame(1, (int) $row->attempts);
+            $this->assertTrue((bool) $row->reported);
+            if (PHP_OS_FAMILY !== 'Windows') {
+                $this->assertSame(0660, fileperms($files[0]) & 0777);
+            }
+        } finally {
+            if ($manager !== null) {
+                foreach (['auth-security', 'single'] as $channel) {
+                    $manager->channel($channel)->getLogger()->close();
+                    $manager->forgetChannel($channel);
+                }
+            }
+            config(['logging' => $previousLogging]);
+            \Illuminate\Support\Facades\Log::swap($previousLogger);
+            $this->app['env'] = $previousEnvironment;
+            $this->app->instance('request', $previousRequest);
+            // Only files created inside this test's unique directory.
+            foreach (glob($directory.'/*.log') as $file) {
+                unlink($file);
+            }
+            rmdir($directory);
+        }
     }
 }

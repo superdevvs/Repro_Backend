@@ -1,6 +1,6 @@
 # Authentication hardening — audit #9
 
-Prepared in an isolated release based on backend `a7c686425b5b36dabd2f347cd2e866ef3e40caf1` and frontend `93807974017b98ed760be335ac63990b2502a2bb`, the verified live #10 revisions. This #9 candidate has not yet been deployed. The pilot remains inactive; no credential rotation or seeder change has been performed.
+Live backend `3ad628da4e833b70f744dc03c811137b86a11720` and frontend `318fd061106a97419c573da388a77a4502f80991` were released from clean isolated checkouts after full CI. The verification pilot is active: start `2026-09-06T18:48:48Z`, enforcement `2026-09-20T18:48:48Z` (21 September 00:18:48 Asia/Kolkata). No seeder, provisioning default, provider credential or APP_KEY changes occurred.
 
 ## Passwords and request limits
 
@@ -64,3 +64,7 @@ Focused backend validation passed **57 tests, 472 assertions**, with warnings/ri
 Additional focused regressions for malformed email quota consumption and both sides of impersonation passed **3 tests, 92 assertions**. They use real persisted test bearer tokens and preserve allowed recovery access.
 
 Final isolated-candidate focused validation passed **26 backend tests / 318 assertions** and **14 frontend tests**, plus TypeScript and the lint gate. Existing email-health tests passed **24 tests / 207 assertions** after correcting two fixtures that simultaneously claimed verified ownership and unverified delivery status. Production verification continues to use ownership proof. Full CI is required on the committed candidate before deployment.
+
+Production acceptance: 90 read-only checks passed before and after activation. The real loopback HTTP burst produced ten 401 responses followed by 429 while forged IP headers were ignored; a separate request after expiry returned the normal 401 and reset the minute window. Counter cleanup is installed through the dedicated hourly cron. One authorized verification-template test reached the user, who confirmed it displays correctly; the test used a harmless dashboard link because the existing account was already verified. Real ownership-token/correction behavior remains covered by feature tests and deployed synthetic checks, without changing a real account. Full CI passed 3,172 backend tests / 87,940 assertions; frontend quality passed 1,343 tests plus other gates.
+
+A production observation found the global log threshold is `error`, so the default-channel bounded throttle notice is suppressed. The follow-up candidate routes the existing bounded throttle event to a separate restricted daily `auth-security` channel at notice severity, with the privacy processor, mode 0660 and 14-day retention. The default error-only threshold stays unchanged. Focused tests passed 26 tests / 331 assertions, including actual file output with secret/identifier canaries and one notice across repeated blocks.

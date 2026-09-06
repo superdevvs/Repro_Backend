@@ -79,6 +79,18 @@ return [
             'permission' => 0660,
         ],
 
+        // Bounded authentication events must remain visible when general
+        // production diagnostics are restricted to error severity.
+        'auth-security' => [
+            'driver' => 'daily',
+            'tap' => [\App\Logging\PrivacyLogTap::class],
+            'path' => storage_path('logs/auth-security.log'),
+            'level' => 'notice',
+            'days' => 14,
+            'replace_placeholders' => true,
+            'permission' => 0660,
+        ],
+
         'slack' => [
             'driver' => 'slack',
             'tap' => [\App\Logging\PrivacyLogTap::class],
