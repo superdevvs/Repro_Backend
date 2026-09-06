@@ -116,6 +116,7 @@ class ShootRescheduleRequestWorkflowTest extends TestCase
         $client = User::factory()->create(['role' => 'client']);
         $photographer = User::factory()->create(['role' => 'photographer']);
         $shoot = $this->makeShoot($client);
+        $shoot->update(['photographer_id' => $photographer->id]);
 
         Sanctum::actingAs($photographer);
         $this->submitRequest($shoot)->assertCreated()->assertJsonPath('applied', false);

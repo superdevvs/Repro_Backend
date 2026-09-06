@@ -15,6 +15,15 @@ class SettingsController extends Controller
      */
     public function get(Request $request, string $key)
     {
+        if ($this->isDropboxSetting($key)) {
+            // Legacy rows may contain plaintext or encrypted credentials. Do
+            // not load, decrypt, or serialize them through the browser API.
+            return response()->json([
+                'success' => false,
+                'message' => 'Use Dropbox connection status in integration settings.',
+            ], 410);
+        }
+
         try {
             $setting = DB::table('settings')->where('key', $key)->first();
             
@@ -67,6 +76,16 @@ class SettingsController extends Controller
             'type' => 'nullable|string|in:string,json,boolean,integer',
             'description' => 'nullable|string',
         ]);
+
+        if ($this->isDropboxSetting($request->input('key'))) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Manage Dropbox through the secure connection flow in integration settings.',
+                'errors' => [
+                    'key' => ['Dropbox credentials and connection settings cannot be saved here.'],
+                ],
+            ], 422);
+        }
 
         try {
             $type = $request->type ?? 'string';
@@ -147,6 +166,12 @@ class SettingsController extends Controller
             default:
                 return (string) $value;
         }
+    }
+
+    private function isDropboxSetting(string $key): bool
+    {
+        // Include historical flat aliases as well as provider namespaces.
+        return (bool) preg_match('/\A(?:(?:integrations|services)[._])?dropbox(?:\z|[._])/i', trim($key));
     }
 
     // Fields that contain sensitive credentials and should be encrypted at rest

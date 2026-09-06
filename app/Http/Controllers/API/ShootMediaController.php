@@ -177,10 +177,11 @@ class ShootMediaController extends Controller
         return response()->json($result['payload'], $result['status']);
     }
 
-    public function moveFileToCompleted(Request $request, $shootId, $fileId)
+    public function moveFileToCompleted(Request $request, Shoot $shoot, ShootFile $file)
     {
-        $shoot = Shoot::findOrFail($shootId);
-        $file = ShootFile::where('shoot_id', $shootId)->findOrFail($fileId);
+        $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        abort_unless($this->shootAuthorizationSupport->hasRole($request->user(), ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer'])
+            && $this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $request->user()), 403, 'Forbidden');
 
         if (! $file->canMoveToCompleted()) {
             return response()->json([
@@ -199,10 +200,10 @@ class ShootMediaController extends Controller
         }
     }
 
-    public function verifyFile(Request $request, $shootId, $fileId)
+    public function verifyFile(Request $request, Shoot $shoot, ShootFile $file)
     {
-        $shoot = Shoot::findOrFail($shootId);
-        $file = ShootFile::where('shoot_id', $shootId)->findOrFail($fileId);
+        $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        $this->shootAuthorizationSupport->ensureRole(['admin', 'superadmin', 'editing_manager'], $request->user());
 
         if (! $file->canVerify()) {
             return response()->json([
@@ -257,6 +258,10 @@ class ShootMediaController extends Controller
     {
         $user = auth()->user();
         $this->shootAuthorizationSupport->ensureFileBelongsToShoot($shoot, $file);
+        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $user);
+        if (! $this->shootAuthorizationSupport->isClientUser($user)) {
+            abort_unless($this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user), 403, 'Forbidden');
+        }
 
         if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor', 'client'])) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -314,10 +319,13 @@ class ShootMediaController extends Controller
 
     public function reorderMedia(Request $request, Shoot $shoot)
     {
+        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $request->user());
         if (! $this->shootAuthorizationSupport->hasRole(auth()->user(), ['admin', 'superadmin', 'editing_manager', 'photographer'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
+        $request->validate(['files' => 'required|array', 'files.*.id' => 'required|integer', 'files.*.sort_order' => 'required|integer|min:0']);
+        $this->ensureManageableFileIds($shoot, collect($request->input('files'))->pluck('id')->all(), $request->user());
         try {
             $this->reorderShootMediaAction->execute($request, $shoot);
 
@@ -481,14 +489,7 @@ class ShootMediaController extends Controller
     public function getFiles($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
-        // Media listing is a read-only view. Sales reps can view full shoot
-        // details (overview, tours, floorplans) for any shoot, so the photo
-        // media listing must be visible to them too. Download / share / album /
-        // AI actions remain gated by canAccessShootMedia (assigned shoots only).
-        if (
-            ! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())
-            && ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())
-        ) {
+        if (! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -498,10 +499,7 @@ class ShootMediaController extends Controller
     public function listMedia($id, Request $request)
     {
         $shoot = Shoot::findOrFail($id);
-        if (
-            ! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())
-            && ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $request->user())
-        ) {
+        if (! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $request->user())) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -773,6 +771,7 @@ class ShootMediaController extends Controller
     public function reorderFiles(Request $request, Shoot $shoot)
     {
         $user = $request->user();
+        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $user);
         $request->validate([
             'file_ids' => 'required|array|min:1',
             'file_ids.*' => 'integer',
@@ -786,6 +785,9 @@ class ShootMediaController extends Controller
         }
 
         $fileIds = $request->input('file_ids');
+        if (! $this->shootAuthorizationSupport->isClientUser($user)) {
+            $this->ensureManageableFileIds($shoot, $fileIds, $user);
+        }
         if ($this->shootAuthorizationSupport->isClientUser($user)) {
             $manageableCount = $shoot->files()
                 ->whereIn('id', $fileIds)
@@ -812,6 +814,11 @@ class ShootMediaController extends Controller
 
         if (! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
+        }
+        if (! $this->shootAuthorizationSupport->isClientUser($user)) {
+            $this->ensureManageableFileIds($shoot, $request->input('file_ids', []), $user);
+        } else {
+            abort_unless((string) $shoot->client_id === (string) $user->id, 403, 'Forbidden');
         }
 
         if ($this->shootAuthorizationSupport->isClientUser($user)) {
@@ -944,6 +951,15 @@ class ShootMediaController extends Controller
         }
 
         return response()->json($result);
+    }
+
+    private function ensureManageableFileIds(Shoot $shoot, array $fileIds, \App\Models\User $user): void
+    {
+        $files = $shoot->files()->whereIn('id', $fileIds)->get();
+        abort_unless($files->count() === count(array_unique($fileIds)), 404, 'File not found');
+        foreach ($files as $file) {
+            abort_unless($this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user), 403, 'Forbidden');
+        }
     }
 
     private function canEditorDeleteEditedMediaBeforeSubmit(Shoot $shoot, iterable $files): bool

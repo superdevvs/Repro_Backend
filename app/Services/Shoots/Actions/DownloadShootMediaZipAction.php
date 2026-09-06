@@ -36,7 +36,7 @@ class DownloadShootMediaZipAction
             ], 403);
         }
 
-        return $this->executeArchiveDownload($request, $shoot);
+        return $this->executeArchiveDownload($request, $shoot, true);
     }
 
     public function executePublic(Request $request, Shoot $shoot)
@@ -44,7 +44,7 @@ class DownloadShootMediaZipAction
         return $this->executeArchiveDownload($request, $shoot);
     }
 
-    protected function executeArchiveDownload(Request $request, Shoot $shoot)
+    protected function executeArchiveDownload(Request $request, Shoot $shoot, bool $authorizeFiles = false)
     {
         $validated = $request->validate([
             'type' => 'nullable|in:raw,edited',
@@ -75,6 +75,25 @@ class DownloadShootMediaZipAction
 
         if ($this->shootClientReleaseAccessService->isArchiveReleaseLocked($shoot, $shootServiceId, $request->user())) {
             return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        }
+
+        if ($authorizeFiles) {
+            if ($this->shootAuthorizationSupport->isClientUser($request->user()) && $baseType === 'raw') {
+                return response()->json(['message' => 'Raw files are not available for client download.'], 403);
+            }
+
+            // Cached studio archives are shared objects. Check every member before
+            // returning their URL so a service assignment cannot unlock other lanes.
+            foreach ($this->shootMediaArchiveService->getFilesForType($shoot, $type, $shootServiceId) as $file) {
+                if (! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $request->user())) {
+                    return response()->json([
+                        'message' => 'This archive contains files you cannot access. Download an assigned service or select accessible files.',
+                    ], 403);
+                }
+                if ($this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $request->user())) {
+                    return $this->shootClientReleaseAccessService->downloadLockedResponse();
+                }
+            }
         }
 
         try {

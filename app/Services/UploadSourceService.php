@@ -60,9 +60,11 @@ class UploadSourceService
         $this->assertProvider($provider);
 
         $personal = $this->findToken($provider, $user, false);
-        $shared = $this->findToken($provider, $user, true);
+        $studio = $provider === 'dropbox' ? app(DropboxTokenService::class) : null;
+        $studioAvailable = $studio && $this->canUseStudioDropbox($user) && $studio->configured();
+        $shared = $studio ? ($studioAvailable ? $studio->record() : null) : $this->findToken($provider, $user, true);
         $configured = $this->isConfigured($provider);
-        $envAvailable = $provider === 'dropbox' && (bool) config('services.dropbox.access_token');
+        $envAvailable = $studioAvailable && !$shared;
         $token = $personal ?: $shared;
 
         return [
@@ -84,6 +86,7 @@ class UploadSourceService
     public function buildAuthorizationUrl(string $provider, User $user, string $accountType = 'personal'): string
     {
         $this->assertProvider($provider);
+        abort_if($provider === 'dropbox' && $accountType === 'shared', 403, 'Manage the studio Dropbox connection from Integrations.');
 
         if (!$this->isConfigured($provider)) {
             throw new RuntimeException("{$this->label($provider)} OAuth credentials are not configured.");
@@ -99,7 +102,7 @@ class UploadSourceService
         return match ($provider) {
             'dropbox' => 'https://www.dropbox.com/oauth2/authorize?' . http_build_query([
                 'client_id' => config('services.dropbox.client_id'),
-                'redirect_uri' => config('services.dropbox.redirect'),
+                'redirect_uri' => $this->dropboxPersonalRedirect(),
                 'response_type' => 'code',
                 'token_access_type' => 'offline',
                 'state' => $state,
@@ -126,7 +129,13 @@ class UploadSourceService
         }
 
         $accountType = ($payload['account_type'] ?? 'personal') === 'shared' ? 'shared' : 'personal';
+        // Reject old signed states as well as new requests; this path must never write studio credentials.
+        abort_if($provider === 'dropbox' && $accountType === 'shared', 403, 'Manage the studio Dropbox connection from Integrations.');
         $userId = $accountType === 'shared' ? null : (int) ($payload['user_id'] ?? 0);
+        if ($provider === 'dropbox') {
+            $owner = $userId ? User::find($userId) : null;
+            abort_unless($owner && $owner->isAccountEligibleForAuthentication(), 403, 'The upload source owner is no longer active.');
+        }
         $tokenData = $this->exchangeCode($provider, $code);
         $account = $this->fetchAccount($provider, $tokenData['access_token']);
 
@@ -250,12 +259,12 @@ class UploadSourceService
     private function exchangeCode(string $provider, string $code): array
     {
         $response = match ($provider) {
-            'dropbox' => Http::asForm()->post('https://api.dropboxapi.com/oauth2/token', [
+            'dropbox' => Http::withOptions(['verify' => true])->asForm()->post('https://api.dropboxapi.com/oauth2/token', [
                 'code' => $code,
                 'grant_type' => 'authorization_code',
                 'client_id' => config('services.dropbox.client_id'),
                 'client_secret' => config('services.dropbox.client_secret'),
-                'redirect_uri' => config('services.dropbox.redirect'),
+                'redirect_uri' => $this->dropboxPersonalRedirect(),
             ]),
             'google_drive', 'google_photos' => Http::asForm()->post('https://oauth2.googleapis.com/token', [
                 'code' => $code,
@@ -282,10 +291,11 @@ class UploadSourceService
 
     private function resolveAccessToken(string $provider, User $user): string
     {
-        if ($provider === 'dropbox' && config('services.dropbox.access_token')) {
+        if ($provider === 'dropbox') {
             $personal = $this->findToken($provider, $user, false);
             if (!$personal) {
-                return (string) config('services.dropbox.access_token');
+                abort_unless($this->canUseStudioDropbox($user), 403, 'Connect your personal Dropbox account before browsing files.');
+                return app(DropboxTokenService::class)->getValidAccessToken();
             }
         }
 
@@ -311,6 +321,18 @@ class UploadSourceService
             ->first();
     }
 
+    private function canUseStudioDropbox(User $user): bool
+    {
+        return in_array($user->role, ['admin', 'superadmin'], true)
+            && $user->isAccountEligibleForAuthentication()
+            && !request()->attributes->get('is_impersonating', false);
+    }
+
+    private function dropboxPersonalRedirect(): string
+    {
+        return rtrim((string) config('app.url'), '/') . '/api/upload-sources/dropbox/callback';
+    }
+
     private function refreshToken(OauthToken $token): string
     {
         if (!$token->refresh_token) {
@@ -318,7 +340,7 @@ class UploadSourceService
         }
 
         $response = match ($token->provider) {
-            'dropbox' => Http::asForm()->post('https://api.dropboxapi.com/oauth2/token', [
+            'dropbox' => Http::withOptions(['verify' => true])->asForm()->post('https://api.dropboxapi.com/oauth2/token', [
                 'grant_type' => 'refresh_token',
                 'refresh_token' => $token->refresh_token,
                 'client_id' => config('services.dropbox.client_id'),
@@ -356,7 +378,7 @@ class UploadSourceService
     private function listDropboxItems(string $token, string $path): array
     {
         $response = Http::withToken($token)
-            ->withOptions(['verify' => app()->environment('production')])
+            ->withOptions(['verify' => true])
             ->post('https://api.dropboxapi.com/2/files/list_folder', [
                 'path' => $path === '/' ? '' : $path,
                 'recursive' => false,
@@ -491,7 +513,7 @@ class UploadSourceService
     {
         $path = (string) ($item['path'] ?? $item['id'] ?? '');
         $response = Http::withToken($token)
-            ->withOptions(['sink' => $tmpPath, 'verify' => app()->environment('production')])
+            ->withOptions(['sink' => $tmpPath, 'verify' => true])
             ->withHeaders(['Dropbox-API-Arg' => json_encode(['path' => $path])])
             ->post('https://content.dropboxapi.com/2/files/download');
 
@@ -550,7 +572,7 @@ class UploadSourceService
     {
         try {
             $response = match ($provider) {
-                'dropbox' => Http::withToken($accessToken)->withBody('null')->post('https://api.dropboxapi.com/2/users/get_current_account'),
+                'dropbox' => Http::withOptions(['verify' => true])->withToken($accessToken)->withBody('null')->post('https://api.dropboxapi.com/2/users/get_current_account'),
                 'google_drive', 'google_photos' => Http::withToken($accessToken)->get('https://openidconnect.googleapis.com/v1/userinfo'),
                 'onedrive' => Http::withToken($accessToken)->get('https://graph.microsoft.com/v1.0/me?$select=id,displayName,userPrincipalName,mail'),
             };

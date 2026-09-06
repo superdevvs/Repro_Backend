@@ -8,7 +8,6 @@ use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
 use App\Jobs\SyncShootFileToR2Job;
 use App\Models\DropboxFolder;
-use App\Models\OauthToken;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\Scanning\ClamAvClient;
@@ -37,9 +36,9 @@ class DropboxWorkflowService
         $this->tokenService = $tokenService ?: new DropboxTokenService;
         $this->rawThumbnailService = $rawThumbnailService ?: new RawThumbnailService;
 
-        // Configure HTTP options for development environment
+        // Credentials require verified TLS in every environment.
         $this->httpOptions = [
-            'verify' => config('app.env') === 'production' ? true : false,
+            'verify' => true,
             'timeout' => 60,
         ];
     }
@@ -1763,12 +1762,10 @@ class DropboxWorkflowService
                 ];
             }
 
-            // Check if access token is configured
-            $accessToken = config('services.dropbox.access_token');
-            if (empty($accessToken)) {
+            if (!$this->tokenService->configured()) {
                 return [
                     'success' => false,
-                    'message' => 'No Dropbox access token configured.',
+                    'message' => 'Connect the studio Dropbox account before testing.',
                 ];
             }
 
@@ -1794,22 +1791,21 @@ class DropboxWorkflowService
 
             return [
                 'success' => false,
-                'message' => 'Failed to connect to Dropbox: '.($response->json()['error_summary'] ?? 'Unknown error'),
+                'message' => 'Unable to verify the Dropbox connection. Try again or reconnect it.',
             ];
 
         } catch (\Exception $e) {
-            Log::error('Dropbox connection test failed', ['error' => $e->getMessage()]);
+            Log::error('Dropbox connection test failed', ['exception' => $e::class]);
 
             return [
                 'success' => false,
-                'message' => 'Connection failed: '.$e->getMessage(),
+                'message' => 'Unable to verify the Dropbox connection. Try again or reconnect it.',
             ];
         }
     }
 
     /**
-     * Check if Dropbox storage is enabled. A valid access token can come from
-     * env config OR the DB-backed OauthToken record (refresh-token flow).
+     * Honor the studio connection's durable disconnect state and token ownership.
      */
     public function isEnabled(): bool
     {
@@ -1817,18 +1813,8 @@ class DropboxWorkflowService
             return false;
         }
 
-        if (! empty(config('services.dropbox.access_token'))) {
-            return true;
-        }
-
         try {
-            $hasDbToken = OauthToken::query()
-                ->where('provider', 'dropbox')
-                ->whereNotNull('access_token')
-                ->where('access_token', '!=', '')
-                ->exists();
-
-            return $hasDbToken;
+            return $this->tokenService->configured();
         } catch (\Throwable $e) {
             return false;
         }
@@ -1871,7 +1857,6 @@ class DropboxWorkflowService
                 'name' => 'resolve_access_token',
                 'success' => (bool) $accessToken,
                 'duration_ms' => (int) round((microtime(true) - $tokenStart) * 1000),
-                'token_preview' => $accessToken ? substr($accessToken, 0, 6).'…' : null,
             ];
             if (! $accessToken) {
                 return $report;

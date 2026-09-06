@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\ShootFile;
 use App\Models\Shoot;
 use App\Services\Shoots\ShootAuthorizationSupport;
+use App\Services\Shoots\ShootClientReleaseAccessService;
+use App\Services\Shoots\ShootMediaReadService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
@@ -103,7 +105,7 @@ class ImageDownloadController extends Controller
             return Storage::disk('local')->download($shootFile->path, $fileName, [
                 'Content-Type' => $mimeType,
                 'Content-Length' => $fileSize,
-                'Cache-Control' => 'private, max-age=86400', // Cache for 1 day
+                'Cache-Control' => 'private, no-store',
                 'Content-Disposition' => 'attachment; filename="' . $fileName . '"'
             ]);
 
@@ -124,7 +126,7 @@ class ImageDownloadController extends Controller
     /**
      * Download web-sized image (for preview)
      */
-    public function downloadWeb(Request $request, $fileId): StreamedResponse|JsonResponse|\Illuminate\Http\RedirectResponse
+    public function downloadWeb(Request $request, $fileId): \Symfony\Component\HttpFoundation\Response
     {
         $validator = Validator::make(['file_id' => $fileId], [
             'file_id' => 'required|integer|exists:shoot_files,id',
@@ -156,6 +158,10 @@ class ImageDownloadController extends Controller
                 ], 403);
             }
 
+            if (app(ShootClientReleaseAccessService::class)->isFileReleaseLocked($shoot, $shootFile, $user)) {
+                return app(ShootMediaReadService::class)->previewFileResponse($shootFile, true);
+            }
+
             // Check if web version exists
             $webPath = $shootFile->web_path;
 
@@ -165,7 +171,7 @@ class ImageDownloadController extends Controller
             if ($webPath && ($media->readFromR2Enabled() || $media->r2Only())) {
                 $key = $media->normalizeKey($webPath);
                 if ($key && $media->existsOnR2($key)) {
-                    return redirect($media->publicUrl($key));
+                    return redirect($media->temporaryUrl($key));
                 }
             }
 
@@ -184,7 +190,7 @@ class ImageDownloadController extends Controller
             return Storage::disk('public')->download($webPath, $fileName, [
                 'Content-Type' => $mimeType,
                 'Content-Length' => $fileSize,
-                'Cache-Control' => 'public, max-age=31536000', // Cache for 1 year
+                'Cache-Control' => 'private, no-store',
                 'Content-Disposition' => 'inline; filename="' . $fileName . '"' // Inline for preview
             ]);
 
@@ -311,7 +317,7 @@ class ImageDownloadController extends Controller
             // Return ZIP file
             return response()->download($zipPath, $zipFileName, [
                 'Content-Type' => 'application/zip',
-                'Cache-Control' => 'private, max-age=3600', // Cache for 1 hour
+                'Cache-Control' => 'private, no-store',
             ])->deleteFileAfterSend(true);
 
         } catch (\Exception $e) {
@@ -332,34 +338,8 @@ class ImageDownloadController extends Controller
      */
     protected function canDownloadFile($user, Shoot $shoot, ShootFile $file): bool
     {
-        // Admin/superadmin/editing_manager can download anything
-        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-            return true;
-        }
-
-        // Manual iGUIDE archives are private implementation packages. Clients
-        // may view their contents only through the short-lived signed viewer;
-        // never expose the source ZIP through either image download endpoint.
-        if ($file->isIguideOfflinePackage()) {
-            return false;
-        }
-
-        if ($user->role === 'photographer') {
-            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
-        }
-
-        // Editor can download completed shoots
-        if ($user->role === 'editor' && in_array($shoot->status, ['completed', 'delivered'])) {
-            return true;
-        }
-
-        // Client can download their own shoots
-        if ($user->role === 'client' && $shoot->client_id == $user->id) {
-            // Only if shoot is completed or delivered
-            return in_array($shoot->status, ['completed', 'delivered']);
-        }
-
-        return false;
+        return app(ShootAuthorizationSupport::class)->canDownloadShootMediaFile($shoot, $file, $user)
+            && ! app(ShootClientReleaseAccessService::class)->isFileReleaseLocked($shoot, $file, $user);
     }
 
     /**
@@ -367,26 +347,10 @@ class ImageDownloadController extends Controller
      */
     protected function canViewFile($user, Shoot $shoot, ShootFile $file): bool
     {
-        // Admin/superadmin/editing_manager can view anything
-        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager'])) {
-            return true;
-        }
+        $authorization = app(ShootAuthorizationSupport::class);
 
-        if ($user->role === 'photographer') {
-            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
-        }
-
-        // Editor can view completed shoots
-        if ($user->role === 'editor') {
-            return true;
-        }
-
-        // Client can view their own shoots
-        if ($user->role === 'client' && $shoot->client_id == $user->id) {
-            return true;
-        }
-
-        return false;
+        return $authorization->canInteractWithShootMediaFile($shoot, $file, $user)
+            && (! $file->isIguideOfflinePackage() || $authorization->canManageShootOperations($user));
     }
 
     /**

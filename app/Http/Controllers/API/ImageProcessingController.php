@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
 use App\Services\Shoots\ShootAuthorizationSupport;
+use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\ImageProcessingService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -113,7 +114,13 @@ class ImageProcessingController extends Controller
 
         try {
             $user = Auth::user();
-            $fileIds = $request->input('file_ids');
+            $fileIds = array_values(array_unique($request->input('file_ids')));
+            $files = ShootFile::with('shoot')->whereIn('id', $fileIds)->get();
+            // Authorize the complete batch before dispatching or mutating any file.
+            if ($files->count() !== count($fileIds)
+                || $files->contains(fn (ShootFile $file) => ! $this->canProcessFile($user, $file->shoot, $file))) {
+                return response()->json(['error' => 'Unauthorized to process these files'], 403);
+            }
             $processedCount = 0;
             $skippedCount = 0;
             $failedCount = 0;
@@ -318,21 +325,11 @@ class ImageProcessingController extends Controller
      */
     protected function canProcessFile($user, $shoot, ShootFile $file): bool
     {
-        // Admin can process anything
-        if ($user->role === 'admin') {
-            return true;
-        }
+        $authorization = app(ShootAuthorizationSupport::class);
 
-        if ($user->role === 'photographer') {
-            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
-        }
-
-        // Editor can process completed shoots
-        if ($user->role === 'editor' && in_array($shoot->status, ['completed', 'delivered'])) {
-            return true;
-        }
-
-        return false;
+        return $shoot && ! $file->isBlockedFromDelivery() && ! $file->isIguideOfflinePackage()
+            && $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor'])
+            && $authorization->canInteractWithShootMediaFile($shoot, $file, $user);
     }
 
     /**
@@ -340,25 +337,11 @@ class ImageProcessingController extends Controller
      */
     protected function canViewFile($user, $shoot, ShootFile $file): bool
     {
-        // Admin can view anything
-        if ($user->role === 'admin') {
-            return true;
-        }
+        $authorization = app(ShootAuthorizationSupport::class);
 
-        if ($user->role === 'photographer') {
-            return app(ShootAuthorizationSupport::class)->canPhotographerAccessFile($shoot, $file, $user);
-        }
-
-        // Editor can view completed shoots
-        if ($user->role === 'editor') {
-            return true;
-        }
-
-        // Client can view their own shoots
-        if ($user->role === 'client' && $shoot->client_id == $user->id) {
-            return true;
-        }
-
-        return false;
+        return $shoot && ! $file->isBlockedFromDelivery()
+            && (! $file->isIguideOfflinePackage() || $authorization->canManageShootOperations($user))
+            && $authorization->canInteractWithShootMediaFile($shoot, $file, $user)
+            && ! app(ShootClientReleaseAccessService::class)->isFileReleaseLocked($shoot, $file, $user);
     }
 }

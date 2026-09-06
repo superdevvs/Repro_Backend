@@ -8,6 +8,7 @@ use App\Models\ShootRescheduleRequest;
 use App\Models\User;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -28,6 +29,8 @@ use Illuminate\Support\Facades\DB;
  */
 class ShootRescheduleRequestController extends Controller
 {
+    public function __construct(protected ShootAuthorizationSupport $authorization) {}
+
     /**
      * Roles allowed to reschedule a shoot outright, and to review other
      * people's requests. Mirrors the `role:` middleware on the updateStatus
@@ -37,7 +40,9 @@ class ShootRescheduleRequestController extends Controller
 
     public function index(Shoot $shoot)
     {
-        $requests = $shoot->rescheduleRequests()->with(['requester', 'approver'])->latest()->get();
+        $this->authorization->ensureShootAccess($shoot, auth()->user());
+        $requests = $shoot->rescheduleRequests()
+            ->with(['requester:id,name,avatar', 'approver:id,name,avatar'])->latest()->get();
 
         return response()->json([
             'data' => $requests,
@@ -46,6 +51,7 @@ class ShootRescheduleRequestController extends Controller
 
     public function store(Request $request, Shoot $shoot)
     {
+        abort_unless($this->authorization->canSubmitShootRequest($shoot, $request->user()), 403, 'Forbidden');
         $validated = $request->validate([
             'requested_date' => 'required|date',
             'requested_time' => 'nullable|string|max:25',
@@ -84,13 +90,14 @@ class ShootRescheduleRequestController extends Controller
                 ? 'Shoot rescheduled successfully.'
                 : 'Reschedule request submitted for review.',
             'applied' => $canApplyDirectly,
-            'data' => $record->fresh(['requester', 'approver']),
+            'data' => $record->fresh(['requester:id,name,avatar', 'approver:id,name,avatar']),
         ], 201);
     }
 
     public function updateStatus(Request $request, ShootRescheduleRequest $rescheduleRequest)
     {
         $this->authorizeReviewer($request);
+        $this->authorization->ensureShootAccess($rescheduleRequest->shoot, $request->user());
 
         $validated = $request->validate([
             'status' => 'required|in:approved,rejected',

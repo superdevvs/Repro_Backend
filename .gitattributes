@@ -9,3 +9,16 @@
 /.github export-ignore
 CHANGELOG.md export-ignore
 .styleci.yml export-ignore
+
+# Environment files and local operational artifacts never belong in releases.
+.env export-ignore
+.env.* export-ignore
+.env.example -export-ignore
+*.pem export-ignore
+*.key export-ignore
+*.p12 export-ignore
+*.pfx export-ignore
+*.jks export-ignore
+/output export-ignore
+/quarantine* export-ignore
+/bootstrap/cache/*.php export-ignore

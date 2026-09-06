@@ -143,7 +143,8 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        if ($user->role === 'photographer' && !$this->shootAuthorizationSupport->isPhotographerAssignedToShoot($shoot, $user)) {
+        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'photographer', 'editor'])
+            || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -170,15 +171,9 @@ class ShootController extends Controller
     {
         $user = $request->user();
 
-        if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'rep', 'representative'], true)) {
+        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep'])
+            || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        if (in_array($user->role, ['rep', 'representative'], true)) {
-            $client = $shoot->client;
-            if ($client && $client->rep_id !== $user->id) {
-                return response()->json(['message' => 'You can only approve shoots for your assigned clients'], 403);
-            }
         }
 
         if ($shoot->status !== Shoot::STATUS_REQUESTED && $shoot->workflow_status !== Shoot::STATUS_REQUESTED) {

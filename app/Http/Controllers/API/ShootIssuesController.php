@@ -5,10 +5,12 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\AccountLink;
 use App\Models\Shoot;
+use App\Models\User;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootIssueParsingService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class ShootIssuesController extends Controller
 {
@@ -25,11 +27,7 @@ class ShootIssuesController extends Controller
         $user = auth()->user();
         $shoot = Shoot::findOrFail($shootId);
 
-        $isPhotographer = $this->shootAuthorizationSupport->isPhotographerAssignedToShoot($shoot, $user);
-        $isEditor = $shoot->editor_id === $user->id || $user->role === 'editor';
-        $isAdmin = in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
-
-        if (!$isPhotographer && !$isEditor && !$isAdmin) {
+        if (! $this->shootAuthorizationSupport->canResolveShootIssues($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -61,13 +59,14 @@ class ShootIssuesController extends Controller
 
         return response()->json([
             'message' => 'Issues marked as resolved. Shoot resubmitted for review.',
-            'data' => $shoot->fresh(['client', 'photographer', 'service', 'files']),
+            'data' => app(\App\Services\Shoots\ShootPresenter::class)->transformShoot($shoot->fresh()),
         ]);
     }
 
     public function getIssues($shootId, Request $request)
     {
         $shoot = Shoot::findOrFail($shootId);
+        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $request->user());
 
         return response()->json([
             'data' => $this->shootIssueParsingService->parseShootRequests($shoot, $request->user()),
@@ -78,26 +77,32 @@ class ShootIssuesController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $user = $request->user();
+        abort_unless($this->shootAuthorizationSupport->canSubmitShootRequest($shoot, $user), 403, 'Forbidden');
 
         $validated = $request->validate([
             'note' => 'required|string',
-            'mediaId' => 'nullable|exists:shoot_files,id',
+            'mediaId' => ['nullable', Rule::exists('shoot_files', 'id')->where('shoot_id', $shoot->id)],
             'mediaIds' => 'nullable|array',
-            'mediaIds.*' => 'exists:shoot_files,id',
+            'mediaIds.*' => [Rule::exists('shoot_files', 'id')->where('shoot_id', $shoot->id)],
             'assignedToRole' => 'nullable|in:editor,photographer',
             'assignedToUserId' => 'nullable|exists:users,id',
         ]);
 
         $assignedToRole = $validated['assignedToRole'] ?? null;
-        if (strtolower((string) $user->role) === 'client') {
+        if (! $this->shootAuthorizationSupport->canManageShootOperations($user)) {
             $assignedToRole = null;
+            $validated['assignedToUserId'] = null;
         }
+        $this->ensureValidAssignee($shoot, $assignedToRole, $validated['assignedToUserId'] ?? null);
 
         $mediaIds = [];
         if (!empty($validated['mediaIds'])) {
             $mediaIds = $validated['mediaIds'];
         } elseif (!empty($validated['mediaId'])) {
             $mediaIds = [$validated['mediaId']];
+        }
+        foreach ($shoot->files()->whereIn('id', $mediaIds)->get() as $file) {
+            abort_unless($this->shootAuthorizationSupport->canInteractWithShootMediaFile($shoot, $file, $user), 403, 'Forbidden');
         }
 
         $requestId = $this->shootIssueParsingService->generateRequestId($shoot);
@@ -127,6 +132,14 @@ class ShootIssuesController extends Controller
     public function updateIssue($shootId, $issueId, Request $request)
     {
         $shoot = Shoot::findOrFail($shootId);
+        abort_unless($this->shootAuthorizationSupport->canResolveShootIssues($shoot, $request->user()), 403, 'Forbidden');
+        $visibleIssue = collect($this->shootIssueParsingService->parseShootRequests($shoot, $request->user()))
+            ->firstWhere('id', (string) $issueId);
+        abort_unless($visibleIssue, 404, 'Request not found');
+        if (! $this->shootAuthorizationSupport->canManageShootOperations($request->user())) {
+            abort_if(! empty($visibleIssue['assignedToRole'])
+                && ! $this->shootAuthorizationSupport->hasRole($request->user(), [$visibleIssue['assignedToRole']]), 403, 'Forbidden');
+        }
         $validated = $request->validate([
             'status' => 'nullable|in:open,in-progress,resolved,dismissed',
         ]);
@@ -135,6 +148,7 @@ class ShootIssuesController extends Controller
             $shoot,
             (string) $issueId,
             $validated['status'] ?? 'open',
+            $request->user(),
         );
 
         if (!$updatedRequest) {
@@ -143,7 +157,8 @@ class ShootIssuesController extends Controller
 
         return response()->json([
             'message' => 'Request updated successfully',
-            'data' => $updatedRequest,
+            'data' => collect($this->shootIssueParsingService->parseShootRequests($shoot->fresh(), $request->user()))
+                ->firstWhere('id', (string) $issueId),
         ]);
     }
 
@@ -151,6 +166,7 @@ class ShootIssuesController extends Controller
     {
         $shoot = Shoot::findOrFail($shootId);
         $user = $request->user();
+        $this->shootAuthorizationSupport->ensureShootAccess($shoot, $user);
 
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             return response()->json(['message' => 'Only admins can assign requests'], 403);
@@ -160,6 +176,7 @@ class ShootIssuesController extends Controller
             'assignedToRole' => 'required|in:editor,photographer',
             'assignedToUserId' => 'nullable|exists:users,id',
         ]);
+        $this->ensureValidAssignee($shoot, $validated['assignedToRole'], $validated['assignedToUserId'] ?? null);
 
         $updatedRequest = $this->shootIssueParsingService->assignIssueRole(
             $shoot,
@@ -214,10 +231,22 @@ class ShootIssuesController extends Controller
             ])));
         }
 
-        $shoots = $shootsQuery->get();
+        $shoots = $this->shootAuthorizationSupport->scopeAccessibleShootMedia($shootsQuery, $user)->get();
 
         return response()->json([
             'data' => $this->shootIssueParsingService->parseClientRequests($shoots, $user),
         ]);
+    }
+
+    private function ensureValidAssignee(Shoot $shoot, ?string $role, mixed $userId): void
+    {
+        if (! $userId) {
+            return;
+        }
+
+        $assignee = User::find($userId);
+        abort_unless($role && $this->shootAuthorizationSupport->hasRole($assignee, [$role])
+            && $this->shootAuthorizationSupport->canResolveShootIssues($shoot, $assignee),
+            422, 'Assignee must have this role and an assignment on this shoot.');
     }
 }

@@ -956,6 +956,43 @@ class IntegrationController extends Controller
             'service' => 'required|in:zillow,bright_mls,iguide,dropbox,mmm',
         ]);
 
+        if ($request->input('service') === 'dropbox') {
+            $administrator = $request->user();
+            if (!$administrator
+                || !in_array($administrator->role, ['admin', 'superadmin'], true)
+                || !$administrator->isAccountEligibleForAuthentication()
+                || $request->attributes->get('is_impersonating', false)
+                || $request->hasHeader('X-Impersonate-User-Id')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only active administrators outside impersonation can test the studio Dropbox connection.',
+                ], 403);
+            }
+
+            try {
+                $result = $this->dropboxService->testConnection();
+                $success = ($result['success'] ?? false) === true;
+                $message = $success
+                    ? 'Dropbox connection is working.'
+                    : 'Dropbox connection could not be verified. Check its connection in integration settings.';
+
+                // Provider diagnostics may contain tokens, request details, or
+                // arbitrary error text. Expose a reviewed response contract.
+                return response()->json([
+                    'success' => $success,
+                    'message' => $message,
+                    'data' => ['success' => $success, 'message' => $message],
+                ]);
+            } catch (\Throwable $e) {
+                Log::warning('Dropbox connection test could not complete.', ['exception' => get_class($e)]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Dropbox connection test is temporarily unavailable.',
+                ], 503);
+            }
+        }
+
         try {
             $service = $request->service;
             $result = [];
@@ -969,9 +1006,6 @@ class IntegrationController extends Controller
                     break;
                 case 'iguide':
                     $result = $this->iguideService->testConnection();
-                    break;
-                case 'dropbox':
-                    $result = $this->dropboxService->testConnection();
                     break;
                 case 'mmm':
                     $configError = $this->mmmService->validateConfig();
@@ -1018,22 +1052,34 @@ class IntegrationController extends Controller
     /**
      * Get Dropbox storage status
      */
-    public function getDropboxStatus()
+    public function getDropboxStatus(Request $request)
     {
+        $user = $request->user();
+        abort_unless($user && in_array($user->role, ['admin', 'superadmin'], true)
+            && $user->isAccountEligibleForAuthentication() && !$request->attributes->get('is_impersonating', false),
+            403, 'Only an active administrator can view the studio Dropbox connection.');
         try {
             $enabled = config('services.dropbox.enabled', false);
+            $tokens = app(\App\Services\DropboxTokenService::class);
+            $record = $tokens->record();
+            $connected = $tokens->configured();
             
             return response()->json([
                 'success' => true,
                 'data' => [
                     'enabled' => $enabled,
-                    'configured' => !empty(config('services.dropbox.access_token')),
+                    'configured' => $connected,
+                    'connected' => $connected,
+                    'storage_mode' => $enabled && $connected ? 'dropbox' : 'local',
+                    'account_label' => $connected ? ($record?->provider_account_name ?: $record?->provider_account_email) : null,
+                    'revocation_pending' => (bool) ($record?->metadata['revocation_pending'] ?? false),
+                    'connection_version' => $tokens->version(),
                 ],
-            ]);
+            ])->header('Cache-Control', 'no-store');
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage(),
+                'message' => 'Dropbox connection status is unavailable. Try again.',
             ], 500);
         }
     }

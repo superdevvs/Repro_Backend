@@ -44,6 +44,7 @@ class ShootWorkflowController extends Controller
 
     public function putOnHold(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -63,6 +64,7 @@ class ShootWorkflowController extends Controller
 
     public function cancel(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -82,6 +84,7 @@ class ShootWorkflowController extends Controller
 
     public function requestCancellation(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         $isPrivilegedUser = in_array($user->role, ['admin', 'superadmin', 'salesRep', 'rep', 'representative'], true);
         $isOwningClient = $user->role === 'client' && (string) $shoot->client_id === (string) $user->id;
@@ -103,6 +106,7 @@ class ShootWorkflowController extends Controller
 
     public function withdrawRequested(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if ($user->role !== 'client' || (string) $shoot->client_id !== (string) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -122,6 +126,7 @@ class ShootWorkflowController extends Controller
 
     public function approveCancellation(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -141,6 +146,7 @@ class ShootWorkflowController extends Controller
 
     public function rejectCancellation(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -165,7 +171,8 @@ class ShootWorkflowController extends Controller
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
-        $shoots = Shoot::whereNotNull('cancellation_requested_at')
+        $shoots = app(\App\Services\Shoots\ShootAuthorizationSupport::class)
+            ->scopeAccessibleShootMedia(Shoot::query(), $user)->whereNotNull('cancellation_requested_at')
             ->with(['client', 'photographer', 'services'])
             ->orderBy('cancellation_requested_at', 'desc')
             ->get();
@@ -177,6 +184,7 @@ class ShootWorkflowController extends Controller
 
     public function startEditing(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -196,6 +204,7 @@ class ShootWorkflowController extends Controller
 
     public function readyForReview(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -217,6 +226,7 @@ class ShootWorkflowController extends Controller
 
     public function complete(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -236,6 +246,7 @@ class ShootWorkflowController extends Controller
 
     public function decline(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -255,6 +266,7 @@ class ShootWorkflowController extends Controller
 
     public function requestHold(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if ($user->role !== 'client' || (string) $shoot->client_id !== (string) $user->id) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -274,6 +286,7 @@ class ShootWorkflowController extends Controller
 
     public function approveHold(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -293,6 +306,7 @@ class ShootWorkflowController extends Controller
 
     public function rejectHold(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -312,6 +326,7 @@ class ShootWorkflowController extends Controller
 
     public function assignEditor(Request $request, Shoot $shoot)
     {
+        app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
         $user = $request->user();
         if (!in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             return response()->json(['message' => 'Forbidden'], 403);
@@ -331,22 +346,29 @@ class ShootWorkflowController extends Controller
 
     public function getWorkflowStatus($shootId)
     {
-        $shoot = Shoot::with(['files', 'workflowLogs.user'])->findOrFail($shootId);
+        $shoot = Shoot::findOrFail($shootId);
+        $user = auth()->user();
+        $authorization = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        $authorization->ensureShootAccess($shoot, $user);
+        $files = $shoot->files()->get()->filter(fn (ShootFile $file) =>
+            $authorization->canInteractWithShootMediaFile($shoot, $file, $user));
+        $canManage = $authorization->canManageShootOperations($user);
+        $logs = $canManage ? $shoot->workflowLogs()->with('user:id,name,avatar')->latest()->limit(10)->get() : [];
 
         return response()->json([
             'shoot_id' => $shoot->id,
             'workflow_status' => $shoot->workflow_status,
             'file_stats' => [
-                'total' => $shoot->files->count(),
-                'todo' => $shoot->files->where('workflow_stage', ShootFile::STAGE_TODO)->count(),
-                'completed' => $shoot->files->where('workflow_stage', ShootFile::STAGE_COMPLETED)->count(),
-                'verified' => $shoot->files->where('workflow_stage', ShootFile::STAGE_VERIFIED)->count(),
-                'flagged' => $shoot->files->where('workflow_stage', ShootFile::STAGE_FLAGGED)->count(),
+                'total' => $files->count(),
+                'todo' => $files->where('workflow_stage', ShootFile::STAGE_TODO)->count(),
+                'completed' => $files->where('workflow_stage', ShootFile::STAGE_COMPLETED)->count(),
+                'verified' => $files->where('workflow_stage', ShootFile::STAGE_VERIFIED)->count(),
+                'flagged' => $files->where('workflow_stage', ShootFile::STAGE_FLAGGED)->count(),
             ],
-            'workflow_logs' => $shoot->workflowLogs->take(10),
-            'can_upload_photos' => $shoot->canUploadPhotos(),
-            'can_move_to_completed' => $shoot->canMoveToCompleted(),
-            'can_verify' => $shoot->canVerify(),
+            'workflow_logs' => $logs,
+            'can_upload_photos' => $shoot->canUploadPhotos() && ($authorization->canUploadShootMedia($shoot, $user, 'raw') || $authorization->canUploadShootMedia($shoot, $user, 'edited')),
+            'can_move_to_completed' => $shoot->canMoveToCompleted() && $authorization->canResolveShootIssues($shoot, $user),
+            'can_verify' => $canManage && $files->contains(fn (ShootFile $file) => $file->canVerify()),
         ]);
     }
 }

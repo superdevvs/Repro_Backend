@@ -38,13 +38,30 @@ class ShootListingService
 
     public function index(Request $request, ?User $user, callable $transformShoot): JsonResponse
     {
+        $authorization = app(ShootAuthorizationSupport::class);
+        if (! $user) {
+            return response()->json(['message' => 'Authentication required.'], 401);
+        }
+        if (! $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'editor', 'photographer', 'client', 'salesRep'])) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        // Discovery is a separate property-only projection, never permission to
+        // request another client's operational shoot, media, or payment data.
+        if ($authorization->isClientUser($user)
+            && filter_var($request->query('private_listing'), FILTER_VALIDATE_BOOLEAN)
+            && strtolower((string) $request->query('listing_scope')) === 'all') {
+            return $this->privateListingDiscovery($request);
+        }
+
         try {
             $tab = strtolower($request->query('tab', 'scheduled'));
             $isPrivateListingRequest = $request->query('private_listing') !== null;
-            $privateListingScope = strtolower((string) $request->query('listing_scope', 'mine'));
 
             if (!$request->has('tab') && $request->query('private_listing') !== null) {
                 $tab = 'delivered';
+            } elseif (! $request->has('tab') && $authorization->hasRole($user, ['editor'])) {
+                $tab = 'completed';
             }
 
             $page = (int) $request->query('page', 1);
@@ -56,7 +73,7 @@ class ShootListingService
             $isImpersonating = $request->attributes->get('is_impersonating', false);
             $impersonationSuffix = $isImpersonating ? '_imp' : '';
 
-            $cacheKey = 'shoots_index_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage;
+            $cacheKey = 'shoots_index_access_v2_' . $userId . '_' . $userRole . $impersonationSuffix . '_' . $tab . '_' . $page . '_' . $perPage;
 
             // Every param that changes the result set has to be in the cache key.
             // `bracket`, `missing` and `limit` were applied to the query but absent
@@ -79,7 +96,9 @@ class ShootListingService
             }
 
             $needsFiles = $request->query('include_files', 'false') === 'true';
-            $skipCache = $needsFiles || filter_var($request->query('no_cache', false), FILTER_VALIDATE_BOOLEAN);
+            $skipCache = ! $authorization->canManageShootOperations($user) || $isImpersonating
+                || $needsFiles || $request->boolean('include_payments')
+                || filter_var($request->query('no_cache', false), FILTER_VALIDATE_BOOLEAN);
             if (!$skipCache) {
                 $cached = Cache::get($cacheKey);
                 if ($cached !== null) {
@@ -138,57 +157,7 @@ class ShootListingService
                 $eagerLoads['payments'] = 'id,shoot_id,amount,paid_at,status';
             }
 
-            $query = Shoot::with($eagerLoads);
-
-            if ($user && $user->role === 'photographer') {
-                $query->where(function (Builder $scope) use ($user) {
-                    $scope->where('photographer_id', $user->id)
-                        ->orWhereHas('services', function (Builder $serviceQuery) use ($user) {
-                            $serviceQuery->where('shoot_service.photographer_id', $user->id);
-                        });
-                });
-            } elseif ($user && $user->role === 'client') {
-                $canViewAllPrivateListings = $isPrivateListingRequest && $privateListingScope === 'all';
-                if (!$canViewAllPrivateListings) {
-                    // Direction-aware: only owner/main accounts see linked clients' shoots.
-                    // Linked clients do NOT see the owner's shoots solely because they are linked.
-                    $linkedClientIds = \App\Models\AccountLink::getLinkedClientIdsForOwner(
-                        (int) $user->id,
-                        'shoots'
-                    );
-
-                    $query->where(function (Builder $scope) use ($user, $linkedClientIds) {
-                        $scope->where('client_id', $user->id)
-                            ->orWhere(function (Builder $ghostScope) use ($user) {
-                                $ghostScope->whereHas('ghostUsers', function (Builder $ghostQuery) use ($user) {
-                                    $ghostQuery->where('users.id', $user->id);
-                                })->where(function (Builder $deliveredScope) {
-                                    $deliveredScope->whereIn('status', [Shoot::STATUS_DELIVERED])
-                                        ->orWhereIn('workflow_status', [
-                                            Shoot::STATUS_DELIVERED,
-                                            'ready_for_client',
-                                            'admin_verified',
-                                            'ready',
-                                            'workflow_completed',
-                                            'client_delivered',
-                                        ]);
-                                });
-                            });
-
-                        // Include shoots from linked client accounts that shared 'shoots' with this user.
-                        // Direction: $user is the main/owner account, linked accounts are the managed clients.
-                        if (!empty($linkedClientIds)) {
-                            $scope->orWhereIn('client_id', $linkedClientIds);
-                        }
-                    });
-                }
-            } elseif ($user && $user->role === 'editor') {
-                app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
-
-                if (!$request->has('tab')) {
-                    $tab = 'completed';
-                }
-            }
+            $query = $authorization->scopeAccessibleShootMedia(Shoot::with($eagerLoads), $user);
 
             $this->applyTabScope($query, $tab);
             $this->applyOperationalFilters($query, $request, $tab, $user);
@@ -260,6 +229,70 @@ class ShootListingService
                 ],
             ], 500);
         }
+    }
+
+    private function privateListingDiscovery(Request $request): JsonResponse
+    {
+        $query = Shoot::query()->select([
+            'id', 'address', 'city', 'state', 'zip', 'latitude', 'longitude',
+            'listing_type', 'property_details',
+        ])->where('is_private_listing', true)
+            ->where(fn (Builder $scope) => $scope->where('is_listing_hidden', false)->orWhereNull('is_listing_hidden'))
+            ->whereIn(DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), [
+                Shoot::STATUS_DELIVERED, 'ready_for_client', 'admin_verified', 'ready', 'workflow_completed', 'client_delivered',
+            ]);
+
+        // Operational filters can become an oracle for private contacts and
+        // assignments. Discovery searches only fields actually returned below.
+        foreach (['search', 'address'] as $filter) {
+            $value = $request->query($filter, '');
+            $term = is_string($value) ? trim($value) : '';
+            if ($term !== '') {
+                $query->where(fn (Builder $scope) => $scope->where('address', 'like', "%{$term}%")
+                    ->orWhere('city', 'like', "%{$term}%")->orWhere('state', 'like', "%{$term}%")
+                    ->orWhere('zip', 'like', "%{$term}%"));
+            }
+        }
+
+        $perPage = min(200, max(9, (int) $request->query('per_page', 25)));
+        $page = max(1, (int) $request->query('page', 1));
+        $shoots = $query->orderBy('id', 'desc')->paginate($perPage, ['*'], 'page', $page);
+        $data = $shoots->getCollection()->map(function (Shoot $shoot): array {
+            // Never serialize the model or feed it to the operational presenter:
+            // its relations, accessors, and property JSON contain private data.
+            $property = is_array($shoot->property_details) ? $shoot->property_details : [];
+            $numeric = static fn ($value) => is_numeric($value) && is_finite((float) $value) ? (float) $value : null;
+            return [
+                'id' => $shoot->id,
+                'address' => $shoot->address,
+                'city' => $shoot->city,
+                'state' => $shoot->state,
+                'zip' => $shoot->zip,
+                'latitude' => $numeric($shoot->latitude ?? $property['latitude'] ?? $property['lat'] ?? null),
+                'longitude' => $numeric($shoot->longitude ?? $property['longitude'] ?? $property['lng'] ?? null),
+                'listing_type' => in_array($shoot->listing_type, ['for_sale', 'for_rent'], true) ? $shoot->listing_type : null,
+                'bedrooms' => $numeric($property['bedrooms'] ?? null),
+                'bathrooms' => $numeric($property['bathrooms'] ?? null),
+                'sqft' => $numeric($property['sqft'] ?? null),
+                // Asking price is public property information, never the shoot invoice.
+                'price' => $numeric($property['price'] ?? null),
+                'is_private_listing' => true,
+                'is_listing_hidden' => false,
+                'discovery_only' => true,
+                'can_view_details' => false,
+                'can_download_media' => false,
+            ];
+        })->all();
+
+        return response()->json([
+            'data' => $data,
+            'meta' => [
+                'tab' => 'delivered', 'count' => $shoots->total(),
+                'current_page' => $shoots->currentPage(), 'per_page' => $shoots->perPage(),
+                'last_page' => $shoots->lastPage(),
+                'filters' => ['clients' => [], 'photographers' => [], 'services' => []],
+            ],
+        ])->header('Cache-Control', 'private, no-store');
     }
 
     public static function flushCachedListings(): void
@@ -445,10 +478,12 @@ class ShootListingService
 
     protected function buildOperationalFilterMeta(Request $request, ?User $user): array
     {
-        $cacheKey = 'shoots_filter_meta_' . ($user?->id ?? auth()->id()) . '_' . $request->query('tab', 'scheduled');
-
-        return Cache::remember($cacheKey, now()->addHour(), function () {
+        $authorization = app(ShootAuthorizationSupport::class);
+        $build = function () use ($authorization, $user) {
+            $accessible = $authorization->scopeAccessibleShootMedia(Shoot::query(), $user);
+            $shootIds = fn () => (clone $accessible)->select('shoots.id');
             $clients = User::where('role', 'client')
+                ->whereIn('id', (clone $accessible)->select('client_id'))
                 ->select('id', 'name')
                 ->orderBy('name')
                 ->get()
@@ -461,6 +496,8 @@ class ShootListingService
                 ->values();
 
             $photographers = User::where('role', 'photographer')
+                ->where(fn (Builder $scope) => $scope->whereIn('id', (clone $accessible)->select('photographer_id'))
+                    ->orWhereIn('id', DB::table('shoot_service')->select('photographer_id')->whereIn('shoot_id', $shootIds())))
                 ->select('id', 'name')
                 ->orderBy('name')
                 ->get()
@@ -473,6 +510,8 @@ class ShootListingService
                 ->values();
 
             $services = Service::select('id', 'name')
+                ->where(fn (Builder $scope) => $scope->whereIn('id', (clone $accessible)->select('service_id'))
+                    ->orWhereIn('id', DB::table('shoot_service')->select('service_id')->whereIn('shoot_id', $shootIds())))
                 ->orderBy('name')
                 ->get()
                 ->pluck('name')
@@ -484,7 +523,16 @@ class ShootListingService
                 'photographers' => $photographers,
                 'services' => $services,
             ];
-        });
+        };
+
+        // Assignment and account-link removal must take effect on the next
+        // request; restricted actors never read or write cached filter metadata.
+        if (! $authorization->canManageShootOperations($user) || $request->attributes->get('is_impersonating', false)) {
+            return $build();
+        }
+
+        $cacheKey = 'shoots_filter_meta_access_v2_' . $user->id . '_' . $user->role;
+        return Cache::remember($cacheKey, now()->addMinutes(5), $build);
     }
 
     protected function applySearchFilter(Builder $query, string $term): void

@@ -44,6 +44,9 @@ class UploadSourceController extends Controller
         ]);
 
         $accountType = ($validated['account_type'] ?? 'personal') === 'shared' ? 'shared' : 'personal';
+        if ($provider === 'dropbox' && $accountType === 'shared') {
+            return response()->json(['error_type' => 'forbidden', 'message' => 'Manage the studio Dropbox connection from Integrations.'], 403);
+        }
         $user = $request->user();
         if ($accountType === 'shared' && ! in_array($user?->role, ['admin', 'superadmin', 'editing_manager'], true)) {
             return response()->json([
@@ -78,7 +81,7 @@ class UploadSourceController extends Controller
             );
         } catch (Throwable $e) {
             return response(
-                '<!doctype html><title>Connection failed</title><body style="font-family:system-ui;padding:32px">Could not connect upload source: '.e($e->getMessage()).'</body>',
+                '<!doctype html><title>Connection failed</title><body style="font-family:system-ui;padding:32px">Could not connect upload source: '.e($provider === 'dropbox' ? 'Start the Dropbox connection again from the upload source picker. Studio connections are managed in Integrations.' : $e->getMessage()).'</body>',
                 400,
                 ['Content-Type' => 'text/html']
             );
@@ -107,7 +110,7 @@ class UploadSourceController extends Controller
         } catch (Throwable $e) {
             return response()->json([
                 'error_type' => 'source_unavailable',
-                'message' => $e->getMessage(),
+                'message' => $provider === 'dropbox' ? 'Dropbox is unavailable. Connect an authorized account and try again.' : $e->getMessage(),
             ], 409);
         }
     }

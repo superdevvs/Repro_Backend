@@ -290,6 +290,13 @@ class ShootPresenter
         }
         $shoot->append('total_paid', 'remaining_balance', 'total_photographer_pay');
         $requestingUser = auth()->user();
+        // Filter before deriving hero images, counters, or serializing loaded files.
+        if ($requestingUser) {
+            $authorization = app(ShootAuthorizationSupport::class);
+            $shoot->setRelation('files', $shoot->files->filter(fn (ShootFile $file) =>
+                $authorization->canInteractWithShootMediaFile($shoot, $file, $requestingUser))->values());
+        }
+        $scopedMediaCounts = app(ShootAuthorizationSupport::class)->scopedMediaCounts($shoot, $requestingUser);
         $visibleIguideData = $this->iguideDataVisibility->forUser($shoot->iguide_data, $requestingUser);
         $rawOfflinePackage = data_get($shoot->iguide_data, 'manual_offline_package');
         $visibleOfflinePackage = $this->iguideDataVisibility->canManage($requestingUser)
@@ -514,7 +521,7 @@ class ShootPresenter
         ];
 
         $shoot->media_summary = $this->buildMediaSummary($shoot);
-        if (! $shoot->hero_image) {
+        if (! $shoot->hero_image || in_array($requestingRole, ['photographer', 'editor', 'client'], true)) {
             $shoot->hero_image = $this->resolveHeroImage($shoot, false);
         }
         $shoot->primary_action = $this->getPrimaryActionForRole(
@@ -1034,6 +1041,13 @@ class ShootPresenter
                 $shoot->unsetRelation($sensitiveRelation);
             }
         }
+
+        // Compute workflow capabilities from the original operational counters;
+        // only the returned counters are narrowed to this viewer's assignments.
+        foreach ($scopedMediaCounts ?? [] as $field => $value) {
+            $shoot->setAttribute($field, $value);
+        }
+        $shoot->media_summary = $this->buildMediaSummary($shoot);
 
         return $shoot;
     }

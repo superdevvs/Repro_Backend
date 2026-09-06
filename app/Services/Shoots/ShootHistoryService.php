@@ -74,7 +74,7 @@ class ShootHistoryService
                 ->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')
                 ->paginate($perPage);
 
-            $clientCounts = $this->loadClientShootCounts($paginator->getCollection());
+            $clientCounts = $this->loadClientShootCounts($paginator->getCollection(), $user);
 
             $collection = $paginator->getCollection()->map(function (Shoot $shoot) use ($clientCounts) {
                 return $this->transformHistoryShoot($shoot, $clientCounts);
@@ -120,7 +120,7 @@ class ShootHistoryService
             ->orderByRaw('COALESCE(admin_verified_at, editing_completed_at, scheduled_date, created_at) DESC')
             ->get();
 
-        $clientCounts = $this->loadClientShootCounts($shoots);
+        $clientCounts = $this->loadClientShootCounts($shoots, $user);
 
         $rows = $shoots->map(function (Shoot $shoot) use ($clientCounts) {
             return $this->transformHistoryShoot($shoot, $clientCounts);
@@ -149,7 +149,7 @@ class ShootHistoryService
             return false;
         }
 
-        return in_array($user->role, self::HISTORY_ALLOWED_ROLES, true);
+        return app(ShootAuthorizationSupport::class)->hasRole($user, self::HISTORY_ALLOWED_ROLES);
     }
 
     protected function applyHistoryFilters(Builder $query, Request $request, ?User $user): void
@@ -163,20 +163,9 @@ class ShootHistoryService
             if ($user->role === 'client') {
                 Log::debug('Filtering shoots for client', ['client_id' => $user->id]);
                 $query->where('client_id', $user->id);
-            } elseif ($user->role === 'salesRep') {
-                $repId = $user->id;
-                $query->where(function ($q) use ($repId) {
-                    $q->where('rep_id', $repId)
-                        ->orWhereHas('client', function ($clientQuery) use ($repId) {
-                            $clientQuery->where(function ($cq) use ($repId) {
-                                $cq->whereRaw("JSON_EXTRACT(metadata, '$.accountRepId') = ?", [$repId])
-                                    ->orWhereRaw("JSON_EXTRACT(metadata, '$.account_rep_id') = ?", [$repId])
-                                    ->orWhereRaw("JSON_EXTRACT(metadata, '$.repId') = ?", [$repId])
-                                    ->orWhereRaw("JSON_EXTRACT(metadata, '$.rep_id') = ?", [$repId])
-                                    ->orWhere('created_by_id', $repId);
-                            });
-                        });
-                });
+            } elseif (app(ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
+                // Account ownership/creation is not assignment to every shoot for that client.
+                app(ShootAuthorizationSupport::class)->scopeAccessibleShootMedia($query, $user);
             } elseif ($user->role === 'editor') {
                 app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
             }
@@ -276,15 +265,22 @@ class ShootHistoryService
         $this->applyDateRangeFilter($query, 'scheduled_date', $start->toDateString(), $end->toDateString());
     }
 
-    protected function loadClientShootCounts(Collection $shoots): array
+    protected function loadClientShootCounts(Collection $shoots, ?User $user): array
     {
         $clientIds = $shoots->pluck('client_id')->filter()->unique()->values();
         if ($clientIds->isEmpty()) {
             return [];
         }
 
-        return Shoot::select('client_id', DB::raw('COUNT(*) as shoots_count'))
-            ->whereIn('client_id', $clientIds)
+        $query = Shoot::select('client_id', DB::raw('COUNT(*) as shoots_count'))
+            ->whereIn('client_id', $clientIds);
+
+        $authorization = app(ShootAuthorizationSupport::class);
+        if ($authorization->hasRole($user, ['salesRep', 'editor', 'client'])) {
+            $authorization->scopeAccessibleShootMedia($query, $user);
+        }
+
+        return $query
             ->groupBy('client_id')
             ->pluck('shoots_count', 'client_id')
             ->toArray();

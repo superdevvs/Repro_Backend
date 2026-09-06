@@ -282,15 +282,15 @@ Route::post('/ai/test', function (Request $request) {
 })->middleware('auth:sanctum');
 
 Route::prefix('dropbox')->name('dropbox.')->group(function () {
-    // Config (public endpoint for frontend)
-    Route::get('config', [DropboxAuthController::class, 'getConfig'])->name('config');
+    // Studio connection controls require explicit administrator authentication.
+    Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->group(function () {
+        Route::get('config', [DropboxAuthController::class, 'getConfig'])->name('config');
+        Route::post('connect', [DropboxAuthController::class, 'connect'])->middleware('throttle:5,1')->name('connect');
+        Route::post('disconnect', [DropboxAuthController::class, 'disconnect'])->middleware('throttle:5,1')->name('disconnect');
+    });
 
-    // Auth
-    Route::get('connect', [DropboxAuthController::class, 'connect'])->name('connect');
+    // Provider callbacks use one-use browser-bound state or provider signatures.
     Route::get('callback', [DropboxAuthController::class, 'callback'])->name('callback');
-    Route::post('disconnect', [DropboxAuthController::class, 'disconnect'])->name('disconnect');
-
-    // Webhook (can be in api.php if it's stateless)
     Route::match(['get', 'post'], 'webhook', [DropboxAuthController::class, 'webhook'])->name('webhook');
 });
 
@@ -341,16 +341,8 @@ Route::middleware('external_api_key')->prefix('external')->group(function () {
         ->name('external.services');
 });
 
-if (! app()->environment('production')) {
-    Route::get('test/dropbox-config', [App\Http\Controllers\TestDropboxController::class, 'debugConfig']);
-    Route::get('test/dropbox-curl', [App\Http\Controllers\TestDropboxController::class, 'testWithCurl']);
-    Route::get('test/dropbox-connection', [App\Http\Controllers\TestDropboxController::class, 'testConnection']);
-    Route::get('test/dropbox-folder', [App\Http\Controllers\TestDropboxController::class, 'testFolderCreation']);
-    Route::get('test/folder-structure', [App\Http\Controllers\TestDropboxController::class, 'testFolderStructure']);
-    Route::get('test/create-shoot', [App\Http\Controllers\TestDropboxController::class, 'createTestShoot']);
-    Route::post('test/create-shoot-api', [App\Http\Controllers\TestDropboxController::class, 'createTestShootViaAPI']);
-    Route::get('dropbox/setup-long-lived-token', [App\Http\Controllers\TestDropboxController::class, 'setupLongLivedToken']);
-}
+// Legacy Dropbox setup/debug HTTP helpers are retired in every environment.
+// Use the authenticated studio connection flow; operational diagnostics stay CLI-only.
 
 Route::prefix('address')->group(function () {
     Route::get('search', [App\Http\Controllers\AddressLookupController::class, 'searchAddresses']);

@@ -95,8 +95,12 @@ class ShootMediaReadService
 
     public function getFilesPayload(Shoot $shoot, Request $request): array
     {
+        $this->authorizationSupport->ensureShootAccess($shoot, $request->user());
         $type = strtolower((string) $request->query('type', ''));
         $user = $request->user();
+        if ($type === 'raw' && $this->authorizationSupport->isClientUser($user)) {
+            return ['data' => [], 'count' => 0];
+        }
         $userId = $user ? $user->id : 'guest';
         $userRole = $user ? $user->role : 'guest';
         $filesUpdatedAt = (string) $shoot->files()->max('updated_at');
@@ -111,7 +115,9 @@ class ShootMediaReadService
             ])
         );
 
-        $cached = Cache::get($cacheKey);
+        // Restricted accounts must observe assignment/link revocation immediately.
+        $canCache = $this->authorizationSupport->canManageShootOperations($user);
+        $cached = $canCache ? Cache::get('authorized_v2_'.$cacheKey) : null;
         if ($cached !== null) {
             return ['data' => $cached];
         }
@@ -151,6 +157,8 @@ class ShootMediaReadService
         if ($user && $user->role === 'photographer') {
             $files = $this->filterFilesForPhotographer($files, $shoot, $user);
         }
+        $files = $files->filter(fn (ShootFile $file) => $this->authorizationSupport
+            ->canInteractWithShootMediaFile($shoot, $file, $user))->values();
         if ($type === 'edited') {
             $files = $files
                 ->reject(fn (ShootFile $file) => $this->authorizationSupport->isRawCameraFile($file))
@@ -167,7 +175,9 @@ class ShootMediaReadService
             return $this->formatFileSafely($file, $dropboxUrls, $fileNeedsWatermark);
         })->values()->all();
 
-        Cache::put($cacheKey, $formattedFiles, now()->addSeconds(30));
+        if ($canCache) {
+            Cache::put('authorized_v2_'.$cacheKey, $formattedFiles, now()->addSeconds(30));
+        }
 
         return [
             'data' => $formattedFiles,
@@ -177,6 +187,14 @@ class ShootMediaReadService
 
     public function listMediaPayload(Shoot $shoot, string $type, ?User $user = null): array
     {
+        $this->authorizationSupport->ensureShootAccess($shoot, $user);
+        if ($this->authorizationSupport->isClientUser($user)) {
+            $request = Request::create('/', 'GET', ['type' => $type]);
+            $request->setUserResolver(fn () => $user);
+            $payload = $this->getFilesPayload($shoot, $request);
+
+            return ['data' => $payload['data'], 'counts' => ['edited_photo_count' => count($payload['data'])]];
+        }
         if ($user && $user->role === 'editor') {
             $filesPayload = $this->getEditorScopedMediaPayload($shoot, $type, $user);
 
@@ -215,6 +233,11 @@ class ShootMediaReadService
      */
     private function mediaCounts(Shoot $shoot): array
     {
+        $scoped = $this->authorizationSupport->scopedMediaCounts($shoot, auth()->user());
+        if ($scoped !== null) {
+            return $scoped;
+        }
+
         return [
             'raw_photo_count' => $shoot->raw_photo_count,
             'edited_photo_count' => $shoot->edited_photo_count,

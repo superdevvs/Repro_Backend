@@ -236,16 +236,75 @@ class ShootAuthorizationSupport
 
     public function canViewShootDetails(Shoot $shoot, ?User $user = null): bool
     {
-        $user = $user ?? auth()->user();
-        if (! $user) {
+        return $this->canAccessShootMedia($shoot, $user);
+    }
+
+    public function ensureShootAccess(Shoot $shoot, ?User $user = null): void
+    {
+        abort_unless($this->canViewShootDetails($shoot, $user), 403, 'Forbidden');
+    }
+
+    public function canManageShootOperations(?User $user): bool
+    {
+        return $this->hasRole($user, ['admin', 'superadmin', 'editing_manager']);
+    }
+
+    /** Viewing a linked/shared delivery never grants the recipient workflow writes. */
+    public function canSubmitShootRequest(Shoot $shoot, ?User $user): bool
+    {
+        if (! $user || ! $this->canViewShootDetails($shoot, $user)) {
             return false;
         }
 
-        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
-            return true;
+        if ($this->isClientUser($user)) {
+            return (string) $shoot->client_id === (string) $user->id;
         }
 
-        return $this->canAccessShootMedia($shoot, $user);
+        return $this->hasRole($user, [
+            'admin', 'superadmin', 'editing_manager', 'salesRep', 'photographer', 'editor',
+        ]);
+    }
+
+    public function canResolveShootIssues(Shoot $shoot, ?User $user): bool
+    {
+        return $this->canViewShootDetails($shoot, $user)
+            && $this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'photographer', 'editor']);
+    }
+
+    /** Contractor counters must describe the same assigned files as their gallery. */
+    public function scopedMediaCounts(Shoot $shoot, ?User $user): ?array
+    {
+        if (! $this->hasRole($user, ['photographer', 'editor'])) {
+            return null;
+        }
+
+        $files = ($shoot->relationLoaded('files') ? $shoot->files : $shoot->files()->get())
+            ->filter(fn (ShootFile $file) => $this->canInteractWithShootMediaFile($shoot, $file, $user));
+        $items = $shoot->serviceItems()->with('service')->get()->filter(function ($item) use ($shoot, $user) {
+            if ($this->hasRole($user, ['photographer'])) {
+                return $this->canPhotographerAccessServiceItem($shoot, $item->id, $user);
+            }
+
+            return (string) $shoot->editor_id === (string) $user->id
+                || (string) $item->editor_id === (string) $user->id;
+        });
+        $brackets = app(BracketModeResolver::class);
+        $expectedRaw = (int) $items->sum(fn ($item) => $brackets->expectedRawForService($item) ?? 0);
+        $expectedFinal = (int) $items->sum(fn ($item) => app(UploadIntakeResolver::class)->contractedPhotoCount($item) ?? 0);
+        $raw = $files->filter(fn (ShootFile $file) => ! $file->workflow_stage || $file->workflow_stage === ShootFile::STAGE_TODO)->count();
+        $edited = $files->filter(fn (ShootFile $file) => in_array($file->workflow_stage, [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED], true)
+            && ! $this->isRawCameraFile($file))->count();
+
+        return [
+            'raw_photo_count' => $raw,
+            'edited_photo_count' => $edited,
+            'extra_photo_count' => $files->filter(fn (ShootFile $file) => $file->is_extra || $file->media_type === 'extra')->count(),
+            'expected_raw_count' => $expectedRaw,
+            'expected_final_count' => $expectedFinal,
+            'raw_missing_count' => max(0, $expectedRaw - $raw),
+            'edited_missing_count' => max(0, $expectedFinal - $edited),
+            'bracket_mode' => $shoot->bracket_mode,
+        ];
     }
 
     public function isRawCameraFile(ShootFile $file): bool
@@ -333,6 +392,9 @@ class ShootAuthorizationSupport
 
     public function canInteractWithShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
     {
+        if ((string) $file->shoot_id !== (string) $shoot->id) {
+            return false;
+        }
         $user = $user ?? auth()->user();
         if (! $this->canAccessShootMedia($shoot, $user)) {
             return false;
@@ -347,7 +409,7 @@ class ShootAuthorizationSupport
         }
 
         if ($this->isClientUser($user)) {
-            return $this->isClientInteractableEditedFile($file);
+            return $this->isClientManageableEditedFile($file);
         }
 
         return true;
@@ -355,6 +417,9 @@ class ShootAuthorizationSupport
 
     public function canDownloadShootMediaFile(Shoot $shoot, ShootFile $file, ?User $user = null): bool
     {
+        if ((string) $file->shoot_id !== (string) $shoot->id) {
+            return false;
+        }
         $user = $user ?? auth()->user();
         if (! $this->canAccessShootMedia($shoot, $user)) {
             return false;
@@ -377,7 +442,7 @@ class ShootAuthorizationSupport
         }
 
         if ($this->isClientUser($user)) {
-            return $this->isClientInteractableEditedFile($file);
+            return $this->isClientManageableEditedFile($file);
         }
 
         return true;
@@ -400,7 +465,7 @@ class ShootAuthorizationSupport
         }
 
         if ($shoot->relationLoaded('services')) {
-            return $shoot->services->contains(function ($service) use ($photographer) {
+            return collect($shoot->getRelation('services'))->contains(function ($service) use ($photographer) {
                 return (string) ($service->pivot?->photographer_id ?? '') === (string) $photographer->id;
             });
         }
@@ -446,6 +511,10 @@ class ShootAuthorizationSupport
 
     protected function normalizeRole(string $role): string
     {
-        return strtolower(str_replace(['-', ' '], ['_', '_'], trim($role)));
+        $normalized = strtolower(str_replace(['-', ' '], ['_', '_'], trim($role)));
+
+        return in_array($normalized, ['salesrep', 'sales_rep', 'rep', 'representative'], true)
+            ? 'sales_rep'
+            : $normalized;
     }
 }

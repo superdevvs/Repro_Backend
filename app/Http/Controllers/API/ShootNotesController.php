@@ -8,6 +8,7 @@ use App\Models\Shoot;
 use App\Models\WorkflowLog;
 use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootNotesAccessService;
 use App\Services\Shoots\ShootNotesCompatibilityService;
 use Illuminate\Http\Request;
@@ -278,13 +279,10 @@ class ShootNotesController extends Controller
     public function getActivityLog(Request $request, Shoot $shoot)
     {
         $user = $request->user();
-        $role = strtolower($user->role ?? '');
-
-        if ($user->role === 'client' && (string) $shoot->client_id !== (string) $user->id) {
-            abort(403, 'Forbidden');
-        }
-
-        if (!in_array($role, ['admin', 'superadmin', 'editing_manager', 'salesrep', 'client'], true)) {
+        $authorization = app(ShootAuthorizationSupport::class);
+        if (! $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'client'])
+            || ! $authorization->canViewShootDetails($shoot, $user)
+            || ($authorization->isClientUser($user) && (string) $shoot->client_id !== (string) $user->id)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

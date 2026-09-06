@@ -2,391 +2,174 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\Dropbox\DropboxOAuthFlow;
+use App\Services\Dropbox\DropboxWebhookHandler;
+use App\Services\DropboxTokenService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redirect;
-use Illuminate\Support\Facades\Storage; // To handle file uploads/downloads
-use App\Models\User; // Example: Assuming you have a User model
-use App\Models\OauthToken;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 class DropboxAuthController extends Controller
 {
-    protected $dropboxApiUrl = 'https://api.dropboxapi.com/2';
-    protected $dropboxContentUrl = 'https://content.dropboxapi.com/2';
+    public function __construct(
+        private readonly DropboxTokenService $tokens,
+        private readonly DropboxOAuthFlow $flow,
+    ) {}
 
-    // --- Configuration ---
-    // Note: These should be in your config/services.php and .env file
-    // 'dropbox' => [
-    //    'client_id' => env('DROPBOX_CLIENT_ID'),
-    //    'client_secret' => env('DROPBOX_CLIENT_SECRET'),
-    //    'redirect' => env('DROPBOX_REDIRECT_URI'),
-    // ],
-    protected $clientId;
-    protected $clientSecret;
-    protected $redirectUri;
-
-    public function __construct()
+    public function getConfig(Request $request): Response
     {
-        $this->clientId = config('services.dropbox.client_id');
-        $this->clientSecret = config('services.dropbox.client_secret');
-        $this->redirectUri = config('services.dropbox.redirect');
+        $this->flow->administrator($request);
+
+        return response()->json([
+            'configured' => $this->oauthConfigured(),
+            'connected' => $this->tokens->configured(),
+            'connection_version' => $this->tokens->version(),
+        ])->header('Cache-Control', 'no-store');
     }
 
-    // ===================================================================
-    // == CONFIGURATION
-    // ===================================================================
+    public function connect(Request $request): Response
+    {
+        $this->flow->administrator($request);
+        abort_unless($this->oauthConfigured(), 503, 'Dropbox connection is not configured.');
 
-    /**
-     * Get Dropbox configuration for frontend (non-sensitive data only)
-     */
-    public function getConfig()
+        try {
+            $version = $this->tokens->version();
+            $accountId = $this->tokens->currentAccountId();
+            $redirectUri = (string) config('services.dropbox.redirect');
+            $flow = $this->flow->begin($request, [
+                'connection_version' => $version,
+                'account_id' => $accountId,
+                'redirect_uri' => $redirectUri,
+                'client_id' => (string) config('services.dropbox.client_id'),
+            ]);
+            $params = [
+                'client_id' => config('services.dropbox.client_id'),
+                'response_type' => 'code',
+                'redirect_uri' => $redirectUri,
+                'token_access_type' => 'offline',
+                'scope' => 'account_info.read files.metadata.read files.metadata.write files.content.read files.content.write sharing.read sharing.write',
+                'state' => $flow['state'],
+                'code_challenge_method' => 'S256',
+                'code_challenge' => $flow['code_challenge'],
+            ];
+
+            return response()->json([
+                'authorization_url' => 'https://www.dropbox.com/oauth2/authorize?'.http_build_query($params, '', '&', PHP_QUERY_RFC3986),
+            ])->withCookie($flow['cookie'])->header('Cache-Control', 'no-store');
+        } catch (\Throwable $exception) {
+            Log::warning('Dropbox authorization could not be started.', ['exception' => $exception::class]);
+
+            return response()->json(['message' => 'Dropbox connection could not be started. Check the current connection and try again.'], 503);
+        }
+    }
+
+    public function callback(Request $request): Response
+    {
+        try {
+            $flow = $this->flow->consume($request);
+            abort_unless($this->oauthConfigured()
+                && hash_equals($flow['client_id'], (string) config('services.dropbox.client_id'))
+                && hash_equals($flow['redirect_uri'], (string) config('services.dropbox.redirect'))
+                && hash_equals($flow['connection_version'], $this->tokens->version()), 409, 'Dropbox connection changed. Start again.');
+            abort_if($request->has('error'), 400, 'Dropbox authorization was declined.');
+            $code = $request->query('code');
+            abort_unless(is_string($code) && $code !== '' && strlen($code) <= 4096, 400, 'Dropbox authorization code is invalid.');
+
+            // Match Dropbox's PKCE exchange: client ID plus the server-held verifier.
+            $exchange = Http::timeout(15)->asForm()->post('https://api.dropboxapi.com/oauth2/token', [
+                    'client_id' => $flow['client_id'],
+                    'grant_type' => 'authorization_code',
+                    'code' => $code,
+                    'redirect_uri' => $flow['redirect_uri'],
+                    'code_verifier' => $flow['code_verifier'],
+                ]);
+            $data = $exchange->json();
+            abort_unless($exchange->successful() && is_array($data)
+                && is_string($data['access_token'] ?? null) && $data['access_token'] !== ''
+                && is_string($data['refresh_token'] ?? null) && $data['refresh_token'] !== '', 502, 'Dropbox token exchange failed.');
+            $accountResponse = Http::timeout(15)->withToken($data['access_token'])
+                ->withBody('null', 'application/json')
+                ->post('https://api.dropboxapi.com/2/users/get_current_account');
+            $account = $accountResponse->json();
+            abort_unless($accountResponse->successful() && is_array($account)
+                && is_string($account['account_id'] ?? null) && $account['account_id'] !== '', 502, 'Dropbox account could not be verified.');
+            abort_if(! empty($flow['account_id']) && ! hash_equals($flow['account_id'], $account['account_id']), 409,
+                'Disconnect the existing studio account before connecting a different account.');
+            $this->tokens->bind($data, $account, $flow['connection_version'], $flow['administrator'],
+                fn () => $this->flow->revalidate($flow));
+
+            return $this->callbackResult($request, true);
+        } catch (\Throwable $exception) {
+            // Never log provider bodies, codes, credentials or OAuth state.
+            Log::warning('Dropbox authorization was not completed.', ['exception' => $exception::class]);
+            $status = $exception instanceof HttpExceptionInterface ? $exception->getStatusCode() : 503;
+
+            return $this->callbackResult($request, false, $status);
+        }
+    }
+
+    public function disconnect(Request $request): Response
+    {
+        $administrator = $this->flow->administrator($request);
+        $validated = $request->validate(['connection_version' => 'required|string|min:32|max:128']);
+
+        try {
+            $result = $this->tokens->disconnect($validated['connection_version'], $administrator);
+
+            return response()->json($result)->withCookie($this->flow->expiredCookie())->header('Cache-Control', 'no-store');
+        } catch (\Throwable $exception) {
+            Log::warning('Dropbox disconnect could not be completed.', ['exception' => $exception::class]);
+            $status = $exception instanceof HttpExceptionInterface ? $exception->getStatusCode() : 503;
+
+            return response()->json(['message' => $status === 409 ? 'Dropbox connection changed. Refresh and try again.' : 'Dropbox disconnect could not be completed. Try again.'], $status)
+                ->header('Cache-Control', 'no-store');
+        }
+    }
+
+    public function webhook(Request $request): Response
+    {
+        return app(DropboxWebhookHandler::class)->handle($request);
+    }
+
+    private function oauthConfigured(): bool
     {
         $clientId = config('services.dropbox.client_id');
-        $redirectUri = config('services.dropbox.redirect');
-        
-        if (empty($clientId) || $clientId === 'your_dropbox_app_key') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Dropbox Client ID is not configured. Please set DROPBOX_CLIENT_ID in your .env file.',
-                'config' => null,
-            ], 400);
+        $secret = config('services.dropbox.client_secret');
+        $redirect = config('services.dropbox.redirect');
+        if (! is_string($clientId) || trim($clientId) === '' || $clientId === 'your_dropbox_app_key'
+            || ! is_string($secret) || trim($secret) === '' || ! is_string($redirect)) {
+            return false;
         }
-        
-        return response()->json([
-            'success' => true,
-            'config' => [
-                'client_id' => $clientId,
-                'redirect_uri' => $redirectUri,
-            ],
-        ]);
+        $uri = parse_url($redirect);
+        if (! is_array($uri) || empty($uri['host']) || isset($uri['user']) || isset($uri['pass'])
+            || isset($uri['query']) || isset($uri['fragment']) || ($uri['path'] ?? '') !== '/api/dropbox/callback') {
+            return false;
+        }
+
+        return ($uri['scheme'] ?? '') === 'https' || (app()->environment(['local', 'testing'])
+            && ($uri['scheme'] ?? '') === 'http' && in_array($uri['host'], ['localhost', '127.0.0.1', '[::1]'], true));
     }
 
-    // ===================================================================
-    // == AUTHENTICATION FLOW
-    // ===================================================================
-
-    /**
-     * Step 1: Redirect the user to Dropbox's authorization page.
-     */
-    public function connect(Request $request)
+    private function callbackResult(Request $request, bool $success, int $status = 400): Response
     {
-        $state = $request->query('debug') ? 'debug' : null;
-        $params = [
-            'client_id' => $this->clientId,
-            'response_type' => 'code',
-            'redirect_uri' => $this->redirectUri,
-            'token_access_type' => 'offline', // Important to get a refresh token
-            'scope' => 'files.content.write files.content.read account_info.read', // Request necessary permissions
-        ];
-
-        if ($state) {
-            $params['state'] = $state;
+        if ($request->expectsJson()) {
+            $response = response()->json(['connected' => $success,
+                'message' => $success ? 'Dropbox connected.' : 'Dropbox authorization could not be completed. Start again from Settings.'], $success ? 200 : $status);
+        } else {
+            $frontend = rtrim((string) config('app.frontend_url'), '/');
+            $uri = parse_url($frontend);
+            $valid = is_array($uri) && ! empty($uri['host']) && ! isset($uri['user']) && ! isset($uri['pass'])
+                && ! isset($uri['query']) && ! isset($uri['fragment'])
+                && (($uri['scheme'] ?? '') === 'https' || (app()->environment(['local', 'testing'])
+                    && ($uri['scheme'] ?? '') === 'http' && in_array($uri['host'], ['localhost', '127.0.0.1', '[::1]'], true)));
+            $response = $valid
+                ? redirect()->away($frontend.'/integrations?dropbox='.($success ? 'connected' : 'error'))
+                : response()->json(['connected' => $success, 'message' => $success ? 'Dropbox connected. Return to Settings.' : 'Dropbox authorization could not be completed.'], $success ? 200 : $status);
         }
 
-        $authUrl = 'https://www.dropbox.com/oauth2/authorize?' . http_build_query($params);
-
-        return Redirect::to($authUrl);
-    }
-
-    /**
-     * Step 2: Dropbox redirects back to this method.
-     * Exchange the authorization code for an access token.
-     */
-    public function callback(Request $request)
-    {
-        if ($request->has('error')) {
-            Log::error('Dropbox auth error: ' . $request->input('error_description'));
-            return response()->json(['error' => 'Dropbox authorization failed.'], 400);
-        }
-
-        $code = $request->input('code');
-
-        try {
-            $response = Http::withBasicAuth($this->clientId, $this->clientSecret)
-                ->asForm()
-                ->post('https://api.dropboxapi.com/oauth2/token', [
-                    'code' => $code,
-                    'grant_type' => 'authorization_code',
-                    'redirect_uri' => $this->redirectUri,
-                ]);
-
-            if ($response->failed()) {
-                Log::error('Dropbox token exchange failed:', $response->json());
-                return response()->json(['error' => 'Could not retrieve access token.'], 500);
-            }
-
-            $tokenData = $response->json();
-
-            // Persist tokens for server-wide Dropbox integration
-            OauthToken::updateOrCreate(
-                ['provider' => 'dropbox'],
-                [
-                    'access_token' => $tokenData['access_token'] ?? null,
-                    'refresh_token' => $tokenData['refresh_token'] ?? null,
-                    'expires_at' => isset($tokenData['expires_in']) ? now()->addSeconds((int)$tokenData['expires_in']) : null,
-                ]
-            );
-
-            // **IMPORTANT**: Securely store these tokens in your database
-            // associated with the authenticated user.
-            // Example for the currently logged-in user:
-            // $user = auth()->user();
-            // $user->update([
-            //     'dropbox_account_id' => $tokenData['account_id'],
-            //     'dropbox_access_token' => $tokenData['access_token'],
-            //     'dropbox_refresh_token' => $tokenData['refresh_token'],
-            //     'dropbox_token_expires_at' => now()->addSeconds($tokenData['expires_in']),
-            // ]);
-
-            Log::info('Dropbox account linked successfully for account_id: ' . ($tokenData['account_id'] ?? 'unknown'));
-
-            // If state=debug, return tokens as JSON to help set .env locally
-            if ($request->input('state') === 'debug' || config('app.env') === 'local') {
-                // Mask the access token in logs but return full values in response for setup
-                return response()->json([
-                    'message' => 'Dropbox OAuth successful. Copy the following into your .env',
-                    'env_keys' => [
-                        'DROPBOX_CLIENT_ID' => config('services.dropbox.client_id'),
-                        'DROPBOX_CLIENT_SECRET' => substr(config('services.dropbox.client_secret'), 0, 4) . '...hidden',
-                        'DROPBOX_ACCESS_TOKEN' => $tokenData['access_token'] ?? null,
-                        'DROPBOX_REFRESH_TOKEN' => $tokenData['refresh_token'] ?? null,
-                    ],
-                    'notes' => [
-                        'Set DROPBOX_CLIENT_ID and DROPBOX_CLIENT_SECRET from your Dropbox app.',
-                        'Paste DROPBOX_REFRESH_TOKEN to enable auto-refresh of access tokens.',
-                        'Paste DROPBOX_ACCESS_TOKEN as an initial token; it will refresh automatically when expired.'
-                    ]
-                ]);
-            }
-
-            // Default: redirect user
-            return redirect('/dashboard')->with('success', 'Dropbox account connected!');
-
-        } catch (\Exception $e) {
-            Log::error('Exception during Dropbox token exchange: ' . $e->getMessage());
-            return response()->json(['error' => 'An unexpected error occurred.'], 500);
-        }
-    }
-
-    /**
-     * Revoke the user's access token and disconnect their account.
-     */
-    public function disconnect()
-    {
-        // **IMPORTANT**: Retrieve the user's access token from your database.
-        // $user = auth()->user();
-        // $accessToken = $user->dropbox_access_token;
-        $accessToken = "USER_ACCESS_TOKEN_FROM_DB"; // Placeholder
-
-        try {
-             Http::withToken($accessToken)->post($this->dropboxApiUrl . '/auth/token/revoke');
-
-            // **IMPORTANT**: Clear the tokens from your database after revoking.
-            // $user->update([
-            //     'dropbox_account_id' => null,
-            //     'dropbox_access_token' => null,
-            //     'dropbox_refresh_token' => null,
-            //     'dropbox_token_expires_at' => null,
-            // ]);
-
-            Log::info('Dropbox token revoked for user.');
-            return redirect('/settings')->with('success', 'Dropbox account disconnected.');
-
-        } catch (\Exception $e) {
-            Log::error('Failed to revoke Dropbox token: ' . $e->getMessage());
-            return back()->with('error', 'Could not disconnect Dropbox account.');
-        }
-    }
-
-    // ===================================================================
-    // == USER INFO
-    // ===================================================================
-
-    /**
-     * Get information about the current user's Dropbox account.
-     */
-    public function getUserAccount()
-    {
-        // $accessToken = $this->getValidAccessTokenForUser(); // Your logic to get a valid token
-    $accessToken = config('services.dropbox.access_token'); // Use config value
-
-        $response = Http::withToken($accessToken)
-            ->withOptions(['verify' => config('app.env') === 'production'])
-            ->withHeaders(['Content-Type' => 'application/json'])
-            ->withBody('null')
-            ->post($this->dropboxApiUrl . '/users/get_current_account');
-
-        if ($response->successful()) {
-            return response()->json($response->json());
-        }
-
-        return response()->json(['error' => 'Failed to fetch user account.'], $response->status());
-    }
-
-
-    // ===================================================================
-    // == FILE & FOLDER OPERATIONS
-    // ===================================================================
-
-    /**
-     * List files and folders in a given path.
-     * @param string $path The path to list. Empty string for root.
-     */
-    public function listFiles(Request $request)
-    {
-        $path = $request->input('path', ''); // Default to root directory
-
-        // $accessToken = $this->getValidAccessTokenForUser();
-    $accessToken = config('services.dropbox.access_token'); // Use config value
-
-        $response = Http::withToken($accessToken)
-            ->post($this->dropboxApiUrl . '/files/list_folder', [
-                'path' => $path === '/' ? '' : $path, // API requires empty string for root
-                'recursive' => false,
-                'include_media_info' => true,
-            ]);
-
-        if ($response->successful()) {
-            return response()->json($response->json());
-        }
-
-        Log::error('Dropbox listFiles error:', $response->json());
-        return response()->json(['error' => 'Could not list files.'], $response->status());
-    }
-
-    /**
-     * Upload a file to a specified Dropbox path.
-     */
-    public function uploadFile(Request $request)
-    {
-        $request->validate([
-            'file' => 'required|file',
-            'path' => 'required|string', // e.g., "/Apps/MyApp/image.jpg"
-        ]);
-
-    $accessToken = config('services.dropbox.access_token'); // Use config value
-
-        $fileContent = $request->file('file')->get();
-        $dropboxPath = $request->input('path');
-
-        $apiArgs = json_encode([
-            'path' => $dropboxPath,
-            'mode' => 'add', // or 'overwrite'
-            'autorename' => true,
-            'mute' => false,
-        ]);
-
-        $response = Http::withToken($accessToken)
-            ->withBody($fileContent, 'application/octet-stream')
-            ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-            ->post($this->dropboxContentUrl . '/files/upload');
-
-        if ($response->successful()) {
-            return response()->json($response->json());
-        }
-
-        Log::error('Dropbox upload error:', $response->json());
-        return response()->json(['error' => 'File upload failed.'], $response->status());
-    }
-    
-    /**
-     * Download a file from Dropbox.
-     */
-    public function downloadFile(Request $request)
-    {
-        $path = $request->input('path');
-        if (!$path) {
-            return response()->json(['error' => 'File path is required.'], 400);
-        }
-
-    $accessToken = config('services.dropbox.access_token'); // Use config value
-
-        $apiArgs = json_encode(['path' => $path]);
-
-        $response = Http::withToken($accessToken)
-            ->withHeaders(['Dropbox-API-Arg' => $apiArgs])
-            ->get($this->dropboxContentUrl . '/files/download');
-
-        if ($response->successful()) {
-            $filename = basename($path);
-            return response($response->body())
-                ->header('Content-Type', $response->header('Content-Type'))
-                ->header('Content-Disposition', 'attachment; filename="' . $filename . '"');
-        }
-
-        Log::error('Dropbox download error:', $response->json());
-        return response()->json(['error' => 'Could not download file.'], $response->status());
-    }
-
-    /**
-     * Delete a file or folder from Dropbox.
-     */
-    public function deleteFile(Request $request)
-    {
-        $path = $request->input('path');
-        if (!$path) {
-            return response()->json(['error' => 'Path is required for deletion.'], 400);
-        }
-
-    $accessToken = config('services.dropbox.access_token'); // Use config value
-
-        $response = Http::withToken($accessToken)
-            ->post($this->dropboxApiUrl . '/files/delete_v2', [
-                'path' => $path
-            ]);
-
-        if ($response->successful()) {
-            return response()->json($response->json());
-        }
-
-        Log::error('Dropbox delete error:', $response->json());
-        return response()->json(['error' => 'Could not delete item.'], $response->status());
-    }
-
-    // ===================================================================
-    // == WEBHOOK HANDLER (Your existing code, slightly cleaned up)
-    // ===================================================================
-
-    /**
-     * Dropbox Webhook endpoint.
-     * Handles verification (GET) and notifications (POST).
-     */
-    public function webhook(Request $request)
-    {
-        // 1. Verification step (GET)
-        if ($request->isMethod('get') && $request->has('challenge')) {
-            return response($request->query('challenge'), 200)
-                ->header('Content-Type', 'text/plain')
-                ->header('X-Content-Type-Options', 'nosniff');
-        }
-
-        // 2. Notification step (POST)
-        if ($request->isMethod('post')) {
-            $payload = $request->getContent();
-            Log::info('Dropbox Webhook Payload:', [$payload]);
-
-            // **Optional**: Verify the request signature for security
-            // $signature = $request->header('X-Dropbox-Signature');
-            // if (!$this->isValidSignature($signature, $payload)) {
-            //     Log::warning('Invalid Dropbox webhook signature received.');
-            //     return response()->json(['error' => 'Invalid signature'], 403);
-            // }
-
-            $data = json_decode($payload, true);
-            if (isset($data['list_folder']['accounts'])) {
-                foreach ($data['list_folder']['accounts'] as $accountId) {
-                    Log::info("Dropbox change detected for account: " . $accountId);
-                    
-                    // You should queue a job here to process the changes
-                    // to avoid timeout issues and long-running requests.
-                    // ProcessDropboxChanges::dispatch($accountId);
-                }
-            }
-
-            return response()->json(['status' => 'ok']);
-        }
-
-        return response()->json(['error' => 'Invalid request'], 400);
+        return $response->withCookie($this->flow->expiredCookie())
+            ->header('Cache-Control', 'no-store')->header('Pragma', 'no-cache')->header('Referrer-Policy', 'no-referrer');
     }
 }

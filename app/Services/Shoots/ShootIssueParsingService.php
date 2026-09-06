@@ -61,10 +61,23 @@ class ShootIssueParsingService
             $assignedToRole = $parsedRequest['assignedToRole'];
             $assignedToUserId = $parsedRequest['assignedToUserId'];
             $requestStatus = $parsedRequest['status'];
+            $authorization = app(ShootAuthorizationSupport::class);
+            $isContractor = $authorization->hasRole($viewer, ['editor', 'photographer']);
+            if ($isContractor && $assignedToUserId && (string) $assignedToUserId !== (string) $viewer->id) {
+                continue;
+            }
 
             $mediaFiles = [];
             if (!empty($mediaIds)) {
-                $files = ShootFile::whereIn('id', $mediaIds)->get();
+                $files = $shoot->files()->whereIn('id', $mediaIds)->get();
+                if ($viewer) {
+                    $files = $files->filter(fn (ShootFile $file) => app(ShootAuthorizationSupport::class)
+                        ->canInteractWithShootMediaFile($shoot, $file, $viewer));
+                }
+                if ($isContractor && $files->count() !== count(array_unique($mediaIds))) {
+                    continue;
+                }
+                $mediaIds = $files->pluck('id')->all();
                 foreach ($files as $file) {
                     $fileUrl = $this->resolveIssuePreviewUrl($file, $needsWatermark, 'web');
                     $thumbnailUrl = $this->resolveIssuePreviewUrl($file, $needsWatermark, 'thumbnail') ?? $fileUrl;
@@ -193,7 +206,7 @@ class ShootIssueParsingService
         $shoot->save();
     }
 
-    public function updateIssueStatus(Shoot $shoot, string $issueId, string $status): ?array
+    public function updateIssueStatus(Shoot $shoot, string $issueId, string $status, ?User $viewer = null): ?array
     {
         if (!$shoot->admin_issue_notes || !in_array($status, self::REQUEST_STATUS_VALUES, true)) {
             return null;
@@ -231,7 +244,7 @@ class ShootIssueParsingService
         $shoot->is_flagged = $this->hasOpenRequestsFromEntries($shoot, $entries);
         $shoot->save();
 
-        return collect($this->parseShootRequests($shoot->fresh()))
+        return collect($this->parseShootRequests($shoot->fresh(), $viewer))
             ->firstWhere('id', $issueId);
     }
 

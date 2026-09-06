@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\TourEvent;
 use App\Models\Shoot;
+use App\Services\Shoots\ShootAuthorizationSupport;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -63,13 +64,10 @@ class TourAnalyticsController extends Controller
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
-        $allowedRoles = ['admin', 'superadmin', 'editing_manager', 'client', 'rep'];
-        if (!in_array($user->role, $allowedRoles)) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
-        // If client, verify they own this shoot
-        if ($user->role === 'client' && $shoot->client_id !== $user->id) {
+        $authorization = app(ShootAuthorizationSupport::class);
+        if (! $authorization->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'client', 'salesRep'])
+            || ! $authorization->canViewShootDetails($shoot, $user)
+            || ($authorization->isClientUser($user) && (string) $shoot->client_id !== (string) $user->id)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
