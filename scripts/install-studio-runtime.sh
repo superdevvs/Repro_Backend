@@ -34,8 +34,57 @@ if [ "$prepare_only" = --prepare-only ]; then exit 0; fi
 test -f "$app/app/Jobs/ProcessStudioWorkspace.php"
 systemctl is-active --quiet cron
 
+# Flysystem creates private directories with explicit 0700 permissions, regardless
+# of umask. Precreate only the parents shared by PHP-FPM and the Studio worker.
+# Existing private leaves and unrelated storage must retain their permissions.
+prepare_shared_studio_storage() {
+  local deploy_uid fpm_uid shared_gid disk directory owner mode
+  deploy_uid="$(id -u)"
+  fpm_uid="$(id -u www-data)"
+  shared_gid="$(id -g www-data)"
+  local -a shared_directories=(
+    "$app/storage/app/private/studio"
+    "$app/storage/app/private/studio/previews"
+    "$app/storage/app/private/studio/workspaces"
+    "$app/storage/app/public/studio"
+    "$app/storage/app/public/studio/uploads"
+    "$app/storage/app/public/studio/workspaces"
+  )
+
+  # Validate every existing path before changing any directory. Disk roots are
+  # managed by the host and are never created, chmodded or chowned here.
+  for disk in "$app/storage/app/private" "$app/storage/app/public"; do
+    if [ ! -d "$disk" ] || [ "$(realpath -e -- "$disk")" != "$disk" ]; then
+      echo "Studio storage requires an existing, non-symlink disk root: $disk" >&2
+      return 1
+    fi
+    owner="$(stat -c %u -- "$disk")"
+    mode="$(stat -c %a -- "$disk")"
+    if { [ "$owner" != "$deploy_uid" ] && [ "$owner" != "$fpm_uid" ]; } ||
+      [ "$(stat -c %g -- "$disk")" != "$shared_gid" ] || (( (8#$mode & 0070) != 0070 )); then
+      echo "Studio disk root must belong to the deployment account or www-data, with www-data group rwx access: $disk" >&2
+      return 1
+    fi
+  done
+  for directory in "${shared_directories[@]}"; do
+    if [ -L "$directory" ] || { [ -e "$directory" ] && { [ ! -d "$directory" ] || [ "$(stat -c %u -- "$directory")" != "$deploy_uid" ]; }; }; then
+      echo "Refusing to change Studio parent with unexpected type or owner (expected deployment account): $directory" >&2
+      return 1
+    fi
+  done
+  for directory in "${shared_directories[@]}"; do
+    if [ ! -d "$directory" ]; then mkdir -- "$directory"; fi
+    chgrp www-data -- "$directory"
+    case "$directory" in
+      "$app/storage/app/private/"*) chmod 2770 -- "$directory" ;;
+      "$app/storage/app/public/"*) chmod 2775 -- "$directory" ;;
+    esac
+  done
+}
+prepare_shared_studio_storage
+
 # A dedicated user-owned Supervisor leaves the root-owned mail/default worker intact.
-# sg + umask keep generated files writable by PHP-FPM's existing www-data group.
+# sg and the shared parents support both OS users without relaxing private leaves.
 cat > "$runtime/worker.sh" <<EOF
 #!/bin/sh
 set -eu
