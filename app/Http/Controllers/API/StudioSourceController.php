@@ -15,6 +15,8 @@ use Illuminate\Validation\Rule;
 
 class StudioSourceController extends StudioController
 {
+    protected const BROWSE_RECENT_SHOOTS = false;
+
     private const RESULT_LIMIT = 20;
 
     private const WORKFLOWS = [
@@ -40,8 +42,7 @@ class StudioSourceController extends StudioController
     public function __construct(
         private ShootAuthorizationSupport $shootAuthorization,
         private \App\Services\UploadValidationService $uploadValidation
-    ) {
-    }
+    ) {}
 
     public function searchShoots(Request $request): JsonResponse
     {
@@ -52,13 +53,13 @@ class StudioSourceController extends StudioController
         ]);
         $search = trim((string) ($validated['q'] ?? ''));
 
-        if ($search === '') {
+        if ($search === '' && ! static::BROWSE_RECENT_SHOOTS) {
             return $this->shootSearchResponse($search, collect());
         }
 
-        $like = '%' . $search . '%';
+        $like = '%'.$search.'%';
         $shoots = $this->scopeShootQuery(Shoot::query(), $request->user())
-            ->where(function (Builder $query) use ($search, $like): void {
+            ->when($search !== '', fn (Builder $query) => $query->where(function (Builder $query) use ($search, $like): void {
                 $query->where('property_slug', 'like', $like)
                     ->orWhere('mls_id', 'like', $like)
                     ->orWhere('address', 'like', $like)
@@ -69,8 +70,9 @@ class StudioSourceController extends StudioController
                 if (ctype_digit($search)) {
                     $query->orWhere('id', (int) $search);
                 }
-            })
+            }))
             ->latest('updated_at')
+            ->latest('id')
             ->limit(self::RESULT_LIMIT)
             ->get()
             ->map(fn (Shoot $shoot): array => $this->presentShoot($shoot));
@@ -130,7 +132,7 @@ class StudioSourceController extends StudioController
         $rejected = [];
 
         foreach ((array) $request->file('files', []) as $file) {
-            if (!$file instanceof \Illuminate\Http\UploadedFile) {
+            if (! $file instanceof \Illuminate\Http\UploadedFile) {
                 continue;
             }
 
@@ -138,6 +140,7 @@ class StudioSourceController extends StudioController
             $violations = $this->uploadViolations($file, $workflow, $constraints);
             if ($violations !== []) {
                 $rejected[] = compact('filename', 'violations');
+
                 continue;
             }
 
@@ -182,20 +185,20 @@ class StudioSourceController extends StudioController
         $size = $file->getSize();
         $maxBytes = (int) ($constraints['max_bytes'] ?? 0);
 
-        if (!$file->isValid()) {
+        if (! $file->isValid()) {
             $violations[] = [
                 'constraint' => 'upload',
                 'message' => 'The file upload did not complete successfully.',
             ];
         }
-        if (!in_array($extension, (array) ($constraints['extensions'] ?? []), true)) {
+        if (! in_array($extension, (array) ($constraints['extensions'] ?? []), true)) {
             $violations[] = [
                 'constraint' => 'extension',
                 'message' => "Extension .{$extension} is not supported for {$workflow}.",
                 'actual' => $extension,
             ];
         }
-        if (!in_array($mime, (array) ($constraints['mimes'] ?? []), true)) {
+        if (! in_array($mime, (array) ($constraints['mimes'] ?? []), true)) {
             $violations[] = [
                 'constraint' => 'mime',
                 'message' => "MIME type {$mime} is not supported for {$workflow}.",
@@ -235,8 +238,8 @@ class StudioSourceController extends StudioController
         }
 
         $url = \Illuminate\Support\Facades\Storage::disk($disk)->url($path);
-        if (!\Illuminate\Support\Str::startsWith($url, ['http://', 'https://'])) {
-            $url = rtrim((string) config('app.url'), '/') . '/' . ltrim($url, '/');
+        if (! \Illuminate\Support\Str::startsWith($url, ['http://', 'https://'])) {
+            $url = rtrim((string) config('app.url'), '/').'/'.ltrim($url, '/');
         }
 
         return [
@@ -258,7 +261,7 @@ class StudioSourceController extends StudioController
         ];
     }
 
-    private function scopeShootQuery(Builder $query, Authenticatable $user): Builder
+    protected function scopeShootQuery(Builder $query, Authenticatable $user): Builder
     {
         $userIds = $this->authorizedUserIds($user);
 

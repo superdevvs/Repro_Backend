@@ -2,7 +2,6 @@
 
 namespace App\Services\Studio;
 
-use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\StudioWorkspace;
 use App\Models\User;
@@ -10,7 +9,6 @@ use App\Services\RawThumbnailService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Auth\Access\AuthorizationException;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
@@ -25,20 +23,12 @@ class WorkspaceMediaService
         if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor', 'client'], true)) {
             throw new AuthorizationException('This user no longer has Studio editing access.');
         }
-        $privileged = in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true);
-        $teamUsers = $privileged ? User::query()->where(fn (Builder $q) => $q->whereKey($teamId)->orWhere('metadata->team_id', $teamId))->pluck('id')->all() : [$user->id];
         $result = [];
         foreach ($media as $item) {
             if (! empty($item['fileId'])) {
                 $file = ShootFile::with('shoot')->findOrFail($item['fileId']);
                 $shoot = $file->shoot;
-                $inTeam = Shoot::whereKey($shoot->id)->where(function (Builder $q) use ($teamUsers): void {
-                    foreach (['client_id', 'photographer_id', 'editor_id', 'rep_id', 'created_by'] as $column) {
-                        $q->orWhereIn($column, $teamUsers);
-                    }
-                    $q->orWhereHas('services', fn (Builder $s) => $s->whereIn('shoot_service.editor_id', $teamUsers));
-                })->exists();
-                if (! $inTeam || ! $this->authorization->canInteractWithShootMediaFile($shoot, $file, $user)
+                if (! $this->authorization->canInteractWithShootMediaFile($shoot, $file, $user)
                     || ($user->role === 'client' && (! $this->authorization->canDownloadShootMediaFile($shoot, $file, $user)
                         || app(\App\Services\Shoots\ShootClientReleaseAccessService::class)->isFileReleaseLocked($shoot, $file, $user)))) {
                     throw new AuthorizationException('This source is outside your Studio access.');

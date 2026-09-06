@@ -5,12 +5,21 @@ namespace App\Http\Controllers\API;
 use App\Models\ShootFile;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Studio\WorkspaceMediaService;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class StudioWorkspaceSourceController extends StudioSourceController
 {
     protected const STUDIO_ROLES = ['admin', 'superadmin', 'editing_manager', 'editor', 'client'];
+
+    protected const BROWSE_RECENT_SHOOTS = true;
+
+    protected function scopeShootQuery(Builder $query, Authenticatable $user): Builder
+    {
+        return app(ShootAuthorizationSupport::class)->scopeAccessibleShootMedia($query, $user);
+    }
 
     public function upload(Request $request): JsonResponse
     {

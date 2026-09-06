@@ -6,10 +6,20 @@ use App\Models\AccountLink;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
 class ShootAuthorizationSupport
 {
+    private const CLIENT_DELIVERED_STATUSES = [
+        Shoot::STATUS_DELIVERED,
+        'ready_for_client',
+        'admin_verified',
+        'ready',
+        'workflow_completed',
+        'client_delivered',
+    ];
+
     public function hasRole(?User $user, array $roles): bool
     {
         if (! $user) {
@@ -100,14 +110,35 @@ class ShootAuthorizationSupport
     {
         $normalizedStatus = strtolower((string) ($shoot->workflow_status ?: $shoot->status ?: ''));
 
-        return in_array($normalizedStatus, [
-            Shoot::STATUS_DELIVERED,
-            'ready_for_client',
-            'admin_verified',
-            'ready',
-            'workflow_completed',
-            'client_delivered',
-        ], true);
+        return in_array($normalizedStatus, self::CLIENT_DELIVERED_STATUSES, true);
+    }
+
+    /** Query counterpart of canAccessShootMedia; per-file and release checks still apply. */
+    public function scopeAccessibleShootMedia(Builder $query, ?User $user): Builder
+    {
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+            return $query;
+        }
+        if ($this->hasRole($user, ['editor'])) {
+            return app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
+        }
+        if ($this->hasRole($user, ['salesRep', 'rep', 'representative'])) {
+            return $query->where('rep_id', $user->id);
+        }
+        if ($this->hasRole($user, ['photographer'])) {
+            return $query->where(fn (Builder $scope) => $scope->where('photographer_id', $user->id)
+                ->orWhereHas('services', fn (Builder $service) => $service->where('shoot_service.photographer_id', $user->id)));
+        }
+        if ($this->isClientUser($user)) {
+            $clientIds = [$user->id, ...AccountLink::getLinkedClientIdsForOwner((int) $user->id, 'shoots')];
+
+            return $query->where(fn (Builder $scope) => $scope->whereIn('client_id', $clientIds)
+                ->orWhere(fn (Builder $ghost) => $ghost->whereHas('ghostUsers', fn (Builder $recipient) => $recipient->where('users.id', $user->id))
+                    // Match the policy's workflow-status precedence, including the empty fallback.
+                    ->whereIn(\Illuminate\Support\Facades\DB::raw("LOWER(COALESCE(NULLIF(workflow_status, ''), status, ''))"), self::CLIENT_DELIVERED_STATUSES)));
+        }
+
+        return $query->whereRaw('1 = 0');
     }
 
     public function canAccessShootMedia(Shoot $shoot, ?User $user = null): bool
