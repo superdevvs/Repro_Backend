@@ -68,7 +68,7 @@ class PhotographerDefaultBracketPreferenceTest extends TestCase
     public function test_a_photographer_can_save_their_own_default_through_the_profile_endpoint(): void
     {
         $photographer = User::factory()->create(['role' => 'photographer']);
-        Sanctum::actingAs($photographer);
+        $this->withToken($photographer->createToken('profile-preference')->plainTextToken);
 
         $this->putJson('/api/profile', [
             'name' => $photographer->name,
@@ -81,7 +81,7 @@ class PhotographerDefaultBracketPreferenceTest extends TestCase
     public function test_only_three_and_five_are_accepted_by_the_profile_endpoint(): void
     {
         $photographer = User::factory()->create(['role' => 'photographer', 'default_bracket_mode' => 5]);
-        Sanctum::actingAs($photographer);
+        $this->withToken($photographer->createToken('profile-preference')->plainTextToken);
 
         $this->putJson('/api/profile', [
             'name' => $photographer->name,
@@ -129,7 +129,7 @@ class PhotographerDefaultBracketPreferenceTest extends TestCase
         $this->assertSame(3, (int) $item->fresh()->bracket_mode);
 
         // Later profile change: the recorded execution value must not move.
-        Sanctum::actingAs($photographer);
+        $this->withToken($photographer->createToken('profile-preference')->plainTextToken);
         $this->putJson('/api/profile', [
             'name' => $photographer->name,
             'default_bracket_mode' => 5,

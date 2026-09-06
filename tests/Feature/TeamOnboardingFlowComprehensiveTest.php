@@ -184,7 +184,7 @@ class TeamOnboardingFlowComprehensiveTest extends TestCase
     public function test_profile_validation_accepts_valid_blocks(): void
     {
         $client = User::factory()->create(['role' => 'client', 'account_status' => 'active']);
-        Sanctum::actingAs($client);
+        $this->withToken($client->createToken('profile-onboarding')->plainTextToken);
 
         $response = $this->putJson('/api/profile', [
             'preferences' => [
@@ -204,7 +204,7 @@ class TeamOnboardingFlowComprehensiveTest extends TestCase
     public function test_profile_validation_rejects_invalid_blocks(): void
     {
         $client = User::factory()->create(['role' => 'client', 'account_status' => 'active']);
-        Sanctum::actingAs($client);
+        $this->withToken($client->createToken('profile-onboarding')->plainTextToken);
 
         $response = $this->putJson('/api/profile', [
             'preferences' => [

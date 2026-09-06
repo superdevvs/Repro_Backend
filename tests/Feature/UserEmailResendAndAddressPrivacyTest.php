@@ -53,7 +53,7 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
     {
         $this->createDefaultEmailChannel();
 
-        $user = User::factory()->create([
+        $user = User::factory()->unverified()->create([
             'role' => 'client',
             'email' => 'needs-verify@example.com',
             'email_status' => 'unverified',
@@ -152,7 +152,7 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
             'zip' => '21201',
         ]);
 
-        Sanctum::actingAs($photographer);
+        $this->withToken($photographer->createToken('profile-address')->plainTextToken);
         $this->putJson('/api/profile', [
             'address' => '200 New Street',
             'city' => 'Fairfax',
@@ -163,7 +163,8 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         $photographer->refresh();
         $this->assertSame('100 Old Street', $photographer->address);
 
-        Sanctum::actingAs($admin);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($admin->createToken('address-approval')->plainTextToken);
         $this->postJson("/api/admin/users/{$photographer->id}/address-change/approve")
             ->assertOk()
             ->assertJsonPath('message', 'Photographer address change approved.')
@@ -178,7 +179,7 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
         $rep = User::factory()->create(['role' => 'salesRep']);
         $photographer = User::factory()->photographer()->create();
 
-        Sanctum::actingAs($photographer);
+        $this->withToken($photographer->createToken('profile-address')->plainTextToken);
         $this->putJson('/api/profile', [
             'address' => '9 Hidden Lane',
             'city' => 'Reston',
@@ -186,7 +187,8 @@ class UserEmailResendAndAddressPrivacyTest extends TestCase
             'zip' => '20190',
         ])->assertOk();
 
-        Sanctum::actingAs($rep);
+        $this->app['auth']->forgetGuards();
+        $this->withToken($rep->createToken('address-denial')->plainTextToken);
         $this->postJson("/api/admin/users/{$photographer->id}/address-change/approve")
             ->assertStatus(403);
     }
