@@ -94,6 +94,7 @@ class StudioWorkspaceTest extends TestCase
 
     public function test_uploaded_raw_preview_is_authorized_cached_and_used_by_new_and_existing_workspaces(): void
     {
+        config(['studio.client_access_enabled' => true]);
         $user = $this->actor('client');
         $upload = $this->post('/api/studio/workspaces/sources/uploads', [
             'workflow' => 'photo-enhancement',
@@ -307,6 +308,7 @@ class StudioWorkspaceTest extends TestCase
 
     public function test_clients_cannot_edit_raw_unreleased_or_unpaid_shoot_media(): void
     {
+        config(['studio.client_access_enabled' => true]);
         $user = $this->actor('client');
         $shoot = Shoot::factory()->create(['client_id' => $user->id, 'payment_status' => 'unpaid', 'total_quote' => 100]);
         $file = ShootFile::create(['shoot_id' => $shoot->id, 'filename' => 'photo.jpg', 'path' => 'photo.jpg', 'stored_filename' => 'photo.jpg', 'file_type' => 'image/jpeg', 'file_size' => 100, 'uploaded_by' => $user->id, 'scan_status' => ShootFile::SCAN_STATUS_CLEAN, 'workflow_stage' => ShootFile::STAGE_COMPLETED]);
@@ -324,6 +326,7 @@ class StudioWorkspaceTest extends TestCase
 
     public function test_client_source_aliases_resolve_only_own_released_images(): void
     {
+        config(['studio.client_access_enabled' => true]);
         $user = $this->actor('client');
         $shoot = Shoot::factory()->create(['client_id' => $user->id, 'payment_status' => 'paid', 'address' => '123 Source Street']);
         $file = ShootFile::create(['shoot_id' => $shoot->id, 'filename' => 'photo.jpg', 'path' => 'photo.jpg', 'stored_filename' => 'photo.jpg', 'file_type' => 'image/jpeg', 'file_size' => 100, 'uploaded_by' => $user->id, 'scan_status' => ShootFile::SCAN_STATUS_CLEAN, 'workflow_stage' => ShootFile::STAGE_COMPLETED]);
@@ -365,6 +368,7 @@ class StudioWorkspaceTest extends TestCase
 
     public function test_output_download_is_exact_and_scoped_and_config_cannot_seed_runtime(): void
     {
+        config(['studio.client_access_enabled' => true]);
         $user = $this->actor('client');
         $payload = $this->payload($user);
         $payload['config'] = ['_studioRuntime' => ['clips' => ['/etc/passwd']], 'sourceDisk' => 'local', 'studioWorkspaceId' => 'someone-else'];

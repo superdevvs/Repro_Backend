@@ -108,6 +108,7 @@ class StudioWorkspaceShootAccessTest extends TestCase
 
     public function test_client_visibility_matches_directional_links_and_delivered_ghost_policy(): void
     {
+        config(['studio.client_access_enabled' => true]);
         $client = User::factory()->create(['role' => 'client']);
         $linked = User::factory()->create(['role' => 'client']);
         $reverse = User::factory()->create(['role' => 'client']);

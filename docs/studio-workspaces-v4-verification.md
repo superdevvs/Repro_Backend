@@ -2,6 +2,8 @@
 
 Existing Studio endpoints retain their contracts. The persisted V4 workspace API, authorization, queue processing and source previews are implemented in the backend. Contract and runtime instructions are in `studio-workspaces-v4.md`.
 
+Client access is currently paused by the default-off `STUDIO_CLIENT_ACCESS_ENABLED` rollout setting. The workspace API and queued client work enforce this gate, and effective client permissions omit AI Editing without deleting saved grants, drafts or outputs. Staff access is unchanged. The frontend also hides client entry points; a future client launch must deliberately restore both UI and API access. Existing client media-policy tests explicitly enable the rollout to retain coverage of ownership and release rules.
+
 ## Checks
 
 - Final combined suite after clip reuse, download and reserved-field protection: **48 tests, 377 assertions passed**, with warnings/risky tests treated as failures. Executed from Linux container storage to avoid Windows bind-mount latency.

@@ -20,6 +20,7 @@ class WorkspaceMediaService
     /** Client URLs are display hints only. Persist only server-resolved, authorized references. */
     public function authorize(array $media, User $user, int $teamId): array
     {
+        StudioClientAccess::authorize($user);
         if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager', 'editor', 'client'], true)) {
             throw new AuthorizationException('This user no longer has Studio editing access.');
         }

@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Setting;
 use App\Models\User;
+use App\Services\Studio\StudioClientAccess;
 
 class RolePermissionService
 {
@@ -52,6 +53,7 @@ class RolePermissionService
         foreach ($roles as $roleId) {
             if ($roleId === 'superadmin') {
                 $normalized[$roleId] = $catalogIds;
+
                 continue;
             }
 
@@ -71,7 +73,7 @@ class RolePermissionService
         foreach ($this->catalog() as $group) {
             foreach ($group['permissions'] as $permission) {
                 foreach ($permission['defaultRoles'] as $roleId) {
-                    if (!isset($defaults[$roleId])) {
+                    if (! isset($defaults[$roleId])) {
                         continue;
                     }
 
@@ -136,16 +138,16 @@ class RolePermissionService
 
         foreach ($payload as $roleId => $permissionIds) {
             $normalizedRoleId = $this->normalizeRole((string) $roleId);
-            if (!in_array($normalizedRoleId, $roleIds, true)) {
+            if (! in_array($normalizedRoleId, $roleIds, true)) {
                 throw new \InvalidArgumentException("Unknown role [{$roleId}]");
             }
 
-            if (!is_array($permissionIds)) {
+            if (! is_array($permissionIds)) {
                 throw new \InvalidArgumentException("Permissions for [{$roleId}] must be an array");
             }
 
             foreach ($permissionIds as $permissionId) {
-                if (!is_string($permissionId) || !in_array($permissionId, $catalogIds, true)) {
+                if (! is_string($permissionId) || ! in_array($permissionId, $catalogIds, true)) {
                     throw new \InvalidArgumentException("Unknown permission id [{$permissionId}]");
                 }
             }
@@ -177,14 +179,16 @@ class RolePermissionService
         $defaults = $this->defaultPermissionsByRole();
         $setting = Setting::query()->where('key', self::SETTINGS_KEY)->first();
 
-        if (!$setting) {
+        if (! $setting) {
             $this->savePermissions($defaults);
+
             return $defaults;
         }
 
         $decoded = json_decode((string) $setting->value, true);
-        if (!is_array($decoded)) {
+        if (! is_array($decoded)) {
             $this->savePermissions($defaults);
+
             return $defaults;
         }
 
@@ -195,6 +199,7 @@ class RolePermissionService
         foreach ($this->roleIds() as $roleId) {
             if ($roleId === 'superadmin') {
                 $normalized[$roleId] = $catalogIds;
+
                 continue;
             }
 
@@ -234,18 +239,18 @@ class RolePermissionService
         // even if the stored permissions map was created before that default existed.
         $salesRepPermissions = $permissions['salesRep'] ?? [];
 
-        if (in_array('robbie-view', $catalogIds, true) && !in_array('robbie-view', $salesRepPermissions, true)) {
+        if (in_array('robbie-view', $catalogIds, true) && ! in_array('robbie-view', $salesRepPermissions, true)) {
             $salesRepPermissions[] = 'robbie-view';
         }
 
         // Existing installs should also inherit Accounts page access for scoped
         // sales-rep account management without requiring a manual permission reset.
-        if (in_array('accounts-view', $catalogIds, true) && !in_array('accounts-view', $salesRepPermissions, true)) {
+        if (in_array('accounts-view', $catalogIds, true) && ! in_array('accounts-view', $salesRepPermissions, true)) {
             $salesRepPermissions[] = 'accounts-view';
         }
 
         foreach (['account-linking-view', 'account-linking-update'] as $permissionId) {
-            if (in_array($permissionId, $catalogIds, true) && !in_array($permissionId, $salesRepPermissions, true)) {
+            if (in_array($permissionId, $catalogIds, true) && ! in_array($permissionId, $salesRepPermissions, true)) {
                 $salesRepPermissions[] = $permissionId;
             }
         }
@@ -254,13 +259,13 @@ class RolePermissionService
             $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
         } elseif (array_key_exists('salesRep', $permissions)) {
             $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
-        } elseif (!empty($salesRepPermissions)) {
+        } elseif (! empty($salesRepPermissions)) {
             $permissions['salesRep'] = $this->normalizePermissionIds($salesRepPermissions, $catalogIds);
         }
 
         foreach (['admin'] as $roleId) {
             $rolePermissions = $permissions[$roleId] ?? [];
-            if (in_array('voice-calls-view', $catalogIds, true) && !in_array('voice-calls-view', $rolePermissions, true)) {
+            if (in_array('voice-calls-view', $catalogIds, true) && ! in_array('voice-calls-view', $rolePermissions, true)) {
                 $rolePermissions[] = 'voice-calls-view';
                 $permissions[$roleId] = $this->normalizePermissionIds($rolePermissions, $catalogIds);
             }
@@ -285,6 +290,11 @@ class RolePermissionService
     {
         $roles = $this->normalizedUserRoles($user);
         $catalogIds = $this->catalogPermissionIds();
+
+        // Filter effective capabilities only; retain the stored grants for a future rollout.
+        if (StudioClientAccess::isPaused($user)) {
+            $catalogIds = array_values(array_filter($catalogIds, fn (string $id) => $this->permissionRuleForId($id)['resource'] !== 'ai-editing'));
+        }
 
         if ($roles->contains('superadmin')) {
             return $catalogIds;

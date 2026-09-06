@@ -937,9 +937,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // AI Editing Studio endpoints. Endpoint-specific behavior is implemented by
     // the focused controllers while this group preserves one auth/role boundary.
-    // V4 workspaces grant clients only their own drafts and authorized, delivered media.
+    // The client rollout gate preserves drafts and grants while access is paused.
     // The existing Studio administration endpoints retain their original role boundary.
-    Route::prefix('studio/workspaces')->middleware('role:admin,superadmin,editing_manager,editor,client')->group(function () {
+    Route::prefix('studio/workspaces')->middleware(['role:admin,superadmin,editing_manager,editor,client', \App\Http\Middleware\EnsureStudioClientAccess::class])->group(function () {
         $controller = \App\Http\Controllers\API\StudioWorkspaceController::class;
         $sources = \App\Http\Controllers\API\StudioWorkspaceSourceController::class;
         Route::get('/sources/shoots', [$sources, 'searchShoots']);
