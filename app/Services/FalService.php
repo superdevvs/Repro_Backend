@@ -18,11 +18,14 @@ class FalService
 
     private string $imageModel;
 
-    public function __construct()
+    private ?string $walkthroughModel;
+
+    public function __construct(array $models = [])
     {
         $this->key = (string) config('services.fal.key');
-        $this->model = (string) config('services.fal.model', 'fal-ai/wan-pro/image-to-video');
+        $this->model = (string) ($models['video'] ?? config('services.fal.model', 'fal-ai/wan-pro/image-to-video'));
         $this->imageModel = (string) config('services.fal.image_model', 'fal-ai/flux-kontext/dev');
+        $this->walkthroughModel = $models['walkthrough'] ?? null;
     }
 
     public function testConnection(): array
@@ -301,7 +304,7 @@ class FalService
 
     public function submitWalkthroughClip(string $imageUrl, ?string $endImageUrl, string $prompt): string
     {
-        $model = (string) config('services.fal.walkthrough_model');
+        $model = $this->walkthroughModel ?? (string) config('services.fal.walkthrough_model');
         if ($model === '') {
             throw new RuntimeException('The walkthrough start/end-frame model is not configured.');
         }

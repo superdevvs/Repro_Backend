@@ -292,21 +292,23 @@ class StudioWorkspaceTest extends TestCase
         $fal->shouldReceive('imageEditResult')->twice()->andReturn(['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($this->image(0, 255, 0))]);
         $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertAccepted();
         $record->refresh();
-        $job = new ProcessStudioWorkspace($record->id, $record->operation['id']);
-        try {
-            $job->handle(app(WorkspaceProcessor::class));
-            $this->fail('Expected provider failure');
-        } catch (\RuntimeException $exception) {
-            $this->assertStringContainsString('provider could not complete', $exception->getMessage());
-        }
+        $job = (new ProcessStudioWorkspace($record->id, $record->operation['id']))->withFakeQueueInteractions();
+        $job->handle(app(WorkspaceProcessor::class));
+        $job->assertFailedWith(\App\Exceptions\StudioProviderException::class);
         $record->refresh();
+        $this->assertSame('failed', $record->status);
         $this->assertArrayNotHasKey('m3', $record->operation['requests']);
         $this->assertSame(['m2'], $record->operation['completed']);
-        $job->handle(app(WorkspaceProcessor::class));
+        $savedOutput = $record->outputs[0];
+        // A terminal rejection requires an explicit retry; the completed subset is reused.
+        $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertAccepted();
+        $record->refresh();
+        (new ProcessStudioWorkspace($record->id, $record->operation['id']))->handle(app(WorkspaceProcessor::class));
         $record->refresh();
         $this->assertSame('completed', $record->status);
         $this->assertCount(2, $record->outputs);
         $this->assertSame(['m2', 'm3'], array_column($record->outputs, 'mediaId'));
+        $this->assertSame($savedOutput, $record->outputs[0]);
     }
 
     public function test_clients_cannot_edit_raw_unreleased_or_unpaid_shoot_media(): void

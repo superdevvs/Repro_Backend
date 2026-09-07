@@ -20,7 +20,7 @@ class WorkspaceClipReuse
     public static function fingerprints(array $refs, array $config): array
     {
         $walkthrough = ($config['presetId'] ?? null) === 'walkthrough';
-        $model = (string) config($walkthrough ? 'services.fal.walkthrough_model' : 'services.fal.model');
+        $model = (string) ($config['_studioProviderRoute']['model'] ?? config($walkthrough ? 'services.fal.walkthrough_model' : 'services.fal.model'));
         $refs = array_values($refs);
         $fingerprints = [];
         foreach ($refs as $index => $ref) {

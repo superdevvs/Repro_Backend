@@ -37,7 +37,7 @@ class WorkspaceProcessor
         $this->media->authorize($workspace->media, \App\Models\User::findOrFail($workspace->created_by), $workspace->team_id);
         $type = $workspace->operation['type'];
         $items = $workspace->media;
-        if ($type === 'revision') {
+        if (in_array($type, ['revision', 'upscale'], true)) {
             $items = array_values(array_filter($items, fn ($m) => $m['id'] === $workspace->operation['payload']['mediaId']));
         } elseif (count($workspace->config['frames'] ?? [])) {
             $selected = array_column($workspace->config['frames'], 'mediaId');
@@ -55,10 +55,14 @@ class WorkspaceProcessor
             if (in_array($item['id'], $workspace->operation['completed'] ?? [], true)) {
                 continue;
             }
-            $bytes = $this->sourceBytes($workspace, $item, $type === 'revision');
+            $bytes = $type === 'upscale'
+                ? $this->upscaleSource($workspace, $item)
+                : $this->sourceBytes($workspace, $item, $type === 'revision');
             $frame = collect($workspace->config['frames'] ?? [])->firstWhere('mediaId', $item['id']) ?? ['mediaId' => $item['id'], 'method' => 'fit'];
             if ($type === 'prepare') {
                 $result = $this->prepareImage($workspace, $operationId, $item, $bytes, $frame);
+            } elseif ($type === 'upscale') {
+                $result = (string) $this->images->read(app(WorkspaceImageOperations::class)->upscale($workspace, $operationId, $item['id'], $bytes))->toJpeg(96);
             } else {
                 $result = $this->editImage($workspace, $operationId, $item, $bytes, $type);
             }
@@ -118,15 +122,15 @@ class WorkspaceProcessor
         if ($dx <= 1 && $dy <= 1) {
             return (string) $image->toJpeg(92);
         }
-        $model = config('services.fal.outpaint_model', 'fal-ai/flux-2-pro/outpaint');
-        $id = $this->requestId($w, $operationId, $item['id'], function () use ($image, $model, $dx, $dy): string {
-            return $this->fal->submitModel($model, ['image_url' => 'data:image/jpeg;base64,'.base64_encode((string) $image->toJpeg(92)), 'expand_left' => (int) floor($dx / 2), 'expand_right' => (int) ceil($dx / 2), 'expand_top' => (int) floor($dy / 2), 'expand_bottom' => (int) ceil($dy / 2), 'auto_crop' => false, 'output_format' => 'jpeg']);
-        });
-        $this->poll($w, $operationId, $item['id'], fn () => $this->fal->modelStatus($model, $id));
+        $bytes = app(WorkspaceImageOperations::class)->outpaint($w, $operationId, $item['id'], (string) $image->toJpeg(92), $w->config['ratio'], [
+            'expand_left' => (int) floor($dx / 2), 'expand_right' => (int) ceil($dx / 2), 'expand_top' => (int) floor($dy / 2), 'expand_bottom' => (int) ceil($dy / 2),
+        ]);
+        $extended = $this->images->read($bytes)->cover($width, $height);
+        // Both providers may reinterpret the source; restore its complete original rectangle.
+        $image->scale(width: $width, height: $height);
+        $extended->place($image, 'center');
 
-        $url = $this->providerCall($w, $operationId, $item['id'], fn () => $this->fal->modelImageResult($model, $id));
-
-        return (string) $this->images->read($this->download($url))->cover($width, $height)->toJpeg(92);
+        return (string) $extended->toJpeg(92);
     }
 
     private function editImage(StudioWorkspace $w, string $operationId, array $item, string $bytes, string $type): string
@@ -149,15 +153,20 @@ class WorkspaceProcessor
             $prompt .= ' Requested visual adjustments: '.json_encode($w->config['adjustments']).'.';
         }
         $prompt .= ' Preserve the actual property structure, perspective, materials, and photorealism. Only make the requested changes.';
-        [$source, $padding] = $this->normalizeEditSource($source);
-        $id = $this->requestId($w, $operationId, $item['id'], function () use ($source, $prompt): string {
-            $submission = $this->fal->submitImageEditFromBuffer((string) $source->toJpeg(94), 'property.jpg', 'image/jpeg', 'enhance', ['prompt' => $prompt]);
-
-            return $submission['request_id'];
-        });
-        $this->poll($w, $operationId, $item['id'], fn () => strtoupper($this->fal->imageEditStatus($id)['status'] ?? 'PROCESSING'));
-        $result = $this->providerCall($w, $operationId, $item['id'], fn () => $this->fal->imageEditResult($id));
-        $edited = $this->images->read($this->download($result['edited_image_url']));
+        $route = (new WorkspaceProviderState($w, $operationId))->route($type === 'revision' ? 'revision' : $w->preset_id);
+        $padding = null;
+        if ($route['provider'] !== 'fotello') {
+            [$source, $padding] = $this->normalizeEditSource($source);
+        }
+        $references = [];
+        foreach ($payload['referenceMediaIds'] ?? [] as $id) {
+            $reference = collect($w->media)->firstWhere('id', $id);
+            if (! $reference) {
+                throw new \App\Exceptions\StudioProviderException('Choose reference photos from this workspace.');
+            }
+            $references[] = (string) $this->images->read($this->media->bytes($reference))->orient()->scaleDown(width: 2048, height: 2048)->toJpeg(92);
+        }
+        $edited = $this->images->read(app(WorkspaceImageOperations::class)->edit($w, $operationId, $item, (string) $source->toJpeg(94), $prompt, $references));
         if ($padding) {
             // Provider output resolution can differ from its input. Remove only
             // the temporary padding before returning to the original edit scope.
@@ -211,6 +220,7 @@ class WorkspaceProcessor
             $ids = $ordered->isNotEmpty() ? $ordered->pluck('mediaId') : collect($w->media)->pluck('id');
             $refs = $ids->map(fn ($id) => $frames->get($id)['path'])->all();
             $config = array_merge($w->config, ['sourceDisk' => 'public', 'studioWorkspace' => true, 'studioWorkspaceId' => $w->id, 'presetId' => $w->preset_id]);
+            $config['_studioProviderRoute'] = (new WorkspaceProviderState($w, $operationId))->route($w->preset_id);
             $config['_studioRuntime'] = app(WorkspaceClipReuse::class)->seed($w, $refs, $config);
             $job = AiReelJob::create(['shoot_id' => null, 'user_id' => $w->created_by, 'provider' => 'fal', 'selected_file_ids' => [], 'source_media_refs' => $refs, 'workflow_config' => $config, 'status' => AiReelJob::STATUS_QUEUED]);
             $jobId = $job->id;
@@ -412,7 +422,20 @@ class WorkspaceProcessor
             'green-grass' => 'Restore a natural healthy green appearance to existing lawn areas only. Preserve landscaping boundaries.',
             'virtual-staging' => 'Virtually stage this room with tasteful, appropriately scaled contemporary furniture. Preserve architecture, windows, doors, walls and permanent fixtures.',
             'color-correction' => 'Correct white balance, color casts and exposure for a natural professional real estate photograph.',
+            'sky-replacement' => 'Replace only the visible sky with a natural, realistic sky. Match the existing lighting and preserve building edges, trees, reflections and window geometry.',
+            'perspective-correction' => 'Correct architectural perspective and straighten vertical lines naturally. Preserve the complete property and avoid stretching objects.',
             default => 'Professionally enhance this real estate photograph: balanced exposure, recovered window highlights, straight verticals, natural colors and crisp detail.',
         };
+    }
+
+    private function upscaleSource(StudioWorkspace $workspace, array $item): string
+    {
+        $output = collect($workspace->outputs ?? [])->firstWhere('id', $workspace->operation['payload']['outputId'] ?? '');
+        $path = $output['path'] ?? '';
+        if (! $output || ($output['mediaId'] ?? '') !== $item['id'] || ($output['kind'] ?? '') !== 'image' || ! str_starts_with($path, 'studio/workspaces/'.$workspace->id.'/') || str_contains($path, '..') || ! Storage::disk('public')->exists($path)) {
+            throw new \App\Exceptions\StudioProviderException('The selected image version is no longer available.');
+        }
+
+        return Storage::disk('public')->get($path);
     }
 }

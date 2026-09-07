@@ -93,7 +93,7 @@ class StudioProjectSubmissionService
         }
 
         $workflowConfig = \Illuminate\Support\Arr::except($template?->config ?? $validated['workflow_config'], [
-            '_studioRuntime', 'studioWorkspace', 'studioWorkspaceId', 'sourceDisk',
+            '_studioRuntime', '_studioProviderRoute', 'studioWorkspace', 'studioWorkspaceId', 'sourceDisk',
         ]);
         $brandState = in_array($validated['workflow_id'], ['listing-video', 'reel-generator'], true)
             ? BrandState::latestCommittedForTeam($teamId)?->settings

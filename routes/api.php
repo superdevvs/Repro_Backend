@@ -824,9 +824,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // the focused controllers while this group preserves one auth/role boundary.
     // The client rollout gate preserves drafts and grants while access is paused.
     // The existing Studio administration endpoints retain their original role boundary.
+    Route::prefix('studio/provider-settings')->middleware('role:superadmin')->group(function () {
+        Route::get('/', [\App\Http\Controllers\API\StudioProviderSettingsController::class, 'show']);
+        Route::put('/', [\App\Http\Controllers\API\StudioProviderSettingsController::class, 'update']);
+    });
     Route::prefix('studio/workspaces')->middleware(['role:admin,superadmin,editing_manager,editor,client', \App\Http\Middleware\EnsureStudioClientAccess::class])->group(function () {
         $controller = \App\Http\Controllers\API\StudioWorkspaceController::class;
         $sources = \App\Http\Controllers\API\StudioWorkspaceSourceController::class;
+        Route::get('/capabilities', [\App\Http\Controllers\API\StudioProviderSettingsController::class, 'capabilities']);
         Route::get('/sources/shoots', [$sources, 'searchShoots']);
         Route::get('/sources/shoots/{shoot}/media', [$sources, 'shootMedia']);
         Route::post('/sources/uploads', [$sources, 'upload']);
@@ -840,6 +845,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{workspace}/prepare', [$controller, 'prepare']);
         Route::post('/{workspace}/generate', [$controller, 'generate']);
         Route::post('/{workspace}/revisions', [$controller, 'revisions']);
+        Route::post('/{workspace}/upscale', [$controller, 'upscale']);
         Route::post('/{workspace}/segments', [$controller, 'segments']);
         Route::post('/{workspace}/cancel', [$controller, 'cancel']);
     });

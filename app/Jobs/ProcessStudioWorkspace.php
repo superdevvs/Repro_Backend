@@ -43,7 +43,7 @@ class ProcessStudioWorkspace implements ShouldQueue
         }
         try {
             $processor->process($workspace, $this->operationId);
-        } catch (FalTerminalException|StudioClientAccessPaused $exception) {
+        } catch (FalTerminalException|StudioClientAccessPaused|\App\Exceptions\StudioProviderException|\App\Exceptions\OpenAiImageException|\App\Services\Studio\Providers\FotelloException $exception) {
             // Invalid provider requests and a paused rollout cannot recover on an automatic retry.
             // Persist the friendly failure even when handle() runs without a queue job.
             $this->failed($exception);
@@ -55,7 +55,7 @@ class ProcessStudioWorkspace implements ShouldQueue
     {
         $workspace = StudioWorkspace::find($this->workspaceId);
         if ($workspace?->isBusy() && data_get($workspace->operation, 'id') === $this->operationId) {
-            $message = $exception instanceof FalTerminalException || $exception instanceof StudioClientAccessPaused
+            $message = $exception instanceof FalTerminalException || $exception instanceof StudioClientAccessPaused || $exception instanceof \App\Exceptions\StudioProviderException || $exception instanceof \App\Exceptions\OpenAiImageException || $exception instanceof \App\Services\Studio\Providers\FotelloException
                 ? $exception->getMessage()
                 : 'The image provider or video renderer could not finish this operation. Retry to resume saved progress.';
             $workspace->update(['status' => 'failed', 'error' => $message, 'version' => $workspace->version + 1]);

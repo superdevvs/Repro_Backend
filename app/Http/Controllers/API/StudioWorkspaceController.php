@@ -19,7 +19,7 @@ class StudioWorkspaceController extends StudioController
 {
     protected const STUDIO_ROLES = ['admin', 'superadmin', 'editing_manager', 'editor', 'client'];
 
-    private const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging', 'full-shoot', 'walkthrough', 'property-reel', 'social-teaser'];
+    private const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging', 'full-shoot', 'sky-replacement', 'perspective-correction', 'walkthrough', 'property-reel', 'social-teaser'];
 
     public function __construct(private WorkspaceMediaService $mediaService) {}
 
@@ -129,6 +129,11 @@ class StudioWorkspaceController extends StudioController
         return $this->start($request, $workspace, 'revision');
     }
 
+    public function upscale(Request $request, string $workspace): JsonResponse
+    {
+        return $this->start($request, $workspace, 'upscale');
+    }
+
     public function cancel(Request $request, string $workspace): JsonResponse
     {
         $record = $this->find($request, $workspace);
@@ -152,7 +157,7 @@ class StudioWorkspaceController extends StudioController
         $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
         $data = $request->validate(['mediaId' => ['required', 'string']]);
         abort_unless(collect($record->media)->contains('id', $data['mediaId']), 422, 'Select a workspace image.');
-        abort_unless(filled(config('services.openai.api_key')), 503, 'Object detection requires the configured OpenAI service.');
+        abort_unless(filled(config('services.openai.api_key')), 503, 'Object detection is not configured. Contact an administrator.');
 
         try {
             return response()->json(['success' => true, 'data' => $processor->segments($record, $data['mediaId'])]);
@@ -168,7 +173,9 @@ class StudioWorkspaceController extends StudioController
         $record = $this->find($request, $workspace);
         $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
         $payload = $request->validate([
-            'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [$type === 'revision' ? 'required' : 'sometimes', 'string'],
+            'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale'], true) ? 'required' : 'sometimes', 'string'],
+            'outputId' => [$type === 'upscale' ? 'required' : 'sometimes', 'string', 'max:200'],
+            'referenceMediaIds' => ['sometimes', 'array', 'max:4'], 'referenceMediaIds.*' => ['string', 'distinct', 'max:100'],
             'prompt' => [$type === 'revision' ? 'required' : 'sometimes', 'string', 'max:4000'],
             'region' => ['nullable', 'array:x,y,width,height'],
             'region.x' => ['required_with:region', 'numeric', 'between:0,1'], 'region.y' => ['required_with:region', 'numeric', 'between:0,1'],
@@ -179,8 +186,15 @@ class StudioWorkspaceController extends StudioController
         if (isset($payload['region']) && ($payload['region']['x'] + $payload['region']['width'] > 1.00001 || $payload['region']['y'] + $payload['region']['height'] > 1.00001)) {
             throw ValidationException::withMessages(['region' => 'The selected region must fit inside the image.']);
         }
-        if ($type === 'revision' && ! collect($record->media)->contains('id', $payload['mediaId'])) {
+        if (in_array($type, ['revision', 'upscale'], true) && ! collect($record->media)->contains('id', $payload['mediaId'])) {
             throw ValidationException::withMessages(['mediaId' => 'Select an image from this workspace.']);
+        }
+        foreach ($payload['referenceMediaIds'] ?? [] as $id) {
+            abort_unless(collect($record->media)->contains('id', $id), 422, 'Choose reference photos from this workspace.');
+        }
+        if ($type === 'upscale') {
+            $output = collect($record->outputs ?? [])->firstWhere('id', $payload['outputId']);
+            abort_unless($output && ($output['mediaId'] ?? null) === $payload['mediaId'] && ($output['kind'] ?? null) === 'image' && ($output['status'] ?? null) === 'completed', 422, 'Choose a completed image version to upscale.');
         }
         $key = $request->header('Idempotency-Key', $payload['requestId'] ?? null);
         if ($key && strlen($key) > 64) {
@@ -208,6 +222,13 @@ class StudioWorkspaceController extends StudioController
                 abort_if(count($frameIds) > 12, 422, 'A reel supports at most 12 selected source photos.');
             }
             $operation = $same && $record->status === 'failed' ? $old : ['id' => (string) Str::uuid(), 'key' => $key, 'type' => $type, 'payload' => $payload, 'completed' => [], 'requests' => []];
+            if (! isset($operation['routing']) && empty($operation['requests'])) {
+                $settings = app(\App\Services\Studio\StudioProviderSettings::class);
+                $stored = $settings->stored();
+                foreach (array_unique([$record->preset_id, 'revision', 'upscale', 'outpaint']) as $service) {
+                    $operation['routing'][$service] = $settings->route($service, $stored);
+                }
+            }
             $record->update(['operation' => $operation, 'status' => $type === 'prepare' ? 'preparing' : 'generating', 'progress' => 0, 'error' => null, 'version' => $record->version + 1]);
             $dispatch = true;
 

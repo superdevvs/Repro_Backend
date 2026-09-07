@@ -38,6 +38,21 @@ class GenerateReel implements ShouldQueue
     {
         $job = AiReelJob::findOrFail($this->jobId);
 
+        $pinnedModel = null;
+        $workspaceId = $job->workflow_config['studioWorkspaceId'] ?? null;
+        if ($workspaceId) {
+            $workspace = \App\Models\StudioWorkspace::whereKey($workspaceId)->where('created_by', $job->user_id)->first();
+            $linked = $workspace && ((int) ($workspace->operation['reelJobId'] ?? 0) === $job->id
+                || collect(array_merge($workspace->outputs ?? [], $workspace->history ?? []))->contains(fn ($item) => (int) ($item['reelJobId'] ?? 0) === $job->id));
+            if ($linked) {
+                $pinnedModel = $job->workflow_config['_studioProviderRoute']['model'] ?? null;
+                $walkthrough = ($job->workflow_config['presetId'] ?? null) === 'walkthrough';
+                if ($pinnedModel && $pinnedModel !== config($walkthrough ? 'services.fal.walkthrough_model' : 'services.fal.model')) {
+                    $fal = new FalService([$walkthrough ? 'walkthrough' : 'video' => $pinnedModel]);
+                }
+            }
+        }
+
         if (in_array($job->status, [AiReelJob::STATUS_CANCELLED, AiReelJob::STATUS_COMPLETED], true)) {
             return;
         }
@@ -56,7 +71,7 @@ class GenerateReel implements ShouldQueue
                 ...($job->source_media_refs ?? []),
             ];
             $walkthroughModel = ($job->workflow_config['presetId'] ?? null) === 'walkthrough'
-                ? (string) config('services.fal.walkthrough_model') : '';
+                ? (string) ($pinnedModel ?? config('services.fal.walkthrough_model')) : '';
 
             if (config('services.fal.test_mode')) {
                 foreach ($sources as $index => $fileId) {
