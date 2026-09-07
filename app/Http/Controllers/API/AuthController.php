@@ -323,6 +323,7 @@ class AuthController extends Controller
      */
     public function updateProfile(Request $request)
     {
+        \App\Support\PhotographerCapabilityFields::assertWritable($request);
         \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $credentialChange = filled($request->input('new_password'))
             || ($request->has('email') && mb_strtolower(trim((string) $request->input('email'))) !== mb_strtolower(trim((string) $request->user()->email)));
@@ -357,6 +358,7 @@ class AuthController extends Controller
     private function saveProfile(Request $request)
     {
         $user = $request->user();
+        \App\Support\PhotographerCapabilityFields::assertWritable($request);
 
         if ($request->has('email')) {
             $request->merge([

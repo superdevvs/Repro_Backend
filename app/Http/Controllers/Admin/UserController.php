@@ -152,6 +152,7 @@ class UserController extends Controller
 
      public function store(Request $request)
     {
+        \App\Support\PhotographerCapabilityFields::assertWritable($request);
         \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $admin = $request->user();
 
@@ -624,6 +625,7 @@ class UserController extends Controller
      */
     public function update(Request $request, $id)
     {
+        \App\Support\PhotographerCapabilityFields::assertWritable($request);
         \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $admin = $request->user();
         if (!$this->userHasAnyRole($admin, ['admin', 'superadmin', 'editing_manager', 'salesRep'])) {

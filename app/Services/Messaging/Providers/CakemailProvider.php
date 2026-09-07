@@ -514,7 +514,7 @@ class CakemailProvider implements EmailProviderInterface
         $token = $this->getAccessToken();
 
         if (!$token) {
-            return [];
+            throw new \RuntimeException('Cakemail email activity is unavailable.');
         }
 
         $params = [
@@ -522,24 +522,30 @@ class CakemailProvider implements EmailProviderInterface
             'per_page' => $filters['per_page'] ?? 50,
         ];
 
-        if (!empty($filters['filter'])) {
-            $params['filter'] = $filters['filter'];
+        foreach (['email_id', 'log_type', 'start_time', 'end_time', 'iso_time'] as $key) {
+            if (array_key_exists($key, $filters) && $filters[$key] !== null) {
+                $params[$key] = $filters[$key];
+            }
         }
 
         try {
             $response = Http::withOptions(['verify' => true])
                 ->withToken($token)
                 ->timeout(30)
-                ->get("{$this->baseUrl}/logs", $params);
+                ->get("{$this->baseUrl}/v2/logs/emails", $params);
 
-            if ($response->successful()) {
-                return $response->json()['data'] ?? [];
+            // Preserve the JSON distinction between an empty list and object.
+            $body = json_decode($response->body());
+            if ($response->successful() && is_object($body) && isset($body->data) && is_array($body->data)) {
+                return $response->json('data');
             }
+
+            Log::warning('Cakemail email activity request failed.', ['status' => $response->status()]);
         } catch (\Exception $e) {
-            Log::error('Cakemail: Failed to get logs', ['error' => $e->getMessage()]);
+            Log::warning('Cakemail email activity request failed.', ['exception' => $e::class]);
         }
 
-        return [];
+        throw new \RuntimeException('Cakemail email activity is unavailable.');
     }
 
     /**

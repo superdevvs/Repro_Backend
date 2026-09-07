@@ -243,16 +243,31 @@ class CakemailController extends Controller
      */
     public function getLogs(Request $request): JsonResponse
     {
-        $filters = [
-            'page' => $request->input('page', 1),
-            'per_page' => $request->input('per_page', 50),
-        ];
+        $filters = $request->validate([
+            'page' => ['sometimes', 'integer', 'min:1'],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'email_id' => ['sometimes', 'nullable', 'uuid'],
+            'log_type' => ['sometimes', 'string', 'max:40'],
+            'start_time' => ['sometimes', 'integer', 'min:1'],
+            'end_time' => ['sometimes', 'integer', 'min:1'],
+            'iso_time' => ['sometimes', 'boolean'],
+            'filter' => ['sometimes', 'string', 'regex:/^email_id==[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i'],
+        ]);
 
-        if ($request->has('filter')) {
-            $filters['filter'] = $request->input('filter');
+        // Keep the old message-ID filter usable with the v2 query contract.
+        if (!empty($filters['filter']) && empty($filters['email_id'])) {
+            $filters['email_id'] = substr($filters['filter'], strlen('email_id=='));
         }
+        unset($filters['filter']);
 
-        $logs = $this->cakemail->getLogs($filters);
+        try {
+            $logs = $this->cakemail->getLogs($filters);
+        } catch (\Throwable $exception) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Email delivery logs are temporarily unavailable. Please try again later.',
+            ], 502);
+        }
 
         return response()->json([
             'success' => true,
