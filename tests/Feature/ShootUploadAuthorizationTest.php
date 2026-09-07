@@ -28,7 +28,6 @@ class ShootUploadAuthorizationTest extends TestCase
             $this->postJson("/api/shoots/{$shoot->id}/upload", ['upload_type' => 'raw']),
             $this->postJson("/api/shoots/{$shoot->id}/upload-extra", []),
             $this->postJson("/api/shoots/{$shoot->id}/upload-from-pc", ['upload_type' => 'raw']),
-            $this->postJson("/api/shoots/{$shoot->id}/copy-from-dropbox", []),
             $this->postJson("/api/shoots/{$shoot->id}/media", ['type' => 'raw']),
             $this->postJson("/api/shoots/{$shoot->id}/upload-from-source", [
                 'upload_type' => 'raw',
@@ -73,9 +72,9 @@ class ShootUploadAuthorizationTest extends TestCase
 
         $responses = [
             $this->getJson('/api/upload-sources'),
-            $this->postJson('/api/upload-sources/dropbox/connect'),
-            $this->deleteJson('/api/upload-sources/dropbox'),
-            $this->getJson('/api/upload-sources/dropbox/items'),
+            $this->postJson('/api/upload-sources/google_drive/connect'),
+            $this->deleteJson('/api/upload-sources/google_drive'),
+            $this->getJson('/api/upload-sources/google_drive/items'),
         ];
 
         foreach ($responses as $response) {
@@ -170,15 +169,10 @@ class ShootUploadAuthorizationTest extends TestCase
         Sanctum::actingAs($admin);
 
         $this->postJson("/api/shoots/{$shoot->id}/copy-from-dropbox", [])
-            ->assertStatus(410)
-            ->assertJsonPath('error_type', 'upload_path_retired')
-            ->assertJsonPath('success_count', 0)
-            ->assertJsonPath('replacement', "/api/shoots/{$shoot->id}/upload-from-source");
+            ->assertNotFound();
 
         $this->getJson('/api/dropbox/browse')
-            ->assertStatus(410)
-            ->assertJsonPath('error_type', 'upload_path_retired')
-            ->assertJsonPath('replacement', '/api/upload-sources/dropbox/items');
+            ->assertNotFound();
     }
 
     public function test_legacy_pc_route_allows_top_level_photographer_for_a_null_pivot_service(): void

@@ -8,7 +8,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Models\UserActivityLog;
 use App\Services\CubiCasaService;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -1584,10 +1584,10 @@ class CubiCasaAutoOrderTest extends TestCase
      */
     private function bindApprovalSideEffectFakes(): void
     {
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldIgnoreMissing();
         $dropbox->shouldReceive('createShootFolders')->zeroOrMoreTimes()->andReturnNull();
-        $this->app->instance(DropboxWorkflowService::class, $dropbox);
+        $this->app->instance(ShootMediaStorageService::class, $dropbox);
 
         $invoice = Mockery::mock(InvoiceService::class);
         $invoice->shouldIgnoreMissing();

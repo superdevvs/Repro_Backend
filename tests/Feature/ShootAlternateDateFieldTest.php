@@ -6,7 +6,7 @@ use App\Http\Resources\ShootResource;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ExternalBooking\ExternalBookingAutoMapper;
 use App\Services\ExternalBooking\NormalizedBooking;
 use App\Services\InvoiceService;
@@ -523,10 +523,10 @@ class ShootAlternateDateFieldTest extends TestCase
 
     private function bindSideEffectFakes(): void
     {
-        $dropboxService = Mockery::mock(DropboxWorkflowService::class);
+        $dropboxService = Mockery::mock(ShootMediaStorageService::class);
         $dropboxService->shouldIgnoreMissing();
         $dropboxService->shouldReceive('createShootFolders')->zeroOrMoreTimes()->andReturnNull();
-        $this->app->instance(DropboxWorkflowService::class, $dropboxService);
+        $this->app->instance(ShootMediaStorageService::class, $dropboxService);
 
         $invoiceService = Mockery::mock(InvoiceService::class);
         $invoiceService->shouldIgnoreMissing();

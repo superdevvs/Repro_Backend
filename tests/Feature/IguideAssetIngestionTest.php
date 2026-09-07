@@ -81,7 +81,7 @@ class IguideAssetIngestionTest extends TestCase
         $relPdf = ltrim(str_replace('storage/', '', (string) $pdfFile->storage_path), '/');
         Storage::disk('public')->assertExists($relPdf);
 
-        Queue::assertPushed(SyncShootFileToDropboxJob::class, 2);
+        Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
     }
 
     public function test_is_idempotent_when_assets_already_exist(): void

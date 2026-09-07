@@ -4,7 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\Schema;
 class UploadExtraFilesAction
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootMediaMutationSupportService $support
     ) {
     }
@@ -34,7 +34,7 @@ class UploadExtraFilesAction
         $uploadedFiles = [];
         foreach ($request->file('files') as $file) {
             try {
-                $shootFile = $this->dropboxService->uploadToExtra($shoot, $file, $user->id);
+                $shootFile = $this->mediaStorageService->uploadToExtra($shoot, $file, $user->id);
                 $flagUpdates = [];
                 if (Schema::hasColumn('shoot_files', 'is_extra')) {
                     $flagUpdates['is_extra'] = true;

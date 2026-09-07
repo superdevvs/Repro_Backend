@@ -6,7 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootShareLink;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -20,18 +20,17 @@ class ShootShareLinkService
     private const MEDIA_STAGE_RAW_VIDEO = 'raw_video';
 
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootActivityLogger $activityLogger,
         protected ShootFileAccessService $fileAccessService,
         protected DeliveryFilenameFormatter $deliveryFilenameFormatter
     ) {
     }
 
-    public function generateFilesZipWithDropboxFallback(Shoot $shoot, $files): ?string
+    public function generateFilesZip(Shoot $shoot, $files): ?string
     {
         $zipPath = storage_path("app/temp/shoot-{$shoot->id}-raw-" . time() . '.zip');
         $tempFiles = [];
-        $dropboxEnabled = $this->dropboxService->isEnabled();
 
         if (!file_exists(dirname($zipPath))) {
             mkdir(dirname($zipPath), 0755, true);
@@ -49,8 +48,8 @@ class ShootShareLinkService
 
         foreach ($files as $file) {
             $localPath = $this->fileAccessService->findLocalFilePath($file);
-            if ($dropboxEnabled && !$localPath && !empty($file->dropbox_path)) {
-                $localPath = $this->fileAccessService->downloadFromDropbox($file);
+            if (!$localPath) {
+                $localPath = $this->fileAccessService->downloadStoredFileToTemp($file->path ?: $file->storage_path);
                 if ($localPath) {
                     $tempFiles[] = $localPath;
                 }
@@ -82,6 +81,12 @@ class ShootShareLinkService
         }
 
         return $zipPath;
+    }
+
+    /** @deprecated Use generateFilesZip. */
+    public function generateFilesZipWithDropboxFallback(Shoot $shoot, $files): ?string
+    {
+        return $this->generateFilesZip($shoot, $files);
     }
 
     /**
@@ -141,35 +146,15 @@ class ShootShareLinkService
             throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found for selected IDs");
         }
 
-        $dropboxEnabled = $this->dropboxService->isEnabled();
-        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType($normalizedMediaStage) : null;
-        if ($dropboxEnabled && !$folderPath) {
-            $this->dropboxService->createShootFolders($shoot);
-            $shoot->refresh();
-            $folderPath = $shoot->getDropboxFolderForType($normalizedMediaStage);
-        }
-
         $shareLink = null;
         $shareLinkSourcePath = null;
-
-        try {
-            if ($dropboxEnabled && empty($fileIds) && $folderPath && !$isLaneSpecificStage) {
-                $shareLink = $this->dropboxService->createSharedLink($folderPath);
-                $shareLinkSourcePath = $folderPath;
-            }
-        } catch (\Exception $dropboxError) {
-            Log::warning('Failed to create Dropbox share link, falling back to local ZIP', [
-                'error' => $dropboxError->getMessage(),
-                'shoot_id' => $shoot->id,
-            ]);
-        }
 
         if (!$shareLink) {
             if ($files->isEmpty()) {
                 throw new \App\Exceptions\PublicBusinessRuleException("No {$stageLabel} files found to share");
             }
 
-            $zipPath = $this->generateFilesZipWithDropboxFallback($shoot, $files);
+            $zipPath = $this->generateFilesZip($shoot, $files);
             if (!$zipPath || !file_exists($zipPath)) {
                 throw new \RuntimeException('Failed to generate shareable ZIP file');
             }
@@ -199,7 +184,7 @@ class ShootShareLinkService
         }
 
         if (!$shareLink) {
-            throw new \RuntimeException('Could not create share link. Dropbox may be unavailable or the ZIP could not be generated.');
+            throw new \RuntimeException('Could not create share link. The ZIP could not be generated.');
         }
 
         try {

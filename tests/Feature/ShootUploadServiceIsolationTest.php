@@ -24,7 +24,7 @@ use Tests\TestCase;
  * realistic case, not a contrived one: two photographers working one shoot both hand in
  * DSC_0001.jpg, and a fake/duplicated frame hashes the same as its twin.
  *
- * Deliberately runs the real DropboxWorkflowService rather than a mock. The mock used by
+ * Deliberately runs the real ShootMediaStorageService rather than a mock. The mock used by
  * the other upload suites bypasses storage entirely, which is exactly where per-shoot
  * (rather than per-service) de-duplication lives.
  */

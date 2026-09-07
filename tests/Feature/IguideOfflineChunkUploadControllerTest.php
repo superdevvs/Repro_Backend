@@ -10,7 +10,7 @@ use App\Models\IguideOfflineUploadSession;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\IguideOfflineChunkUploadService;
 use App\Services\IguideOfflinePackageService;
 use App\Services\UploadValidationService;
@@ -314,7 +314,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
             $uploads,
             app(UploadValidationService::class),
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
         $this->assertDatabaseCount('shoot_files', 0);
         $this->assertSame('worker-one', $session->fresh()->assembly_token);
@@ -365,7 +365,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
             app(IguideOfflineChunkUploadService::class),
             app(UploadValidationService::class),
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
 
         $session->refresh();
@@ -392,7 +392,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
             app(IguideOfflineChunkUploadService::class),
             app(UploadValidationService::class),
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
         $this->assertDatabaseCount('shoot_files', 1);
 
@@ -403,7 +403,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
         ]);
         (new FinalizeIguideOfflinePackageJob($file->id))->handle(
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
         $this->assertSame(IguideOfflineUploadSession::STATUS_READY, $session->fresh()->status);
         app(IguideOfflinePackageService::class)->markFailed($file, 'late failure callback');
@@ -453,7 +453,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
             app(IguideOfflineChunkUploadService::class),
             app(UploadValidationService::class),
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
 
         $file = ShootFile::query()->where('shoot_id', $shoot->id)->sole();
@@ -641,7 +641,7 @@ class IguideOfflineChunkUploadControllerTest extends TestCase
             app(IguideOfflineChunkUploadService::class),
             app(UploadValidationService::class),
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
 
         $session->refresh();

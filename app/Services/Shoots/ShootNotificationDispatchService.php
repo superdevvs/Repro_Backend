@@ -4,7 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
@@ -15,7 +15,7 @@ class ShootNotificationDispatchService
     public function __construct(
         protected AutomationService $automationService,
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected MailService $mailService,
     ) {
     }
@@ -41,7 +41,7 @@ class ShootNotificationDispatchService
 
         if (!$treatAsClientRequest && $isImmediatelyScheduled) {
             try {
-                $this->dropboxService->createShootFolders($shoot);
+                $this->mediaStorageService->createShootFolders($shoot);
             } catch (\Exception $e) {
                 Log::error('Failed to create Dropbox folders for shoot', [
                     'shoot_id' => $shoot->id,

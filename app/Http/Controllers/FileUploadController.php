@@ -37,54 +37,6 @@ class FileUploadController extends Controller
         return response()->json($result['payload'], $result['status']);
     }
 
-    /**
-     * Get user's Dropbox files for selection
-     */
-    public function listDropboxFiles(Request $request)
-    {
-        return response()->json([
-            'error_type' => 'upload_path_retired',
-            'message' => 'Shared Dropbox browsing has moved to connected upload sources.',
-            'replacement' => '/api/upload-sources/dropbox/items',
-        ], 410);
-    }
-
-    /**
-     * Copy files from user's Dropbox to shoot folder
-     */
-    public function copyFromDropbox(Request $request, Shoot $shoot)
-    {
-        $shootServiceId = $request->filled('shoot_service_id')
-            ? (int) $request->input('shoot_service_id')
-            : null;
-        if (! $this->shootAuthorizationSupport->canUploadShootMedia(
-            $shoot,
-            $request->user(),
-            'raw',
-            $shootServiceId
-        )) {
-            return $this->uploadForbiddenResponse();
-        }
-
-        // This legacy path copied objects with no canonical service provenance
-        // or replay protection. Callers must use the source-import endpoint,
-        // which downloads each item and runs it through UploadShootFilesAction.
-        return response()->json([
-            'error_type' => 'upload_path_retired',
-            'message' => 'Dropbox copy uploads have moved to the upload source endpoint.',
-            'replacement' => "/api/shoots/{$shoot->id}/upload-from-source",
-            'uploaded_files' => [],
-            'errors' => [[
-                'error_type' => 'upload_path_retired',
-                'message' => 'Use the upload source endpoint for Dropbox imports.',
-                'retryable' => false,
-            ]],
-            'success_count' => 0,
-            'error_count' => 1,
-            'partial_success' => false,
-        ], 410);
-    }
-
     private function uploadForbiddenResponse()
     {
         return response()->json([

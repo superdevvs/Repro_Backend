@@ -13,7 +13,7 @@ use App\Models\ShootFile;
 use App\Models\ShootShareLink;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMediaArchiveService;
 use App\Services\Shoots\Actions\VerifyShootFileAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -108,7 +108,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_status' => Shoot::STATUS_SCHEDULED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')
             ->once()
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
@@ -127,7 +127,7 @@ class ShootMediaActionsTest extends TestCase
                     'workflow_stage' => ShootFile::STAGE_TODO,
                 ]);
             });
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
             'files' => [UploadedFile::fake()->image('raw-upload.jpg')],
@@ -178,7 +178,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_status' => Shoot::STATUS_SCHEDULED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToCompleted')
             ->once()
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
@@ -198,7 +198,7 @@ class ShootMediaActionsTest extends TestCase
                     'workflow_stage' => ShootFile::STAGE_COMPLETED,
                 ]);
             });
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
             'files' => [UploadedFile::fake()->image('edited-upload.jpg')],
@@ -227,7 +227,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToCompleted')
             ->once()
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
@@ -247,7 +247,7 @@ class ShootMediaActionsTest extends TestCase
                     'workflow_stage' => ShootFile::STAGE_COMPLETED,
                 ]);
             });
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
             'files' => [UploadedFile::fake()->image('superadmin-upload.jpg')],
@@ -317,14 +317,14 @@ class ShootMediaActionsTest extends TestCase
             'path' => 'shoots/' . $shoot->id . '/completed/final.jpg',
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('moveToFinal')
             ->once()
             ->withArgs(function (ShootFile $passedFile, int $userId) use ($file) {
                 return $passedFile->id === $file->id && $userId === $this->admin->id;
             })
             ->andReturnNull();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $action = app(VerifyShootFileAction::class);
         $payload = $action->execute(
@@ -375,9 +375,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->postJson('/api/shoots/' . $shoot->id . '/generate-share-link', [
             'file_ids' => [$file->id],
@@ -535,9 +535,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $archiveService = app(ShootMediaArchiveService::class);
         $archiveService->generateArchive($shoot, 'edited', 'small');
@@ -606,9 +606,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small', true, $firstServiceItemId);
 
@@ -721,9 +721,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small', true, $serviceItemId);
 
@@ -801,9 +801,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
@@ -838,9 +838,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
@@ -872,9 +872,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->post('/api/shoots/' . $shoot->id . '/files/download', [
             'file_ids' => [$file->id],
@@ -940,9 +940,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
@@ -1261,9 +1261,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small');
 
@@ -1333,9 +1333,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->post('/api/shoots/' . $shoot->id . '/files/download', [
             'file_ids' => [$file->id],
@@ -1489,9 +1489,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=original');
 
@@ -1533,9 +1533,9 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small');
 

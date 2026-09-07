@@ -24,15 +24,6 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
-    'dropbox' => [
-        'enabled' => env('DROPBOX_ENABLED', false),
-        'client_id' => env('DROPBOX_CLIENT_ID'),
-        'client_secret' => env('DROPBOX_CLIENT_SECRET'),
-        'redirect' => env('APP_URL').'/api/dropbox/callback',
-        'access_token' => env('DROPBOX_ACCESS_TOKEN'),
-        'refresh_token' => env('DROPBOX_REFRESH_TOKEN'),
-    ],
-
     'stripe' => [
         'secret_key' => env('STRIPE_SECRET_KEY'),
         'publishable_key' => env('STRIPE_PUBLISHABLE_KEY'),

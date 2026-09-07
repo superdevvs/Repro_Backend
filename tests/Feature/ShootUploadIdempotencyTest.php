@@ -8,7 +8,7 @@ use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\ShootUploadAttempt;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
@@ -33,7 +33,7 @@ class ShootUploadIdempotencyTest extends TestCase
         ]);
         Sanctum::actingAs($admin);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')->once()->andReturnUsing(
             fn (Shoot $target, UploadedFile $file, int $actorId, mixed $serviceCategory = null, mixed $mediaType = null) => ShootFile::create([
                 'shoot_id' => $target->id,
@@ -47,7 +47,7 @@ class ShootUploadIdempotencyTest extends TestCase
                 'workflow_stage' => ShootFile::STAGE_TODO,
             ])
         );
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $payload = fn () => [
             'files' => [UploadedFile::fake()->create('front.jpg', 10, 'image/jpeg')],
@@ -87,7 +87,7 @@ class ShootUploadIdempotencyTest extends TestCase
         $shoot = Shoot::factory()->create();
         Sanctum::actingAs($admin);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')->once()->andReturnUsing(
             fn (Shoot $target, UploadedFile $file, int $actorId, mixed $serviceCategory = null, mixed $mediaType = null) => ShootFile::create([
                 'shoot_id' => $target->id,
@@ -101,7 +101,7 @@ class ShootUploadIdempotencyTest extends TestCase
                 'workflow_stage' => ShootFile::STAGE_TODO,
             ])
         );
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'files' => [UploadedFile::fake()->create('front.jpg', 10, 'image/jpeg')],
@@ -216,7 +216,7 @@ class ShootUploadIdempotencyTest extends TestCase
         ]);
         Sanctum::actingAs($photographer);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')->once()->andReturnUsing(
             fn (Shoot $target, UploadedFile $file, int $actorId, mixed $serviceCategory = null, mixed $mediaType = null) => ShootFile::create([
                 'shoot_id' => $target->id,
@@ -230,7 +230,7 @@ class ShootUploadIdempotencyTest extends TestCase
                 'workflow_stage' => ShootFile::STAGE_TODO,
             ])
         );
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
 
         $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'files' => [UploadedFile::fake()->create('front.jpg', 10, 'image/jpeg')],

@@ -29,7 +29,6 @@ class MmmService
 
     public function __construct(
         private readonly MmmXmlBuilder $xmlBuilder,
-        private readonly DropboxWorkflowService $dropboxService,
     ) {
         $settings = $this->loadSettings('integrations.mmm');
 
@@ -652,13 +651,11 @@ class MmmService
             return $this->ensureAbsoluteUrl(Storage::disk('public')->url($path));
         }
 
-        if ($path && !Str::startsWith($path, 'http') && !$file->dropbox_path) {
+        if ($path && !Str::startsWith($path, 'http')) {
             return $this->ensureAbsoluteUrl(Storage::disk('public')->url($path));
         }
 
-        if ($file->dropbox_path) {
-            return $this->dropboxService->getTemporaryLink($file->dropbox_path);
-        }
+
 
         return null;
     }

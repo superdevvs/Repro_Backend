@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootService;
-use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\Actions\AssignHeroMediaAction;
 use App\Services\Shoots\Actions\ChangeServiceBracketModeAction;
 use App\Services\Shoots\Actions\DeleteShootMediaAction;
@@ -38,7 +37,6 @@ use Symfony\Component\HttpFoundation\Response;
 class ShootMediaController extends Controller
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected ShootAlbumService $shootAlbumService,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
@@ -551,7 +549,7 @@ class ShootMediaController extends Controller
         }
 
         $validated = $request->validate([
-            'source' => 'required|in:dropbox,local',
+            'source' => 'required|in:local',
             'folder_path' => 'nullable|string|max:500',
             'photographer_id' => 'nullable|exists:users,id',
             'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
@@ -620,26 +618,6 @@ class ShootMediaController extends Controller
             'error_count' => 1,
             'partial_success' => false,
         ], 403);
-    }
-
-    public function archiveShoot($id, Request $request)
-    {
-        $shoot = Shoot::findOrFail($id);
-        $user = auth()->user();
-
-        if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
-
-        $success = $this->dropboxService->archiveShoot($shoot, $user->id);
-        if ($success) {
-            return response()->json([
-                'message' => 'Shoot archived successfully',
-                'archive_folder' => $shoot->dropbox_archive_folder,
-            ]);
-        }
-
-        return response()->json(['error' => 'Failed to archive shoot'], 500);
     }
 
     public function editorDownloadRaw(Request $request, Shoot $shoot)

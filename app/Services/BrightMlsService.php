@@ -50,11 +50,9 @@ class BrightMlsService
     private $importUrlBase;
     private $enabled;
     private BrightMlsStrategyInterface $strategy;
-    private ?DropboxWorkflowService $dropboxService;
 
-    public function __construct(?DropboxWorkflowService $dropboxService = null)
+    public function __construct()
     {
-        $this->dropboxService = $dropboxService;
         // Try to load from database settings first, fallback to config
         $settings = $this->loadSettings('integrations.bright_mls');
 
@@ -892,9 +890,7 @@ class BrightMlsService
             }
 
             // Build photo options from shoot files
-            $dropbox = $this->dropboxService;
-            $dropboxEnabled = $dropbox && config('services.dropbox.enabled', false);
-            $photoOptions = $photos->map(function ($file) use ($dropboxEnabled, $dropbox) {
+            $photoOptions = $photos->map(function ($file) {
                 $commentDescription = $this->latestMediaCommentDescription($file);
                 // Try fields that are already full HTTP URLs
                 foreach (['url', 'web_path', 'storage_path', 'path'] as $field) {
@@ -914,23 +910,7 @@ class BrightMlsService
                     }
                 }
 
-                // When Dropbox is enabled, files live in Dropbox — get a temp link
-                if ($dropboxEnabled && $file->dropbox_path) {
-                    $tempUrl = $dropbox->getTemporaryLink($file->dropbox_path);
-                    if ($tempUrl) {
-                        return [
-                            'url' => $tempUrl,
-                            'filename' => $this->normalizeBrightMlsPhotoFilename(
-                                $file->filename ?? null,
-                                $tempUrl,
-                                $file->id
-                            ),
-                            'description' => $commentDescription,
-                            'roomType' => '',
-                            'selected' => true,
-                        ];
-                    }
-                }
+
 
                 // Fallback: convert relative path to storage URL
                 $url = $file->storage_path ?? $file->path ?? null;

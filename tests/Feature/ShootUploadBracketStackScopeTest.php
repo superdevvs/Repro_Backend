@@ -8,7 +8,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
@@ -69,9 +69,9 @@ class ShootUploadBracketStackScopeTest extends TestCase
         ]);
         Sanctum::actingAs($this->admin);
 
-        // The real EXIF read lives in DropboxWorkflowService, so mocking it means the
+        // The real EXIF read lives in ShootMediaStorageService, so mocking it means the
         // test owns captured_at outright.
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')->andReturnUsing(
             function (Shoot $target, UploadedFile $file, int $actorId, mixed $serviceCategory = null, mixed $mediaType = null) {
                 $name = $file->getClientOriginalName();
@@ -97,7 +97,7 @@ class ShootUploadBracketStackScopeTest extends TestCase
                 ]);
             }
         );
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
     }
 
     /**

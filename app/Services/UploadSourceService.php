@@ -14,7 +14,7 @@ use RuntimeException;
 
 class UploadSourceService
 {
-    public const PROVIDERS = ['dropbox', 'google_drive', 'google_photos', 'onedrive'];
+    public const PROVIDERS = ['google_drive', 'google_photos', 'onedrive'];
 
     /**
      * Extensions accepted from cloud imports IN ADDITION to the direct-upload
@@ -60,24 +60,21 @@ class UploadSourceService
         $this->assertProvider($provider);
 
         $personal = $this->findToken($provider, $user, false);
-        $studio = $provider === 'dropbox' ? app(DropboxTokenService::class) : null;
-        $studioAvailable = $studio && $this->canUseStudioDropbox($user) && $studio->configured();
-        $shared = $studio ? ($studioAvailable ? $studio->record() : null) : $this->findToken($provider, $user, true);
+        $shared = $this->findToken($provider, $user, true);
         $configured = $this->isConfigured($provider);
-        $envAvailable = $studioAvailable && !$shared;
         $token = $personal ?: $shared;
 
         return [
             'provider' => $provider,
             'label' => $this->label($provider),
-            'configured' => $configured || $envAvailable,
-            'connected' => (bool) ($token || $envAvailable),
-            'account_type' => $personal ? 'personal' : ($shared || $envAvailable ? 'shared' : null),
+            'configured' => $configured,
+            'connected' => (bool) ($token),
+            'account_type' => $personal ? 'personal' : ($shared ? 'shared' : null),
             'account_email' => $token?->provider_account_email,
             'account_name' => $token?->provider_account_name,
             'expired' => $token?->expires_at ? $token->expires_at->isPast() : false,
             'supports_oauth' => $configured,
-            'message' => ($configured || $envAvailable)
+            'message' => ($configured)
                 ? null
                 : "{$this->label($provider)} OAuth credentials are not configured.",
         ];
@@ -86,7 +83,6 @@ class UploadSourceService
     public function buildAuthorizationUrl(string $provider, User $user, string $accountType = 'personal'): string
     {
         $this->assertProvider($provider);
-        abort_if($provider === 'dropbox' && $accountType === 'shared', 403, 'Manage the studio Dropbox connection from Integrations.');
 
         if (!$this->isConfigured($provider)) {
             throw new RuntimeException("{$this->label($provider)} OAuth credentials are not configured.");
@@ -100,13 +96,6 @@ class UploadSourceService
         ]));
 
         return match ($provider) {
-            'dropbox' => 'https://www.dropbox.com/oauth2/authorize?' . http_build_query([
-                'client_id' => config('services.dropbox.client_id'),
-                'redirect_uri' => $this->dropboxPersonalRedirect(),
-                'response_type' => 'code',
-                'token_access_type' => 'offline',
-                'state' => $state,
-            ]),
             'google_drive' => $this->googleAuthUrl('google_drive', $state, 'https://www.googleapis.com/auth/drive.readonly'),
             'google_photos' => $this->googleAuthUrl('google_photos', $state, 'https://www.googleapis.com/auth/photoslibrary.readonly'),
             'onedrive' => 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' . http_build_query([
@@ -129,13 +118,8 @@ class UploadSourceService
         }
 
         $accountType = ($payload['account_type'] ?? 'personal') === 'shared' ? 'shared' : 'personal';
-        // Reject old signed states as well as new requests; this path must never write studio credentials.
-        abort_if($provider === 'dropbox' && $accountType === 'shared', 403, 'Manage the studio Dropbox connection from Integrations.');
         $userId = $accountType === 'shared' ? null : (int) ($payload['user_id'] ?? 0);
-        if ($provider === 'dropbox') {
-            $owner = $userId ? User::find($userId) : null;
-            abort_unless($owner && $owner->isAccountEligibleForAuthentication(), 403, 'The upload source owner is no longer active.');
-        }
+
         $tokenData = $this->exchangeCode($provider, $code);
         $account = $this->fetchAccount($provider, $tokenData['access_token']);
 
@@ -177,7 +161,6 @@ class UploadSourceService
         $token = $this->resolveAccessToken($provider, $user);
 
         return match ($provider) {
-            'dropbox' => $this->listDropboxItems($token, (string) ($params['path'] ?? '')),
             'google_drive' => $this->listGoogleDriveItems($token, (string) ($params['folder_id'] ?? 'root')),
             'google_photos' => $this->listGooglePhotosItems($token, $params),
             'onedrive' => $this->listOneDriveItems($token, (string) ($params['folder_id'] ?? 'root')),
@@ -225,7 +208,6 @@ class UploadSourceService
         }
 
         [$name, $contentType] = match ($provider) {
-            'dropbox' => $this->downloadDropboxItem($token, $item, $tmpPath),
             'google_drive' => $this->downloadGoogleDriveItem($token, $item, $tmpPath),
             'google_photos' => $this->downloadGooglePhotosItem($token, $item, $tmpPath),
             'onedrive' => $this->downloadOneDriveItem($token, $item, $tmpPath),
@@ -259,13 +241,6 @@ class UploadSourceService
     private function exchangeCode(string $provider, string $code): array
     {
         $response = match ($provider) {
-            'dropbox' => Http::withOptions(['verify' => true])->asForm()->post('https://api.dropboxapi.com/oauth2/token', [
-                'code' => $code,
-                'grant_type' => 'authorization_code',
-                'client_id' => config('services.dropbox.client_id'),
-                'client_secret' => config('services.dropbox.client_secret'),
-                'redirect_uri' => $this->dropboxPersonalRedirect(),
-            ]),
             'google_drive', 'google_photos' => Http::asForm()->post('https://oauth2.googleapis.com/token', [
                 'code' => $code,
                 'client_id' => config('services.google.client_id'),
@@ -291,13 +266,7 @@ class UploadSourceService
 
     private function resolveAccessToken(string $provider, User $user): string
     {
-        if ($provider === 'dropbox') {
-            $personal = $this->findToken($provider, $user, false);
-            if (!$personal) {
-                abort_unless($this->canUseStudioDropbox($user), 403, 'Connect your personal Dropbox account before browsing files.');
-                return app(DropboxTokenService::class)->getValidAccessToken();
-            }
-        }
+
 
         $token = $this->findToken($provider, $user, false) ?: $this->findToken($provider, $user, true);
         if (!$token) {
@@ -321,18 +290,6 @@ class UploadSourceService
             ->first();
     }
 
-    private function canUseStudioDropbox(User $user): bool
-    {
-        return in_array($user->role, ['admin', 'superadmin'], true)
-            && $user->isAccountEligibleForAuthentication()
-            && !request()->attributes->get('is_impersonating', false);
-    }
-
-    private function dropboxPersonalRedirect(): string
-    {
-        return rtrim((string) config('app.url'), '/') . '/api/upload-sources/dropbox/callback';
-    }
-
     private function refreshToken(OauthToken $token): string
     {
         if (!$token->refresh_token) {
@@ -340,12 +297,6 @@ class UploadSourceService
         }
 
         $response = match ($token->provider) {
-            'dropbox' => Http::withOptions(['verify' => true])->asForm()->post('https://api.dropboxapi.com/oauth2/token', [
-                'grant_type' => 'refresh_token',
-                'refresh_token' => $token->refresh_token,
-                'client_id' => config('services.dropbox.client_id'),
-                'client_secret' => config('services.dropbox.client_secret'),
-            ]),
             'google_drive', 'google_photos' => Http::asForm()->post('https://oauth2.googleapis.com/token', [
                 'grant_type' => 'refresh_token',
                 'refresh_token' => $token->refresh_token,
@@ -373,36 +324,6 @@ class UploadSourceService
         ])->save();
 
         return (string) $token->access_token;
-    }
-
-    private function listDropboxItems(string $token, string $path): array
-    {
-        $response = Http::withToken($token)
-            ->withOptions(['verify' => true])
-            ->post('https://api.dropboxapi.com/2/files/list_folder', [
-                'path' => $path === '/' ? '' : $path,
-                'recursive' => false,
-                'include_media_info' => true,
-                'include_deleted' => false,
-            ]);
-
-        if ($response->failed()) {
-            throw new RuntimeException('Could not list Dropbox files.');
-        }
-
-        return [
-            'items' => collect($response->json('entries', []))->map(fn ($entry) => [
-                'id' => $entry['id'] ?? ($entry['path_display'] ?? ''),
-                'name' => $entry['name'] ?? '',
-                'path' => $entry['path_display'] ?? '',
-                'is_folder' => ($entry['.tag'] ?? null) === 'folder',
-                'size' => $entry['size'] ?? null,
-                'mime_type' => $this->mimeFromName($entry['name'] ?? ''),
-                'modified' => $entry['server_modified'] ?? null,
-            ])->values(),
-            'path' => $path,
-            'has_more' => (bool) $response->json('has_more', false),
-        ];
     }
 
     private function listGoogleDriveItems(string $token, string $folderId): array
@@ -509,21 +430,6 @@ class UploadSourceService
         ];
     }
 
-    private function downloadDropboxItem(string $token, array $item, string $tmpPath): array
-    {
-        $path = (string) ($item['path'] ?? $item['id'] ?? '');
-        $response = Http::withToken($token)
-            ->withOptions(['sink' => $tmpPath, 'verify' => true])
-            ->withHeaders(['Dropbox-API-Arg' => json_encode(['path' => $path])])
-            ->post('https://content.dropboxapi.com/2/files/download');
-
-        if ($response->failed()) {
-            throw new RuntimeException('Could not download Dropbox file.');
-        }
-
-        return [$item['name'] ?? basename($path), $response->header('Content-Type') ?: $this->mimeFromName((string) ($item['name'] ?? $path))];
-    }
-
     private function downloadGoogleDriveItem(string $token, array $item, string $tmpPath): array
     {
         $id = (string) ($item['id'] ?? '');
@@ -572,7 +478,6 @@ class UploadSourceService
     {
         try {
             $response = match ($provider) {
-                'dropbox' => Http::withOptions(['verify' => true])->withToken($accessToken)->withBody('null')->post('https://api.dropboxapi.com/2/users/get_current_account'),
                 'google_drive', 'google_photos' => Http::withToken($accessToken)->get('https://openidconnect.googleapis.com/v1/userinfo'),
                 'onedrive' => Http::withToken($accessToken)->get('https://graph.microsoft.com/v1.0/me?$select=id,displayName,userPrincipalName,mail'),
             };
@@ -583,11 +488,6 @@ class UploadSourceService
 
             $data = $response->json() ?: [];
             return match ($provider) {
-                'dropbox' => [
-                    'id' => $data['account_id'] ?? null,
-                    'email' => $data['email'] ?? null,
-                    'name' => $data['name']['display_name'] ?? null,
-                ],
                 'google_drive', 'google_photos' => [
                     'id' => $data['sub'] ?? null,
                     'email' => $data['email'] ?? null,
@@ -709,7 +609,6 @@ class UploadSourceService
     private function isConfigured(string $provider): bool
     {
         return match ($provider) {
-            'dropbox' => (bool) (config('services.dropbox.client_id') && config('services.dropbox.client_secret')),
             'google_drive', 'google_photos' => (bool) (config('services.google.client_id') && config('services.google.client_secret')),
             'onedrive' => (bool) (config('services.microsoft.client_id') && config('services.microsoft.client_secret')),
         };
@@ -718,7 +617,6 @@ class UploadSourceService
     private function label(string $provider): string
     {
         return match ($provider) {
-            'dropbox' => 'Dropbox',
             'google_drive' => 'Google Drive',
             'google_photos' => 'Google Photos',
             'onedrive' => 'OneDrive',

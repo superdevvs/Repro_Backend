@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
@@ -48,7 +48,7 @@ class ShootNotificationDispatchServiceTest extends TestCase
         $mailService->shouldReceive('sendShootRequestedAdminNotificationEmails')->never();
 
         $recoveryService = Mockery::mock(ClientConfirmationRecoveryService::class);
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
 
         $service = new ShootNotificationDispatchService(
             $automationService,
@@ -92,7 +92,7 @@ class ShootNotificationDispatchServiceTest extends TestCase
             ->with(Mockery::on(fn (User $recipient) => $recipient->is($shoot->client)))
             ->andReturnTrue();
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
 
         $service = new ShootNotificationDispatchService(
             $automationService,
@@ -133,7 +133,7 @@ class ShootNotificationDispatchServiceTest extends TestCase
         $recoveryService = Mockery::mock(ClientConfirmationRecoveryService::class);
         $recoveryService->shouldReceive('hasDeliverableEmail')->once()->andReturnTrue();
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
 
         $service = new ShootNotificationDispatchService(
             $automationService,
@@ -173,7 +173,7 @@ class ShootNotificationDispatchServiceTest extends TestCase
         $recoveryService = Mockery::mock(ClientConfirmationRecoveryService::class);
         $recoveryService->shouldReceive('hasDeliverableEmail')->once()->andReturnFalse();
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
 
         $service = new ShootNotificationDispatchService(
             $automationService,

@@ -3,7 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\IguideOfflinePackageService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -34,7 +34,7 @@ class FinalizeIguideOfflinePackageJob implements ShouldQueue
         $this->onQueue('default');
     }
 
-    public function handle(IguideOfflinePackageService $packages, DropboxWorkflowService $dropbox): void
+    public function handle(IguideOfflinePackageService $packages, ShootMediaStorageService $mediaStorageService): void
     {
         $file = ShootFile::find($this->shootFileId);
         if (
@@ -53,18 +53,6 @@ class FinalizeIguideOfflinePackageJob implements ShouldQueue
         $packages->markScanning($file);
         $packages->markReady($file);
 
-        if ($dropbox->isEnabled()) {
-            try {
-                SyncShootFileToDropboxJob::dispatch((int) $file->getKey());
-            } catch (Throwable $exception) {
-                // The authenticated private ZIP is already ready. A transient
-                // mirror enqueue failure must not roll its lifecycle backward.
-                Log::warning('Could not enqueue clean iGUIDE package Dropbox mirror.', [
-                    'shoot_file_id' => $file->id,
-                    'error' => $exception->getMessage(),
-                ]);
-            }
-        }
     }
 
     public function failed(?Throwable $exception = null): void

@@ -20,7 +20,7 @@ class SettingsController extends Controller
             // not load, decrypt, or serialize them through the browser API.
             return response()->json([
                 'success' => false,
-                'message' => 'Use Dropbox connection status in integration settings.',
+                'message' => 'This integration has been retired.',
             ], 410);
         }
 
@@ -77,9 +77,9 @@ class SettingsController extends Controller
         if ($this->isDropboxSetting($request->input('key'))) {
             return response()->json([
                 'success' => false,
-                'message' => 'Manage Dropbox through the secure connection flow in integration settings.',
+                'message' => 'This integration has been retired.',
                 'errors' => [
-                    'key' => ['Dropbox credentials and connection settings cannot be saved here.'],
+                    'key' => ['Retired integration settings cannot be saved.'],
                 ],
             ], 422);
         }

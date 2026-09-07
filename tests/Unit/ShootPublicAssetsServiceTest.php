@@ -3,7 +3,6 @@
 namespace Tests\Unit;
 
 use App\Models\Shoot;
-use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootPaymentStatusSupport;
 use App\Services\Shoots\ShootPublicAssetsService;
@@ -71,7 +70,6 @@ class ShootPublicAssetsServiceTest extends TestCase
 
     protected function makeService(): ShootPublicAssetsService
     {
-        $dropboxService = Mockery::mock(DropboxWorkflowService::class);
         $paymentStatusSupport = Mockery::mock(ShootPaymentStatusSupport::class);
         $clientReleaseAccessService = Mockery::mock(ShootClientReleaseAccessService::class);
 
@@ -84,7 +82,6 @@ class ShootPublicAssetsServiceTest extends TestCase
             });
 
         return new ShootPublicAssetsService(
-            $dropboxService,
             $paymentStatusSupport,
             $clientReleaseAccessService,
             new \App\Services\Media\MediaStorage(),

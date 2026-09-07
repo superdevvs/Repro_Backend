@@ -5,7 +5,7 @@ namespace App\Services\ReproAi;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\ShootActivityLogger;
 use App\Services\ShootTaxService;
@@ -16,7 +16,7 @@ use Illuminate\Validation\ValidationException;
 
 class ShootService
 {
-    private DropboxWorkflowService $dropboxService;
+    private ShootMediaStorageService $mediaStorageService;
 
     private ShootWorkflowService $workflowService;
 
@@ -26,7 +26,7 @@ class ShootService
 
     public function __construct()
     {
-        $this->dropboxService = app(DropboxWorkflowService::class);
+        $this->mediaStorageService = app(ShootMediaStorageService::class);
         $this->workflowService = app(ShootWorkflowService::class);
         $this->taxService = app(ShootTaxService::class);
         $this->activityLogger = app(ShootActivityLogger::class);
@@ -143,11 +143,11 @@ class ShootService
             // Create Dropbox folders if scheduled
             if ($scheduledAt) {
                 try {
-                    $this->dropboxService->createShootFolders($shoot);
-                } catch (\Throwable $dropboxError) {
+                    $this->mediaStorageService->createShootFolders($shoot);
+                } catch (\Throwable $mediaStorageServiceError) {
                     Log::warning('Robbie booking Dropbox folder creation failed', [
                         'shoot_id' => $shoot->id,
-                        'error' => $dropboxError->getMessage(),
+                        'error' => $mediaStorageServiceError->getMessage(),
                     ]);
                 }
             }

@@ -4,7 +4,7 @@ namespace Tests\Unit;
 
 use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ImageProcessingService;
 use App\Services\Media\MediaStorage;
 use Illuminate\Support\Facades\Storage;
@@ -52,7 +52,7 @@ class ProcessImageJobGridBackfillTest extends TestCase
         Storage::disk('local')->put('originals/listing-photo.jpg', 'binary');
 
         $imageService = $this->createMock(ImageProcessingService::class);
-        $dropbox = $this->createMock(DropboxWorkflowService::class);
+        $dropbox = $this->createMock(ShootMediaStorageService::class);
         $media = $this->createMock(MediaStorage::class);
 
         $imageService->method('needsPreviewRegeneration')->willReturn(false);
@@ -72,7 +72,7 @@ class ProcessImageJobGridBackfillTest extends TestCase
         Storage::disk('local')->put('originals/listing-photo.jpg', 'binary');
 
         $imageService = $this->createMock(ImageProcessingService::class);
-        $dropbox = $this->createMock(DropboxWorkflowService::class);
+        $dropbox = $this->createMock(ShootMediaStorageService::class);
         $media = $this->createMock(MediaStorage::class);
 
         $imageService->method('needsPreviewRegeneration')->willReturn(false);

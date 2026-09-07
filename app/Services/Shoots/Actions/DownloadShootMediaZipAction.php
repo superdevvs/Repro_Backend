@@ -3,7 +3,6 @@
 namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
-use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootMediaArchiveService;
 use App\Services\Shoots\ShootClientReleaseAccessService;
@@ -14,7 +13,6 @@ use Illuminate\Support\Facades\Log;
 class DownloadShootMediaZipAction
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
         protected ShootMediaArchiveService $shootMediaArchiveService,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected ShootFileAccessService $shootFileAccessService,

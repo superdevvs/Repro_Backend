@@ -4,7 +4,7 @@ namespace App\Jobs;
 
 use App\Models\ShootFile;
 use App\Models\WatermarkSettings;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Http\Controllers\API\WatermarkSettingsController;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -38,7 +38,7 @@ class GenerateWatermarkedImageJob implements ShouldQueue
     ) {
     }
 
-    public function handle(DropboxWorkflowService $dropboxService): void
+    public function handle(ShootMediaStorageService $mediaStorageService): void
     {
         try {
             // Only process image files - check both file_type and mime_type
@@ -64,7 +64,7 @@ class GenerateWatermarkedImageJob implements ShouldQueue
 
             $imageManager = new ImageManager(new Driver());
 
-            [$originalPath, $deleteOriginalAfter] = $this->getOriginalFilePath($dropboxService);
+            [$originalPath, $deleteOriginalAfter] = $this->getOriginalFilePath($mediaStorageService);
 
             if (!$originalPath || !file_exists($originalPath)) {
                 throw new \Exception('Failed to locate original file for watermarking.');
@@ -86,13 +86,13 @@ class GenerateWatermarkedImageJob implements ShouldQueue
 
             $watermarkedStoragePath = $this->storeWatermarkedOutput(
                 $watermarkedAbsolutePath,
-                $dropboxService
+                $mediaStorageService
             );
 
             $watermarkedSizePaths = $this->generateWatermarkedSizes(
                 $watermarkedAbsolutePath,
                 $imageManager,
-                $dropboxService
+                $mediaStorageService
             );
 
             // Update shoot file record
@@ -713,7 +713,7 @@ class GenerateWatermarkedImageJob implements ShouldQueue
     protected function generateWatermarkedSizes(
         string $watermarkedAbsolutePath,
         ImageManager $imageManager,
-        DropboxWorkflowService $dropboxService
+        ShootMediaStorageService $mediaStorageService
     ): array {
         $paths = [];
 
@@ -723,7 +723,7 @@ class GenerateWatermarkedImageJob implements ShouldQueue
                 $sizeImage->scaleDown($config['width'], $config['height']);
 
                 $tempPath = $this->saveWatermarkedVariant($sizeImage, $sizeName, $config['quality']);
-                $paths[$sizeName] = $this->storeWatermarkedOutput($tempPath, $dropboxService, $sizeName);
+                $paths[$sizeName] = $this->storeWatermarkedOutput($tempPath, $mediaStorageService, $sizeName);
 
                 if (file_exists($tempPath)) {
                     @unlink($tempPath);
@@ -756,11 +756,11 @@ class GenerateWatermarkedImageJob implements ShouldQueue
     }
 
     /**
-     * Determine the path to the original file, downloading from Dropbox if necessary.
+     * Resolve the original from local storage or the configured R2 disk.
      *
      * @return array{0:string,1:bool} [absolutePath, shouldDeleteAfter]
      */
-    protected function getOriginalFilePath(DropboxWorkflowService $dropboxService): array
+    protected function getOriginalFilePath(ShootMediaStorageService $mediaStorageService): array
     {
         $candidates = array_filter([
             $this->shootFile->storage_path,
@@ -782,13 +782,6 @@ class GenerateWatermarkedImageJob implements ShouldQueue
                 if ($downloaded && file_exists($downloaded)) {
                     return [$downloaded, true];
                 }
-            }
-        }
-
-        if ($this->shootFile->dropbox_path) {
-            $downloaded = $dropboxService->downloadToTemp($this->shootFile->dropbox_path);
-            if ($downloaded && file_exists($downloaded)) {
-                return [$downloaded, true];
             }
         }
 
@@ -818,20 +811,10 @@ class GenerateWatermarkedImageJob implements ShouldQueue
 
     protected function storeWatermarkedOutput(
         string $localTempPath,
-        DropboxWorkflowService $dropboxService,
+        ShootMediaStorageService $mediaStorageService,
         ?string $sizeName = null
     ): string {
         if ($sizeName) {
-            if ($this->shootFile->dropbox_path) {
-                $targetDropboxPath = $this->buildDropboxWatermarkSizePath($sizeName);
-                $uploadedPath = $dropboxService->uploadFromPath($localTempPath, $targetDropboxPath);
-
-                if (!$uploadedPath) {
-                    throw new \Exception('Failed to upload watermarked size to Dropbox.');
-                }
-
-                return $uploadedPath;
-            }
 
             $destinationPath = $this->buildLocalWatermarkSizePath($sizeName);
             $publicDisk = Storage::disk('public');
@@ -841,57 +824,12 @@ class GenerateWatermarkedImageJob implements ShouldQueue
             return $destinationPath;
         }
 
-        if ($this->shootFile->dropbox_path) {
-            $targetDropboxPath = $this->buildDropboxWatermarkPath();
-            $uploadedPath = $dropboxService->uploadFromPath($localTempPath, $targetDropboxPath);
-
-            if (!$uploadedPath) {
-                throw new \Exception('Failed to upload watermarked file to Dropbox.');
-            }
-
-            return $uploadedPath;
-        }
-
         $destinationPath = $this->buildLocalWatermarkPath();
         $publicDisk = Storage::disk('public');
         $publicDisk->makeDirectory(Str::beforeLast($destinationPath, '/'));
         $publicDisk->put($destinationPath, file_get_contents($localTempPath));
 
         return $destinationPath;
-    }
-
-    protected function buildDropboxWatermarkPath(): string
-    {
-        $originalPath = $this->shootFile->dropbox_path ?? '';
-        $directory = rtrim(dirname($originalPath), '/');
-
-        if (!$directory || $directory === '.') {
-            $directory = '/watermarked';
-        } else {
-            $directory .= '/watermarked';
-        }
-
-        $filename = basename($originalPath) ?: ($this->shootFile->stored_filename ?? $this->shootFile->filename ?? 'watermarked.jpg');
-
-        return rtrim($directory, '/') . '/' . $filename;
-    }
-
-    protected function buildDropboxWatermarkSizePath(string $sizeName): string
-    {
-        $originalPath = $this->shootFile->dropbox_path ?? '';
-        $directory = rtrim(dirname($originalPath), '/');
-
-        if (!$directory || $directory === '.') {
-            $directory = '/watermarked/' . $sizeName;
-        } else {
-            $directory .= '/watermarked/' . $sizeName;
-        }
-
-        $originalName = $this->shootFile->stored_filename ?? $this->shootFile->filename ?? 'watermarked.jpg';
-        $basename = pathinfo($originalName, PATHINFO_FILENAME);
-        $filename = $basename . '_watermarked_' . $sizeName . '.jpg';
-
-        return rtrim($directory, '/') . '/' . $filename;
     }
 
     protected function buildLocalWatermarkPath(): string

@@ -3,7 +3,7 @@
 namespace App\Jobs;
 
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\FinalizeProgressTracker;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -41,7 +41,7 @@ class CacheShootFinalToLocalJob implements ShouldQueue
         $this->onQueue('media');
     }
 
-    public function handle(DropboxWorkflowService $dropbox, ?FinalizeProgressTracker $progress = null): void
+    public function handle(ShootMediaStorageService $mediaStorageService, ?FinalizeProgressTracker $progress = null): void
     {
         $progress ??= app(FinalizeProgressTracker::class);
 
@@ -52,38 +52,9 @@ class CacheShootFinalToLocalJob implements ShouldQueue
             return;
         }
 
-        $disk = Storage::disk('public');
-        $currentPath = (string) $file->path;
-
-        // Already cached locally and present on disk — nothing to do.
-        if ($currentPath !== '' && $disk->exists($currentPath)) {
-            $this->countTowardsFinalizeProgress($progress, $file);
-            return;
-        }
-
-        if (empty($file->dropbox_path)) {
-            // No Dropbox source to fetch from. Without a remote source there's
-            // nothing to cache; leave path alone and let the read pipeline
-            // fall back to whatever it already does.
-            Log::info('CacheShootFinalToLocalJob: no dropbox_path, skipping', [
-                'shoot_file_id' => $file->id,
-            ]);
-            $this->countTowardsFinalizeProgress($progress, $file);
-            return;
-        }
-
-        try {
-            // moveToFinal handles streaming download + STAGE_VERIFIED bookkeeping.
-            $dropbox->moveToFinal($file, 0);
-            $this->countTowardsFinalizeProgress($progress, $file);
-        } catch (\Throwable $e) {
-            Log::warning('CacheShootFinalToLocalJob attempt failed', [
-                'shoot_file_id' => $file->id,
-                'attempt' => $this->attempts(),
-                'error' => $e->getMessage(),
-            ]);
-            throw $e; // queue worker handles backoff/retries.
-        }
+        // Old serialized cache jobs must still complete their progress unit.
+        // All current media is local; retired remote sources are never fetched.
+        $this->countTowardsFinalizeProgress($progress, $file);
     }
 
     public function failed(\Throwable $exception): void

@@ -429,53 +429,7 @@ class FinalizeShootJob implements ShouldQueue
      */
     protected function dispatchLocalCacheJobs(array $fileIds, FinalizeProgressTracker $progress): void
     {
-        // Ordered by the same snapshot the ZIP and MLS manifest use, so the
-        // Dropbox cache warms front-to-back in delivery order. A client who
-        // starts downloading before every file is cached then gets the early
-        // photos first instead of an arbitrary subset.
-        $cacheableIds = empty($fileIds)
-            ? []
-            : $this->orderByDeliverySnapshot(
-                ShootFile::query()
-                    ->whereIn('id', $fileIds)
-                    ->whereNotNull('dropbox_path')
-                    ->where('dropbox_path', '!=', '')
-                    ->inDeliveryOrder()
-                    ->pluck('id')
-                    ->map(fn ($id) => (int) $id)
-                    ->all()
-            );
-
-        if (empty($cacheableIds)) {
-            $progress->stageSkipped(
-                $this->shootId,
-                FinalizeProgressTracker::STAGE_LOCAL_CACHE,
-                'No remote files needed caching'
-            );
-            return;
-        }
-
-        // The per-file jobs report their own completion, so the stage knows
-        // its unit count up front and can show a real fraction.
-        $progress->stageRunning(
-            $this->shootId,
-            FinalizeProgressTracker::STAGE_LOCAL_CACHE,
-            sprintf('Caching %d delivered file(s)', count($cacheableIds)),
-            count($cacheableIds)
-        );
-
-        foreach ($cacheableIds as $id) {
-            try {
-                CacheShootFinalToLocalJob::dispatch((int) $id, $this->shootId);
-            } catch (\Throwable $e) {
-                Log::warning('Failed to dispatch CacheShootFinalToLocalJob', [
-                    'shoot_file_id' => $id,
-                    'error' => $e->getMessage(),
-                ]);
-                // Never leave the stage waiting on a job that was never queued.
-                $progress->stageAdvanced($this->shootId, FinalizeProgressTracker::STAGE_LOCAL_CACHE);
-            }
-        }
+        $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_LOCAL_CACHE, 'Media is stored locally');
     }
 
     /**

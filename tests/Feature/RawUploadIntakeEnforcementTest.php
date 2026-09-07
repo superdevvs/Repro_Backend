@@ -8,7 +8,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Queue;
@@ -47,7 +47,7 @@ class RawUploadIntakeEnforcementTest extends TestCase
             'bracket_mode' => 5,
         ]);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')->andReturnUsing(
             function (Shoot $target, UploadedFile $file, int $actorId, mixed $serviceCategory = null, mixed $mediaType = null) {
                 return ShootFile::create([
@@ -63,7 +63,7 @@ class RawUploadIntakeEnforcementTest extends TestCase
                 ]);
             }
         );
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
     }
 
     private function service(string $name, string $category, string $intake, array $extra = []): Service

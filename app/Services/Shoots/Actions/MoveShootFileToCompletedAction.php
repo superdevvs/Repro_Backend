@@ -4,20 +4,20 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 
 class MoveShootFileToCompletedAction
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootMediaMutationSupportService $support
     ) {
     }
 
     public function execute(Shoot $shoot, ShootFile $file, ?int $userId): array
     {
-        $this->dropboxService->moveToCompleted($file, $userId);
+        $this->mediaStorageService->moveToCompleted($file, $userId);
         $shoot = $this->support->refreshMediaCounters($shoot->fresh());
 
         return [

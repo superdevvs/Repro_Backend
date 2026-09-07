@@ -5,7 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
 use App\Jobs\SyncShootFileToDropboxJob;
-use App\Jobs\UploadShootMediaToDropboxJob;
+use App\Jobs\UploadShootAlbumMediaJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -28,7 +28,7 @@ use Tests\TestCase;
  *  - On a valid upload, the ShootFile row is created with scan_status
  *    'quarantined' (the migration default).
  *  - ScanShootFileJob is dispatched after the row is created.
- *  - ProcessImageJob and UploadShootMediaToDropboxJob are NOT dispatched
+ *  - ProcessImageJob and UploadShootAlbumMediaJob are NOT dispatched
  *    directly from the upload path (downstream gating arrives in 13.6 / 13.5).
  *
  * Hits BOTH user-upload entry points called out by the task:
@@ -113,7 +113,7 @@ class UploadQuarantineWiringTest extends TestCase
         $this->assertSame(0, ShootFile::where('shoot_id', $shoot->id)->count());
         Queue::assertNotPushed(ScanShootFileJob::class);
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 
     #[Test]
@@ -138,7 +138,7 @@ class UploadQuarantineWiringTest extends TestCase
         $this->assertSame(0, ShootFile::where('shoot_id', $shoot->id)->count());
         Queue::assertNotPushed(ScanShootFileJob::class);
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 
     #[Test]
@@ -171,7 +171,7 @@ class UploadQuarantineWiringTest extends TestCase
             return $job->shootFileId === $file->id;
         });
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 
     #[Test]
@@ -192,7 +192,7 @@ class UploadQuarantineWiringTest extends TestCase
         $this->assertSame(0, ShootFile::where('shoot_id', $shoot->id)->count());
         Queue::assertNotPushed(ScanShootFileJob::class);
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 
     #[Test]
@@ -223,7 +223,7 @@ class UploadQuarantineWiringTest extends TestCase
             return $job->shootFileId === $file->id;
         });
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 
     #[Test]
@@ -258,6 +258,6 @@ class UploadQuarantineWiringTest extends TestCase
             return $job->shootFileId === $file->id;
         });
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 }

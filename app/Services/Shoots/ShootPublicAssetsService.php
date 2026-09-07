@@ -5,7 +5,6 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
 use App\Services\IguideOfflineViewerService;
 use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
@@ -19,7 +18,6 @@ use Illuminate\Support\Facades\Storage;
 class ShootPublicAssetsService
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
         protected ShootPaymentStatusSupport $paymentStatusSupport,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected MediaStorage $mediaStorage,
@@ -550,17 +548,7 @@ class ShootPublicAssetsService
                 }
             }
 
-            if (!$url && !empty($file->dropbox_path)) {
-                try {
-                    $url = $this->dropboxService->getTemporaryLink($file->dropbox_path);
-                } catch (\Exception $e) {
-                    Log::warning('Failed to resolve Dropbox image for AI property description', [
-                        'file_id' => $file->id,
-                        'dropbox_path' => $file->dropbox_path,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-            }
+
 
             if ($url) {
                 $imageUrls[] = $url;
@@ -791,7 +779,7 @@ class ShootPublicAssetsService
             if ($file->shouldBeWatermarked()) {
                 try {
                     $watermarkJob = new \App\Jobs\GenerateWatermarkedImageJob($file->fresh());
-                    $watermarkJob->handle(app(DropboxWorkflowService::class));
+                    $watermarkJob->handle(app(\App\Services\ShootMediaStorageService::class));
                     $file->refresh();
 
                     return $this->resolveClientProfileFileUrl($file, $shoots, $size);
@@ -1082,14 +1070,7 @@ class ShootPublicAssetsService
             return $resolved;
         }
 
-        try {
-            return $path ? $this->dropboxService->getTemporaryLink($path) : null;
-        } catch (\Exception $e) {
-            Log::warning('Failed to resolve watermarked path', [
-                'path' => $path,
-                'error' => $e->getMessage(),
-            ]);
-        }
+
 
         return null;
     }

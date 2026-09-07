@@ -6,7 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\BracketModeResolver;
 use App\Services\Shoots\ShootEditingAssignmentService;
@@ -27,7 +27,7 @@ use Illuminate\Validation\ValidationException;
 class UploadShootFilesAction
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootMediaMutationSupportService $support,
         protected ShootActivityLogger $activityLogger,
         protected AutoStackRawFilesAction $autoStackRawFilesAction,
@@ -614,8 +614,8 @@ class UploadShootFilesAction
                     // duplicate check is scoped to that row. Without it, two services on
                     // one shoot receiving the same filename collapsed into one file.
                     $shootFile = $uploadType === 'raw'
-                        ? $this->dropboxService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId)
-                        : $this->dropboxService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId);
+                        ? $this->mediaStorageService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId)
+                        : $this->mediaStorageService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId);
 
                     if ($shootServiceId && ! $shootFile->shoot_service_id) {
                         $shootFile->shoot_service_id = $shootServiceId;

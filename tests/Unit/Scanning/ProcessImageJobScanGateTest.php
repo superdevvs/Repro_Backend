@@ -4,7 +4,7 @@ namespace Tests\Unit\Scanning;
 
 use App\Jobs\ProcessImageJob;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ImageProcessingService;
 use App\Services\Media\MediaStorage;
 use PHPUnit\Framework\Attributes\Test;
@@ -48,7 +48,7 @@ class ProcessImageJobScanGateTest extends TestCase
             ShootFile::SCAN_STATUS_FAILED,
         ] as $status) {
             $imageService = $this->createMock(ImageProcessingService::class);
-            $dropbox = $this->createMock(DropboxWorkflowService::class);
+            $dropbox = $this->createMock(ShootMediaStorageService::class);
 
             // If the gate fails to withhold, the job would consult the image
             // service — assert it is never touched for a non-clean file.
@@ -63,7 +63,7 @@ class ProcessImageJobScanGateTest extends TestCase
     public function clean_files_pass_the_gate_into_processing(): void
     {
         $imageService = $this->createMock(ImageProcessingService::class);
-        $dropbox = $this->createMock(DropboxWorkflowService::class);
+        $dropbox = $this->createMock(ShootMediaStorageService::class);
         $media = $this->createMock(MediaStorage::class);
 
         // Passing the gate means the job consults the image service; returning
@@ -79,7 +79,7 @@ class ProcessImageJobScanGateTest extends TestCase
     public function legacy_null_status_files_pass_the_gate_into_processing(): void
     {
         $imageService = $this->createMock(ImageProcessingService::class);
-        $dropbox = $this->createMock(DropboxWorkflowService::class);
+        $dropbox = $this->createMock(ShootMediaStorageService::class);
         $media = $this->createMock(MediaStorage::class);
 
         $imageService->expects($this->once())

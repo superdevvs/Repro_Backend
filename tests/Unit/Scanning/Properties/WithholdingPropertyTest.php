@@ -47,7 +47,7 @@ use Tests\TestCase;
  *
  * **Companion coverage (preview/download endpoints, Req 15.7).** The
  * downstream gates in {@see \App\Jobs\ProcessImageJob}/
- * {@see \App\Jobs\UploadShootMediaToDropboxJob} (via
+ * {@see \App\Jobs\UploadShootAlbumMediaJob} (via
  * {@see ShootFile::isClearedForProcessing()}) and the preview/download
  * controller endpoints (`ShootMediaController::previewFile`,
  * `ShootMediaController::downloadMedia`, `bulkDownloadMedia`,

@@ -4,7 +4,6 @@ namespace App\Jobs;
 
 use App\Exceptions\Scanning\ClamAvUnavailable;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
 use App\Services\Scanning\ClamAvClient;
 use App\Services\Scanning\ClamAvScanResult;
 use App\Services\Scanning\FileScanService;
@@ -247,21 +246,6 @@ class ScanShootFileJob implements ShouldQueue
 
         if ($file->storage_path && Storage::disk('local')->exists($file->storage_path)) {
             return Storage::disk('local')->path($file->storage_path);
-        }
-
-        if ($file->dropbox_path) {
-            try {
-                $temp = app(DropboxWorkflowService::class)->downloadToTemp($file->dropbox_path);
-                if (is_string($temp) && is_file($temp)) {
-                    return $temp;
-                }
-            } catch (Throwable $e) {
-                Log::warning('ScanShootFileJob: Dropbox download failed, file unscannable.', [
-                    'shoot_file_id' => $file->id,
-                    'dropbox_path' => $file->dropbox_path,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         return null;

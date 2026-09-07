@@ -10,7 +10,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\BrightMlsService;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\DeliveryMediaOrderService;
 use App\Services\Shoots\ShootMediaArchiveService;
@@ -797,10 +797,10 @@ class ShootDeliveryMediaOrderTest extends TestCase
 
     protected function mockDropboxDisabled(): void
     {
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         $dropbox->shouldReceive('getTemporaryLink')->andReturnNull();
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
     }
 
     protected function createShoot(array $overrides = []): Shoot

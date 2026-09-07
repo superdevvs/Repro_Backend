@@ -165,15 +165,6 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     ]);
                 }
 
-                try {
-                    SyncShootFileToDropboxJob::dispatch($shootFile->id);
-                } catch (\Throwable $e) {
-                    Log::warning('IngestCubiCasaAssetsJob: dropbox dispatch failed', [
-                        'shoot_file_id' => $shootFile->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-
                 if (config('media.dual_write') || config('media.r2_only')) {
                     try {
                         SyncShootFileToR2Job::dispatch($shootFile->id);

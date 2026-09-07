@@ -5,7 +5,7 @@ namespace App\Services\Shoots;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -22,7 +22,7 @@ class ShootMediaArchiveService
     private const DEFAULT_API_URL = 'https://api.reprodashboard.com';
 
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootFileAccessService $shootFileAccessService,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected DeliveryMediaOrderService $deliveryMediaOrderService,
@@ -498,12 +498,10 @@ class ShootMediaArchiveService
                 $file->placeholder_path,
                 $file->storage_path,
                 $file->path,
-                $file->dropbox_path,
             ]
             : [
                 $file->storage_path,
                 $file->path,
-                $file->dropbox_path,
             ];
 
         foreach ($candidates as $candidate) {
@@ -511,15 +509,7 @@ class ShootMediaArchiveService
                 continue;
             }
 
-            if ($candidate === $file->dropbox_path) {
-                if ($this->dropboxService->isEnabled()) {
-                    return $candidate;
-                }
-
-                continue;
-            }
-
-            if ($this->shootFileAccessService->resolveLocalPath($candidate)) {
+            if ($this->shootFileAccessService->storedFileExists($candidate)) {
                 return $candidate;
             }
         }
@@ -539,11 +529,11 @@ class ShootMediaArchiveService
             return $localPath;
         }
 
-        // Stage the Dropbox download under the master filename, not the
+        // Stage a configured R2 source under the master filename, not the
         // position-prefixed archive name — the prefix belongs to the delivered
         // ZIP entry only, and the temp file is keyed off the source.
         $filename = basename($entry['source_name'] ?? $entry['archive_name'] ?? 'file');
-        $downloaded = $this->shootFileAccessService->downloadDropboxPathToTemp($sourcePath, $filename);
+        $downloaded = $this->shootFileAccessService->downloadStoredFileToTemp($sourcePath);
         if ($downloaded) {
             $entry['temp_path'] = $downloaded;
         }

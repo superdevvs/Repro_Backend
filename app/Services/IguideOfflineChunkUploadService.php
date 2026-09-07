@@ -497,7 +497,7 @@ class IguideOfflineChunkUploadService
         string $sessionId,
         UploadValidationService $uploadValidation,
         IguideOfflinePackageService $packages,
-        DropboxWorkflowService $dropbox
+        ShootMediaStorageService $mediaStorageService
     ): void {
         $session = IguideOfflineUploadSession::with(['shoot', 'user'])->find($sessionId);
         if ($session === null || $session->status !== IguideOfflineUploadSession::STATUS_ASSEMBLING) {
@@ -537,7 +537,7 @@ class IguideOfflineChunkUploadService
 
         if ($shootFile === null) {
             $lifecycle = $packages->beginUpload($shoot, $inspection, $user, (string) $session->getKey());
-            $shootFile = $dropbox->uploadIguideOfflinePackage(
+            $shootFile = $mediaStorageService->uploadIguideOfflinePackage(
                 $shoot,
                 $upload,
                 $user->getKey(),

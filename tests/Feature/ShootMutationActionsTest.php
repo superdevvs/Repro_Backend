@@ -13,7 +13,7 @@ use App\Models\ShootFile;
 use App\Models\ShootMediaAlbum;
 use App\Models\ShootUploadAttempt;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\CubiCasaService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
@@ -2366,10 +2366,10 @@ class ShootMutationActionsTest extends TestCase
 
     protected function bindMutationSideEffectFakes(): void
     {
-        $dropboxService = Mockery::mock(DropboxWorkflowService::class);
+        $dropboxService = Mockery::mock(ShootMediaStorageService::class);
         $dropboxService->shouldIgnoreMissing();
         $dropboxService->shouldReceive('createShootFolders')->zeroOrMoreTimes()->andReturnNull();
-        $this->app->instance(DropboxWorkflowService::class, $dropboxService);
+        $this->app->instance(ShootMediaStorageService::class, $dropboxService);
 
         $invoiceService = Mockery::mock(InvoiceService::class);
         $invoiceService->shouldIgnoreMissing();

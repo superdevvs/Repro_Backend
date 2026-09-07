@@ -7,7 +7,7 @@ use App\Jobs\ScanShootFileJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\IguideOfflinePackageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -151,7 +151,7 @@ class IguideOfflinePackageControllerTest extends TestCase
 
         (new FinalizeIguideOfflinePackageJob($file->id))->handle(
             app(IguideOfflinePackageService::class),
-            app(DropboxWorkflowService::class)
+            app(ShootMediaStorageService::class)
         );
 
         $lifecycle = data_get($shoot->fresh()->iguide_data, 'manual_offline_package');

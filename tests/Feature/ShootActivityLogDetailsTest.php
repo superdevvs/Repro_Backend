@@ -12,7 +12,7 @@ use App\Models\ShootActivityLog;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\BrightMlsService;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Events\ShootActivityBroadcast;
@@ -354,26 +354,26 @@ class ShootActivityLogDetailsTest extends TestCase
 
     private function mockUploadToTodo(int $times = 2): void
     {
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')
             ->times($times)
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null) {
                 return $this->createShootFile($shoot, $file, $userId, ShootFile::STAGE_TODO, $mediaTypeOverride ?? 'raw');
             });
 
-        $this->app->instance(DropboxWorkflowService::class, $dropbox);
+        $this->app->instance(ShootMediaStorageService::class, $dropbox);
     }
 
     private function mockUploadToCompleted(int $times = 1): void
     {
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToCompleted')
             ->times($times)
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, $userId, $serviceCategory = null, ?string $mediaTypeOverride = null) {
                 return $this->createShootFile($shoot, $file, $userId, ShootFile::STAGE_COMPLETED, $mediaTypeOverride ?? 'edited');
             });
 
-        $this->app->instance(DropboxWorkflowService::class, $dropbox);
+        $this->app->instance(ShootMediaStorageService::class, $dropbox);
     }
 
     private function createShootFile(Shoot $shoot, UploadedFile $file, int $userId, string $stage, string $mediaType): ShootFile

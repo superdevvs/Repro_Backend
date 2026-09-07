@@ -5,7 +5,6 @@ namespace App\Console\Commands;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\WorkflowLog;
-use App\Services\DropboxWorkflowService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Storage;
 
@@ -14,12 +13,11 @@ class ShootFinalizeDoctor extends Command
     protected $signature = 'shoot:finalize-doctor
         {shoot : The shoot ID to diagnose.}
         {--logs=15 : How many recent workflow log entries to show.}
-        {--probe : Also probe Dropbox temporary link + streamed download for the first completed file.}
         {--json : Output the full structured report as JSON.}';
 
-    protected $description = 'Diagnose a shoot finalize run: show status, file stage counts, recent workflow logs, and optional Dropbox probe.';
+    protected $description = 'Diagnose a shoot finalize run: show status, file stage counts, recent workflow logs and local file availability.';
 
-    public function handle(DropboxWorkflowService $dropbox): int
+    public function handle(): int
     {
         $shootId = (int) $this->argument('shoot');
         $logLimit = max(1, (int) $this->option('logs'));
@@ -45,9 +43,7 @@ class ShootFinalizeDoctor extends Command
             'recent_workflow_logs' => $this->buildRecentLogs($shoot, $logLimit),
         ];
 
-        if ($this->option('probe')) {
-            $report['dropbox_probe'] = $this->probeFirstCompletedFile($shoot, $dropbox);
-        }
+
 
         if ($this->option('json')) {
             $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -138,33 +134,6 @@ class ShootFinalizeDoctor extends Command
             ->all();
     }
 
-    private function probeFirstCompletedFile(Shoot $shoot, DropboxWorkflowService $dropbox): array
-    {
-        /** @var ShootFile|null $file */
-        $file = ShootFile::query()
-            ->where('shoot_id', $shoot->id)
-            ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
-            ->whereNotNull('dropbox_path')
-            ->orderBy('id')
-            ->first();
-
-        if (!$file) {
-            return [
-                'probed' => false,
-                'reason' => 'No completed/verified file with dropbox_path found on this shoot.',
-            ];
-        }
-
-        $report = $dropbox->healthCheck($file->dropbox_path);
-        return [
-            'probed' => true,
-            'file_id' => $file->id,
-            'filename' => $file->filename,
-            'dropbox_path' => $file->dropbox_path,
-            'result' => $report,
-        ];
-    }
-
     private function renderHuman(array $report): void
     {
         $this->info("Shoot #{$report['shoot_id']} finalize diagnostics");
@@ -233,36 +202,7 @@ class ShootFinalizeDoctor extends Command
             $this->table(['id', 'created_at', 'action', 'details'], $logRows);
         }
 
-        if (isset($report['dropbox_probe'])) {
-            $this->info('Dropbox probe on first completed file:');
-            $probe = $report['dropbox_probe'];
-            if (!($probe['probed'] ?? false)) {
-                $this->warn('  ' . ($probe['reason'] ?? 'probe skipped'));
-                return;
-            }
-            $this->line(sprintf('  file_id=%d  filename=%s', $probe['file_id'], $probe['filename']));
-            $this->line('  dropbox_path=' . $probe['dropbox_path']);
-            $result = $probe['result'] ?? [];
-            foreach (($result['steps'] ?? []) as $step) {
-                $this->line(sprintf(
-                    '    [%s] %s  %s ms  %s',
-                    ($step['success'] ?? false) ? 'OK  ' : 'FAIL',
-                    str_pad((string) ($step['name'] ?? '—'), 22),
-                    $step['duration_ms'] ?? '—',
-                    isset($step['error']) ? ('error: ' . substr((string) $step['error'], 0, 200)) : $this->shortProbeDetail($step)
-                ));
-            }
-            $this->line('  overall_success=' . (!empty($result['overall_success']) ? 'yes' : 'no'));
-        }
+
     }
 
-    private function shortProbeDetail(array $step): string
-    {
-        return match ($step['name'] ?? '') {
-            'download_probe' => sprintf('%.2f MB @ %.2f MB/s', $step['megabytes'] ?? 0, $step['throughput_mb_per_sec'] ?? 0),
-            'get_temporary_link' => 'link=' . (!empty($step['link_present']) ? 'yes' : 'no'),
-            'account_info' => ($step['account_email'] ?? '—'),
-            default => '',
-        };
-    }
 }

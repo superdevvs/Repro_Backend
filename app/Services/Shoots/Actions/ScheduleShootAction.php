@@ -5,7 +5,7 @@ namespace App\Services\Shoots\Actions;
 use App\Http\Requests\UpdateShootStatusRequest;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
@@ -19,7 +19,7 @@ class ScheduleShootAction
     public function __construct(
         protected ShootMutationSupportService $support,
         protected ShootWorkflowService $workflowService,
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected AutomationService $automationService,
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
         protected MailService $mailService,
@@ -93,7 +93,7 @@ class ScheduleShootAction
             ]);
 
         if (!$shoot->dropbox_raw_folder) {
-            $this->dropboxService->createShootFolders($shoot);
+            $this->mediaStorageService->createShootFolders($shoot);
         }
 
         $shoot->refresh();

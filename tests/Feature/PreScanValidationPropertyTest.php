@@ -4,7 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
-use App\Jobs\UploadShootMediaToDropboxJob;
+use App\Jobs\UploadShootAlbumMediaJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -354,7 +354,7 @@ class PreScanValidationPropertyTest extends TestCase
             "[{$label}] a rejected upload must NOT enqueue downstream processing"
         );
         Queue::assertNotPushed(
-            UploadShootMediaToDropboxJob::class,
+            UploadShootAlbumMediaJob::class,
             "[{$label}] a rejected upload must NOT enqueue downstream delivery"
         );
     }

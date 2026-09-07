@@ -91,7 +91,7 @@ class CubiCasaAssetIngestionTest extends TestCase
         $relPdf = ltrim(str_replace('storage/', '', (string) $pdf->storage_path), '/');
         Storage::disk('public')->assertExists($relPdf);
 
-        Queue::assertPushed(SyncShootFileToDropboxJob::class, 2);
+        Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
     }
 
     public function test_skips_ingestion_when_shoot_has_no_eligible_service(): void

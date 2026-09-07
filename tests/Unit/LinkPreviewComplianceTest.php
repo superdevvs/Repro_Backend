@@ -4,7 +4,6 @@ namespace Tests\Unit;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
 use App\Services\LinkPreview\ImageSourceLoader;
 use App\Services\LinkPreview\LinkPreviewService;
 use App\Services\LinkPreview\PreviewPayload;
@@ -388,7 +387,6 @@ class LinkPreviewComplianceTest extends TestCase
             });
 
         return new ShootPublicAssetsService(
-            Mockery::mock(DropboxWorkflowService::class),
             $paymentStatusSupport,
             Mockery::mock(ShootClientReleaseAccessService::class),
             new MediaStorage(),

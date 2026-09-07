@@ -7,7 +7,7 @@ use App\Models\ScheduledVoiceCall;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditingAssignmentService;
@@ -99,14 +99,13 @@ class StoredDeliveryErrorSecurityTest extends TestCase
         $shoot->shouldReceive('files')->once()->andReturn($relation);
         $user = new User(['name' => 'Synthetic Admin', 'role' => 'admin']);
         $user->id = 912004;
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
-        $dropbox->shouldReceive('isEnabled')->once()->andReturnFalse();
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $activity = Mockery::mock(ShootActivityLogger::class);
         $activity->shouldReceive('log')->once();
         $authorization = Mockery::mock(ShootAuthorizationSupport::class);
         $authorization->shouldReceive('hasRole')->once()->with($user, ['editor'])->andReturnFalse();
         $share = Mockery::mock(ShootShareLinkService::class);
-        $share->shouldReceive('generateFilesZipWithDropboxFallback')->once()->andThrow(new \RuntimeException(self::CANARY));
+        $share->shouldReceive('generateFilesZip')->once()->andThrow(new \RuntimeException(self::CANARY));
         $service = new ShootEditorDownloadService($dropbox, $activity, $authorization, $share, Mockery::mock(ShootEditingAssignmentService::class));
 
         $response = $service->downloadRaw(Request::create('/api/shoots/912003/editor-download/raw'), $shoot, $user);

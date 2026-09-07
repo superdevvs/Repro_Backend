@@ -25,7 +25,9 @@ class ShootMediaAlbum extends Model
         'updated_at' => 'datetime',
     ];
 
-    // Source constants
+    protected $attributes = ['source' => self::SOURCE_LOCAL];
+
+    // Historical source label remains readable for existing rows.
     const SOURCE_DROPBOX = 'dropbox';
     const SOURCE_LOCAL = 'local';
 

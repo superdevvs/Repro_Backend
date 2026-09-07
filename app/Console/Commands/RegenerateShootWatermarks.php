@@ -34,7 +34,7 @@ class RegenerateShootWatermarks extends Command
         foreach ($files as $file) {
             try {
                 $job = new GenerateWatermarkedImageJob($file);
-                $job->handle(app(\App\Services\DropboxWorkflowService::class));
+                $job->handle(app(\App\Services\ShootMediaStorageService::class));
                 $processed++;
             } catch (\Exception $e) {
                 $this->newLine();

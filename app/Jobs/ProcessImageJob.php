@@ -4,7 +4,7 @@ namespace App\Jobs;
 
 use App\Models\ShootFile;
 use App\Services\ImageProcessingService;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -37,7 +37,7 @@ class ProcessImageJob implements ShouldQueue
     /**
      * Execute the job.
      */
-    public function handle(ImageProcessingService $imageService, DropboxWorkflowService $dropboxService, \App\Services\Media\MediaStorage $media): void
+    public function handle(ImageProcessingService $imageService, ShootMediaStorageService $mediaStorageService, \App\Services\Media\MediaStorage $media): void
     {
         // Quarantine gate (Req 14.3 / 15.1 / 15.4): downstream image processing is
         // withheld unless the file has cleared the virus scan (clean, or a legacy
@@ -90,9 +90,6 @@ class ProcessImageJob implements ShouldQueue
                 && ($r2Key = $media->normalizeKey($this->shootFile->path ?: $this->shootFile->storage_path))
                 && ($tempPath = $media->downloadToTemp($r2Key))) {
                 // Source the original from R2 when the local copy is gone (post-prune).
-                $sourcePath = $tempPath;
-            } elseif ($this->shootFile->dropbox_path || $this->shootFile->storage_path) {
-                $tempPath = $dropboxService->downloadToTemp($this->shootFile->dropbox_path ?: $this->shootFile->storage_path);
                 $sourcePath = $tempPath;
             }
 

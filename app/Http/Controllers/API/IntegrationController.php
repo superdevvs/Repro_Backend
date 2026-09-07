@@ -13,7 +13,6 @@ use App\Services\ZillowPropertyService;
 use App\Services\BrightMlsService;
 use App\Services\IguideService;
 use App\Services\CubiCasaService;
-use App\Services\DropboxWorkflowService;
 use App\Services\MmmService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Http\Request;
@@ -28,7 +27,6 @@ class IntegrationController extends Controller
     protected $brightMlsService;
     protected $iguideService;
     protected $cubicasaService;
-    protected $dropboxService;
     protected $mmmService;
     protected $activityLogger;
 
@@ -37,7 +35,6 @@ class IntegrationController extends Controller
         BrightMlsService $brightMlsService,
         IguideService $iguideService,
         CubiCasaService $cubicasaService,
-        DropboxWorkflowService $dropboxService,
         MmmService $mmmService,
         ShootActivityLogger $activityLogger
     ) {
@@ -45,7 +42,6 @@ class IntegrationController extends Controller
         $this->brightMlsService = $brightMlsService;
         $this->iguideService = $iguideService;
         $this->cubicasaService = $cubicasaService;
-        $this->dropboxService = $dropboxService;
         $this->mmmService = $mmmService;
         $this->activityLogger = $activityLogger;
     }
@@ -932,45 +928,10 @@ class IntegrationController extends Controller
     public function testConnection(Request $request)
     {
         $request->validate([
-            'service' => 'required|in:zillow,bright_mls,iguide,dropbox,mmm',
+            'service' => 'required|in:zillow,bright_mls,iguide,mmm',
         ]);
 
-        if ($request->input('service') === 'dropbox') {
-            $administrator = $request->user();
-            if (!$administrator
-                || !in_array($administrator->role, ['admin', 'superadmin'], true)
-                || !$administrator->isAccountEligibleForAuthentication()
-                || $request->attributes->get('is_impersonating', false)
-                || $request->hasHeader('X-Impersonate-User-Id')) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Only active administrators outside impersonation can test the studio Dropbox connection.',
-                ], 403);
-            }
 
-            try {
-                $result = $this->dropboxService->testConnection();
-                $success = ($result['success'] ?? false) === true;
-                $message = $success
-                    ? 'Dropbox connection is working.'
-                    : 'Dropbox connection could not be verified. Check its connection in integration settings.';
-
-                // Provider diagnostics may contain tokens, request details, or
-                // arbitrary error text. Expose a reviewed response contract.
-                return response()->json([
-                    'success' => $success,
-                    'message' => $message,
-                    'data' => ['success' => $success, 'message' => $message],
-                ]);
-            } catch (\Throwable $e) {
-                \App\Services\ApiErrorResponder::log($e, 'warning');
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Dropbox connection test is temporarily unavailable.',
-                ], 503);
-            }
-        }
 
         try {
             $service = $request->service;
@@ -1026,41 +987,6 @@ class IntegrationController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to generate redirect URL',
-            ], 500);
-        }
-    }
-
-    /**
-     * Get Dropbox storage status
-     */
-    public function getDropboxStatus(Request $request)
-    {
-        $user = $request->user();
-        abort_unless($user && in_array($user->role, ['admin', 'superadmin'], true)
-            && $user->isAccountEligibleForAuthentication() && !$request->attributes->get('is_impersonating', false),
-            403, 'Only an active administrator can view the studio Dropbox connection.');
-        try {
-            $enabled = config('services.dropbox.enabled', false);
-            $tokens = app(\App\Services\DropboxTokenService::class);
-            $record = $tokens->record();
-            $connected = $tokens->configured();
-            
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'enabled' => $enabled,
-                    'configured' => $connected,
-                    'connected' => $connected,
-                    'storage_mode' => $enabled && $connected ? 'dropbox' : 'local',
-                    'account_label' => $connected ? ($record?->provider_account_name ?: $record?->provider_account_email) : null,
-                    'revocation_pending' => (bool) ($record?->metadata['revocation_pending'] ?? false),
-                    'connection_version' => $tokens->version(),
-                ],
-            ])->header('Cache-Control', 'no-store');
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Dropbox connection status is unavailable. Try again.',
             ], 500);
         }
     }
@@ -1347,15 +1273,7 @@ class IntegrationController extends Controller
                 }
             }
 
-            // When Dropbox is enabled, files live in Dropbox — not on local disk.
-            // Prefer Dropbox temporary links over converting relative paths to
-            // storage URLs that would 404 because the file isn't physically there.
-            if ($file->dropbox_path && $this->dropboxService->isEnabled()) {
-                $dropboxUrl = $this->dropboxService->getTemporaryLink($file->dropbox_path);
-                if ($dropboxUrl) {
-                    return $dropboxUrl;
-                }
-            }
+
 
             // Fallback: convert storage-relative paths to full URLs (works when
             // files are stored locally and the storage symlink is in place)

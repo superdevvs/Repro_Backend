@@ -4,7 +4,7 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
@@ -32,7 +32,7 @@ class ApproveShootAction
         protected ShootMutationSupportService $support,
         protected ShootEditablePayloadService $editablePayloadService,
         protected ShootWorkflowService $workflowService,
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected InvoiceService $invoiceService,
         protected AutomationService $automationService,
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
@@ -91,7 +91,7 @@ class ApproveShootAction
         }
 
         $this->workflowService->approve($shoot, $scheduledAt, $user, $validated['notes'] ?? null);
-        $this->dropboxService->createShootFolders($shoot);
+        $this->mediaStorageService->createShootFolders($shoot);
 
         if ($scheduledAt) {
             try {

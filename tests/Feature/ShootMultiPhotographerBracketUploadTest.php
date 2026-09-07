@@ -8,7 +8,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootService;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\Actions\ChangeServiceBracketModeAction;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -65,7 +65,7 @@ class ShootMultiPhotographerBracketUploadTest extends TestCase
         ]);
         Sanctum::actingAs($this->admin);
 
-        $dropbox = Mockery::mock(DropboxWorkflowService::class);
+        $dropbox = Mockery::mock(ShootMediaStorageService::class);
         $dropbox->shouldReceive('uploadToTodo')->andReturnUsing(
             function (Shoot $target, UploadedFile $file, int $actorId, mixed $serviceCategory = null, mixed $mediaType = null) {
                 $name = $file->getClientOriginalName();
@@ -91,7 +91,7 @@ class ShootMultiPhotographerBracketUploadTest extends TestCase
                 ]);
             }
         );
-        app()->instance(DropboxWorkflowService::class, $dropbox);
+        app()->instance(ShootMediaStorageService::class, $dropbox);
     }
 
     private function photographer(string $name, ?int $preference): User

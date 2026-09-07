@@ -2,7 +2,7 @@
 
 namespace App\Services\Shoots\Actions;
 
-use App\Jobs\UploadShootMediaToDropboxJob;
+use App\Jobs\UploadShootAlbumMediaJob;
 use App\Models\Shoot;
 use App\Models\ShootMediaAlbum;
 use App\Models\User;
@@ -91,7 +91,7 @@ class UploadAlbumMediaAction
             try {
                 $tempPath = $file->store('temp/uploads', 'local');
 
-                dispatch(new UploadShootMediaToDropboxJob(
+                dispatch(new UploadShootAlbumMediaJob(
                     $shoot,
                     $album,
                     $tempPath,

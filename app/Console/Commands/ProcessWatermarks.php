@@ -59,7 +59,7 @@ class ProcessWatermarks extends Command
                 if ($file) {
                     // Run the job directly (not queued)
                     $job = new GenerateWatermarkedImageJob($file, $regenerationId);
-                    $job->handle(app(\App\Services\DropboxWorkflowService::class));
+                    $job->handle(app(\App\Services\ShootMediaStorageService::class));
                     $processed++;
                 } else {
                     $failed++;

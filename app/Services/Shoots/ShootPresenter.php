@@ -6,7 +6,6 @@ use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
 use App\Services\IguideDataVisibilityService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -17,7 +16,6 @@ class ShootPresenter
     public function __construct(
         protected ShootFileAccessService $fileAccessService,
         protected ShootEditingAssignmentService $editingAssignmentService,
-        protected DropboxWorkflowService $dropboxService,
         protected \App\Services\Media\MediaStorage $mediaStorage,
         protected ShootClientContactVisibility $clientContactVisibility,
         protected IguideDataVisibilityService $iguideDataVisibility
@@ -159,7 +157,7 @@ class ShootPresenter
         }
 
         // Resolve to the R2 CDN once reads are flipped (presenter assets are
-        // previews/delivered media), falling back to local then Dropbox.
+        // previews/delivered media), falling back to local storage.
         if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
             if ($this->mediaStorage->existsOnR2($clean)) {
                 return $this->fileAccessService->resolvePublicStorageUrl($clean);
@@ -173,14 +171,7 @@ class ShootPresenter
             return $this->fileAccessService->resolvePublicStorageUrl($clean);
         }
 
-        try {
-            return $this->dropboxService->getTemporaryLink($path);
-        } catch (\Exception $e) {
-            Log::warning('Failed to resolve shoot media asset URL', [
-                'path' => $path,
-                'error' => $e->getMessage(),
-            ]);
-        }
+
 
         return null;
     }
@@ -211,7 +202,7 @@ class ShootPresenter
             }
 
             $watermarkJob = new GenerateWatermarkedImageJob($freshFile);
-            $watermarkJob->handle($this->dropboxService);
+            $watermarkJob->handle(app(\App\Services\ShootMediaStorageService::class));
             $file->refresh();
         } catch (\Throwable $e) {
             Log::warning('Failed to generate watermark synchronously for shoot listing preview', [

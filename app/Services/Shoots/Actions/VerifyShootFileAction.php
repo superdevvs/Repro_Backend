@@ -6,7 +6,7 @@ use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootMediaMutationSupportService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\DB;
 class VerifyShootFileAction
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootMediaMutationSupportService $support
     ) {
     }
@@ -28,7 +28,7 @@ class VerifyShootFileAction
         DB::beginTransaction();
         try {
             $file->verify($user->id, $request->verification_notes);
-            $this->dropboxService->moveToFinal($file, $user->id);
+            $this->mediaStorageService->moveToFinal($file, $user->id);
 
             if (in_array($file->media_type, ['image', 'raw', 'edited'], true) && $file->shouldBeWatermarked()) {
                 GenerateWatermarkedImageJob::dispatch($file->fresh());

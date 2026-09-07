@@ -5,7 +5,7 @@ namespace App\Services\ReproAi\Tools;
 use App\Models\Shoot;
 use App\Models\Service;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Shoots\ShootMutationSupportService;
@@ -15,14 +15,14 @@ use Illuminate\Validation\ValidationException;
 
 class BookingTools
 {
-    private DropboxWorkflowService $dropboxService;
+    private ShootMediaStorageService $mediaStorageService;
     private MailService $mailService;
     private AutomationService $automationService;
     private ShootMutationSupportService $support;
 
     public function __construct()
     {
-        $this->dropboxService = app(DropboxWorkflowService::class);
+        $this->mediaStorageService = app(ShootMediaStorageService::class);
         $this->mailService = app(MailService::class);
         $this->automationService = app(AutomationService::class);
         $this->support = app(ShootMutationSupportService::class);
@@ -118,7 +118,7 @@ class BookingTools
 
                 // Create Dropbox folders if scheduled
                 if ($shoot->status === 'scheduled') {
-                    $this->dropboxService->createShootFolders($shoot);
+                    $this->mediaStorageService->createShootFolders($shoot);
                 }
 
                 $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);

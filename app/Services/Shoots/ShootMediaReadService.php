@@ -7,7 +7,7 @@ use App\Jobs\ProcessImageJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ImageProcessingService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -19,7 +19,7 @@ use Illuminate\Support\Str;
 class ShootMediaReadService
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootFileAccessService $shootFileAccessService,
         protected ImageProcessingService $imageProcessingService,
         protected ShootAuthorizationSupport $authorizationSupport,
@@ -74,20 +74,6 @@ class ShootMediaReadService
 
         if ($file->url && Str::startsWith($file->url, 'http')) {
             return redirect($file->url);
-        }
-
-        if ($file->dropbox_path) {
-            try {
-                $url = $this->dropboxService->getTemporaryLink($file->dropbox_path);
-                if ($url) {
-                    return redirect($url);
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to get Dropbox preview link', [
-                    'file_id' => $file->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         return response()->json(['message' => 'File not available'], 404);
@@ -165,14 +151,14 @@ class ShootMediaReadService
                 ->values();
         }
 
-        $dropboxUrls = $this->resolveDropboxUrls($files);
+        $mediaUrls = $this->resolveMediaUrls($files);
         $needsWatermark = $this->needsWatermark($shoot, $user);
 
-        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $dropboxUrls, $needsWatermark) {
+        $formattedFiles = $files->map(function (ShootFile $file) use ($shoot, $user, $mediaUrls, $needsWatermark) {
             $fileNeedsWatermark = $needsWatermark
                 && $this->shootClientReleaseAccessService->isFileReleaseLocked($shoot, $file, $user);
 
-            return $this->formatFileSafely($file, $dropboxUrls, $fileNeedsWatermark);
+            return $this->formatFileSafely($file, $mediaUrls, $fileNeedsWatermark);
         })->values()->all();
 
         if ($canCache) {
@@ -213,8 +199,22 @@ class ShootMediaReadService
             ];
         }
 
+        $request = Request::create('/', 'GET', ['type' => $type]);
+        $request->setUserResolver(fn () => $user);
+        $files = $this->getFilesPayload($shoot, $request)['data'];
+        $files = array_values(array_filter($files, static fn (array $file) => match (strtolower($type)) {
+            'extra' => (bool) ($file['is_extra'] ?? false),
+            'archive' => ($file['workflow_stage'] ?? null) === ShootFile::STAGE_ARCHIVED,
+            default => true,
+        }));
         return [
-            'data' => $this->dropboxService->listShootFiles($shoot, $type),
+            'data' => array_map(static fn (array $file) => array_merge($file, [
+                'name' => $file['filename'],
+                'size' => $file['file_size'] ?? 0,
+                'modified' => $file['uploaded_at'] ?? $file['created_at'] ?? null,
+                'mime_type' => $file['file_type'] ?? 'application/octet-stream',
+                'thumbnail_link' => $file['thumbnail_url'] ?? $file['url'] ?? null,
+            ]), $files),
             'counts' => $this->mediaCounts($shoot),
         ];
     }
@@ -260,9 +260,9 @@ class ShootMediaReadService
     public function formatUploadedFile(ShootFile $file): array
     {
         try {
-            $dropboxUrls = $this->resolveDropboxUrls(collect([$file]));
+            $mediaUrls = $this->resolveMediaUrls(collect([$file]));
         } catch (\Throwable $exception) {
-            $dropboxUrls = [];
+            $mediaUrls = [];
             Log::warning('Accepted media URLs could not be resolved.', [
                 'shoot_id' => $file->shoot_id,
                 'shoot_file_id' => $file->id,
@@ -270,7 +270,7 @@ class ShootMediaReadService
             ]);
         }
 
-        return $this->formatFileSafely($file->fresh() ?? $file, $dropboxUrls, false);
+        return $this->formatFileSafely($file->fresh() ?? $file, $mediaUrls, false);
     }
 
     public function resolveBulkDownloadUrls(Shoot $shoot, array $fileIds): array
@@ -314,10 +314,10 @@ class ShootMediaReadService
                 ->values();
         }
 
-        $dropboxUrls = $this->resolveDropboxUrls($files);
+        $mediaUrls = $this->resolveMediaUrls($files);
 
-        return $files->map(function (ShootFile $file) use ($dropboxUrls) {
-            return $this->formatFileSafely($file, $dropboxUrls, false);
+        return $files->map(function (ShootFile $file) use ($mediaUrls) {
+            return $this->formatFileSafely($file, $mediaUrls, false);
         })->values()->all();
     }
 
@@ -346,17 +346,17 @@ class ShootMediaReadService
                 ->values();
         }
 
-        $dropboxUrls = $this->resolveDropboxUrls($files);
+        $mediaUrls = $this->resolveMediaUrls($files);
 
-        return $files->map(function (ShootFile $file) use ($dropboxUrls) {
-            return $this->formatFileSafely($file, $dropboxUrls, false);
+        return $files->map(function (ShootFile $file) use ($mediaUrls) {
+            return $this->formatFileSafely($file, $mediaUrls, false);
         })->values()->all();
     }
 
-    protected function formatFileSafely(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
+    protected function formatFileSafely(ShootFile $file, array $mediaUrls, bool $needsWatermark): array
     {
         try {
-            return $this->formatFile($file, $dropboxUrls, $needsWatermark);
+            return $this->formatFile($file, $mediaUrls, $needsWatermark);
         } catch (\Throwable $exception) {
             $correlationId = (string) Str::uuid();
             Log::warning('Media file could not be fully formatted.', [
@@ -393,29 +393,9 @@ class ShootMediaReadService
             ->values();
     }
 
-    protected function resolveDropboxUrls($files): array
+    protected function resolveMediaUrls($files): array
     {
-        $dropboxUrls = [];
-        $dropboxFiles = $files->filter(fn (ShootFile $file) => $file->dropbox_path && ! $file->url && ! $file->path);
-
-        foreach ($dropboxFiles as $file) {
-            try {
-                $urlCacheKey = 'dropbox_url_'.md5($file->dropbox_path);
-                $url = Cache::remember($urlCacheKey, now()->addHours(4), function () use ($file) {
-                    return $this->dropboxService->getTemporaryLink($file->dropbox_path);
-                });
-                if ($url) {
-                    $dropboxUrls[$file->id] = $url;
-                }
-            } catch (\Exception $e) {
-                Log::warning('Failed to get Dropbox link', [
-                    'file_id' => $file->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        return $dropboxUrls;
+        return [];
     }
 
     protected function needsWatermark(Shoot $shoot, ?User $user): bool
@@ -432,7 +412,7 @@ class ShootMediaReadService
         return $isClient && ! $shoot->bypass_paywall && $paymentStatus !== 'paid';
     }
 
-    protected function formatFile(ShootFile $file, array $dropboxUrls, bool $needsWatermark): array
+    protected function formatFile(ShootFile $file, array $mediaUrls, bool $needsWatermark): array
     {
         $file = $this->ensureFloorplanPreviewForRead($file);
         $needsWatermark = $needsWatermark && $file->shouldBeWatermarked();
@@ -473,7 +453,7 @@ class ShootMediaReadService
                 $file->refresh();
             }
 
-            $originalUrl = $dropboxUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
+            $originalUrl = $mediaUrls[$file->id] ?? $this->shootFileAccessService->resolveFileUrl($file, true);
             if (! $originalUrl && $this->isVideoFile($file)) {
                 $originalUrl = url('/api/shoots/'.$file->shoot_id.'/files/'.$file->id.'/preview');
             }
@@ -709,7 +689,7 @@ class ShootMediaReadService
             }
 
             $watermarkJob = new GenerateWatermarkedImageJob($freshFile);
-            $watermarkJob->handle($this->dropboxService);
+            $watermarkJob->handle($this->mediaStorageService);
             $file->refresh();
         } catch (\Throwable $e) {
             Log::warning('Failed to generate watermark synchronously for shoot media preview', [
@@ -809,15 +789,6 @@ class ShootMediaReadService
 
         if (Storage::disk('public')->exists($clean)) {
             return $this->shootFileAccessService->resolvePublicStorageUrl($clean);
-        }
-
-        try {
-            return $this->dropboxService->getTemporaryLink($path);
-        } catch (\Exception $e) {
-            Log::warning('Failed to resolve preview path', [
-                'path' => $path,
-                'error' => $e->getMessage(),
-            ]);
         }
 
         return null;

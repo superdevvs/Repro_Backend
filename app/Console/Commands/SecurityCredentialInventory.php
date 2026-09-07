@@ -25,10 +25,6 @@ class SecurityCredentialInventory extends Command
             'CAKEMAIL_USERNAME' => 'services.cakemail.username',
             'CAKEMAIL_PASSWORD' => 'services.cakemail.password',
             'CAKEMAIL_WEBHOOK_SECRET' => 'services.cakemail.webhook_secret',
-            'DROPBOX_CLIENT_ID' => 'services.dropbox.client_id',
-            'DROPBOX_CLIENT_SECRET' => 'services.dropbox.client_secret',
-            'DROPBOX_ACCESS_TOKEN' => 'services.dropbox.access_token',
-            'DROPBOX_REFRESH_TOKEN' => 'services.dropbox.refresh_token',
             'GOOGLE_CLIENT_SECRET' => 'services.google.client_secret',
         ];
         $credentials = [];
@@ -36,6 +32,13 @@ class SecurityCredentialInventory extends Command
             $credentials[$name] = [
                 'configured' => filled(config($path)),
                 'consumer' => $path,
+                'provider_revocation_verified' => false,
+            ];
+        }
+        foreach (['DROPBOX_CLIENT_ID', 'DROPBOX_CLIENT_SECRET', 'DROPBOX_ACCESS_TOKEN', 'DROPBOX_REFRESH_TOKEN'] as $name) {
+            $credentials[$name] = [
+                'configured' => false,
+                'consumer' => 'retired_integration_historical_inventory_only',
                 'provider_revocation_verified' => false,
             ];
         }

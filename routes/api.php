@@ -88,7 +88,6 @@ use App\Http\Controllers\API\Webhooks\TelnyxVoiceWebhookController;
 use App\Http\Controllers\API\Webhooks\VapiWebhookController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ClientBillingController;
-use App\Http\Controllers\DropboxAuthController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\InvoiceReportController;
 use App\Http\Controllers\PhotographerAvailabilityController;
@@ -223,19 +222,6 @@ Route::get('/ai/health', function () {
         'timestamp' => now()->toIso8601String(),
         'routes_loaded' => true,
     ]);
-});
-
-Route::prefix('dropbox')->name('dropbox.')->group(function () {
-    // Studio connection controls require explicit administrator authentication.
-    Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->group(function () {
-        Route::get('config', [DropboxAuthController::class, 'getConfig'])->name('config');
-        Route::post('connect', [DropboxAuthController::class, 'connect'])->middleware('throttle:5,1')->name('connect');
-        Route::post('disconnect', [DropboxAuthController::class, 'disconnect'])->middleware('throttle:5,1')->name('disconnect');
-    });
-
-    // Provider callbacks use one-use browser-bound state or provider signatures.
-    Route::get('callback', [DropboxAuthController::class, 'callback'])->name('callback');
-    Route::match(['get', 'post'], 'webhook', [DropboxAuthController::class, 'webhook'])->name('webhook');
 });
 
 Route::get('google-calendar/callback', [GoogleCalendarController::class, 'callback'])
@@ -693,7 +679,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');
     Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
     Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootMediaController::class, 'revokeShareLink']);
-    Route::post('/shoots/{shoot}/archive', [ShootMediaController::class, 'archiveShoot'])->middleware('role:admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootMediaController::class, 'moveFileToCompleted']);
     Route::post('/shoots/{shoot}/files/{file}/verify', [ShootMediaController::class, 'verifyFile']);
     Route::post('/shoots/{shoot}/files/{file}/extra', [ShootMediaController::class, 'toggleFileExtra']);
@@ -729,8 +714,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Enhanced file upload endpoints
     Route::post('/shoots/{shoot}/upload-from-pc', [App\Http\Controllers\FileUploadController::class, 'uploadFromPC']);
-    Route::post('/shoots/{shoot}/copy-from-dropbox', [App\Http\Controllers\FileUploadController::class, 'copyFromDropbox']);
-    Route::get('/dropbox/browse', [App\Http\Controllers\FileUploadController::class, 'listDropboxFiles']);
 
     Route::get('/upload-sources', [UploadSourceController::class, 'index']);
     Route::post('/upload-sources/{provider}/connect', [UploadSourceController::class, 'connect'])
@@ -962,8 +945,6 @@ Route::middleware('auth:sanctum')->group(function () {
         // Test connections (admin only)
         Route::middleware('role:admin,superadmin,editing_manager')->post('/test-connection', [IntegrationController::class, 'testConnection']);
 
-        // Dropbox status
-        Route::get('/dropbox/status', [IntegrationController::class, 'getDropboxStatus']);
     });
 
     // Settings endpoints (admin only)

@@ -5,7 +5,6 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -16,7 +15,6 @@ class ShootIssueParsingService
     protected const REQUEST_STATUS_VALUES = ['open', 'in-progress', 'resolved', 'dismissed'];
 
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
         protected ShootPaymentStatusSupport $paymentStatusSupport
     ) {
     }
@@ -503,14 +501,7 @@ class ShootIssueParsingService
             return $url;
         }
 
-        try {
-            return $this->dropboxService->getTemporaryLink($path);
-        } catch (\Exception $e) {
-            Log::warning('Failed to resolve issue preview path', [
-                'path' => $path,
-                'error' => $e->getMessage(),
-            ]);
-        }
+
 
         return null;
     }

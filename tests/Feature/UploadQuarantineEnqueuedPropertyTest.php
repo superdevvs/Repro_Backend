@@ -4,7 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\ProcessImageJob;
 use App\Jobs\ScanShootFileJob;
-use App\Jobs\UploadShootMediaToDropboxJob;
+use App\Jobs\UploadShootAlbumMediaJob;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -36,7 +36,7 @@ use Tests\TestCase;
  *       scan is enqueued for the file before downstream processing).
  *
  *   (c) No downstream processing job (ProcessImageJob /
- *       UploadShootMediaToDropboxJob) is dispatched directly from the upload
+ *       UploadShootAlbumMediaJob) is dispatched directly from the upload
  *       path — downstream work is gated behind a recorded clean verdict.
  *
  * Approach: no PHP property-based testing library is configured for the
@@ -255,6 +255,6 @@ class UploadQuarantineEnqueuedPropertyTest extends TestCase
         // (c) No downstream processing job is dispatched directly from the
         //     upload path — those are gated behind a clean verdict.
         Queue::assertNotPushed(ProcessImageJob::class);
-        Queue::assertNotPushed(UploadShootMediaToDropboxJob::class);
+        Queue::assertNotPushed(UploadShootAlbumMediaJob::class);
     }
 }

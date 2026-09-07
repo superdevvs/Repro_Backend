@@ -5,7 +5,6 @@ namespace App\Services\Shoots\Actions;
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\DeliveryMediaOrderService;
 use App\Services\Shoots\ShootAuthorizationSupport;
@@ -16,7 +15,6 @@ use Illuminate\Http\Request;
 class DownloadSelectedShootFilesAction
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
         protected ShootFileAccessService $fileAccess,
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
@@ -78,7 +76,6 @@ class DownloadSelectedShootFilesAction
 
         $size = $request->input('size', 'original');
         $needsWatermark = false;
-        $dropboxEnabled = $this->dropboxService->isEnabled();
 
         $zipPath = storage_path('app/temp/shoot-' . $shoot->id . '-download-' . time() . '.zip');
         if (!file_exists(dirname($zipPath))) {
@@ -91,7 +88,6 @@ class DownloadSelectedShootFilesAction
         }
 
         $addedFiles = 0;
-        $tempFiles = [];
         $pendingWatermarks = [];
         // Positions are 1..n across the selection, so a partial download reads
         // 001, 002, 003 in the selection's delivery order rather than exposing
@@ -107,13 +103,7 @@ class DownloadSelectedShootFilesAction
             }
 
             $localPath = $this->fileAccess->resolveLocalPath($downloadPath);
-            if (!$localPath && $dropboxEnabled) {
-                $downloaded = $this->fileAccess->downloadDropboxPathToTemp($downloadPath, $file->stored_filename ?? $file->filename ?? 'file');
-                if ($downloaded) {
-                    $localPath = $downloaded;
-                    $tempFiles[] = $downloaded;
-                }
-            }
+
 
             if ($localPath && file_exists($localPath)) {
                 $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
@@ -127,9 +117,7 @@ class DownloadSelectedShootFilesAction
 
         $zip->close();
 
-        foreach ($tempFiles as $tempFile) {
-            @unlink($tempFile);
-        }
+
 
         if ($addedFiles === 0) {
             @unlink($zipPath);
@@ -171,13 +159,11 @@ class DownloadSelectedShootFilesAction
                 ?? $file->thumbnail_path
                 ?? $file->placeholder_path
                 ?? $file->storage_path
-                ?? $file->path
-                ?? $file->dropbox_path;
+                ?? $file->path;
         }
 
         return $file->storage_path
             ?? $file->path
-            ?? $file->dropbox_path
             ?? $file->web_path
             ?? $file->thumbnail_path;
     }

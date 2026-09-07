@@ -8,7 +8,7 @@ use App\Jobs\SyncShootIguideJob;
 use App\Http\Requests\StoreShootRequest;
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
@@ -32,7 +32,7 @@ class CreateShootAction
         protected InvoiceService $invoiceService,
         protected AutomationService $automationService,
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected MailService $mailService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
     ) {

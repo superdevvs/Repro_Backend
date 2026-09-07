@@ -3,7 +3,7 @@
 namespace App\Services\Shoots;
 
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ImageProcessingService;
 use App\Services\Media\MediaStorage;
 use Illuminate\Support\Facades\Log;
@@ -13,13 +13,13 @@ use Illuminate\Support\Str;
 class ShootFileAccessService
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ImageProcessingService $imageProcessingService,
         protected MediaStorage $mediaStorage
     ) {
     }
 
-    public function resolveFileUrl(?ShootFile $file, bool $allowDropboxCalls = true): ?string
+    public function resolveFileUrl(?ShootFile $file, bool $allowRemoteCalls = true): ?string
     {
         if (!$file) {
             return null;
@@ -47,25 +47,8 @@ class ShootFileAccessService
             return $this->resolvePublicStorageUrl($file->path);
         }
 
-        if ($file->path && !Str::startsWith($file->path, 'http') && !$file->dropbox_path) {
+        if ($file->path && !Str::startsWith($file->path, 'http')) {
             return $this->resolvePublicStorageUrl($file->path);
-        }
-
-        if ($file->dropbox_path && $allowDropboxCalls) {
-            try {
-                return $this->dropboxService->getTemporaryLink($file->dropbox_path);
-            } catch (\Exception $e) {
-                Log::warning('Failed to get Dropbox link', [
-                    'file_id' => $file->id,
-                    'error' => $e->getMessage(),
-                ]);
-
-                return null;
-            }
-        }
-
-        if ($file->dropbox_path && !$allowDropboxCalls) {
-            return url('/api/shoots/' . $file->shoot_id . '/files/' . $file->id . '/preview');
         }
 
         return null;
@@ -150,9 +133,9 @@ class ShootFileAccessService
 
             if (
                 !$sourcePath
-                && ($file->dropbox_path || $file->storage_path)
+                && ($file->path || $file->storage_path)
             ) {
-                $tempPath = $this->dropboxService->downloadToTemp($file->dropbox_path ?: $file->storage_path);
+                $tempPath = $this->downloadStoredFileToTemp($file->path ?: $file->storage_path);
                 $sourcePath = $tempPath;
             }
 
@@ -275,39 +258,26 @@ class ShootFileAccessService
         return null;
     }
 
-    public function downloadFromDropbox(ShootFile $file): ?string
+    /** @deprecated Kept for old in-process callers; retired providers are never contacted. */
+    public function downloadFromDropbox(ShootFile $file): ?string { return null; }
+
+    /** @deprecated Retired provider compatibility. */
+    public function downloadDropboxPathToTemp(string $path, string $filename, bool $useContentApi = false): ?string { return null; }
+
+    /** A temporary R2 source, owned by the caller; local files resolve separately. */
+    public function downloadStoredFileToTemp(?string $path): ?string
     {
-        if (!$this->dropboxService->isEnabled() || empty($file->dropbox_path)) {
+        if (! $path || ! ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only())) {
             return null;
         }
-
-        return $this->downloadDropboxPathToTemp($file->dropbox_path, $file->filename ?? 'file');
+        return $this->mediaStorage->downloadToTemp($path);
     }
 
-    public function downloadDropboxPathToTemp(string $dropboxPath, string $filename, bool $useContentApi = false): ?string
+    public function storedFileExists(?string $path): bool
     {
-        try {
-            $tempPath = storage_path('app/temp/download-' . uniqid() . '-' . $filename);
-            if (!file_exists(dirname($tempPath))) {
-                mkdir(dirname($tempPath), 0755, true);
-            }
-
-            $contents = $useContentApi
-                ? $this->dropboxService->downloadFileContent($dropboxPath)
-                : $this->dropboxService->downloadFile($dropboxPath);
-
-            if ($contents) {
-                file_put_contents($tempPath, $contents);
-
-                return $tempPath;
-            }
-        } catch (\Exception $e) {
-            Log::warning('Failed to download file from Dropbox', [
-                'dropbox_path' => $dropboxPath,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        return null;
+        return $path && ($this->resolveLocalPath($path) || (
+            ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only())
+            && $this->mediaStorage->existsOnR2($path)
+        ));
     }
 }

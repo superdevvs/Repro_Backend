@@ -5,7 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Shoot;
 use App\Models\ShootFile;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\IguideOfflinePackageService;
 use App\Services\IguideDataVisibilityService;
 use App\Services\UploadValidationService;
@@ -22,7 +22,7 @@ class IguideOfflinePackageController extends Controller
         Shoot $shoot,
         IguideOfflinePackageService $packages,
         UploadValidationService $uploadValidation,
-        DropboxWorkflowService $dropbox
+        ShootMediaStorageService $mediaStorageService
     ): JsonResponse {
         $request->validate([
             'package' => ['required', 'file', 'max:262144'],
@@ -43,7 +43,7 @@ class IguideOfflinePackageController extends Controller
         $lifecycle = $packages->beginUpload($shoot, $inspection, $request->user());
 
         try {
-            $shootFile = $dropbox->uploadIguideOfflinePackage(
+            $shootFile = $mediaStorageService->uploadIguideOfflinePackage(
                 $shoot,
                 $package,
                 $request->user()->getKey(),

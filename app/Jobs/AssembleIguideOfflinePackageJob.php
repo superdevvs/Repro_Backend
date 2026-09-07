@@ -2,7 +2,7 @@
 
 namespace App\Jobs;
 
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\IguideOfflineChunkUploadService;
 use App\Services\IguideOfflinePackageService;
 use App\Services\UploadValidationService;
@@ -49,7 +49,7 @@ class AssembleIguideOfflinePackageJob implements ShouldBeUnique, ShouldQueue
         IguideOfflineChunkUploadService $uploads,
         UploadValidationService $uploadValidation,
         IguideOfflinePackageService $packages,
-        DropboxWorkflowService $dropbox
+        ShootMediaStorageService $mediaStorageService
     ): void {
         if (! $uploads->claimAssembly($this->uploadSessionId, $this->assemblyToken)) {
             $retryAfter = $uploads->assemblyClaimRetryAfter($this->uploadSessionId);
@@ -66,7 +66,7 @@ class AssembleIguideOfflinePackageJob implements ShouldBeUnique, ShouldQueue
                     $this->uploadSessionId,
                     $uploadValidation,
                     $packages,
-                    $dropbox
+                    $mediaStorageService
                 );
             } catch (ValidationException $exception) {
                 $message = collect($exception->errors())->flatten()->first()

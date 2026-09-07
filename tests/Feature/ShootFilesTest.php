@@ -14,7 +14,7 @@ use App\Models\ShootService;
 use App\Models\Payment;
 use App\Models\PaymentServiceAllocation;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Config;
@@ -228,7 +228,7 @@ class ShootFilesTest extends TestCase
         // Filename replacement is the behavior under test; external metadata
         // extraction is covered separately and can emit process-level diagnostics
         // for PHPUnit-managed temporary files on Windows.
-        $service = new class extends DropboxWorkflowService {
+        $service = new class extends ShootMediaStorageService {
             protected function extractMetadataWithExifTool(?string $path): array
             {
                 return [];
@@ -968,7 +968,7 @@ class ShootFilesTest extends TestCase
     }
 
     #[Test]
-    public function dropbox_backed_media_payload_generates_web_preview_instead_of_using_original_for_display(): void
+    public function local_media_with_legacy_remote_metadata_generates_web_preview_instead_of_using_original_for_display(): void
     {
         Storage::fake('public');
 
@@ -978,8 +978,8 @@ class ShootFilesTest extends TestCase
         ]);
         $client = User::query()->findOrFail($shoot->client_id);
 
-        $tempSource = tempnam(sys_get_temp_dir(), 'shoot-preview-');
-        file_put_contents($tempSource, 'dropbox-original');
+        Storage::disk('public')->put('remote/final.jpg', 'local-original');
+        \Illuminate\Support\Facades\Http::fake();
 
         app()->instance(ImageProcessingService::class, new class extends ImageProcessingService {
             public function processImageFromPath(int $shootId, string $fileName, string $sourcePath): array
@@ -998,15 +998,6 @@ class ShootFilesTest extends TestCase
             }
         });
 
-        $dropbox = \Mockery::mock(DropboxWorkflowService::class);
-        $dropbox->shouldReceive('downloadToTemp')
-            ->once()
-            ->andReturn($tempSource);
-        $dropbox->shouldReceive('getTemporaryLink')
-            ->once()
-            ->andReturn('https://dropbox.test/original/final.jpg');
-        app()->instance(DropboxWorkflowService::class, $dropbox);
-
         $this->createShootFile($shoot, [
             'filename' => 'final.jpg',
             'path' => 'remote/final.jpg',
@@ -1024,10 +1015,7 @@ class ShootFilesTest extends TestCase
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['web_url']);
         $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-thumb.jpg', $payload['thumb_url']);
-        $this->assertSame('https://dropbox.test/original/final.jpg', $payload['original_url']);
-
-        if (file_exists($tempSource)) {
-            @unlink($tempSource);
-        }
+        $this->assertStringContainsString('/storage/remote/final.jpg', $payload['original_url']);
+        \Illuminate\Support\Facades\Http::assertNothingSent();
     }
 }

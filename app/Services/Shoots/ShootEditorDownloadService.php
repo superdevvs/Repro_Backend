@@ -5,7 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
-use App\Services\DropboxWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\ShootActivityLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -15,7 +15,7 @@ use Symfony\Component\HttpFoundation\Response;
 class ShootEditorDownloadService
 {
     public function __construct(
-        protected DropboxWorkflowService $dropboxService,
+        protected ShootMediaStorageService $mediaStorageService,
         protected ShootActivityLogger $activityLogger,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected ShootShareLinkService $shootShareLinkService,
@@ -46,8 +46,6 @@ class ShootEditorDownloadService
             ? $this->shootEditingAssignmentService->filterFilesForEditor($allFiles, $shoot, $user)
             : $allFiles;
         $fileCount = $files->count();
-        $dropboxEnabled = $this->dropboxService->isEnabled();
-        $folderPath = $dropboxEnabled ? $shoot->getDropboxFolderForType('raw') : null;
 
         if (!empty($fileIdsParam) && $fileCount === 0) {
             return $this->withCors(
@@ -55,7 +53,7 @@ class ShootEditorDownloadService
                 $request,
             );
         }
-        if ($fileCount === 0 && !$folderPath) {
+        if ($fileCount === 0) {
             return $this->withCors(
                 response()->json(['error' => 'No raw files found to download'], 404),
                 $request,
@@ -78,25 +76,9 @@ class ShootEditorDownloadService
             $this->notifyAdminsOfEditorDownload($shoot, $user, $fileCount > 0 ? $fileCount : 0);
         }
 
-        if ($dropboxEnabled && $folderPath && empty($fileIdsParam)) {
-            try {
-                $zipLink = $this->dropboxService->getDropboxZipLink($folderPath);
-                if ($zipLink) {
-                    return $this->withCors(response()->json([
-                        'type' => 'redirect',
-                        'url' => $zipLink,
-                        'file_count' => $fileCount,
-                        'message' => 'Download started. Switch to Edited tab to upload your edits.',
-                    ]), $request);
-                }
-            } catch (\Exception $e) {
-                \App\Services\ApiErrorResponder::log($e, 'warning');
-            }
-        }
-
         try {
             if ($files->count() > 0) {
-                $zipPath = $this->shootShareLinkService->generateFilesZipWithDropboxFallback($shoot, $files);
+                $zipPath = $this->shootShareLinkService->generateFilesZip($shoot, $files);
                 if ($zipPath && file_exists($zipPath)) {
                     return $this->withCors(response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
                         'X-File-Count' => $fileCount,
@@ -104,23 +86,9 @@ class ShootEditorDownloadService
                 }
             }
 
-            if ($dropboxEnabled && $folderPath) {
-                try {
-                    $zipPath = $this->dropboxService->generateZipOnFly($shoot, 'raw');
-                    if ($zipPath && file_exists($zipPath)) {
-                        return $this->withCors(response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
-                            'X-File-Count' => $fileCount,
-                        ])->deleteFileAfterSend(true), $request);
-                    }
-                } catch (\Exception $dropboxError) {
-                    \App\Services\ApiErrorResponder::log($dropboxError, 'warning');
-                }
-            }
-
             return $this->withCors(response()->json([
-                'error' => 'No downloadable files available. Files may not be stored locally or Dropbox access may be unavailable.',
+                'error' => 'No downloadable files are available.',
                 'file_count' => $fileCount,
-                'has_dropbox_folder' => $dropboxEnabled && !empty($folderPath),
             ], 404), $request);
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');

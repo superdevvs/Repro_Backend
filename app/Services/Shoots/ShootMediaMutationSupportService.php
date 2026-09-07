@@ -281,7 +281,7 @@ class ShootMediaMutationSupportService
             'shoot_id' => $shoot->id,
             'shoot_service_id' => $shootServiceId,
             'photographer_id' => $photographerId,
-            'source' => 'dropbox',
+            'source' => 'local',
             'folder_path' => $shootServiceId
                 ? "/shoots/{$shoot->id}/service-{$shootServiceId}/{$type}/{$photographerId}/"
                 : "/shoots/{$shoot->id}/{$type}/{$photographerId}/",

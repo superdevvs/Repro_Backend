@@ -157,16 +157,6 @@ class IngestIguideAssetsJob implements ShouldQueue
                     ]);
                 }
 
-                // Mirror into Dropbox if enabled (mirrors how regular media is synced).
-                try {
-                    SyncShootFileToDropboxJob::dispatch($shootFile->id);
-                } catch (\Throwable $e) {
-                    Log::warning('IngestIguideAssetsJob: dropbox dispatch failed', [
-                        'shoot_file_id' => $shootFile->id,
-                        'error' => $e->getMessage(),
-                    ]);
-                }
-
                 // Mirror into R2 during the dual-write/R2-only cutover.
                 if (config('media.dual_write') || config('media.r2_only')) {
                     try {
