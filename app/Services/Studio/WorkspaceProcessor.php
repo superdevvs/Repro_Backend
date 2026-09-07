@@ -126,9 +126,9 @@ class WorkspaceProcessor
             'expand_left' => (int) floor($dx / 2), 'expand_right' => (int) ceil($dx / 2), 'expand_top' => (int) floor($dy / 2), 'expand_bottom' => (int) ceil($dy / 2),
         ]);
         $extended = $this->images->read($bytes)->cover($width, $height);
-        // Both providers may reinterpret the source; restore its complete original rectangle.
+        // Restore the source and blend color only in the generated padding at its boundary.
         $image->scale(width: $width, height: $height);
-        $extended->place($image, 'center');
+        $extended = app(OutpaintComposite::class)->apply($extended, $image, (int) floor(($width - $image->width()) / 2), (int) floor(($height - $image->height()) / 2));
 
         return (string) $extended->toJpeg(92);
     }

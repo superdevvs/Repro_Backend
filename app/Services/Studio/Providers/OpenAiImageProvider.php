@@ -3,6 +3,7 @@
 namespace App\Services\Studio\Providers;
 
 use App\Exceptions\OpenAiImageException;
+use App\Services\Studio\OutpaintComposite;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
@@ -106,7 +107,7 @@ class OpenAiImageProvider
         $finalX = (int) floor(($finalWidth - $original->width()) / 2);
         $finalY = (int) floor(($finalHeight - $original->height()) / 2);
 
-        return (string) $image->place($original, 'top-left', $finalX, $finalY)->toPng();
+        return (string) (new OutpaintComposite)->apply($image, $original, $finalX, $finalY)->toPng();
     }
 
     /** @return array{int, int} */

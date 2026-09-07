@@ -11,6 +11,7 @@ Saving a connection does not switch any workflow. Add the API key first, deploy,
 - Photo presets and revisions can also use the existing fal.ai model, Nano Banana Pro, or GPT Image 2. Sky replacement and perspective correction have explicit presets. They use prompt-based image editing unless a native parameter contract is verified.
 - Upscaling uses Clarity Upscaler on the exact selected completed output and saves a separate version.
 - AI Extend uses FLUX.2 Pro Outpaint, with GPT Image 2 as the default fallback. The original photograph is composited back into the expanded canvas. Fallback is allowed before submission for missing configuration, or after an unaccepted authentication/account rejection. Timeouts and ambiguous submissions never silently trigger a second paid request.
+- A tapered color correction in the generated padding reduces visible joins after restoring the source. Original pixels are unchanged; this does not guarantee perfect scene continuity, so prepared frames remain available for review and revision.
 - Videos remain on fal.ai. Accepted work snapshots the selected model; subsequent settings changes do not reroute in-flight work or incorrectly reuse clips from another model.
 
 ## Public API boundaries
