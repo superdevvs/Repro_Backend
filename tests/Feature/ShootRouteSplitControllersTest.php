@@ -402,6 +402,10 @@ class ShootRouteSplitControllersTest extends TestCase
 
         $shoot = Shoot::factory()->create([
             'id' => 123,
+            'address' => '310 Route Split Lane',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
             'client_id' => $this->client->id,
             'service_id' => $this->service->id,
             'editor_id' => $editor->id,
@@ -424,7 +428,7 @@ class ShootRouteSplitControllersTest extends TestCase
             ->get("/api/shoots/{$shoot->id}/editor-download-raw");
 
         $response->assertOk();
-        $this->assertStringContainsString('shoot-123-raw-files.zip', $response->headers->get('content-disposition', ''));
+        $this->assertStringContainsString('310-route-split-lane-baltimore-md-21201-raw-files.zip', $response->headers->get('content-disposition', ''));
         $response->assertHeader('Access-Control-Allow-Origin', 'https://reprodashboard.com');
     }
 
