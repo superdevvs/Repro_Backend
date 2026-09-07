@@ -2,6 +2,7 @@
 
 namespace App\Services\Messaging\Providers;
 
+use App\Exceptions\Messaging\EmailProviderRejectedException;
 use App\Models\MessageChannel;
 use App\Services\Messaging\Contracts\EmailProviderInterface;
 use Illuminate\Support\Facades\Cache;
@@ -738,6 +739,11 @@ class CakemailProvider implements EmailProviderInterface
             if (is_array($errorMessage)) {
                 $errorMessage = json_encode($errorMessage);
             }
+            if (in_array($response->status(), [400, 401, 403, 404, 422, 429], true)) {
+                throw new EmailProviderRejectedException('Failed to send email via Cakemail: ' . $errorMessage);
+            }
+
+            // Timeouts and server errors may follow provider acceptance.
             throw new \RuntimeException('Failed to send email via Cakemail: ' . $errorMessage);
         }
 

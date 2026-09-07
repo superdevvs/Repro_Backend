@@ -25,7 +25,8 @@ class AccountCreatedNotificationServiceTest extends TestCase
         $automation->expects($this->once())->method('handleEvent')->willReturn(['email_sent_to' => []]);
         $mail->expects($this->once())->method('sendAccountCreatedEmail')->willReturn(true);
         $mail->expects($verify ? $this->once() : $this->never())->method('sendClientEmailVerificationEmail')->willReturn(true);
-        $mail->expects($role === 'photographer' ? $this->once() : $this->never())->method('sendPhotographerEquipmentVerificationEmail')->with($user, 0)->willReturn(true);
+        $mail->expects($this->never())->method('sendPhotographerEquipmentVerificationEmail');
+        $mail->expects($this->never())->method('equipmentVerificationLink');
         $messaging->expects($this->once())->method('sendSms')->with($this->callback(fn (array $payload) => $payload['to'] === '+14105550123'))->willReturn(new Message());
 
         $result = $service->dispatch($user);
@@ -34,8 +35,48 @@ class AccountCreatedNotificationServiceTest extends TestCase
         $this->assertSame($verify, $result['email']['verification']['attempted']);
         $this->assertSame($verify, $result['email']['verification']['sent']);
         $this->assertTrue($result['sms']['sent']);
-        $this->assertSame($role === 'photographer', $result['email']['equipment']['attempted']);
-        $this->assertSame($role === 'photographer', $result['email']['equipment']['sent']);
+        $this->assertFalse($result['email']['equipment']['attempted']);
+        $this->assertFalse($result['email']['equipment']['sent']);
+        $this->assertNull($result['links']['equipment']);
+    }
+
+    public function test_equipment_email_and_welcome_link_require_pending_assigned_equipment(): void
+    {
+        [$service, $mail, $automation] = $this->service();
+        $user = $this->user('photographer');
+        $equipmentLink = 'https://app.test/equipment';
+
+        $mail->expects($this->once())->method('equipmentVerificationLink')->with($user)->willReturn($equipmentLink);
+        $automation->expects($this->once())->method('handleEvent')
+            ->with('ACCOUNT_CREATED', $this->callback(fn (array $context) => $context['equipment_verification_link'] === $equipmentLink && $context['pending_equipment_count'] === 2))
+            ->willReturn(['email_sent_to' => []]);
+        $mail->expects($this->once())->method('sendAccountCreatedEmail')
+            ->with($user, 'https://app.test/reset/token', 'https://app.test/verify/token', $equipmentLink, 2, false)
+            ->willReturn(true);
+        $mail->expects($this->once())->method('sendPhotographerEquipmentVerificationEmail')->with($user, 2)->willReturn(true);
+
+        $result = $service->dispatch($user, ['pending_equipment_count' => 2]);
+
+        $this->assertTrue($result['email']['equipment']['sent']);
+        $this->assertSame($equipmentLink, $result['links']['equipment']);
+    }
+
+    public function test_explicit_equipment_email_option_does_not_send_without_equipment(): void
+    {
+        [$service, $mail, $automation] = $this->service();
+        $user = $this->user('photographer');
+        $mail->expects($this->never())->method('equipmentVerificationLink');
+        $mail->expects($this->never())->method('sendPhotographerEquipmentVerificationEmail');
+        $automation->expects($this->once())->method('handleEvent')
+            ->with('ACCOUNT_CREATED', $this->callback(fn (array $context) => $context['equipment_verification_link'] === null))
+            ->willReturn(['email_sent_to' => []]);
+        $mail->expects($this->once())->method('sendAccountCreatedEmail')
+            ->with($user, 'https://app.test/reset/token', 'https://app.test/verify/token', null, 0, false)
+            ->willReturn(true);
+
+        $result = $service->dispatch($user, ['pending_equipment_count' => 0, 'send_equipment_email' => true]);
+
+        $this->assertSame(['attempted' => false, 'sent' => false, 'error' => null], $result['email']['equipment']);
     }
 
     public function test_recipient_acceptance_suppresses_fallback_but_unrelated_acceptance_does_not(): void

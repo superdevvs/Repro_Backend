@@ -35,7 +35,8 @@ class AccountCreatedNotificationService
         $requiresVerification = array_key_exists('require_verification', $options)
             ? (bool) $options['require_verification']
             : $this->requiresVerification($user->role);
-        $sendEquipmentEmail = $isPhotographer && (bool) ($options['send_equipment_email'] ?? true);
+        $hasPendingEquipment = $isPhotographer && $pendingEquipmentCount > 0;
+        $sendEquipmentEmail = $hasPendingEquipment && (bool) ($options['send_equipment_email'] ?? true);
 
         $result = [
             'email' => [
@@ -59,7 +60,7 @@ class AccountCreatedNotificationService
                 ]));
                 $result['links']['verification'] = $this->verificationLinks->buildUrlForIssuedToken($user, $verificationToken);
             }
-            if ($isPhotographer) {
+            if ($hasPendingEquipment) {
                 $result['links']['equipment'] = $this->mailService->equipmentVerificationLink($user);
             }
 

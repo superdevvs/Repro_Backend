@@ -387,7 +387,7 @@ class InvoiceController extends Controller
     {
         $data = $request->validate([
             'description' => ['required', 'string', 'max:500'],
-            'amount' => ['required', 'numeric', 'min:0'],
+            'amount' => ['required', 'numeric'],
             'quantity' => ['nullable', 'integer', 'min:1'],
             // When true the adjustment is added to the client payable (shoot.total_quote).
             // Defaults to false so adjustments never silently increase what a client owes.
@@ -462,7 +462,7 @@ class InvoiceController extends Controller
                 ], fn ($value) => $value !== null),
             ]);
 
-            if ($billsClient && $totalAmount >= 0.005) {
+            if ($billsClient && abs($totalAmount) >= 0.005) {
                 $this->invoiceAdjustments->applyInvoiceTotalDelta($invoice, $totalAmount);
             }
             $invoice->update([
@@ -508,7 +508,7 @@ class InvoiceController extends Controller
     {
         $data = $request->validate([
             'description' => ['required', 'string', 'max:500'],
-            'amount' => ['required', 'numeric', 'min:0'],
+            'amount' => ['required', 'numeric'],
             'quantity' => ['nullable', 'integer', 'min:1'],
             'bills_client' => ['nullable', 'boolean'],
             'charge_type' => ['nullable', 'string', 'max:50'],
@@ -592,13 +592,13 @@ class InvoiceController extends Controller
                     $updatedShoots->push($updated);
                 }
             } else {
-                if ($oldTargetShoot && $oldBillable > 0) {
+                if ($oldTargetShoot && abs($oldBillable) >= 0.005) {
                     $updated = $this->invoiceAdjustments->applyShootPayableDelta($oldTargetShoot, -$oldBillable);
                     if ($updated) {
                         $updatedShoots->push($updated);
                     }
                 }
-                if ($newTargetShoot && $newBillable > 0) {
+                if ($newTargetShoot && abs($newBillable) >= 0.005) {
                     $updated = $this->invoiceAdjustments->applyShootPayableDelta($newTargetShoot, $newBillable);
                     if ($updated) {
                         $updatedShoots->push($updated);
@@ -666,7 +666,7 @@ class InvoiceController extends Controller
                 : $this->invoiceAdjustments->resolveTargetShoot($invoice, null, false);
 
             $item->delete();
-            if ($billableContribution > 0) {
+            if (abs($billableContribution) >= 0.005) {
                 $this->invoiceAdjustments->applyInvoiceTotalDelta($invoice, -$billableContribution);
             }
             $invoice->update([
@@ -674,7 +674,7 @@ class InvoiceController extends Controller
                 'modified_at' => now(),
             ]);
 
-            $updatedShoot = $billableContribution > 0
+            $updatedShoot = abs($billableContribution) >= 0.005
                 ? $this->invoiceAdjustments->applyShootPayableDelta($targetShoot, -$billableContribution)
                 : $targetShoot;
 
@@ -691,6 +691,10 @@ class InvoiceController extends Controller
                 'invoice' => $this->buildInvoiceResponse($invoice),
                 'affected_shoot_ids' => $affectedShoots->pluck('id')->values()->all(),
             ]);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+
+            throw $e;
         } catch (\Exception $e) {
             DB::rollBack();
             \App\Services\ApiErrorResponder::log($e, 'error');

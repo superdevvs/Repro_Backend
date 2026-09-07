@@ -16,6 +16,7 @@ use App\Models\PhotographerEquipment;
 use App\Models\User;
 use App\Models\Shoot;
 use App\Models\Payment;
+use App\Exceptions\Messaging\EmailProviderRejectedException;
 use App\Services\Messaging\MessagingService;
 use App\Services\Messaging\ShootEmailMatrix;
 use App\Services\Messaging\TemplateRenderer;
@@ -461,29 +462,37 @@ class MailService
 
     public function sendAssignedPhotographerShootScheduledEmails(Shoot $shoot): bool
     {
+        return $this->sendAssignedPhotographerShootScheduledEmailsWithRecipients($shoot) !== [];
+    }
+
+    /** @return array<int, string> Email addresses accepted by the delivery pipeline. */
+    public function sendAssignedPhotographerShootScheduledEmailsWithRecipients(Shoot $shoot): array
+    {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
-            $sentAssignedPhotographer = false;
+            $sentTo = [];
 
             foreach ($this->resolveAssignedPhotographers($shoot) as $photographer) {
-                $sentAssignedPhotographer = $this->sendShootScheduledEmailToRecipient(
+                if ($this->sendShootScheduledEmailToRecipient(
                     $photographer,
                     $shoot,
                     $shootData,
                     '',
                     true
-                ) || $sentAssignedPhotographer;
+                )) {
+                    $sentTo[] = $this->normalizeDeliverableEmail($photographer->email);
+                }
             }
 
-            return $sentAssignedPhotographer;
+            return array_values(array_unique($sentTo));
         } catch (\Exception $e) {
             Log::error('Failed to send shoot scheduled emails to assigned photographers', [
                 'shoot_id' => $shoot->id,
                 'error' => $e->getMessage(),
             ]);
 
-            return false;
+            return [];
         }
     }
 
@@ -530,7 +539,7 @@ class MailService
                 ],
             ]);
 
-            $this->dispatchProtectedEmail('SHOOT_SCHEDULED', $payload, $normalizedEmail, $cc, [], [
+            $sent = $this->dispatchProtectedEmail('SHOOT_SCHEDULED', $payload, $normalizedEmail, $cc, [], [
                 'related_shoot_id' => $shoot->id,
                 'related_account_id' => $isPhotographer ? null : $recipient->id,
             ], [
@@ -541,7 +550,16 @@ class MailService
                     $isPhotographer ? 'photographer' : 'client',
                     $this->serviceScopeHash($recipientShootData)
                 ),
+                // Photographer notifications have no CC fan-out. Only retry
+                // explicit rejections; never replay a timeout or uncertain send.
+                'retry_failed' => $isPhotographer,
+                'retry_failed_error_codes' => [class_basename(EmailProviderRejectedException::class)],
+                'require_confirmed_duplicate' => true,
             ]);
+
+            if (!$sent) {
+                return false;
+            }
 
             if ($isPhotographer) {
                 Log::info('Shoot scheduled email sent to photographer', [
@@ -3159,11 +3177,17 @@ class MailService
             'enforce_email_health_gate' => $extraPayload['enforce_email_health_gate'] ?? true,
             'idempotency_key' => $options['idempotency_key'] ?? null,
             'force' => $options['force'] ?? false,
+            'retry_failed' => $options['retry_failed'] ?? false,
+            'retry_failed_error_codes' => $options['retry_failed_error_codes'] ?? null,
             'canonical_metadata' => $options['canonical_metadata'] ?? [],
         ]);
 
         if (($options['require_fresh_send'] ?? false) === true) {
             return (bool) ($result['sent'] ?? false);
+        }
+
+        if (($options['require_confirmed_duplicate'] ?? false) === true && ($result['duplicate'] ?? false)) {
+            return in_array(strtolower((string) (($result['dispatch'] ?? null)?->status ?? '')), ['sent', 'delivered'], true);
         }
 
         return $result['sent'] || $result['duplicate'];

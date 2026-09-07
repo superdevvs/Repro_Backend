@@ -5,6 +5,8 @@ namespace Tests\Unit\Messaging;
 use App\Models\AutomationRun;
 use App\Models\AutomationRunStep;
 use App\Models\AutomationRule;
+use App\Models\Shoot;
+use App\Models\User;
 use App\Services\Messaging\AutomationWorkflowConverter;
 use App\Services\Messaging\AutomationWorkflowExecutor;
 use App\Services\Messaging\AutomationWorkflowValidator;
@@ -98,10 +100,58 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
             'ops@example.com',
         ], $summary['email_sent_to']);
         $this->assertTrue($summary['client_email_sent']);
+        $this->assertFalse($summary['photographer_email_sent'], 'A partial delivery must leave photographer fallback enabled.');
+
+        $run->steps->push(new AutomationRunStep([
+            'output_json' => ['channel' => 'email', 'sent_to' => ['LEAD@example.com']],
+        ]));
+        $summary = $method->invoke($executor, [$run]);
         $this->assertTrue($summary['photographer_email_sent']);
     }
 
-    private function makeExecutor(): AutomationWorkflowExecutor
+    public function test_scheduled_dispatch_does_not_report_a_failed_photographer_as_sent_when_client_succeeds(): void
+    {
+        $mail = $this->createMock(MailService::class);
+        $executor = $this->makeExecutor($mail);
+        $client = new User(['email' => 'client@example.com']);
+        $shoot = new Shoot();
+        $mail->expects($this->once())->method('sendShootScheduledEmail')
+            ->with($client, $shoot, 'https://app.test/pay', false)->willReturn(true);
+        $mail->expects($this->once())->method('sendAssignedPhotographerShootScheduledEmailsWithRecipients')
+            ->with($shoot)->willReturn([]);
+
+        $method = new ReflectionMethod($executor, 'dispatchProtectedTrigger');
+        $sentTo = $method->invoke($executor, 'SHOOT_SCHEDULED', ['client', 'photographer'], [
+            'shoot' => $shoot,
+            'client' => $client,
+            'payment_link' => 'https://app.test/pay',
+        ]);
+
+        $this->assertSame([$client->email], $sentTo);
+    }
+
+    public function test_scheduled_dispatch_keeps_photographer_delivery_independent_of_client_failure(): void
+    {
+        $mail = $this->createMock(MailService::class);
+        $executor = $this->makeExecutor($mail);
+        $client = new User(['email' => 'client@example.com']);
+        $shoot = new Shoot();
+        $mail->expects($this->once())->method('sendShootScheduledEmail')
+            ->with($client, $shoot, 'https://app.test/pay', false)->willReturn(false);
+        $mail->expects($this->once())->method('sendAssignedPhotographerShootScheduledEmailsWithRecipients')
+            ->with($shoot)->willReturn(['photographer@example.com']);
+
+        $method = new ReflectionMethod($executor, 'dispatchProtectedTrigger');
+        $sentTo = $method->invoke($executor, 'SHOOT_SCHEDULED', ['client', 'photographer'], [
+            'shoot' => $shoot,
+            'client' => $client,
+            'payment_link' => 'https://app.test/pay',
+        ]);
+
+        $this->assertSame(['photographer@example.com'], $sentTo);
+    }
+
+    private function makeExecutor(?MailService $mailService = null): AutomationWorkflowExecutor
     {
         return new AutomationWorkflowExecutor(
             $this->createMock(MessagingService::class),
@@ -109,7 +159,7 @@ class AutomationWorkflowExecutorRecipientTest extends TestCase
             $this->createMock(TemplateVariableResolver::class),
             $this->createMock(AutomationWorkflowConverter::class),
             $this->createMock(AutomationWorkflowValidator::class),
-            $this->createMock(MailService::class),
+            $mailService ?? $this->createMock(MailService::class),
             $this->createMock(ProtectedAutomationEmailMap::class),
         );
     }

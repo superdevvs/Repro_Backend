@@ -25,18 +25,32 @@ class EmailAuditService
             $existing = SystemEmailDispatch::query()->where('idempotency_key', $idempotencyKey)->first();
 
             if ($existing) {
-                if (($options['retry_failed'] ?? false) === true && strtolower((string) $existing->status) === 'failed') {
-                    $existing->update([
+                $retryableErrorCodes = $options['retry_failed_error_codes'] ?? null;
+                $retryableFailure = $retryableErrorCodes === null
+                    || in_array($existing->error_code, $retryableErrorCodes, true);
+                if (($options['retry_failed'] ?? false) === true && strtolower((string) $existing->status) === 'failed' && $retryableFailure) {
+                    $originalAttemptCount = $existing->getRawOriginal('attempt_count');
+                    $originalErrorCode = $existing->getRawOriginal('error_code');
+                    $existing->fill([
                         'status' => 'pending',
-                        'attempt_count' => max(1, (int) $existing->attempt_count + 1),
+                        'attempt_count' => max(1, (int) $originalAttemptCount + 1),
                         'payload_snapshot' => $payload,
                         'transport_snapshot' => $transport,
                         'error_code' => null,
                         'error_message' => null,
                         'failed_at' => null,
                     ]);
+                    // Cast snapshots through the model, then atomically claim
+                    // this exact failure. A newer ambiguous result must never
+                    // be retried using an older rejection's eligibility.
+                    $claimed = SystemEmailDispatch::query()
+                        ->whereKey($existing->id)
+                        ->where('status', 'failed')
+                        ->where('attempt_count', $originalAttemptCount)
+                        ->where('error_code', $originalErrorCode)
+                        ->update($existing->getDirty());
 
-                    return ['dispatch' => $existing->fresh(), 'duplicate' => false];
+                    return ['dispatch' => $existing->fresh(), 'duplicate' => !$claimed];
                 }
 
                 return ['dispatch' => $existing, 'duplicate' => true];

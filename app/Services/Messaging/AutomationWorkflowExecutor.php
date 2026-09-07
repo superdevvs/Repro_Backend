@@ -567,22 +567,20 @@ class AutomationWorkflowExecutor
 
             case 'SHOOT_BOOKED':
             case 'PHOTOGRAPHER_ASSIGNED':
-                if ($shoot && in_array('photographer', $recipientTypes, true) && $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot)) {
-                    $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                if ($shoot && in_array('photographer', $recipientTypes, true)) {
+                    $sentTo = array_merge($sentTo, $this->mailService->sendAssignedPhotographerShootScheduledEmailsWithRecipients($shoot));
                 }
                 break;
 
             case 'SHOOT_SCHEDULED':
                 if ($shoot && $client && in_array('client', $recipientTypes, true)) {
                     $paymentLink = (string) ($context['payment_link'] ?? ($context['paymentLink'] ?? $this->mailService->generatePaymentLink($shoot)));
-                    if ($this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, in_array('photographer', $recipientTypes, true))) {
+                    if ($this->mailService->sendShootScheduledEmail($client, $shoot, $paymentLink, false)) {
                         $sentTo[] = $client->email;
-                        if (in_array('photographer', $recipientTypes, true)) {
-                            $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
-                        }
                     }
-                } elseif ($shoot && in_array('photographer', $recipientTypes, true) && $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot)) {
-                    $sentTo = array_merge($sentTo, $this->recipientEmails($this->assignedPhotographers($shoot)));
+                }
+                if ($shoot && in_array('photographer', $recipientTypes, true)) {
+                    $sentTo = array_merge($sentTo, $this->mailService->sendAssignedPhotographerShootScheduledEmailsWithRecipients($shoot));
                 }
                 break;
 
@@ -1214,7 +1212,9 @@ class AutomationWorkflowExecutor
         return [
             'email_sent_to' => $sentEmails,
             'client_email_sent' => $this->emailListsIntersect($sentEmails, $clientEmails),
-            'photographer_email_sent' => $this->emailListsIntersect($sentEmails, $photographerEmails),
+            // Fallback must still run if any assigned photographer was missed.
+            'photographer_email_sent' => $photographerEmails !== []
+                && array_diff($photographerEmails, $sentEmails) === [],
         ];
     }
 

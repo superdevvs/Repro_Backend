@@ -912,6 +912,148 @@ class InvoiceShootOrderSyncTest extends TestCase
         return [$shoot, $invoice];
     }
 
+    public function test_negative_adjustment_updates_and_removes_the_discount_without_changing_tax(): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $added = $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Client discount', 'amount' => -30, 'bills_client' => true,
+        ])->assertCreated();
+        $itemId = $added->json('item.id');
+        $this->assertSame(70.0, (float) $added->json('invoice.subtotal'));
+        $this->assertSame(6.0, (float) $added->json('invoice.tax'));
+        $this->assertSame(76.0, (float) $added->json('invoice.total_amount'));
+        $this->assertSame(76.0, (float) $shoot->fresh()->total_quote);
+        $this->assertOrderContainsAdjustment(
+            $this->getJson("/api/shoots/{$shoot->id}")->assertOk()->json('data'),
+            'Client discount', 1, -30.0, -30.0
+        );
+
+        $updated = $this->patchJson("/api/admin/invoices/{$invoice->id}/misc-items/{$itemId}", [
+            'description' => 'Client discount', 'amount' => -20, 'quantity' => 2, 'bills_client' => true,
+        ])->assertOk();
+        $this->assertSame(66.0, (float) $updated->json('invoice.total_amount'));
+        $this->assertSame(66.0, (float) $shoot->fresh()->total_quote);
+
+        $removed = $this->deleteJson("/api/admin/invoices/{$invoice->id}/misc-items/{$itemId}")->assertOk();
+        $this->assertSame(106.0, (float) $removed->json('invoice.total_amount'));
+        $this->assertSame(106.0, (float) $shoot->fresh()->total_quote);
+    }
+
+    public function test_negative_adjustment_can_move_between_shoots_and_become_display_only(): void
+    {
+        $first = $this->createShoot();
+        $second = $this->createShoot('456 Second St');
+        $invoice = Invoice::factory()->create([
+            'user_id' => $this->client->id, 'client_id' => $this->client->id,
+            'role' => Invoice::ROLE_CLIENT, 'shoot_id' => null,
+            'subtotal' => 200, 'tax' => 12, 'total' => 212, 'total_amount' => 212,
+        ]);
+        $invoice->shoots()->attach([$first->id, $second->id]);
+        $added = $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Discount', 'amount' => -30, 'bills_client' => true, 'shoot_id' => $first->id,
+        ])->assertCreated();
+        $itemId = $added->json('item.id');
+
+        $this->patchJson("/api/admin/invoices/{$invoice->id}/misc-items/{$itemId}", [
+            'description' => 'Discount', 'amount' => -30, 'bills_client' => true, 'shoot_id' => $second->id,
+        ])->assertOk();
+        $this->assertSame(106.0, (float) $first->fresh()->total_quote);
+        $this->assertSame(76.0, (float) $second->fresh()->total_quote);
+        $this->assertSame(182.0, (float) $invoice->fresh()->total_amount);
+
+        $this->patchJson("/api/admin/invoices/{$invoice->id}/misc-items/{$itemId}", [
+            'description' => 'Discount note', 'amount' => -30, 'bills_client' => false,
+        ])->assertOk();
+        $this->assertSame(106.0, (float) $second->fresh()->total_quote);
+        $this->assertSame(212.0, (float) $invoice->fresh()->total_amount);
+    }
+
+    public function test_excessive_invoice_discount_is_rejected_without_persisting_partial_changes(): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Excessive discount', 'amount' => -150, 'bills_client' => true,
+        ])->assertUnprocessable()->assertJsonValidationErrors('amount');
+        $this->assertSame(106.0, (float) $shoot->fresh()->total_quote);
+        $this->assertSame(106.0, (float) $invoice->fresh()->total_amount);
+        $this->assertDatabaseMissing('invoice_items', ['description' => 'Excessive discount']);
+    }
+
+    public function test_shoot_discount_reprices_services_and_tax_and_can_be_cleared(): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $shoot->forceFill(['tax_region' => 'MD', 'tax_percent' => 6, 'discount_type' => null, 'discount_value' => null])->save();
+        $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Invoice credit', 'amount' => -10, 'bills_client' => true,
+        ])->assertCreated();
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'services' => [['id' => $this->service->id, 'quantity' => 2]],
+            'discount_type' => 'fixed', 'discount_value' => 30,
+        ])->assertOk();
+        $fresh = $shoot->fresh();
+        $this->assertSame('fixed', $fresh->discount_type);
+        $this->assertSame(30.0, (float) $fresh->discount_amount);
+        $this->assertSame(170.0, (float) $fresh->base_quote);
+        $this->assertSame(10.2, (float) $fresh->tax_amount);
+        $this->assertSame(170.2, (float) $fresh->total_quote);
+        $this->assertSame(170.2, (float) $invoice->fresh()->total_amount);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'discount_type' => 'percent', 'discount_value' => 10,
+        ])->assertOk();
+        $this->assertSame(180.0, (float) $shoot->fresh()->base_quote);
+        $this->assertSame(180.8, (float) $shoot->fresh()->total_quote);
+
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'discount_type' => null, 'discount_value' => null,
+        ])->assertOk();
+        $this->assertNull($shoot->fresh()->discount_type);
+        $this->assertSame(0.0, (float) $shoot->fresh()->discount_amount);
+        $this->assertSame(202.0, (float) $shoot->fresh()->total_quote);
+        $this->assertSame(202.0, (float) $invoice->fresh()->total_amount);
+    }
+
+    public static function repricingBelowRetainedCreditCases(): array
+    {
+        return [
+            'service price below credit' => ['service', 50],
+            'shoot discount below credit' => ['discount', 50],
+            'positive total but negative pre-tax subtotal' => ['discount', 24],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('repricingBelowRetainedCreditCases')]
+    public function test_repricing_rejects_excess_retained_credit_and_removal_restores_original_price(string $change, int $value): void
+    {
+        [$shoot, $invoice] = $this->createShootAndInvoice();
+        $shoot->forceFill(['tax_region' => 'MD', 'tax_percent' => 6, 'discount_type' => null, 'discount_value' => null])->save();
+        $added = $this->postJson("/api/admin/invoices/{$invoice->id}/misc-items", [
+            'description' => 'Retained invoice credit', 'amount' => -80, 'bills_client' => true,
+        ])->assertCreated();
+        $itemId = $added->json('item.id');
+        $this->assertSame(26.0, (float) $shoot->fresh()->total_quote);
+
+        $payload = $change === 'service'
+            ? ['services' => [['id' => $this->service->id, 'quantity' => 1, 'price' => $value]]]
+            : ['discount_type' => 'fixed', 'discount_value' => $value];
+        $this->patchJson("/api/shoots/{$shoot->id}", $payload)
+            ->assertUnprocessable()->assertJsonValidationErrors('pricing');
+
+        $fresh = $shoot->fresh();
+        $this->assertSame(100.0, (float) $fresh->base_quote);
+        $this->assertNull($fresh->discount_type);
+        $this->assertSame(100.0, (float) $fresh->services()->first()->pivot->price);
+        $this->assertSame(26.0, (float) $fresh->total_quote);
+        $this->assertSame(26.0, (float) $invoice->fresh()->total_amount);
+        $this->assertSame(-80.0, (float) InvoiceItem::findOrFail($itemId)->total_amount);
+
+        $this->deleteJson("/api/admin/invoices/{$invoice->id}/misc-items/{$itemId}")->assertOk();
+        $this->assertSame(106.0, (float) $shoot->fresh()->total_quote);
+        $this->assertSame(106.0, (float) $invoice->fresh()->total_amount);
+        $this->assertSame(100.0, (float) $invoice->fresh()->subtotal);
+    }
+
     private function createShoot(string $address = '123 Main St'): Shoot
     {
         $shoot = Shoot::factory()->create([

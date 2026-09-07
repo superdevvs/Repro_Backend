@@ -306,7 +306,12 @@ class InvoiceAdjustmentService
             $this->assertClientPaymentAllowedForShoot($lockedShoot, 'amount');
         }
 
-        $newTotal = round(max((float) ($lockedShoot->total_quote ?? 0) + $delta, 0), 2);
+        $newTotal = round((float) ($lockedShoot->total_quote ?? 0) + $delta, 2);
+        if ($newTotal < 0) {
+            throw ValidationException::withMessages([
+                'amount' => ['The discount cannot exceed the shoot total.'],
+            ]);
+        }
         $lockedShoot->total_quote = $newTotal;
 
         if ($newTotal > 0.01 && $lockedShoot->bypass_paywall) {
@@ -364,6 +369,11 @@ class InvoiceAdjustmentService
 
         $oldSubtotal = (float) ($invoice->subtotal ?? max((float) ($invoice->total ?? $invoice->total_amount ?? 0) - (float) ($invoice->tax ?? 0), 0));
         $oldTotal = (float) ($invoice->total ?? $invoice->total_amount ?? ($oldSubtotal + (float) ($invoice->tax ?? 0)));
+        if (round($oldSubtotal + $delta, 2) < 0 || round($oldTotal + $delta, 2) < 0) {
+            throw ValidationException::withMessages([
+                'amount' => ['The discount cannot exceed the invoice subtotal.'],
+            ]);
+        }
         $newSubtotal = round(max($oldSubtotal + $delta, 0), 2);
         $newTotal = round(max($oldTotal + $delta, 0), 2);
 

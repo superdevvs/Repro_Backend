@@ -254,6 +254,8 @@ class ShootEditablePayloadService
         $invoiceNeedsRefresh = false;
         $serviceChangeRequested = array_key_exists('services', $validated)
             || array_key_exists('service_items', $validated);
+        $discountChangeRequested = array_key_exists('discount_type', $validated)
+            || array_key_exists('discount_value', $validated);
         $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
             && $validated['admin_adjusted_total_quote'] !== null;
         $previousProductStatus = (string) ($shoot->product_status ?? Shoot::PRODUCT_STATUS_HAS_PRODUCT);
@@ -355,10 +357,10 @@ class ShootEditablePayloadService
         if (array_key_exists('product_status', $validated)) {
             $shoot->product_status = $validated['product_status'] ?: Shoot::PRODUCT_STATUS_HAS_PRODUCT;
         }
-        if (! $serviceChangeRequested && array_key_exists('discount_type', $validated)) {
+        if (array_key_exists('discount_type', $validated)) {
             $shoot->discount_type = $validated['discount_type'];
         }
-        if (! $serviceChangeRequested && array_key_exists('discount_value', $validated)) {
+        if (array_key_exists('discount_value', $validated)) {
             $shoot->discount_value = $validated['discount_value'];
         }
         if (! $serviceChangeRequested && array_key_exists('discount_amount', $validated)) {
@@ -369,6 +371,7 @@ class ShootEditablePayloadService
         }
 
         $shouldRecalculatePricing = $serviceChangeRequested
+            || $discountChangeRequested
             || $hasAdjustedTotal
             || (! $paymentFieldsProvided && (
                 array_key_exists('client_id', $validated)
@@ -381,7 +384,7 @@ class ShootEditablePayloadService
             $taxRegion = array_key_exists('state', $validated)
                 ? null
                 : ($shoot->tax_region ?: null);
-            $pricingCalculation = $serviceChangeRequested
+            $pricingCalculation = ($serviceChangeRequested || $discountChangeRequested)
                 ? $this->support->buildPricingCalculationForExistingShoot(
                     $targetServices,
                     $shoot,
@@ -437,6 +440,17 @@ class ShootEditablePayloadService
                 $shoot->tax_percent = $pricingCalculation['tax_percent'];
                 $shoot->tax_amount = $pricingCalculation['tax_amount'];
                 $shoot->total_quote = round($pricingCalculation['total_quote'] + $billableAdjustments, 2);
+            }
+
+            // Retained credits must stay reversible. Clipping the payable at
+            // zero would lose part of a credit and inflate the total if that
+            // adjustment is later removed. Preserve the invoice's pre-tax
+            // subtotal as well as its tax-inclusive total.
+            if (round((float) $shoot->base_quote + $billableAdjustments, 2) < 0
+                || (float) $shoot->total_quote < 0) {
+                throw ValidationException::withMessages([
+                    'pricing' => ['The retained invoice discount exceeds the recalculated subtotal. Reduce or remove the invoice discount before lowering this shoot price.'],
+                ]);
             }
 
             $invoiceNeedsRefresh = true;
