@@ -106,7 +106,7 @@ class StoredDeliveryErrorSecurityTest extends TestCase
         $authorization->shouldReceive('hasRole')->once()->with($user, ['editor'])->andReturnFalse();
         $share = Mockery::mock(ShootShareLinkService::class);
         $share->shouldReceive('generateFilesZip')->once()->andThrow(new \RuntimeException(self::CANARY));
-        $service = new ShootEditorDownloadService($dropbox, $activity, $authorization, $share, Mockery::mock(ShootEditingAssignmentService::class));
+        $service = new ShootEditorDownloadService($dropbox, $activity, $authorization, $share, Mockery::mock(ShootEditingAssignmentService::class), new \App\Services\Shoots\ShootArchiveFilenameFormatter());
 
         $response = $service->downloadRaw(Request::create('/api/shoots/912003/editor-download/raw'), $shoot, $user);
         $this->assertSame(500, $response->getStatusCode());

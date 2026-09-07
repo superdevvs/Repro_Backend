@@ -385,12 +385,13 @@ class ShootMediaController extends Controller
         // them through this authenticated endpoint; never exchange the request
         // for a public-storage or third-party temporary URL.
         if ($file->isIguideOfflinePackage()) {
-            return $this->downloadShootMediaAction->downloadResponse($file);
+            return $this->downloadShootMediaAction->downloadResponse($file, $request);
         }
 
         $acceptHeader = $request->headers->get('Accept', '');
         if (
-            str_contains($acceptHeader, 'application/json')
+            $request->prefers(['application/json', 'application/zip']) !== 'application/zip'
+            && str_contains($acceptHeader, 'application/json')
             && ! str_contains($acceptHeader, 'application/octet-stream')
         ) {
             $url = $this->downloadShootMediaAction->execute($file);
@@ -400,7 +401,7 @@ class ShootMediaController extends Controller
                 : response()->json(['message' => 'File not available'], 404);
         }
 
-        return $this->downloadShootMediaAction->downloadResponse($file);
+        return $this->downloadShootMediaAction->downloadResponse($file, $request);
     }
 
     public function previewFile(Shoot $shoot, ShootFile $file)

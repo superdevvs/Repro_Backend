@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\DeliveryMediaOrderService;
+use App\Services\Shoots\ShootArchiveFilenameFormatter;
 use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
@@ -19,7 +20,8 @@ class DownloadSelectedShootFilesAction
         protected ShootClientReleaseAccessService $shootClientReleaseAccessService,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected DeliveryMediaOrderService $deliveryMediaOrderService,
-        protected DeliveryFilenameFormatter $deliveryFilenameFormatter
+        protected DeliveryFilenameFormatter $deliveryFilenameFormatter,
+        protected ShootArchiveFilenameFormatter $archiveFilenameFormatter
     ) {
     }
 
@@ -131,7 +133,7 @@ class DownloadSelectedShootFilesAction
             return response()->json(['error' => 'No downloadable files available'], 404);
         }
 
-        return response()->download($zipPath, 'shoot-' . $shoot->id . '-selected.zip')->deleteFileAfterSend(true);
+        return response()->download($zipPath, $this->archiveFilenameFormatter->selection($shoot, $size))->deleteFileAfterSend(true);
     }
 
     protected function resolveDownloadPath($file, string $size, bool $needsWatermark, array &$pendingWatermarks): ?string

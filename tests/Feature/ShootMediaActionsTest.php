@@ -552,6 +552,44 @@ class ShootMediaActionsTest extends TestCase
             (string) $response->json('url')
         );
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
+
+        $archivePath = $archiveService->getArchivePath($shoot, 'edited', 'small');
+        $this->assertSame(
+            'shoots/'.$shoot->id.'/archives/250-media-lane-baltimore-md-21201-edited-small.zip',
+            $archivePath
+        );
+        $expectedZip = Storage::disk('public')->get($archivePath);
+        $binaryResponse = $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
+            'Accept' => 'application/zip, application/json',
+            'Origin' => 'https://reprodashboard.com',
+        ]);
+        $binaryResponse->assertOk()
+            ->assertHeader('Content-Type', 'application/zip')
+            ->assertHeader('Content-Length', (string) strlen($expectedZip))
+            ->assertHeader('X-Archive-Download-Url', $response->json('url'))
+            ->assertHeader('X-Content-Type-Options', 'nosniff');
+        $this->assertStringContainsString(basename($archivePath), $binaryResponse->headers->get('Content-Disposition'));
+        $this->assertStringContainsString('private', $binaryResponse->headers->get('Cache-Control'));
+        $this->assertStringContainsString('no-store', $binaryResponse->headers->get('Cache-Control'));
+        $this->assertStringContainsString('Content-Disposition', $binaryResponse->headers->get('Access-Control-Expose-Headers'));
+        $this->assertStringContainsString('X-Archive-Download-Url', $binaryResponse->headers->get('Access-Control-Expose-Headers'));
+        $this->assertSame($expectedZip, $binaryResponse->streamedContent());
+        Storage::disk('public')->assertExists($archivePath);
+
+        $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
+            'Accept' => 'application/json, application/zip',
+        ])->assertOk()->assertJsonPath('type', 'redirect');
+
+        $publicDisk = Mockery::mock(Storage::disk('public'));
+        $publicDisk->shouldReceive('size')->once()->andThrow(new \RuntimeException('synthetic-private-storage-secret /private/archive.zip'));
+        $storageManager = Mockery::mock(Storage::getFacadeRoot());
+        $storageManager->shouldReceive('disk')->with('public')->andReturn($publicDisk);
+        Storage::swap($storageManager);
+        $failedTransfer = $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
+            'Accept' => 'application/zip, application/json',
+        ])->assertStatus(500);
+        $this->assertStringNotContainsString('synthetic-private-storage-secret', $failedTransfer->getContent());
+        $this->assertStringNotContainsString('/private/archive.zip', $failedTransfer->getContent());
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -807,13 +845,15 @@ class ShootMediaActionsTest extends TestCase
 
         $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
+            'Origin' => 'https://reprodashboard.com',
         ]);
 
         $response->assertOk();
         $this->assertStringContainsString(
-            'shoot-' . $shoot->id . '-raw-files.zip',
+            '250-media-lane-baltimore-md-21201-raw-files.zip',
             (string) $response->headers->get('content-disposition')
         );
+        $this->assertStringContainsString('Content-Disposition', $response->headers->get('Access-Control-Expose-Headers'));
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -848,7 +888,7 @@ class ShootMediaActionsTest extends TestCase
 
         $response->assertOk();
         $this->assertStringContainsString(
-            'shoot-' . $shoot->id . '-raw-files.zip',
+            '250-media-lane-baltimore-md-21201-raw-files.zip',
             (string) $response->headers->get('content-disposition')
         );
     }
@@ -861,13 +901,16 @@ class ShootMediaActionsTest extends TestCase
 
         $shoot = $this->createShoot();
         $originalPath = 'shoots/' . $shoot->id . '/completed/editing-manager-selected.jpg';
+        $webPath = 'shoots/' . $shoot->id . '/web/editing-manager-selected.jpg';
         Storage::disk('public')->put($originalPath, 'editing-manager-selected-bytes');
+        Storage::disk('public')->put($webPath, 'editing-manager-mls-bytes');
 
         $file = $this->createShootFile($shoot, [
             'filename' => 'editing-manager-selected.jpg',
             'stored_filename' => 'editing-manager-selected.jpg',
             'path' => $originalPath,
             'storage_path' => $originalPath,
+            'web_path' => $webPath,
             'media_type' => 'edited',
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
@@ -885,9 +928,20 @@ class ShootMediaActionsTest extends TestCase
 
         $response->assertOk();
         $this->assertStringContainsString(
-            'shoot-' . $shoot->id . '-selected.zip',
+            '250-media-lane-baltimore-md-21201-selected-print.zip',
             (string) $response->headers->get('content-disposition')
         );
+
+        $mlsResponse = $this->post('/api/shoots/'.$shoot->id.'/files/download', [
+            'file_ids' => [$file->id], 'size' => 'small',
+        ], ['Accept' => 'application/zip', 'Origin' => 'https://reprodashboard.com']);
+        $mlsResponse->assertOk();
+        $this->assertStringContainsString('250-media-lane-baltimore-md-21201-selected-mls.zip', $mlsResponse->headers->get('Content-Disposition'));
+        $this->assertStringContainsString('Content-Disposition', $mlsResponse->headers->get('Access-Control-Expose-Headers'));
+        $zip = new ZipArchive();
+        $this->assertTrue($zip->open($mlsResponse->baseResponse->getFile()->getPathname()));
+        $this->assertSame('editing-manager-mls-bytes', $zip->getFromIndex(0));
+        $zip->close();
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -915,6 +969,41 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonStructure(['url']);
 
         $this->assertNotEmpty($response->json('url'));
+
+        $binaryResponse = $this->get('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download', [
+            'Accept' => 'application/zip, application/json;q=0.9, application/octet-stream;q=0.8',
+        ])->assertOk();
+        $this->assertSame('editing-manager-single-bytes', file_get_contents($binaryResponse->baseResponse->getFile()->getPathname()));
+        $this->assertStringContainsString('editing-manager-single.jpg', $binaryResponse->headers->get('Content-Disposition'));
+        $this->get('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download', [
+            'Accept' => 'application/zip, application/json;q=0.9',
+        ])->assertOk()->assertHeader('Content-Disposition', $binaryResponse->headers->get('Content-Disposition'));
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function zip_first_single_file_download_can_hand_off_an_external_url_without_a_credentialed_redirect(): void
+    {
+        Storage::fake('public');
+        Storage::fake('local');
+        config(['media.read_from_r2' => false, 'media.r2_only' => false]);
+        Sanctum::actingAs($this->admin);
+        $shoot = $this->createShoot(['rep_id' => $this->salesRep->id]);
+        $file = $this->createShootFile($shoot, ['path' => 'https://media.example.test/original.jpg', 'storage_path' => null]);
+        $endpoint = '/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download';
+        $accept = ['Accept' => 'application/zip, application/json;q=0.9, application/octet-stream;q=0.8'];
+
+        $this->get($endpoint, $accept)->assertOk()
+            ->assertJsonPath('type', 'redirect')
+            ->assertJsonPath('url', 'https://media.example.test/original.jpg');
+        $this->get($endpoint, ['Accept' => 'application/zip, application/json;q=0.9'])->assertOk()
+            ->assertJsonPath('type', 'redirect')
+            ->assertJsonPath('url', 'https://media.example.test/original.jpg');
+        $this->get($endpoint, ['Accept' => 'application/octet-stream'])
+            ->assertRedirect('https://media.example.test/original.jpg');
+
+        Sanctum::actingAs($this->unassignedSalesRep);
+        $denied = $this->get($endpoint, $accept)->assertForbidden();
+        $this->assertStringNotContainsString('https://media.example.test/original.jpg', $denied->getContent());
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -950,7 +1039,7 @@ class ShootMediaActionsTest extends TestCase
 
         $response->assertOk();
         $this->assertStringContainsString(
-            'shoot-' . $shoot->id . '-raw-files.zip',
+            '250-media-lane-baltimore-md-21201-raw-files.zip',
             (string) $response->headers->get('content-disposition')
         );
     }
@@ -1308,6 +1397,9 @@ class ShootMediaActionsTest extends TestCase
         $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
 
         $response->assertForbidden();
+        $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
+            'Accept' => 'application/zip, application/json',
+        ])->assertForbidden();
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -1346,7 +1438,7 @@ class ShootMediaActionsTest extends TestCase
 
         $response->assertOk();
         $this->assertStringContainsString(
-            'shoot-' . $shoot->id . '-selected.zip',
+            '250-media-lane-baltimore-md-21201-selected-print.zip',
             (string) $response->headers->get('content-disposition')
         );
     }
@@ -1498,6 +1590,10 @@ class ShootMediaActionsTest extends TestCase
         $response->assertStatus(202)
             ->assertJsonPath('type', 'preparing');
 
+        $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=original', [
+            'Accept' => 'application/zip, application/json',
+        ])->assertStatus(202)->assertJsonPath('type', 'preparing');
+
         $this->assertStringContainsString(
             '/api/shoots/' . $shoot->id . '/media/download-zip',
             (string) $response->json('status_url')
@@ -1559,6 +1655,15 @@ class ShootMediaActionsTest extends TestCase
             (string) $response->json('url')
         );
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
+
+        $archivePath = app(ShootMediaArchiveService::class)->getArchivePath($shoot, 'edited', 'small');
+        $binaryResponse = $this->get($signedUrl, ['Accept' => 'application/zip, application/json']);
+        $binaryResponse->assertOk()->assertHeader('Content-Type', 'application/zip');
+        $this->assertSame(Storage::disk('public')->get($archivePath), $binaryResponse->streamedContent());
+        Storage::disk('public')->assertExists($archivePath);
+        $this->get('/api/public/shoot-media/'.$shoot->id.'/download-zip?type=edited&size=small', [
+            'Accept' => 'application/zip, application/json',
+        ])->assertForbidden();
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

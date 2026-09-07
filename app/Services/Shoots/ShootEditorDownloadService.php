@@ -19,7 +19,8 @@ class ShootEditorDownloadService
         protected ShootActivityLogger $activityLogger,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected ShootShareLinkService $shootShareLinkService,
-        protected ShootEditingAssignmentService $shootEditingAssignmentService
+        protected ShootEditingAssignmentService $shootEditingAssignmentService,
+        protected ShootArchiveFilenameFormatter $archiveFilenameFormatter
     ) {
     }
 
@@ -80,7 +81,7 @@ class ShootEditorDownloadService
             if ($files->count() > 0) {
                 $zipPath = $this->shootShareLinkService->generateFilesZip($shoot, $files);
                 if ($zipPath && file_exists($zipPath)) {
-                    return $this->withCors(response()->download($zipPath, "shoot-{$shoot->id}-raw-files.zip", [
+                    return $this->withCors(response()->download($zipPath, $this->archiveFilenameFormatter->rawFiles($shoot), [
                         'X-File-Count' => $fileCount,
                     ])->deleteFileAfterSend(true), $request);
                 }
@@ -108,6 +109,7 @@ class ShootEditorDownloadService
         $response->headers->set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
         $response->headers->set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
         $response->headers->set('Access-Control-Allow-Credentials', 'true');
+        $response->headers->set('Access-Control-Expose-Headers', implode(', ', config('cors.exposed_headers', ['Content-Disposition'])));
 
         return $response;
     }

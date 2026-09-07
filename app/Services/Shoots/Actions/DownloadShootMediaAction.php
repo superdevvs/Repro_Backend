@@ -7,6 +7,7 @@ use App\Services\Shoots\DeliveryFilenameFormatter;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 
 class DownloadShootMediaAction
@@ -22,7 +23,7 @@ class DownloadShootMediaAction
         return $this->fileAccess->resolveFileUrl($file);
     }
 
-    public function downloadResponse(ShootFile $file): BinaryFileResponse|JsonResponse|RedirectResponse
+    public function downloadResponse(ShootFile $file, ?Request $request = null): BinaryFileResponse|JsonResponse|RedirectResponse
     {
         $filename = $this->deliveryDownloadName($file);
 
@@ -45,6 +46,13 @@ class DownloadShootMediaAction
 
         $url = $this->fileAccess->resolveFileUrl($file);
         if ($url) {
+            // Credential-bearing fetch clients deliberately reject HTTP redirects.
+            // Give them the destination explicitly for a credential-free handoff;
+            // native and legacy callers retain the original redirect response.
+            if ($request?->prefers(['application/json', 'application/zip']) === 'application/zip') {
+                return response()->json(['type' => 'redirect', 'url' => $url]);
+            }
+
             return redirect()->away($url);
         }
 

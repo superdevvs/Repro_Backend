@@ -9,6 +9,7 @@ use App\Services\Shoots\ShootClientReleaseAccessService;
 use App\Services\Shoots\ShootFileAccessService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class DownloadShootMediaZipAction
 {
@@ -103,7 +104,6 @@ class DownloadShootMediaZipAction
                 $shootServiceId
             );
 
-            return response()->json($archiveResponse['payload'], $archiveResponse['status']);
         } catch (\RuntimeException $e) {
             return response()->json(['error' => $e->getMessage()], 404);
         } catch (\Exception $e) {
@@ -116,6 +116,26 @@ class DownloadShootMediaZipAction
 
             return response()->json(['error' => 'Failed to prepare ZIP file'], 500);
         }
+
+        // ZIP-first clients wait for the actual transfer to finish. Existing
+        // JSON-first clients keep their redirect response and polling URLs.
+        // Filesystem failures use the global safe error handler, not the
+        // archive-planning business-message catch above.
+        if ($archiveResponse['status'] === 200
+            && $request->prefers(['application/json', 'application/zip']) === 'application/zip') {
+            $archivePath = $this->shootMediaArchiveService->getArchivePath($shoot, $type, $resolvedSize, $shootServiceId);
+            $disk = Storage::disk('public');
+
+            return $disk->download($archivePath, basename($archivePath), [
+                'Content-Type' => 'application/zip',
+                'Content-Length' => $disk->size($archivePath),
+                'X-Archive-Download-Url' => $archiveResponse['payload']['url'],
+                'Cache-Control' => 'private, no-store',
+                'X-Content-Type-Options' => 'nosniff',
+            ]);
+        }
+
+        return response()->json($archiveResponse['payload'], $archiveResponse['status']);
     }
 
 }

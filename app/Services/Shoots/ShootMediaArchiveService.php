@@ -26,7 +26,8 @@ class ShootMediaArchiveService
         protected ShootFileAccessService $shootFileAccessService,
         protected ShootAuthorizationSupport $shootAuthorizationSupport,
         protected DeliveryMediaOrderService $deliveryMediaOrderService,
-        protected DeliveryFilenameFormatter $deliveryFilenameFormatter
+        protected DeliveryFilenameFormatter $deliveryFilenameFormatter,
+        protected ShootArchiveFilenameFormatter $archiveFilenameFormatter
     ) {
     }
 
@@ -291,21 +292,7 @@ class ShootMediaArchiveService
      */
     public function buildArchiveFilenameSlug(Shoot $shoot): string
     {
-        $parts = array_filter([
-            $shoot->address,
-            $shoot->city,
-            $shoot->state,
-            $shoot->zip,
-        ], fn ($value) => is_string($value) ? trim($value) !== '' : !empty($value));
-
-        $candidate = trim((string) implode(' ', array_map('strval', $parts)));
-        if ($candidate === '') {
-            return "shoot-{$shoot->id}";
-        }
-
-        $slug = \Illuminate\Support\Str::slug($candidate, '-');
-
-        return $slug !== '' ? $slug : "shoot-{$shoot->id}";
+        return $this->archiveFilenameFormatter->propertySlug($shoot);
     }
 
     public function getArchiveUrl(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
