@@ -123,7 +123,13 @@ class Invoice extends Model
         'edit_locked_reason',
         'overpayment_amount',
         'overpaymentAmount',
+        'pricing_breakdown',
     ];
+
+    public function getPricingBreakdownAttribute(): array
+    {
+        return app(\App\Services\Invoices\InvoicePricingBreakdown::class)->forInvoice($this);
+    }
 
     public function photographer(): BelongsTo
     {

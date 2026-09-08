@@ -178,6 +178,7 @@ class ClientBillingService
             'issueDate' => $issueDate,
             'dueDate' => $dueDate,
             'amount' => $amount,
+            'pricing_breakdown' => $invoice->pricing_breakdown,
             'amountPaid' => $amountPaid,
             'balance' => $balance,
             'status' => $status,

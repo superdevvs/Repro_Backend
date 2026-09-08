@@ -305,6 +305,16 @@ class InvoiceController extends Controller
             }
 
             $this->writeCsvRow($handle, []);
+            $pricing = $invoice->pricing_breakdown;
+            $this->writeCsvRow($handle, ['Subtotal Before Discount', number_format($pricing['subtotal_before_discount'], 2, '.', '')]);
+            if ($pricing['discount_amount'] > 0) {
+                $this->writeCsvRow($handle, ['Discount', number_format(-$pricing['discount_amount'], 2, '.', '')]);
+            }
+            if ($pricing['pricing_adjustment_amount'] != 0) {
+                $this->writeCsvRow($handle, ['Pricing Adjustment', number_format($pricing['pricing_adjustment_amount'], 2, '.', '')]);
+            }
+            $this->writeCsvRow($handle, ['Subtotal', number_format($pricing['subtotal'], 2, '.', '')]);
+            $this->writeCsvRow($handle, ['Tax', number_format($pricing['tax'], 2, '.', '')]);
             $this->writeCsvRow($handle, ['Total', number_format($total, 2, '.', '')]);
             $this->writeCsvRow($handle, ['Amount Paid', number_format($amountPaid, 2, '.', '')]);
             $this->writeCsvRow($handle, ['Balance', number_format($balance, 2, '.', '')]);

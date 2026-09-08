@@ -10,6 +10,7 @@ use App\Models\Shoot;
 use App\Models\ShootCompensation;
 use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
+use App\Services\Invoices\InvoicePricingBreakdown;
 use App\Services\Messaging\AutomationService;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
@@ -681,6 +682,7 @@ class InvoiceService
                     'recorded_at' => $shoot->scheduled_at ?? $shoot->scheduled_date,
                     'meta' => [
                         'shoot_id' => $shoot->id,
+                        'pricing_snapshot' => app(InvoicePricingBreakdown::class)->snapshotForShoot($shoot, $shootBasePayable),
                     ],
                 ]);
 
@@ -1729,6 +1731,7 @@ class InvoiceService
         $reshootItems = $shoot->relationLoaded('compReshootItems')
             ? $shoot->compReshootItems->keyBy('shoot_service_id')
             : $shoot->compReshootItems()->get()->keyBy('shoot_service_id');
+        $pricingSnapshot = ($isComplimentaryReceipt || $isCancellationFeeOnly) ? null : app(InvoicePricingBreakdown::class)->snapshotForShoot($shoot);
 
         foreach ($shoot->services as $service) {
             $reshootItem = $reshootItems->get($service->pivot->id);
@@ -1749,6 +1752,7 @@ class InvoiceService
 
             $meta = [
                 'service_id' => $service->id,
+                'pricing_snapshot' => $pricingSnapshot,
                 'service_name' => $reshootItem?->service_name_snapshot
                     ?? $service->name
                     ?? $service->service_name,
