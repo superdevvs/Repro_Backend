@@ -6,6 +6,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\IguideDataVisibilityService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -234,6 +235,11 @@ class ShootResource extends JsonResource
             $tourLinks['realtor_client'] = $realtorClient;
         }
 
+        $scheduleResolver = app(ScheduleInstantResolver::class);
+        $scheduledInstant = $scheduleResolver->forShoot($this->resource)?->utc()->toIso8601String();
+        $scheduleTimezone = $scheduleResolver->timezoneForShoot($this->resource);
+        $cancellationFeeWindow = $scheduleResolver->isWithinCancellationFeeWindow($this->resource);
+
         return [
             'id' => (string) $this->id,
             'client' => [
@@ -414,6 +420,12 @@ class ShootResource extends JsonResource
             'editor_assignments' => $editorAssignments,
             'editorAssignments' => $editorAssignments,
             'scheduledAt' => $this->scheduled_at?->toIso8601String(),
+            'scheduled_instant' => $scheduledInstant,
+            'scheduledInstant' => $scheduledInstant,
+            'schedule_timezone' => $scheduleTimezone,
+            'scheduleTimezone' => $scheduleTimezone,
+            'cancellation_fee_window' => $cancellationFeeWindow,
+            'cancellationFeeWindow' => $cancellationFeeWindow,
             'scheduledDate' => $this->scheduled_date?->toDateString(),
             'time' => $this->time,
             // External booking sync fields (so the frontend "External Booking

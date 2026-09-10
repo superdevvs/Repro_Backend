@@ -5,6 +5,7 @@ namespace App\Services\Shoots\Actions;
 use App\Models\Shoot;
 use App\Models\User;
 use App\Services\ShootActivityLogger;
+use App\Services\Schedule\ScheduleInstantResolver;
 use App\Services\Shoots\ShootWorkflowTransitionSupportService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -79,26 +80,15 @@ class RequestCancellationAction
 
     protected function isWithinCancellationFeeWindow(Shoot $shoot): bool
     {
-        $scheduledAt = $this->scheduledAt($shoot);
-        if (!$scheduledAt) {
-            return false;
-        }
-
-        $hoursUntilShoot = now($scheduledAt->timezone)->diffInMinutes($scheduledAt, false) / 60;
-
-        return $hoursUntilShoot >= 0 && $hoursUntilShoot <= 4;
+        return app(ScheduleInstantResolver::class)->isWithinCancellationFeeWindow($shoot);
     }
 
     protected function scheduledAt(Shoot $shoot): ?Carbon
     {
-        if ($shoot->scheduled_at) {
-            return Carbon::parse($shoot->scheduled_at, $shoot->timezone ?: null);
-        }
-
-        if (!$shoot->scheduled_date || !$shoot->time) {
+        if (! $shoot->scheduled_at && (! $shoot->scheduled_date || ! $shoot->time)) {
             return null;
         }
 
-        return Carbon::parse($shoot->scheduled_date->format('Y-m-d') . ' ' . $shoot->time, $shoot->timezone ?: null);
+        return app(ScheduleInstantResolver::class)->forShoot($shoot);
     }
 }

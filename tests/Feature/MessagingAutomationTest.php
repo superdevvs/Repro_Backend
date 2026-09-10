@@ -863,6 +863,7 @@ class MessagingAutomationTest extends TestCase
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
             'scheduled_at' => $scheduledAt,
+            'timezone' => 'UTC',
             'scheduled_date' => $scheduledAt->toDateString(),
             'time' => $scheduledAt->format('H:i'),
         ]);

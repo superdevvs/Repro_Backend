@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Invoices\InvoicePricingBreakdown;
 use App\Services\Messaging\AutomationService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -1660,21 +1661,21 @@ class InvoiceService
 
     protected function eligibleCancellationPayoutPhotographerIds(Shoot $shoot): Collection
     {
-        $shoot->loadMissing(['services' => fn ($query) => $query->withPivot(['photographer_id', 'scheduled_at'])]);
+        $shoot->loadMissing(['serviceItems.photographer', 'photographer']);
         $shootScheduledAt = $this->resolveShootScheduledAt($shoot);
 
         $photographerIds = collect();
 
-        foreach ($shoot->services as $service) {
-            $serviceScheduledAt = $service->pivot?->scheduled_at
-                ? Carbon::parse($service->pivot->scheduled_at, $shoot->timezone ?: null)
-                : $shootScheduledAt;
+        foreach ($shoot->serviceItems as $serviceItem) {
+            $serviceScheduledAt = ! $serviceItem->scheduled_at && ! $shoot->scheduled_at && ! $shoot->time
+                ? null
+                : app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem);
 
             if ($serviceScheduledAt && ! $this->isWithinCancellationFeeWindow($serviceScheduledAt)) {
                 continue;
             }
 
-            $photographerId = $service->pivot?->photographer_id ?? $shoot->photographer_id;
+            $photographerId = $serviceItem->photographer_id ?? $shoot->photographer_id;
             if ($photographerId) {
                 $photographerIds->push((int) $photographerId);
             }
@@ -1703,26 +1704,16 @@ class InvoiceService
 
     protected function resolveShootScheduledAt(Shoot $shoot): ?Carbon
     {
-        if ($shoot->scheduled_at) {
-            return Carbon::parse($shoot->scheduled_at, $shoot->timezone ?: null);
-        }
-
-        if (! $shoot->scheduled_date || ! $shoot->time) {
+        if (! $shoot->scheduled_at && (! $shoot->scheduled_date || ! $shoot->time)) {
             return null;
         }
 
-        $date = $shoot->scheduled_date instanceof Carbon
-            ? $shoot->scheduled_date->format('Y-m-d')
-            : Carbon::parse($shoot->scheduled_date)->format('Y-m-d');
-
-        return Carbon::parse($date.' '.$shoot->time, $shoot->timezone ?: null);
+        return app(ScheduleInstantResolver::class)->forShoot($shoot);
     }
 
     protected function isWithinCancellationFeeWindow(Carbon $scheduledAt): bool
     {
-        $hoursUntilShoot = now($scheduledAt->timezone)->diffInMinutes($scheduledAt, false) / 60;
-
-        return $hoursUntilShoot >= 0 && $hoursUntilShoot <= 4;
+        return app(ScheduleInstantResolver::class)->isWithinCancellationFeeWindowAt($scheduledAt);
     }
 
     protected function createShootChargeItems(Invoice $invoice, Shoot $shoot, bool $isCancellationFeeOnly = false): void

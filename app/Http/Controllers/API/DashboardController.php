@@ -13,6 +13,7 @@ use App\Models\UserActivityLog;
 use App\Models\WorkflowLog;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Schedule\ScheduleDateScopeService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -56,7 +57,7 @@ class DashboardController extends Controller
                         'scheduled_at', 'timezone'],
                     [
                         'client:id,name,company_name,phonenumber',
-                        'photographer:id,name,avatar',
+                        'photographer:id,name,avatar,timezone',
                         'service:id,name,icon,category_id',
                         'service.category:id,name,icon',
                         'services:id,name,icon,category_id',
@@ -136,10 +137,11 @@ class DashboardController extends Controller
                 Shoot::select('id', 'client_id', 'photographer_id', 'service_id', 'service_category', 'address', 'city', 'state', 'zip',
                     'scheduled_date', 'time', 'status', 'workflow_status', 'is_flagged', 'admin_issue_notes',
                     'cancellation_requested_at', 'cancellation_requested_by', 'cancellation_reason',
-                    'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image')
+                    'shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes', 'property_details', 'created_by', 'hero_image',
+                    'scheduled_at', 'timezone')
                     ->with([
                         'client:id,name,company_name,phonenumber',
-                        'photographer:id,name,avatar',
+                        'photographer:id,name,avatar,timezone',
                         'service:id,name,icon,category_id',
                         'service.category:id,name,icon',
                         'services:id,name,icon,category_id',
@@ -283,6 +285,7 @@ class DashboardController extends Controller
                 'day_label' => $this->getDayLabel($date, $today),
                 'time_label' => $dateTime ? $dateTime->format('h:i A') : null,
                 'start_time' => $dateTime ? $dateTime->toIso8601String() : null,
+                'scheduled_instant' => app(ScheduleInstantResolver::class)->forShoot($shoot)?->utc()->toIso8601String(),
                 'address_line' => $shoot->address,
                 'city_state_zip' => $this->formatLocationLine($shoot),
                 'status' => $shoot->status,
@@ -586,7 +589,7 @@ class DashboardController extends Controller
             $query = Shoot::select($columns)
                 ->with([
                     'client:id,name,company_name',
-                    'photographer:id,name,avatar',
+                    'photographer:id,name,avatar,timezone',
                     'service:id,name,icon,category_id',
                     'service.category:id,name,icon',
                     'services:id,name,icon,category_id',
@@ -611,7 +614,7 @@ class DashboardController extends Controller
                     $columns,
                     [
                         'client:id,name,company_name',
-                        'photographer:id,name,avatar',
+                        'photographer:id,name,avatar,timezone',
                         'service:id,name,icon,category_id',
                         'service.category:id,name,icon',
                         'services:id,name,icon,category_id',

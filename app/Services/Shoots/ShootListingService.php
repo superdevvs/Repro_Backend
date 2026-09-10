@@ -108,7 +108,7 @@ class ShootListingService
 
             $eagerLoads = [
                 'client:id,name,email,company_name,phonenumber',
-                'photographer:id,name,email,phone,phonenumber,avatar',
+                'photographer:id,name,email,phone,phonenumber,avatar,timezone',
                 'editor:id,name,avatar',
                 'rep:id,name,email,avatar',
                 'service:id,name',

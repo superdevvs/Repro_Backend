@@ -164,6 +164,7 @@ class ShootWorkflowActionsTest extends TestCase
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
             'scheduled_at' => $scheduledAt,
+            'timezone' => 'UTC',
             'scheduled_date' => $scheduledAt->toDateString(),
             'time' => $scheduledAt->format('H:i'),
         ]);
@@ -425,6 +426,7 @@ class ShootWorkflowActionsTest extends TestCase
             'status' => Shoot::STATUS_SCHEDULED,
             'workflow_status' => Shoot::STATUS_SCHEDULED,
             'scheduled_at' => $scheduledAt,
+            'timezone' => 'UTC',
             'scheduled_date' => $scheduledAt->toDateString(),
             'time' => $scheduledAt->format('H:i'),
             'cancellation_requested_at' => now()->subMinute(),

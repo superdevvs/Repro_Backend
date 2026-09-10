@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\User;
 use App\Services\IguideDataVisibilityService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -241,6 +242,10 @@ class ShootPresenter
     public function transformShoot(Shoot $shoot): Shoot
     {
         $shoot->loadMissing(['client', 'photographer', 'editor', 'service', 'services.category', 'rep', 'createdByUser', 'ghostUsers', 'featuredHomepageImages.file']);
+        $scheduleResolver = app(ScheduleInstantResolver::class);
+        $scheduledInstant = $scheduleResolver->forShoot($shoot)?->utc()->toIso8601String();
+        $scheduleTimezone = $scheduleResolver->timezoneForShoot($shoot);
+        $cancellationFeeWindow = $scheduleResolver->isWithinCancellationFeeWindow($shoot);
         if (! $shoot->relationLoaded('files')) {
             $shoot->load(['files' => function ($query) {
                 $query->select(
@@ -545,6 +550,12 @@ class ShootPresenter
         $shoot->mls_image_width = $shoot->mls_image_width;
         $shoot->mlsImageWidth = $shoot->mls_image_width;
         $shoot->timezone = $shoot->timezone;
+        $shoot->scheduled_instant = $scheduledInstant;
+        $shoot->scheduledInstant = $shoot->scheduled_instant;
+        $shoot->schedule_timezone = $scheduleTimezone;
+        $shoot->scheduleTimezone = $shoot->schedule_timezone;
+        $shoot->cancellation_fee_window = $cancellationFeeWindow;
+        $shoot->cancellationFeeWindow = $shoot->cancellation_fee_window;
         $shoot->listing_source = $shoot->listing_source;
         $shoot->property_details = $shoot->property_details;
         $shoot->integration_flags = $shoot->integration_flags;

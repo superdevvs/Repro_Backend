@@ -3,6 +3,7 @@
 namespace App\Services\Messaging;
 
 use App\Services\MailService;
+use App\Services\Schedule\ScheduleInstantResolver;
 use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageTemplate;
@@ -661,11 +662,17 @@ class AutomationService
     {
         $targetTime = Carbon::now()->addHours(24);
 
+        // Legacy scheduled_at values are local clocks, while zoned bookings
+        // are UTC instants. A one-day candidate margin covers every supported
+        // UTC offset; the resolved instant below enforces the five-minute window.
+        $candidateStart = $targetTime->copy()->subDay();
+        $candidateEnd = $targetTime->copy()->addDay();
+
         $shoots = Shoot::query()
-            ->where(function ($query) use ($targetTime) {
+            ->where(function ($query) use ($targetTime, $candidateStart, $candidateEnd) {
                 $query->whereBetween('scheduled_at', [
-                    $targetTime->copy()->subMinutes(5),
-                    $targetTime->copy()->addMinutes(5),
+                    $candidateStart,
+                    $candidateEnd,
                 ])->orWhere(function ($fallback) use ($targetTime) {
                     $fallback->whereNull('scheduled_at')
                         ->whereNotNull('scheduled_date')
@@ -673,11 +680,11 @@ class AutomationService
                             $targetTime->copy()->subDay()->toDateString(),
                             $targetTime->copy()->addDay()->toDateString(),
                         ]);
-                })->orWhereHas('serviceItems', function ($serviceQuery) use ($targetTime) {
+                })->orWhereHas('serviceItems', function ($serviceQuery) use ($candidateStart, $candidateEnd) {
                     $serviceQuery
                         ->whereBetween('scheduled_at', [
-                            $targetTime->copy()->subMinutes(5),
-                            $targetTime->copy()->addMinutes(5),
+                            $candidateStart,
+                            $candidateEnd,
                         ])
                         ->where('workflow_status', '!=', ShootService::WORKFLOW_CANCELLED);
                 });
@@ -707,7 +714,7 @@ class AutomationService
             $tag = sprintf(
                 'SHOOT_REMINDER:24H:shoot:%d:%s',
                 $shoot->id,
-                $scheduledAt->toIso8601String()
+                $scheduledAt->copy()->utc()->toIso8601String()
             );
 
             if ($this->hasSentAutomationTag($tag)) {
@@ -755,7 +762,7 @@ class AutomationService
     private function resolveDueServiceReminderItems(Shoot $shoot, Carbon $targetTime): \Illuminate\Support\Collection
     {
         return collect($shoot->serviceItems ?? [])
-            ->filter(function (ShootService $serviceItem) use ($targetTime) {
+            ->filter(function (ShootService $serviceItem) use ($shoot, $targetTime) {
                 if (!$serviceItem->scheduled_at) {
                     return false;
                 }
@@ -764,7 +771,7 @@ class AutomationService
                     return false;
                 }
 
-                return $serviceItem->scheduled_at->between(
+                return app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem)?->between(
                     $targetTime->copy()->subMinutes(5),
                     $targetTime->copy()->addMinutes(5)
                 );
@@ -774,7 +781,7 @@ class AutomationService
 
     private function dispatchServiceItemReminder(Shoot $shoot, ShootService $serviceItem): void
     {
-        $scheduledAt = $serviceItem->scheduled_at;
+        $scheduledAt = app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem);
         if (!$scheduledAt) {
             return;
         }
@@ -782,7 +789,7 @@ class AutomationService
         $tag = sprintf(
             'SHOOT_REMINDER:24H:shoot_service:%d:%s',
             $serviceItem->id,
-            $scheduledAt->toIso8601String()
+            $scheduledAt->copy()->utc()->toIso8601String()
         );
 
         if ($this->hasSentAutomationTag($tag)) {
@@ -914,29 +921,7 @@ class AutomationService
 
     private function resolveShootDateTime(Shoot $shoot): ?Carbon
     {
-        if ($shoot->scheduled_at) {
-            return $shoot->scheduled_at instanceof Carbon
-                ? $shoot->scheduled_at->copy()
-                : Carbon::parse($shoot->scheduled_at);
-        }
-
-        if (!$shoot->scheduled_date) {
-            return null;
-        }
-
-        try {
-            return Carbon::parse(
-                trim(sprintf(
-                    '%s %s',
-                    $shoot->scheduled_date instanceof \DateTimeInterface
-                        ? $shoot->scheduled_date->format('Y-m-d')
-                        : (string) $shoot->scheduled_date,
-                    $shoot->time ?: '00:00'
-                ))
-            );
-        } catch (\Exception) {
-            return null;
-        }
+        return app(ScheduleInstantResolver::class)->forShoot($shoot);
     }
 
     private function formatShootNotes(Shoot $shoot): string
@@ -1113,7 +1098,7 @@ class AutomationService
             'service_id' => $serviceItem->service_id,
             'name' => $serviceItem->service?->name,
             'category' => $serviceItem->service?->category?->name ?? $serviceItem->service?->category,
-            'scheduled_at' => $serviceItem->scheduled_at?->toIso8601String(),
+            'scheduled_at' => app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem)?->toIso8601String(),
             'workflow_status' => $serviceItem->workflow_status,
             'delivery_status' => $serviceItem->delivery_status,
             'photographer_id' => $photographer?->id,

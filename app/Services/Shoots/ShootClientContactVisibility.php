@@ -4,6 +4,7 @@ namespace App\Services\Shoots;
 
 use App\Models\Shoot;
 use App\Models\User;
+use App\Services\Schedule\ScheduleInstantResolver;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 
@@ -17,9 +18,8 @@ use Carbon\CarbonInterface;
  *
  * Shoots store no duration, so {@see self::SHOOT_BUFFER_MINUTES} stands in for
  * the appointment itself. The window is evaluated against the absolute
- * `scheduled_at` instant (UTC), which makes it timezone-agnostic; the local
- * `scheduled_date` + `time` pair in the shoot's timezone is only a fallback for
- * legacy rows without `scheduled_at`.
+ * schedule instant resolved using the same explicit/legacy timezone convention
+ * as calendar events and reminders.
  *
  * {@see frontend/src/utils/clientContactVisibility.ts} mirrors these bounds for
  * display; this class is the authority that decides whether the number leaves
@@ -105,23 +105,7 @@ class ShootClientContactVisibility
 
     private function resolveStart(Shoot $shoot): ?CarbonInterface
     {
-        if ($shoot->scheduled_at) {
-            return Carbon::parse($shoot->scheduled_at);
-        }
-
-        $date = $shoot->scheduled_date?->toDateString();
-        if (!$date) {
-            return null;
-        }
-
-        try {
-            return Carbon::parse(
-                trim($date . ' ' . ($shoot->time ?: '00:00')),
-                $shoot->timezone ?: config('app.timezone')
-            )->utc();
-        } catch (\Throwable) {
-            return null;
-        }
+        return app(ScheduleInstantResolver::class)->forShoot($shoot);
     }
 
     private function clientPhone(Shoot $shoot): ?string
