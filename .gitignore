@@ -24,6 +24,10 @@ codex-*.log
 
 create_out.txt
 verify_reel.php
+
+# Local QA / security-validation evidence. Review-only; never part of a release.
+/output/
+
 # Certificate and key material must never be committed.
 *.pem
 *.key
