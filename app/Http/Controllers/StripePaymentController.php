@@ -2230,10 +2230,6 @@ class StripePaymentController extends Controller
                 $sessionParams['metadata'] ?? [],
                 ['checkout_attempt_id' => (string) $attempt->id]
             );
-            $sessionParams['payment_intent_data']['metadata'] = array_merge(
-                data_get($sessionParams, 'payment_intent_data.metadata', []),
-                ['checkout_attempt_id' => (string) $attempt->id]
-            );
 
             try {
                 $session = StripeSession::create($sessionParams, [
@@ -2726,10 +2722,6 @@ class StripePaymentController extends Controller
         return [
             'description' => $this->buildStripePaymentDescriptionForSingleShoot($shoot),
             'receipt_email' => (string) $client->email,
-            // Keep metadata to application identifiers. The required owner and
-            // email live on the Stripe Customer, while the required property
-            // address is the PaymentIntent description shown in Dashboard.
-            'metadata' => $metadata,
         ];
     }
 
@@ -2745,7 +2737,6 @@ class StripePaymentController extends Controller
         return [
             'description' => $description,
             'receipt_email' => (string) $client->email,
-            'metadata' => $metadata,
         ];
     }
 
@@ -2891,12 +2882,8 @@ class StripePaymentController extends Controller
         $params = [
             'email' => trim((string) $client->email),
             'name' => Str::limit($this->resolveStripeOwnerName($client), 250, ''),
-            'description' => 'Repro Dashboard billing client #'.$client->id,
             'metadata' => [
                 'app_user_id' => (string) $client->id,
-                'app_role' => (string) $client->role,
-                'company_name' => $this->stripeMetadataValue((string) ($client->company_name ?? '')),
-                'environment' => $this->stripeMetadataValue((string) app()->environment()),
             ],
         ];
 

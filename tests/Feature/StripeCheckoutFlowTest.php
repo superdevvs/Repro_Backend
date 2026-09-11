@@ -74,11 +74,7 @@ class StripeCheckoutFlowTest extends TestCase
                         && data_get($params, 'customer_update.name') === 'auto'
                         && data_get($params, 'payment_intent_data.description') === '2 Topwood Court, Parkville, MD 21234'
                         && data_get($params, 'payment_intent_data.receipt_email') === 'listings@example.test'
-                        && data_get($params, 'payment_intent_data.metadata.client_id') === (string) $client->id
-                        && data_get($params, 'payment_intent_data.metadata.shoot_id') === (string) $shoot->id
-                        && data_get($params, 'payment_intent_data.metadata.customer_email') === null
-                        && data_get($params, 'payment_intent_data.metadata.property_address') === null
-                        && data_get($params, 'payment_intent_data.metadata.return_to') === null
+                        && ! array_key_exists('metadata', $params['payment_intent_data'] ?? [])
                         && data_get($params, 'metadata.return_to') === '/shoot-history?source=receipt#paid';
                 }),
                 Mockery::on(fn (array $options): bool => str_starts_with(
