@@ -737,6 +737,7 @@ class ShootPresenter
                         'price' => $isEditorRole ? null : (float) ($service->pivot?->price ?? $service->price ?? 0),
                         'quantity' => (int) ($service->pivot?->quantity ?? 1),
                         'pricing_type' => $service->pricing_type,
+                        'photographer_required' => (bool) $service->photographer_required,
                         // Canonical contracted photo count. Null means unspecified, and
                         // booking quantity is never substituted for it.
                         'photo_count' => $serviceItemSummary['photo_count']

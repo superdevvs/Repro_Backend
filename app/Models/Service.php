@@ -158,6 +158,11 @@ class Service extends Model
         return $value === null ? true : (bool) $value;
     }
 
+    public function requiresPhotographer(): bool
+    {
+        return (bool) $this->getAttribute('photographer_required');
+    }
+
     public function category()
     {
         return $this->belongsTo(Category::class);

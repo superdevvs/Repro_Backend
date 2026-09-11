@@ -22,6 +22,7 @@ class ServiceFactory extends Factory
             'delivery_time' => $this->faker->numberBetween(24, 168),
             'category_id' => Category::factory(),
             'exclude_from_sales_commission' => false,
+            'photographer_required' => true,
             // The column default is `none` so that an unclassified production
             // catalogue row is never silently selectable. Test fixtures overwhelmingly
             // model photo capture, so the factory opts into the photo lane and the

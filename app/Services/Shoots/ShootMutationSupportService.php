@@ -213,13 +213,15 @@ class ShootMutationSupportService
 
         foreach ($services as $service) {
             $scheduledAt = $service['scheduled_at'] ?? null;
-            $photographerId = $service['photographer_id'] ?? $fallbackPhotographerId;
+            $serviceModel = $serviceModels->get((int) ($service['id'] ?? 0));
+            $photographerId = ($serviceModel?->requiresPhotographer() ?? false)
+                ? ($service['photographer_id'] ?? $fallbackPhotographerId)
+                : null;
 
             if (!$scheduledAt || !$photographerId) {
                 continue;
             }
 
-            $serviceModel = $serviceModels->get((int) ($service['id'] ?? 0));
             $durationMinutes = $this->calculateServiceItemDuration($serviceModel);
 
             try {
@@ -369,9 +371,11 @@ class ShootMutationSupportService
                         : ($currentItem?->nominal_value_snapshot),
                     'quantity' => $service['quantity'] ?? $currentItem?->quantity ?? 1,
                     'photographer_pay' => $service['photographer_pay'] ?? $currentItem?->photographer_pay,
-                    'photographer_id' => array_key_exists('photographer_id', $service)
-                        ? $this->normalizeNullableInteger($service['photographer_id'])
-                        : $currentItem?->photographer_id,
+                    'photographer_id' => ($serviceModel && ! $serviceModel->requiresPhotographer())
+                        ? null
+                        : (array_key_exists('photographer_id', $service)
+                            ? $this->normalizeNullableInteger($service['photographer_id'])
+                            : $currentItem?->photographer_id),
                     'editor_id' => array_key_exists('editor_id', $service)
                         ? $this->normalizeNullableInteger($service['editor_id'])
                         : $currentItem?->editor_id,
@@ -547,6 +551,19 @@ class ShootMutationSupportService
                     && $assignment['photographer_id'] !== ''
                         ? (int) $assignment['photographer_id']
                         : null;
+
+                $catalogService = Service::query()->find((int) $serviceId);
+                if ($catalogService && ! $catalogService->requiresPhotographer()) {
+                    if ($assignedPhotographerId) {
+                        throw ValidationException::withMessages([
+                            'service_photographers' => [
+                                'This service does not require a photographer.',
+                            ],
+                        ]);
+                    }
+
+                    continue;
+                }
 
                 if ($assignedPhotographerId) {
                     $assignedPhotographer = User::query()

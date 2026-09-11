@@ -114,6 +114,80 @@ class ShootBookingTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function digital_enhancement_does_not_keep_a_photographer_assignment(): void
+    {
+        $this->service->update(['photographer_required' => true]);
+        $enhancement = Service::factory()->noIntake()->create([
+            'name' => 'Virtual Staging (per image)',
+            'price' => 45,
+            'photographer_required' => false,
+            'requires_editing' => true,
+        ]);
+
+        Sanctum::actingAs($this->admin);
+        $scheduledAt = now()->addDays(7)->format('Y-m-d H:i:s');
+
+        $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'photographer_id' => $this->photographer->id,
+            'address' => '123 Main St',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'services' => [
+                ['id' => $this->service->id, 'quantity' => 1, 'photographer_id' => $this->photographer->id],
+                ['id' => $enhancement->id, 'quantity' => 1, 'photographer_id' => $this->photographer->id],
+            ],
+            'scheduled_at' => $scheduledAt,
+        ])->assertStatus(201);
+
+        $shoot = Shoot::where('client_id', $this->client->id)->first();
+        $this->assertNotNull($shoot);
+        $this->assertEquals($this->photographer->id, $shoot->photographer_id);
+        $this->assertEquals(
+            $this->photographer->id,
+            $shoot->serviceItems()->where('service_id', $this->service->id)->value('photographer_id')
+        );
+        $this->assertNull(
+            $shoot->serviceItems()->where('service_id', $enhancement->id)->value('photographer_id')
+        );
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function enhancement_only_booking_keeps_the_shoot_date_without_a_photographer(): void
+    {
+        $enhancement = Service::factory()->noIntake()->create([
+            'name' => 'Green Grass Enhancement',
+            'price' => 25,
+            'photographer_required' => false,
+            'requires_editing' => true,
+        ]);
+
+        Sanctum::actingAs($this->admin);
+        $scheduledAt = now()->addDays(7)->format('Y-m-d H:i:s');
+
+        $this->postJson('/api/shoots', [
+            'client_id' => $this->client->id,
+            'address' => '123 Main St',
+            'city' => 'Baltimore',
+            'state' => 'MD',
+            'zip' => '21201',
+            'services' => [
+                ['id' => $enhancement->id, 'quantity' => 1],
+            ],
+            'scheduled_at' => $scheduledAt,
+        ])->assertStatus(201);
+
+        $shoot = Shoot::where('client_id', $this->client->id)->first();
+        $this->assertNotNull($shoot);
+        $this->assertNotNull($shoot->scheduled_at);
+        $this->assertNull($shoot->photographer_id);
+        $this->assertNull(
+            $shoot->serviceItems()->where('service_id', $enhancement->id)->value('photographer_id')
+        );
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_can_book_hold_on_shoot_without_date()
     {
         Sanctum::actingAs($this->admin);
