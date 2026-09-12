@@ -12,13 +12,12 @@ class EditorPayoutController extends Controller
     public function __construct(
         private readonly EditorPayoutService $service,
         private readonly MessagingService $messagingService,
-    ) {
-    }
+    ) {}
 
     public function earnings(Request $request)
     {
         $user = $request->user();
-        if (!$user || $user->role !== 'editor') {
+        if (! $user || $user->role !== 'editor') {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -42,7 +41,7 @@ class EditorPayoutController extends Controller
     public function sendReport(Request $request)
     {
         $user = $request->user();
-        if (!$user || $user->role !== 'editor') {
+        if (! $user || $user->role !== 'editor') {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -51,9 +50,9 @@ class EditorPayoutController extends Controller
             'end' => 'nullable|date',
         ]);
 
-        if (!empty($filters['start']) || !empty($filters['end'])) {
-            $rangeStart = !empty($filters['start']) ? $filters['start'] : $filters['end'];
-            $rangeEnd = !empty($filters['end']) ? $filters['end'] : $rangeStart;
+        if (! empty($filters['start']) || ! empty($filters['end'])) {
+            $rangeStart = ! empty($filters['start']) ? $filters['start'] : $filters['end'];
+            $rangeEnd = ! empty($filters['end']) ? $filters['end'] : $rangeStart;
             [$start, $end] = ReportingWeek::normalizeRange($rangeStart, $rangeEnd);
         } else {
             [$start, $end] = ReportingWeek::lastCompleted();
@@ -80,23 +79,22 @@ class EditorPayoutController extends Controller
             'paid_amount' => $payload['summary']['paid_amount'] ?? 0,
         ];
 
-        $html = view('emails.payout-report', [
+        $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.payout-report', [
             'recipientName' => $user->name,
             'summary' => $summary,
             'rangeStart' => $start,
             'rangeEnd' => $end,
             'audience' => 'editor',
-        ])->render();
+        ], sprintf('Weekly earnings recap (%s - %s)', $start->format('M d'), $end->format('M d')));
+        if ($rendered === null) {
+            return response()->json(['message' => 'Editor earnings email template is disabled.', 'sent_count' => 0]);
+        }
 
         $this->messagingService->sendEmail([
             'to' => $user->email,
-            'subject' => sprintf(
-                'Weekly earnings recap (%s - %s)',
-                optional($start)->format('M d') ?? 'Start',
-                optional($end)->format('M d') ?? 'End'
-            ),
-            'body_html' => $html,
-            'body_text' => strip_tags($html),
+            'subject' => $rendered['subject'],
+            'body_html' => $rendered['html'],
+            'body_text' => $rendered['text'],
             'send_source' => 'EDITOR_PAYOUT_REPORT',
             'sender_name' => 'R/E Pro Photos',
         ]);

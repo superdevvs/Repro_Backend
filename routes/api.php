@@ -1108,6 +1108,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
 
         // Templates
         Route::get('/templates', [MessageTemplateController::class, 'index']);
+        Route::post('/templates/preview', [MessageTemplateController::class, 'previewDraft']);
         Route::get('/templates/{template}', [MessageTemplateController::class, 'show']);
         Route::post('/templates', [MessageTemplateController::class, 'store']);
         Route::put('/templates/{template}', [MessageTemplateController::class, 'update']);

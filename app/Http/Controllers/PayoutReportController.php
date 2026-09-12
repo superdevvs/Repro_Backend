@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\PayoutReportService;
 use App\Services\Messaging\MessagingService;
+use App\Services\PayoutReportService;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -14,9 +14,7 @@ class PayoutReportController extends Controller
     public function __construct(
         private readonly PayoutReportService $service,
         private readonly MessagingService $messagingService,
-    )
-    {
-    }
+    ) {}
 
     /**
      * Get payout report data for the dashboard
@@ -102,7 +100,7 @@ class PayoutReportController extends Controller
             $handle = fopen('php://output', 'w');
 
             fputcsv($handle, ['Payout Report']);
-            fputcsv($handle, ['Period', $start->toDateString() . ' - ' . $end->toDateString()]);
+            fputcsv($handle, ['Period', $start->toDateString().' - '.$end->toDateString()]);
             fputcsv($handle, []);
 
             // Photographers section
@@ -149,7 +147,7 @@ class PayoutReportController extends Controller
                     $summary['email'],
                     $summary['shoot_count'],
                     number_format($summary['gross_total'], 2, '.', ''),
-                    $summary['commission_rate'] ? $summary['commission_rate'] . '%' : 'N/A',
+                    $summary['commission_rate'] ? $summary['commission_rate'].'%' : 'N/A',
                     number_format($summary['commission_total'] ?? 0, 2, '.', ''),
                     number_format($summary['compensation_total'] ?? 0, 2, '.', ''),
                     number_format($summary['payout_total'] ?? 0, 2, '.', ''),
@@ -215,19 +213,22 @@ class PayoutReportController extends Controller
                 default => 'photographer',
             };
 
-            $html = view('emails.payout-report', [
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.payout-report', [
                 'recipientName' => $summary['name'],
                 'summary' => $summary,
                 'rangeStart' => $start,
                 'rangeEnd' => $end,
                 'audience' => $audience,
-            ])->render();
+            ], sprintf('Weekly payout recap (%s - %s)', $start->format('M d'), $end->format('M d')));
+            if ($rendered === null) {
+                continue;
+            }
 
             $this->messagingService->sendEmail([
                 'to' => $summary['email'],
-                'subject' => sprintf('Weekly payout recap (%s - %s)', $start->format('M d'), $end->format('M d')),
-                'body_html' => $html,
-                'body_text' => strip_tags($html),
+                'subject' => $rendered['subject'],
+                'body_html' => $rendered['html'],
+                'body_text' => $rendered['text'],
                 'send_source' => 'PAYOUT_REPORT',
                 'sender_name' => 'R/E Pro Photos',
             ]);

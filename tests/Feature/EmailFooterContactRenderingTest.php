@@ -113,16 +113,19 @@ class EmailFooterContactRenderingTest extends TestCase
                 preg_split('/\s+/', trim($contact->getAttribute('class'))) ?: [],
                 'The rendered contact anchor must opt into the dark-mode-safe footer link rules.'
             );
+            $branding = app(EmailBrandingConfig::class)->defaults();
+            $color = $contact === $email ? $branding['link_color_light'] : $branding['muted_color_light'];
             $this->assertMatchesRegularExpression(
-                '/(?:^|;)\s*color:\s*#1463ff\s*;/i',
+                '/(?:^|;)\s*color:\s*'.preg_quote($color, '/').'\s*;/i',
                 $contact->getAttribute('style'),
                 'The rendered contact anchor needs a readable inline fallback when a mail client strips embedded CSS.'
             );
-            $this->assertMatchesRegularExpression(
-                '/(?:^|;)\s*text-decoration:\s*underline\s*;?/i',
-                $contact->getAttribute('style')
+            $this->assertGreaterThanOrEqual(
+                4.5,
+                $this->contrastRatio($color, $branding['footer_surface_light'])
             );
         }
+        $this->assertMatchesRegularExpression('/(?:^|;)\s*text-decoration:\s*underline\s*;?/i', $email->getAttribute('style'));
     }
 
     private function singleFooterContact(DOMXPath $xpath, string $href): DOMElement

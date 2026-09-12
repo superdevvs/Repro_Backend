@@ -14,8 +14,7 @@ class EditorPayoutController extends Controller
     public function __construct(
         private readonly EditorPayoutService $service,
         private readonly MessagingService $messagingService,
-    ) {
-    }
+    ) {}
 
     public function index(Request $request)
     {
@@ -75,9 +74,9 @@ class EditorPayoutController extends Controller
             'end' => 'nullable|date',
         ]);
 
-        if (!empty($filters['start']) || !empty($filters['end'])) {
-            $rangeStart = !empty($filters['start']) ? $filters['start'] : $filters['end'];
-            $rangeEnd = !empty($filters['end']) ? $filters['end'] : $rangeStart;
+        if (! empty($filters['start']) || ! empty($filters['end'])) {
+            $rangeStart = ! empty($filters['start']) ? $filters['start'] : $filters['end'];
+            $rangeEnd = ! empty($filters['end']) ? $filters['end'] : $rangeStart;
             [$start, $end] = ReportingWeek::normalizeRange($rangeStart, $rangeEnd);
         } else {
             [$start, $end] = ReportingWeek::lastCompleted();
@@ -90,23 +89,22 @@ class EditorPayoutController extends Controller
                 continue;
             }
 
-            $html = view('emails.payout-report', [
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.payout-report', [
                 'recipientName' => $summary['name'],
                 'summary' => $summary,
                 'rangeStart' => $start,
                 'rangeEnd' => $end,
                 'audience' => 'editor',
-            ])->render();
+            ], sprintf('Weekly earnings recap (%s - %s)', $start->format('M d'), $end->format('M d')));
+            if ($rendered === null) {
+                continue;
+            }
 
             $this->messagingService->sendEmail([
                 'to' => $summary['email'],
-                'subject' => sprintf(
-                    'Weekly earnings recap (%s - %s)',
-                    optional($start)->format('M d') ?? 'Start',
-                    optional($end)->format('M d') ?? 'End'
-                ),
-                'body_html' => $html,
-                'body_text' => strip_tags($html),
+                'subject' => $rendered['subject'],
+                'body_html' => $rendered['html'],
+                'body_text' => $rendered['text'],
                 'send_source' => 'EDITOR_PAYOUT_REPORT',
                 'sender_name' => 'R/E Pro Photos',
             ]);

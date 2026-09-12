@@ -11,8 +11,8 @@ use Tests\TestCase;
 /**
  * Verifies the email template fixes on REAL rendered output (not just source):
  * - status badge removed from the DB-rendered hero
- * - exact support line wording
- * - reduced hero header size
+ * - visible canonical support contacts
+ * - responsive Atelier hero sizing
  * - New Account single-URL footer + "Thank you for the opportunity." closing
  *
  * Covers both render paths: TemplateRenderer (DB templates) and the Blade view
@@ -20,7 +20,7 @@ use Tests\TestCase;
  */
 class EmailTemplateRenderingTest extends TestCase
 {
-    private const SUPPORT_LINE = 'If you need help, call (202) 868-1663 or email us at';
+    private const SUPPORT_LINE = 'Need a hand?';
 
     private function renderer(): TemplateRenderer
     {
@@ -73,20 +73,17 @@ class EmailTemplateRenderingTest extends TestCase
         // Exact support line.
         $this->assertStringContainsString(self::SUPPORT_LINE, $this->visibleText($html));
         $this->assertStringContainsString('contact@reprophotos.com', $html);
-        // Header reduced below 32px.
-        $this->assertStringContainsString('font-size: 30px', $html);
-        $this->assertStringNotContainsString('font-size: 32px', $html);
-        $this->assertStringNotContainsString('font-size: 48px', $html);
-        // Light mode hero should render as a visible top card, not white on white.
-        $this->assertStringContainsString('class="hero-card" style="background-color:#f7fbff; border:0;"', $html);
+        $this->assertStringContainsString('font-size:36px', $html);
+        $this->assertStringContainsString('font-size:30px', $html);
+        $this->assertStringNotContainsString('font-size:48px', $html);
+        $this->assertStringContainsString('data-email-design="atelier-v6"', $html);
+        $this->assertStringContainsString('max-width:640px', $html);
         // Payment essentials still present.
         $this->assertStringContainsString('Pay Now', $html);
         $this->assertStringContainsString('250.00', $html);
         // Shared footer no longer renders a Dashboard card.
         $this->assertStringNotContainsString('>Dashboard<', $html);
-        // CakeMail should replace this official token inside our styled footer
-        // instead of appending a loose address below the email.
-        $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
+        $this->assertStringNotContainsString('[CLIENT.ADDRESS]', $html);
         // Obsolete phone never appears.
         $this->assertStringNotContainsString('202-868-1113', $html);
     }
@@ -171,14 +168,14 @@ class EmailTemplateRenderingTest extends TestCase
         $html = $result['html'];
 
         $this->assertSame('Payment Reminder - Invoice 00018', $result['subject']);
-        $this->assertStringContainsString('class="hero-title"', $html);
+        $this->assertStringContainsString('class="hero-title-td dark-title"', $html);
         $this->assertStringContainsString('Payment Reminder', $html);
         $this->assertMatchesRegularExpression('/<div[^>]*display:none[^>]*>This is a reminder that your invoice still has an outstanding balance\./i', $html);
         $this->assertStringContainsString('This is a reminder that your invoice still has an outstanding balance.', $html);
         $this->assertStringContainsString('Invoice 00018', $html);
         $this->assertStringContainsString('250.00', $html);
-        $this->assertStringContainsString('margin:20px 0; padding:18px 52px; width:100%; box-sizing:border-box;', $html);
-        $this->assertStringContainsString('body-inner-after-wide', $html);
+        $this->assertMatchesRegularExpression('/class="info-box[^"\\n]*"[^>]*border-radius:12px;padding:24px;/', $html);
+        $this->assertStringNotContainsString('body-inner-after-wide', $html);
         $this->assertStringContainsString('Jul 01, 2026', $html);
         $this->assertStringContainsString('https://pay.example/inv-00018', $html);
         $this->assertStringContainsString(self::SUPPORT_LINE, $this->visibleText($html));
@@ -295,13 +292,13 @@ class EmailTemplateRenderingTest extends TestCase
         // Website and Dashboard footer tiles are suppressed for this email.
         $this->assertStringNotContainsString('>Website<', $html);
         $this->assertStringNotContainsString('>Dashboard<', $html);
-        // Header reduced below 32px; no oversized hero.
+        // Desktop and mobile retain the approved responsive heading sizes.
         $this->assertStringContainsString('font-size:30px', $html);
-        $this->assertStringNotContainsString('font-size:32px', $html);
+        $this->assertStringContainsString('font-size:36px', $html);
         $this->assertStringNotContainsString('font-size:48px', $html);
         // Support contact.
         $this->assertStringContainsString('(202) 868-1663', $html);
-        $this->assertStringContainsString('[CLIENT.ADDRESS]', $html);
+        $this->assertStringNotContainsString('[CLIENT.ADDRESS]', $html);
         $this->assertStringNotContainsString('202-868-1113', $html);
     }
 

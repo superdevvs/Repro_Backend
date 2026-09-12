@@ -9,8 +9,8 @@ use App\Support\InvoiceReference;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use stdClass;
 
@@ -32,25 +32,25 @@ class SystemEmailRenderer
         // Opt-in override: if an admin has enabled a DB template for this
         // protected email type, render that instead of the hardcoded Blade
         // view. Disabled by default, so behavior is unchanged until enabled.
-        if (! $this->mustUseProtectedBlade($definition, $payload)) {
-            if ($override = $this->resolveOverrideTemplate($definition)) {
-                $rendered = $this->renderOverride($override, $definition, $payload, $subject);
-                if ($rendered !== null && ! $this->violatesProtectedOutcome($definition, $payload, $rendered)) {
-                    $this->recordOverrideHealth($override, 'healthy', null);
-                    return $rendered;
-                }
+        $override = $this->resolveOverrideTemplate($definition);
+        if ($override && (! $this->mustUseProtectedBlade($definition, $payload) || ProtectedEmailTemplates::hasScopedRuntimeBlock($override))) {
+            $rendered = $this->renderOverride($override, $definition, $payload, $subject);
+            if ($rendered !== null && ! $this->violatesProtectedOutcome($definition, $payload, $rendered)) {
+                $this->recordOverrideHealth($override, 'healthy', null);
 
-                if ($rendered !== null) {
-                    $this->recordOverrideHealth(
-                        $override,
-                        'unhealthy',
-                        'Protected payment or recipient outcome would be changed; canonical renderer used.'
-                    );
-                    Log::warning('Unsafe protected email override ignored in favor of canonical renderer.', [
-                        'email_alias' => $definition->alias,
-                        'template_id' => $override->id,
-                    ]);
-                }
+                return $rendered;
+            }
+
+            if ($rendered !== null) {
+                $this->recordOverrideHealth(
+                    $override,
+                    'unhealthy',
+                    'Protected payment or recipient outcome would be changed; canonical renderer used.'
+                );
+                Log::warning('Unsafe protected email override ignored in favor of canonical renderer.', [
+                    'email_alias' => $definition->alias,
+                    'template_id' => $override->id,
+                ]);
             }
         }
 
@@ -116,8 +116,8 @@ class SystemEmailRenderer
     }
 
     /**
-     * @param array<string, mixed> $payload
-     * @param array<string, mixed> $rendered
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $rendered
      */
     private function violatesProtectedOutcome(EmailTypeDefinition $definition, array $payload, array $rendered): bool
     {
@@ -182,7 +182,16 @@ class SystemEmailRenderer
     {
         $renderer = $this->templateRenderer ?? app(TemplateRenderer::class);
 
-        $rendered = $renderer->render($template, $this->overrideVariables($payload));
+        $variables = $this->overrideVariables($payload);
+        $variables['system_subject'] = $subject;
+        if (ProtectedEmailTemplates::hasScopedRuntimeBlock($template) || str_contains((string) $template->body_text, 'system_body_text')) {
+            // Preserve the canonical role/payment-scoped content before applying edited copy.
+            $canonical = view($definition->templateView, $this->viewData($definition, $payload))->render();
+            $variables['system_body_html'] = $renderer->editableBodyHtml($canonical);
+            $plainBody = preg_replace('/<\/(?:p|div|tr|h[1-6])>|<br\s*\/?>/i', "\n", $variables['system_body_html']);
+            $variables['system_body_text'] = trim(html_entity_decode(strip_tags($plainBody), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        }
+        $rendered = $renderer->render($template, $variables);
 
         $html = (string) ($rendered['html'] ?? $rendered['body_html'] ?? '');
         if (trim($html) === '') {
@@ -479,6 +488,14 @@ class SystemEmailRenderer
                 'equipmentName' => $meta->equipment_name ?? null,
                 'equipmentSerialNumber' => $meta->equipment_serial_number ?? null,
                 'verifiedAt' => $this->hydrateCarbon($meta->verified_at ?? null),
+            ],
+            'PHOTOGRAPHER_EQUIPMENT_REJECTED' => $shared + [
+                'dashboardUrl' => $links['dashboard'] ?? $branding->dashboard_url ?? null,
+                'equipmentUrl' => $links['equipment'] ?? null,
+                'equipmentName' => $meta->equipment_name ?? null,
+                'equipmentSerialNumber' => $meta->equipment_serial_number ?? null,
+                'rejectedAt' => $this->hydrateCarbon($meta->rejected_at ?? null),
+                'rejectionReason' => $meta->rejection_reason ?? null,
             ],
             'ROLE_CHANGED' => $shared + [
                 'oldRoleLabel' => $meta->old_role_label ?? null,

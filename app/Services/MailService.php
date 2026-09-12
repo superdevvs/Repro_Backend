@@ -1442,18 +1442,22 @@ class MailService
     public function sendTermsAcceptedEmail(User $user): bool
     {
         try {
-            $html = view('emails.terms_accepted', [
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.terms_accepted', [
                 'user' => $user,
-            ])->render();
+            ], 'Terms/Conditions Accepted');
+            if ($rendered === null) {
+                return false;
+            }
             $this->sendViaCakemail(
                 $user->email,
-                'Terms/Conditions Accepted',
-                $html,
+                $rendered['subject'],
+                $rendered['html'],
                 'TERMS_ACCEPTED',
                 [],
                 [],
                 $this->automatedClientPayload($user, [
                     'enforce_email_health_gate' => false,
+                    'body_text' => $rendered['text'],
                 ])
             );
             
@@ -2533,12 +2537,15 @@ class MailService
             $period = $reportData['period'];
             $weekLabel = "Week {$period['week_number']}, {$period['year']}";
 
-            $html = view('emails.weekly_sales_report', [
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.weekly_sales_report', [
                 'salesRep' => $salesRep,
                 'report' => $reportData,
                 'weekLabel' => $weekLabel,
-            ])->render();
-            $this->sendViaCakemail($salesRep->email, "Weekly Sales Report - {$weekLabel}", $html, 'WEEKLY_SALES_REPORT');
+            ], "Weekly Sales Report - {$weekLabel}");
+            if ($rendered === null) {
+                return false;
+            }
+            $this->sendViaCakemail($salesRep->email, $rendered['subject'], $rendered['html'], 'WEEKLY_SALES_REPORT', [], [], ['body_text' => $rendered['text']]);
             
             Log::info('Weekly sales report email sent', [
                 'sales_rep_id' => $salesRep->id,
@@ -3028,6 +3035,7 @@ class MailService
                 'account' => $this->formatUserData($client),
                 'invoice' => $this->formatInvoiceData($invoice),
                 'shoot' => $shoot ? $this->formatShootData($shoot) : [],
+                'links' => ['invoice' => $invoice->paymentLink()],
                 'meta' => [
                     'recipient_type' => 'client',
                     'address' => $address,
@@ -3793,7 +3801,9 @@ HTML;
             }
         }
 
-        $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)));
+        $text = array_key_exists('body_text', $extraPayload)
+            ? (string) $extraPayload['body_text']
+            : trim(preg_replace('/\s+/', ' ', strip_tags($html)));
         $payload = [
             'to' => $to,
             'cc' => $this->sanitizeEmailAddresses($cc, $to),

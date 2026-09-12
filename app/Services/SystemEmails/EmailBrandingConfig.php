@@ -111,6 +111,32 @@ class EmailBrandingConfig
             'timezone' => (string) config('app.timezone', 'UTC'),
         ], $overrides);
 
+        // Keep older renderers on the same approved palette during migration.
+        foreach (['light', 'dark'] as $theme) {
+            $palette = EmailPresentation::palette($theme);
+            $tokens = [
+                'email_canvas_background' => 'canvas', 'card_surface' => 'paper',
+                'hero_surface' => 'paper', 'section_surface' => 'surface',
+                'stat_surface' => 'surface', 'note_surface' => 'surface',
+                'footer_surface' => 'paper', 'meta_surface' => 'surface',
+                'heading_color' => 'ink', 'body_color' => 'body',
+                'muted_color' => 'muted', 'link_color' => 'accent',
+                'legal_copy_color' => 'muted', 'border_color' => 'border',
+                'meta_border_color' => 'border', 'button_secondary_surface' => 'surface',
+                'button_secondary_text' => 'ink', 'callout_surface' => 'surface',
+                'callout_success_surface' => 'surface', 'callout_warning_surface' => 'surface',
+                'callout_danger_surface' => 'surface',
+            ];
+            foreach ($tokens as $token => $color) {
+                $branding[$token.'_'.$theme] = $overrides[$token.'_'.$theme] ?? $palette[$color];
+                if ($theme === 'dark' && str_contains($token, 'surface')) {
+                    $branding[$token.'_dark_gradient'] = 'none';
+                }
+            }
+        }
+        $branding['logo_url'] = $appUrl.'/images/email-atelier/v6/logo-light.png';
+        $branding['company_address'] = config('mail.company_address');
+
         // The support number is brand-owned, not tenant/user data. Force the
         // canonical value after overrides so stale cached config or legacy
         // caller-provided branding cannot reintroduce the retired number.

@@ -28,22 +28,23 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringNotContainsString('Open Dashboard', $html);
         $this->assertStringContainsString('hero-card-bg', $html);
         $this->assertStringContainsString('content="light dark"', $html);
-        $this->assertStringContainsString('max-width:720px', $html);
+        $this->assertStringContainsString('max-width:640px', $html);
         $this->assertStringContainsString('https://api.reprodashboard.com/api/email/verify/1/hash', $html);
-        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
+        $this->assertStringContainsString('/images/email-atelier/v6/logo-dark.png', $html);
         $this->assertStringNotContainsString('/images/Repro%20HQ%20dark.png', $html);
         $normalizedHtml = str_replace(' ', '', strtolower($html));
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#f7fbff;border:0;border-radius:24px24px00', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#ffffff;border:1pxsolid#dce3ed;border-radius:20px', $normalizedHtml);
         $this->assertStringContainsString('@media(prefers-color-scheme:dark)', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
-        $this->assertStringContainsString('linear-gradient(180deg,#18233a0%,#121a2b100%)', $normalizedHtml);
-        $this->assertStringContainsString('color:#071223!important', $normalizedHtml);
-        $this->assertStringContainsString('color:#eef2f9!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#121e2c!important', $normalizedHtml);
+        $this->assertStringNotContainsString('linear-gradient(', $normalizedHtml);
+        $this->assertStringContainsString('color:#14243a!important', $normalizedHtml);
+        $this->assertStringContainsString('color:#f1f5fc!important', $normalizedHtml);
         $this->assertStringNotContainsString('@extends(', $html);
     }
 
-    public function test_account_created_email_uses_the_grey_logo_and_dark_safe_hero_title(): void
+    public function test_account_created_email_uses_the_atelier_logo_and_dark_safe_hero_title(): void
     {
         $user = (object) [
             'name' => 'Shubham Prasad',
@@ -59,10 +60,11 @@ class ClientEmailVerificationViewTest extends TestCase
             'includePasswordCreationLink' => true,
         ])->render();
 
-        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
+        $this->assertStringContainsString('/images/email-atelier/v6/logo-dark.png', $html);
         $this->assertStringContainsString('Your dashboard access is ready.', $html);
         $this->assertStringContainsString('content="light dark"', $html);
-        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
+        $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
         $this->assertStringNotContainsString('/images/repro-logo.png', $html);
         $this->assertStringContainsString('Create Password', $html);
         $this->assertStringContainsString('Verify Email', $html);
@@ -145,9 +147,10 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('You are all set for updates.', $html);
         $this->assertStringContainsString('Notification Settings', $html);
         $this->assertStringContainsString('https://reprodashboard.com/settings', $html);
-        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
+        $this->assertStringContainsString('/images/email-atelier/v6/logo-dark.png', $html);
         $this->assertStringContainsString('content="light dark"', $html);
-        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
+        $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
     }
 
     public function test_verification_result_page_uses_the_light_logo_branding_token(): void
@@ -182,11 +185,11 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringNotContainsString('Your shoot has been cancelled.', $html);
         $this->assertStringNotContainsString('This shoot has been cancelled.', $html);
         $this->assertStringContainsString('content="light dark"', $html);
-        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
+        $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#fff0f1', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#3a1f27!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#121e2c!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#f5f7fa', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#1b2a3e!important', $normalizedHtml);
     }
 
     public function test_shoot_cancelled_email_keeps_cancellation_copy(): void
@@ -226,11 +229,11 @@ class ClientEmailVerificationViewTest extends TestCase
         $normalizedHtml = str_replace(' ', '', strtolower($html));
 
         $this->assertStringContainsString('content="light dark"', $html);
-        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
-        $this->assertStringContainsString('background-color:#f5f9ff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#1a2740!important', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#f7fbff', $normalizedHtml);
-        $this->assertStringContainsString('background-color:#131c2e!important', $normalizedHtml);
+        $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
+        $this->assertStringContainsString('background-color:#f5f7fa', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#1b2a3e!important', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#f5f7fa', $normalizedHtml);
+        $this->assertStringContainsString('background-color:#121e2c!important', $normalizedHtml);
     }
 
     private function shootEmailViewData(): object

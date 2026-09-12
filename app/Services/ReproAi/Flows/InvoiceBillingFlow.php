@@ -9,6 +9,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Services\InvoiceService;
 use App\Services\Messaging\MessagingService;
+use App\Services\SystemEmails\EmailAtelierTemplates;
 use App\Support\InvoiceReference;
 use Illuminate\Support\Facades\Schema;
 
@@ -375,15 +376,20 @@ class InvoiceBillingFlow
                 $messagingService = app(MessagingService::class);
                 $paymentLink = $invoice->paymentLink();
                 $invoiceLabel = InvoiceReference::label($invoice->invoice_number, $invoice->id);
+                $rendered = app(EmailAtelierTemplates::class)->render('client_invoice', [
+                    'recipient_name' => $invoice->client?->name ?? 'Client',
+                    'recipient_id' => $invoice->client_id, 'recipient_email' => $clientEmail,
+                    'invoice_label' => $invoiceLabel,
+                    'amount_due' => '$'.number_format(max(0, (float) $invoice->total - (float) $invoice->amount_paid), 2),
+                    'due_date' => $invoice->due_date?->format('M d, Y') ?? 'See invoice',
+                    'payment_link' => $paymentLink,
+                ]);
 
                 $messagingService->sendEmail([
                     'to' => $clientEmail,
-                    'subject' => "{$invoiceLabel} from REPRO-HQ",
-                    'body_html' => "<h2>{$invoiceLabel}</h2>".
-                        '<p>Amount Due: $'.number_format($invoice->total, 2).'</p>'.
-                        '<p>Due Date: '.$invoice->due_date->format('M d, Y').'</p>'.
-                        "<p><a href='{$paymentLink}'>Pay Now</a></p>",
-                    'body_text' => "{$invoiceLabel}\nAmount: $".number_format($invoice->total, 2),
+                    'subject' => $rendered['subject'],
+                    'body_html' => $rendered['body_html'],
+                    'body_text' => $rendered['body_text'],
                     'related_invoice_id' => $invoice->id,
                 ]);
                 $emailSent = true;

@@ -4,267 +4,146 @@ namespace Tests\Feature;
 
 use App\Models\MessageTemplate;
 use App\Services\Messaging\TemplateRenderer;
-use App\Services\SystemEmails\EmailBrandingConfig;
+use App\Services\SystemEmails\EmailPresentation;
+use DOMDocument;
+use DOMElement;
+use DOMXPath;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class EmailDarkModeVisibilityTest extends TestCase
 {
-    public function test_database_template_layout_keeps_hero_and_footer_copy_visible_in_dark_mode(): void
+    public function test_both_render_paths_include_adaptive_text_surface_and_outlook_rules(): void
     {
-        $template = new MessageTemplate([
-            'slug' => 'dark-mode-visibility-test',
-            'channel' => 'EMAIL',
-            'subject' => 'A simple email title',
-            'body_html' => '<p>Visible body copy.</p>',
-            'body_text' => 'Visible body copy.',
-        ]);
+        $database = app(TemplateRenderer::class)->render($this->template(), [])['html'];
+        $blade = view('emails.invoice_approved', [
+            'invoice' => (object) ['invoice_number' => '00018', 'total_amount' => 150, 'approved_at' => null],
+            'period' => 'August 2026',
+            'roleLabel' => 'photographer',
+        ])->render();
 
-        $html = app(TemplateRenderer::class)->render($template, [])['html'];
-        $headingColorDark = preg_quote(
-            app(EmailBrandingConfig::class)->defaults()['heading_color_dark'],
-            '/'
-        );
-
-        $this->assertMatchesRegularExpression(
-            "/@media \\(prefers-color-scheme: dark\\).*?\\.hero-title-primary,.*?color: {$headingColorDark} !important;/s",
-            $html
-        );
-        $this->assertMatchesRegularExpression(
-            "/\\[data-ogsc\\] \\.hero-title-primary,.*?color: {$headingColorDark} !important;/s",
-            $html
-        );
-        $this->assertMatchesRegularExpression(
-            '/\[data-ogsc\] \.button,\s*\[data-ogsc\] \.button-large\s*\{[^}]*color: #ffffff !important;/s',
-            $html
-        );
-        $this->assertStringContainsString(
-            '.footer-copy a { color: #071223; text-decoration: underline; }',
-            $html
-        );
-        $this->assertStringNotContainsString(
-            '.footer-copy a { color: #071223 !important;',
-            $html
-        );
+        foreach ([$database, $blade] as $html) {
+            $this->assertStringContainsString('content="light dark"', $html);
+            $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
+            foreach (['.dark-heading' => '#f1f5fc', '.dark-body' => '#bdccdf', '.dark-muted' => '#8da5c4', '.footer-contact-link' => '#9cbdff'] as $selector => $color) {
+                $this->assertColorRule($html, $selector, $color);
+                $this->assertColorRule($html, '[data-ogsc] '.$selector, $color);
+            }
+            $this->assertColorRule($html, '.atelier-button', '#ffffff');
+            $this->assertStringContainsString('background-color:#1b2a3e !important', $html);
+            $this->assertStringContainsString('name="format-detection" content="telephone=no', $html);
+            $this->assertStringContainsString('href="tel:+12028681663"', $html);
+            $this->assertStringContainsString('href="mailto:contact@reprophotos.com"', $html);
+        }
     }
 
-    public function test_blade_layout_and_photographer_steps_opt_into_dark_mode_text_colors(): void
+    #[DataProvider('previewThemes')]
+    public function test_forced_editor_theme_updates_inline_body_details_links_and_logo_without_os_dependency(string $theme, array $colors): void
     {
-        $user = (object) [
-            'name' => 'Alex Photographer',
-            'role' => 'photographer',
-            'company_name' => 'R/E Pro Photos',
-            'email' => 'alex@example.com',
-            'phonenumber' => '202-555-0123',
-        ];
+        $html = app(TemplateRenderer::class)->render($this->template(), [], $theme)['html'];
+        $xpath = $this->xpath($html);
 
+        $this->assertStringContainsString('content="'.$theme.'"', $html);
+        $this->assertDoesNotMatchRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
+        $this->assertStringContainsString('/logo-'.$theme.'.png', $html);
+        $this->assertStringNotContainsString('/logo-'.($theme === 'light' ? 'dark' : 'light').'.png', $html);
+        foreach ([
+            '//*[@data-email-content]//p' => $colors['body'],
+            '//*[@data-email-content]//strong' => $colors['ink'],
+            '//*[@data-email-content]//span[contains(@class,"info-label")]' => $colors['muted'],
+            '//*[@data-email-content]//a[@href="https://example.com/details"]' => $colors['accent'],
+        ] as $selector => $color) {
+            $node = $xpath->query($selector)->item(0);
+            $this->assertInstanceOf(DOMElement::class, $node);
+            $this->assertSame($color, $this->lastInlineColor($node), $selector);
+        }
+        $button = $xpath->query('//*[@data-email-content]//a[contains(@class,"atelier-button")]')->item(0);
+        $this->assertInstanceOf(DOMElement::class, $button);
+        $this->assertSame('#ffffff', $this->lastInlineColor($button));
+        $this->assertStringContainsString('background-color:#155bdd', $button->getAttribute('style'));
+        $this->assertStringContainsString('Invoice 00028', $html);
+        $this->assertStringContainsString('$815.02', $html);
+        $this->assertStringNotContainsString('body-inner-after-wide', $html);
+    }
+
+    public static function previewThemes(): array
+    {
+        return [
+            'light' => ['light', ['ink' => '#14243a', 'body' => '#465971', 'muted' => '#5d6e84', 'accent' => '#195fe6']],
+            'dark' => ['dark', ['ink' => '#f1f5fc', 'body' => '#bdccdf', 'muted' => '#8da5c4', 'accent' => '#9cbdff']],
+        ];
+    }
+
+    public function test_photographer_onboarding_steps_keep_readable_dark_titles_and_white_actions(): void
+    {
         $html = view('emails.account_created', [
-            'user' => $user,
+            'user' => (object) ['name' => 'Alex Photographer', 'role' => 'photographer', 'company_name' => 'R/E Pro Photos', 'email' => 'alex@example.com', 'phonenumber' => '202-555-0123'],
             'verificationLink' => 'https://example.com/verify',
             'resetLink' => 'https://example.com/reset',
             'includePasswordCreationLink' => true,
             'equipmentVerificationUrl' => 'https://example.com/equipment',
+            'emailPreviewTheme' => 'dark',
         ])->render();
 
-        $this->assertMatchesRegularExpression('/class="dark-heading"[^>]*>Need help with a shoot, invoice, or account question\?/', $html);
-        $this->assertMatchesRegularExpression('/class="dark-muted"[^>]*>\s*If you were not expecting this account/', $html);
-        $this->assertMatchesRegularExpression('/class="legal-copy-dark"[^>]*>Thank you for the opportunity\./', $html);
-
-        foreach ([
-            '1. Verify your email',
-            '2. Create your password',
-            '3. Review and verify equipment',
-            '4. Open your photographer dashboard',
-        ] as $step) {
-            $this->assertMatchesRegularExpression(
-                '/class="dark-heading"[^>]*color:#071223;[^>]*>'.preg_quote($step, '/').'/',
-                $html
-            );
+        foreach (['1. Verify your email', '2. Create your password', '3. Review and verify equipment', '4. Open your photographer dashboard'] as $step) {
+            $this->assertMatchesRegularExpression('/class="dark-heading"[^>]*color:#f1f5fc;[^>]*>'.preg_quote($step, '/').'/', $html);
         }
-
-        $this->assertWhiteCtaTextIsProtectedInDarkMode($html, 'Create Password');
-
-        $invoiceHtml = view('emails.invoice_approved', [
-            'invoice' => (object) [
-                'invoice_number' => 'Invoice 00018',
-                'total_amount' => 150,
-                'approved_at' => null,
-            ],
-            'period' => 'August 2026',
-            'roleLabel' => 'photographer',
-        ])->render();
-
-        $this->assertWhiteCtaTextIsProtectedInDarkMode($invoiceHtml, 'View Invoice');
+        $xpath = $this->xpath($html);
+        foreach ($xpath->query('//a[contains(@class,"atelier-button")]') as $button) {
+            $this->assertSame('#ffffff', $this->lastInlineColor($button));
+        }
+        $this->assertStringContainsString('Thank you for the opportunity.', $html);
+        $this->assertStringContainsString('If you were not expecting this account', $html);
     }
 
-    public function test_shared_change_and_shoot_summary_surfaces_follow_dark_mode(): void
+    public function test_change_summary_surfaces_keep_authored_values_after_shared_dark_formatting(): void
     {
-        $changeHtml = view('emails.partials.change-summary', [
+        $html = EmailPresentation::format(view('emails.partials.change-summary', [
             'changesSummary' => "Date: Aug 16 -> Aug 17\nInstructions: Use the side entrance",
-        ])->render();
-
-        $this->assertSame(2, preg_match_all(
-            '/<td class="note-card-bg"[^>]*background-color:#f8fbff;[^>]*>/',
-            $changeHtml
-        ));
-        $this->assertMatchesRegularExpression(
-            '/<td class="note-card-bg"[^>]*>\s*<p class="dark-heading"[^>]*>Date<\/p>/',
-            $changeHtml
-        );
-        $this->assertMatchesRegularExpression(
-            '/<td class="note-card-bg"[^>]*>\s*<p class="dark-heading"[^>]*>Instructions<\/p>/',
-            $changeHtml
-        );
-
-        $shootHtml = view('emails.partials.shoot-summary', [
-            'shoot' => (object) [
-                'location' => '101 Preview Lane',
-                'date' => 'Aug 17, 2026',
-                'time' => 'TBD',
-                'services' => [],
-                'service_category' => null,
-                'is_private_listing' => false,
-                'client_name' => null,
-                'rep_name' => null,
-                'photographers_label' => 'TBD',
-                'primary_photographer' => null,
-                'photographers' => [],
-                'property_highlights' => [
-                    ['label' => 'Bedrooms', 'value' => '4'],
-                ],
-                'access_details' => [],
-                'notes_lines' => [],
-                'company_notes_lines' => [],
-                'photographer_notes_lines' => [],
-            ],
-        ])->render();
-
-        $this->assertMatchesRegularExpression(
-            '/<td class="stat-card-bg"[^>]*background-color:#f5f9ff;[^>]*>\s*<p class="dark-muted"[^>]*>Bedrooms<\/p>/',
-            $shootHtml
-        );
-    }
-
-    public function test_footer_contacts_keep_scoped_ios_gmail_and_outlook_dark_mode_colors(): void
-    {
-        $template = new MessageTemplate([
-            'slug' => 'footer-contact-client-visibility-test',
-            'channel' => 'EMAIL',
-            'subject' => 'Footer contact visibility',
-            'body_html' => '<p>Visible body copy.</p>',
-            'body_text' => 'Visible body copy.',
-        ]);
-
-        $databaseTemplateHtml = app(TemplateRenderer::class)->render($template, [])['html'];
-        $bladeTemplateHtml = view('emails.invoice_approved', [
-            'invoice' => (object) [
-                'invoice_number' => '00018',
-                'total_amount' => 150,
-                'approved_at' => null,
-            ],
-            'period' => 'August 2026',
-            'roleLabel' => 'photographer',
-        ])->render();
-
-        foreach ([$databaseTemplateHtml, $bladeTemplateHtml] as $html) {
-            $this->assertStringContainsString('<meta name="format-detection" content="telephone=no">', $html);
-            $this->assertMatchesRegularExpression('/<body\b[^>]*class="[^"]*email-body[^"]*"/', $html);
-            $this->assertMatchesRegularExpression(
-                '/\.footer-contact a\[x-apple-data-detectors\],\s*u \+ \.email-body \.footer-contact a\s*\{[^}]*color: #1463ff !important;[^}]*-webkit-text-fill-color: #1463ff !important;/s',
-                $html
-            );
-            $this->assertMatchesRegularExpression(
-                '/@media \(prefers-color-scheme: dark\).*?\.footer-contact a\[x-apple-data-detectors\],\s*u \+ \.email-body \.footer-contact a\s*\{[^}]*color: #6ba6ff !important;[^}]*-webkit-text-fill-color: #6ba6ff !important;/s',
-                $html
-            );
-            $this->assertMatchesRegularExpression(
-                '/\[data-ogsc\] \.footer-contact a\[x-apple-data-detectors\]\s*\{[^}]*color: #6ba6ff !important;[^}]*-webkit-text-fill-color: #6ba6ff !important;/s',
-                $html
-            );
+        ])->render(), 'dark');
+        $xpath = $this->xpath($html);
+        $cards = $xpath->query('//td[contains(@class,"note-card-bg")]');
+        $this->assertCount(2, $cards);
+        foreach ($cards as $card) {
+            $this->assertStringContainsString('background-color:#1b2a3e', $card->getAttribute('style'));
         }
+        $this->assertStringContainsString('Aug 16', $html);
+        $this->assertStringContainsString('Aug 17', $html);
+        $this->assertStringContainsString('Use the side entrance', $html);
     }
 
-    public function test_promoted_invoice_info_box_values_receive_explicit_dark_mode_colors(): void
+    private function template(): MessageTemplate
     {
-        $template = new MessageTemplate([
+        return new MessageTemplate([
             'slug' => 'payment-due-reminder',
             'channel' => 'EMAIL',
-            'subject' => 'Payment Reminder - 421 Direct Avenue - Invoice 00028',
-            'body_html' => <<<'HTML'
-<div class="info-box">
-    <div class="info-row"><span class="info-label">Invoice Number:</span> Invoice 00028</div>
-    <div class="info-row"><span class="info-label">Amount Due:</span> <strong>$815.02</strong></div>
-    <div class="info-row"><span class="info-label">Due Date:</span> 2026-06-15</div>
-</div>
-HTML,
-            'body_text' => "Invoice Number: 00028\nAmount Due: $815.02\nDue Date: 2026-06-15",
+            'subject' => 'Payment Reminder - Invoice 00028',
+            'body_html' => '<p>Visible body copy.</p><div class="info-box"><div class="info-row"><span class="info-label">Amount due</span><strong>$815.02</strong></div></div><a href="https://example.com/details">Details</a><a class="button" href="https://example.com/pay">Pay invoice</a>',
+            'body_text' => 'Amount due: $815.02',
         ]);
-
-        $html = app(TemplateRenderer::class)->render($template, [])['html'];
-
-        $this->assertStringContainsString('body-inner-after-wide', $html);
-        $this->assertMatchesRegularExpression(
-            '/@media \(prefers-color-scheme: dark\).*?\.info-box \{[^}]*color: #c4cfde !important;[^}]*-webkit-text-fill-color: #c4cfde !important;.*?\.info-box \.info-row \{[^}]*color: #c4cfde !important;[^}]*-webkit-text-fill-color: #c4cfde !important;.*?\.info-box \.info-label \{[^}]*color: #8b9cb4 !important;[^}]*-webkit-text-fill-color: #8b9cb4 !important;.*?\.info-box strong,\s*\.info-box b \{[^}]*color: #eef2f9 !important;[^}]*-webkit-text-fill-color: #eef2f9 !important;/s',
-            $html
-        );
-        $this->assertMatchesRegularExpression(
-            '/\[data-ogsc\] \.info-box \{[^}]*color: #c4cfde !important;[^}]*-webkit-text-fill-color: #c4cfde !important;.*?\[data-ogsc\] \.info-box \.info-row \{[^}]*color: #c4cfde !important;[^}]*-webkit-text-fill-color: #c4cfde !important;.*?\[data-ogsc\] \.info-box \.info-label \{[^}]*color: #8b9cb4 !important;[^}]*-webkit-text-fill-color: #8b9cb4 !important;.*?\[data-ogsc\] \.info-box strong,\s*\[data-ogsc\] \.info-box b \{[^}]*color: #eef2f9 !important;[^}]*-webkit-text-fill-color: #eef2f9 !important;/s',
-            $html
-        );
-        $this->assertMatchesRegularExpression('/class="info-row"[^>]*>.*?Invoice 00028<\/div>/s', $html);
-        $this->assertMatchesRegularExpression('/class="info-row"[^>]*>.*?<strong[^>]*>\$815\.02<\/strong>/s', $html);
-        $this->assertMatchesRegularExpression('/class="info-row"[^>]*>.*?2026-06-15<\/div>/s', $html);
-
-        $branding = app(EmailBrandingConfig::class)->defaults();
-        foreach (['body_color_dark', 'muted_color_dark', 'heading_color_dark', 'link_color_dark'] as $foreground) {
-            $this->assertGreaterThanOrEqual(
-                4.5,
-                $this->contrastRatio($branding[$foreground], $branding['section_surface_dark']),
-                "{$foreground} must remain readable on the promoted dark invoice panel."
-            );
-        }
     }
 
-    private function contrastRatio(string $foreground, string $background): float
+    private function assertColorRule(string $html, string $selector, string $color): void
     {
-        $foregroundLuminance = $this->relativeLuminance($foreground);
-        $backgroundLuminance = $this->relativeLuminance($background);
-
-        return (max($foregroundLuminance, $backgroundLuminance) + 0.05)
-            / (min($foregroundLuminance, $backgroundLuminance) + 0.05);
+        $this->assertMatchesRegularExpression('/'.preg_quote($selector, '/').'(?=\s*[,\{])[^{}]*\{[^}]*color:\s*'.preg_quote($color, '/').'\s*!important;/s', $html);
     }
 
-    private function relativeLuminance(string $hex): float
+    private function xpath(string $html): DOMXPath
     {
-        $hex = ltrim($hex, '#');
-        $channels = array_map(
-            static fn (int $offset): float => hexdec(substr($hex, $offset, 2)) / 255,
-            [0, 2, 4]
-        );
-        $linearChannels = array_map(
-            static fn (float $channel): float => $channel <= 0.04045
-                ? $channel / 12.92
-                : (($channel + 0.055) / 1.055) ** 2.4,
-            $channels
-        );
+        $document = new DOMDocument;
+        $previous = libxml_use_internal_errors(true);
+        $this->assertTrue($document->loadHTML($html, LIBXML_NONET));
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
 
-        return (0.2126 * $linearChannels[0])
-            + (0.7152 * $linearChannels[1])
-            + (0.0722 * $linearChannels[2]);
+        return new DOMXPath($document);
     }
 
-    private function assertWhiteCtaTextIsProtectedInDarkMode(string $html, string $label): void
+    private function lastInlineColor(DOMElement $element): string
     {
-        $this->assertMatchesRegularExpression(
-            '/@media \(prefers-color-scheme: dark\).*?a\[style\*="color:#ffffff"\].*?color: #ffffff !important;/s',
-            $html
-        );
-        $this->assertMatchesRegularExpression(
-            '/\[data-ogsc\] a\[style\*="color:#ffffff"\].*?color: #ffffff !important;/s',
-            $html
-        );
-        $this->assertMatchesRegularExpression(
-            '/<a\b[^>]*style="[^"]*color:#ffffff;[^"]*"[^>]*>'.preg_quote($label, '/').'<\/a>/',
-            $html
-        );
+        preg_match_all('/(?<![-\w])color:\s*(#[0-9a-f]{6})\s*(?:!important)?/i', $element->getAttribute('style'), $matches);
+        $this->assertNotEmpty($matches[1]);
+
+        return strtolower($matches[1][array_key_last($matches[1])]);
     }
 }

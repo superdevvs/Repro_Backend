@@ -1,0 +1,557 @@
+{
+  "version": 6,
+  "figma": "https://www.figma.com/design/kN6Q5oLYfukXmtaOutga1J?node-id=9-80",
+  "assets": {
+    "welcome": "b0ebb89bd65f7f7f414e98562db483c91a2b6904",
+    "verification": "b87eca7bf71cdcb09c4392d5f29ab7f775b85b05",
+    "request": "66201f4e7f156b1e25aa002423059916be9348a5",
+    "schedule": "30a0519a81b4e14b824419dc36a54a41fc83c75f",
+    "schedule_change": "4bee35f4efd9443e8a7f02fe654ac14047c30bd5",
+    "delivery_access": "9d10d7ea6e0e27a1b058aa3daf707ee90623a8f1",
+    "invoice": "cb2285d7ccbe751e60823d617425fefb48385275",
+    "payment": "68601fd2a4489b34b08431e7b18149ff397f7d7d",
+    "editing": "26fb7ace262411d23ab8b5d46615276baa5eef97",
+    "shoot_request_modified": "0c043590b1218437e4ab5e9990e086fd043c43ac",
+    "shoot_reminder": "65202a411facfb5eb5d7b6ae25bc665645a0af5a",
+    "shoot_removed": "5f3007789d330b6d6f4fe43d5d92eb4386e68d45",
+    "shoot_request_declined": "7020e9bcc0b884bc3f6f8399de8e82dcba9096bd",
+    "shoot_cancellation_requested": "634501434af3ef0c5081350a130718c0037b4192",
+    "shoot_cancelled": "5b4e4ed81bc650e376c8b9083937926fd19f5c31",
+    "photographer_changed": "9e07fb77535d3266ec5a6acf40d0b3342f8dab75",
+    "property_contact_reminder": "94d1f0823d72d29cf02b19415304aec9ab950219",
+    "shoot_on_hold": "9e60536b5ae01e3d0e7c20b5487570a17e78a9d3",
+    "invoice_pending_approval": "5716f68b9ae91f9ed06a600e5884755cc084feca",
+    "invoice_approved": "a9601aecd9b698274207f8e17ecce72f040b3649",
+    "invoice_rejected": "aa2f46529f9db6b3a443b4a6bc5994500d3eb902",
+    "cancellation_fee_invoice": "e9f89ca350a8cc472b98e2c2c9a6c81145158146",
+    "client_invoice": "ccce916dc89189fdcbf14a3ca25015f23c95c661",
+    "payment_receipt": "3569b613edadbf489c2d1f27e8ba8cd37182b06c",
+    "payment_completed": "398693bf279a7164d7553ee6519b2002762a6673",
+    "shoot_paid": "b87eb27d53a9f2fce1b028cc09f589a3cf08d667",
+    "offline_payment_intent_submitted": "b5e8afa76c78f2e1234950042a6fed7d90b316ee",
+    "offline_payment_intent_declined": "4a0f3cea650d4b3268166697b5a616b1da644ad1",
+    "payment_due_reminder": "0819657d18ee4f81a3eb69395a77b184de6e0231",
+    "refund_submitted": "bfad7b9fc4b0e8d2a847d13bd5c1650b87a0c123",
+    "payment_due": "8a9bd6b1a82259facb3ecfc72c9bb2bfa992a9cc",
+    "shoot_request_approved": "1063494db92771b9c5243b19fc78b631896d6d75",
+    "client_email_verified": "b94a09750ad0cf64dab75477f4d49f1cb430fb01",
+    "photographer_equipment_verification": "737cef4ebb24f81ad81e996b2f14efca1a5695cc",
+    "photographer_equipment_approved": "dad791bd1eb82217cb5e486a0b2eb426392416ad",
+    "photographer_equipment_rejected": "ca30cad5562b06c4dcd91295fc9626f6096784cd",
+    "account_created__photographer": "37299cb2ad284f359f25437175dc0b2811d113f6",
+    "account_created__existing_password": "25176c8b9e8c6f8f52590e9bfb565512f1199c6b",
+    "contact_confirmation": "f73a7abb4ce16112fb4cb0db363640bd90b17c1d",
+    "contact_notification": "f000648298762e62113a5cd7680026ec306ab72a",
+    "crm_thank_you": "86a87c9737eab79e812191d5fcae98e36b977c8b",
+    "crm_feedback": "b6086cc67929ba50bbdd1232a245eaca178a70b3",
+    "crm_referral": "c07294a8b77940e4752e992abc1d87c6690a0288",
+    "crm_rebook": "64dfe7a9dc47a8b3b1aa48238bd3f3c92f83924d",
+    "offline_payment_intent_submitted__cheque": "d55bb80c6926694c98ca3cc96813ef686bcdd76a"
+  },
+  "templates": {
+    "account_created": {
+      "kind": "illustration",
+      "asset": "welcome",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "client_email_verification": {
+      "kind": "illustration",
+      "asset": "verification",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "client_email_verified": {
+      "kind": "illustration",
+      "asset": "client_email_verified",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "photographer_equipment_verification": {
+      "kind": "illustration",
+      "asset": "photographer_equipment_verification",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "photographer_equipment_approved": {
+      "kind": "illustration",
+      "asset": "photographer_equipment_approved",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "photographer_equipment_rejected": {
+      "kind": "illustration",
+      "asset": "photographer_equipment_rejected",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "role_changed": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "password_reset": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "ACCOUNT SECURITY",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_scheduled": {
+      "kind": "illustration",
+      "asset": "schedule",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_updated": {
+      "kind": "illustration",
+      "asset": "schedule_change",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_request_modified": {
+      "kind": "illustration",
+      "asset": "shoot_request_modified",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_reminder": {
+      "kind": "illustration",
+      "asset": "shoot_reminder",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_removed": {
+      "kind": "illustration",
+      "asset": "shoot_removed",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_request_declined": {
+      "kind": "illustration",
+      "asset": "shoot_request_declined",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_requested": {
+      "kind": "illustration",
+      "asset": "request",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_cancellation_requested": {
+      "kind": "illustration",
+      "asset": "shoot_cancellation_requested",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_delivered": {
+      "kind": "existing_shoot_photos",
+      "asset": "hero",
+      "eyebrow": "YOUR LISTING MEDIA",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payment_confirmation": {
+      "kind": "illustration",
+      "asset": "payment",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payment_completed": {
+      "kind": "illustration",
+      "asset": "payment_completed",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_generated": {
+      "kind": "illustration",
+      "asset": "invoice",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_pending_approval": {
+      "kind": "illustration",
+      "asset": "invoice_pending_approval",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_approved": {
+      "kind": "illustration",
+      "asset": "invoice_approved",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_rejected": {
+      "kind": "illustration",
+      "asset": "invoice_rejected",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_paid": {
+      "kind": "illustration",
+      "asset": "shoot_paid",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_cancelled": {
+      "kind": "illustration",
+      "asset": "shoot_cancelled",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "photographer_changed": {
+      "kind": "illustration",
+      "asset": "photographer_changed",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "cancellation_fee_invoice": {
+      "kind": "illustration",
+      "asset": "cancellation_fee_invoice",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "offline_payment_intent_submitted": {
+      "kind": "illustration",
+      "asset": "offline_payment_intent_submitted",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "offline_payment_intent_declined": {
+      "kind": "illustration",
+      "asset": "offline_payment_intent_declined",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "internal_message_notification": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "terms_accepted": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "contact_confirmation": {
+      "kind": "illustration",
+      "asset": "contact_confirmation",
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "contact_notification": {
+      "kind": "illustration",
+      "asset": "contact_notification",
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "editing_request": {
+      "kind": "illustration",
+      "asset": "editing",
+      "eyebrow": "STUDIO OPERATIONS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payout_report": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR WEEK AT REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payout_digest": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR WEEK AT REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "weekly_sales_report": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR WEEK AT REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_request_approved": {
+      "kind": "illustration",
+      "asset": "shoot_request_approved",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_delivered_links": {
+      "kind": "existing_shoot_photos",
+      "asset": "hero",
+      "eyebrow": "YOUR LISTING MEDIA",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payment_due_reminder": {
+      "kind": "illustration",
+      "asset": "payment_due_reminder",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_summary": {
+      "kind": "existing_shoot_photos",
+      "asset": "hero",
+      "eyebrow": "YOUR LISTING MEDIA",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "refund_submitted": {
+      "kind": "illustration",
+      "asset": "refund_submitted",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "property_contact_reminder": {
+      "kind": "illustration",
+      "asset": "property_contact_reminder",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_on_hold": {
+      "kind": "illustration",
+      "asset": "shoot_on_hold",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payment_due": {
+      "kind": "illustration",
+      "asset": "payment_due",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payment_receipt": {
+      "kind": "illustration",
+      "asset": "payment_receipt",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "crm_thank_you": {
+      "kind": "illustration",
+      "asset": "crm_thank_you",
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "You’re receiving updates from R/E Pro Photos.\nManage preferences · Unsubscribe",
+      "marketing": true
+    },
+    "crm_feedback": {
+      "kind": "illustration",
+      "asset": "crm_feedback",
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "You’re receiving updates from R/E Pro Photos.\nManage preferences · Unsubscribe",
+      "marketing": true
+    },
+    "crm_referral": {
+      "kind": "illustration",
+      "asset": "crm_referral",
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "You’re receiving updates from R/E Pro Photos.\nManage preferences · Unsubscribe",
+      "marketing": true
+    },
+    "crm_rebook": {
+      "kind": "illustration",
+      "asset": "crm_rebook",
+      "eyebrow": "A NOTE FROM REPRO",
+      "footer_reason": "You’re receiving updates from R/E Pro Photos.\nManage preferences · Unsubscribe",
+      "marketing": true
+    },
+    "client_invoice": {
+      "kind": "illustration",
+      "asset": "client_invoice",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "account_created__photographer": {
+      "kind": "illustration",
+      "asset": "account_created__photographer",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "account_created__existing_password": {
+      "kind": "illustration",
+      "asset": "account_created__existing_password",
+      "eyebrow": "YOUR REPRO ACCOUNT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_scheduled__photographer": {
+      "kind": "illustration",
+      "asset": "schedule",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_scheduled__balance_due": {
+      "kind": "illustration",
+      "asset": "schedule",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_updated__photographer": {
+      "kind": "illustration",
+      "asset": "schedule_change",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_reminder__photographer": {
+      "kind": "illustration",
+      "asset": "shoot_reminder",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_removed__photographer": {
+      "kind": "illustration",
+      "asset": "shoot_removed",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_requested__admin": {
+      "kind": "illustration",
+      "asset": "request",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_cancellation_requested__photographer": {
+      "kind": "illustration",
+      "asset": "shoot_cancellation_requested",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_delivered__balance_due": {
+      "kind": "illustration",
+      "asset": "delivery_access",
+      "eyebrow": "YOUR LISTING MEDIA",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payment_confirmation__grouped": {
+      "kind": "illustration",
+      "asset": "payment",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_generated__sales_rep": {
+      "kind": "illustration",
+      "asset": "invoice",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_approved__sales_rep": {
+      "kind": "illustration",
+      "asset": "invoice_approved",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_rejected__sales_rep": {
+      "kind": "illustration",
+      "asset": "invoice_rejected",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "invoice_pending_approval__sales_rep": {
+      "kind": "illustration",
+      "asset": "invoice_pending_approval",
+      "eyebrow": "YOUR INVOICE",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_cancelled__photographer": {
+      "kind": "illustration",
+      "asset": "shoot_cancelled",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "photographer_changed__removed": {
+      "kind": "illustration",
+      "asset": "photographer_changed",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "offline_payment_intent_submitted__cheque": {
+      "kind": "illustration",
+      "asset": "offline_payment_intent_submitted__cheque",
+      "eyebrow": "PAYMENTS & RECEIPTS",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payout_report__editor": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR WEEK AT REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "payout_report__sales_rep": {
+      "kind": "none",
+      "asset": null,
+      "eyebrow": "YOUR WEEK AT REPRO",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    },
+    "shoot_on_hold__photographer": {
+      "kind": "illustration",
+      "asset": "shoot_on_hold",
+      "eyebrow": "YOUR PROPERTY SHOOT",
+      "footer_reason": "This message relates to your RePro account, booking, or work.",
+      "marketing": false
+    }
+  }
+}

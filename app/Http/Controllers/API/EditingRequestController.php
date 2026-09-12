@@ -6,8 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\EditingRequest;
 use App\Services\Messaging\MessagingService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class EditingRequestController extends Controller
@@ -47,7 +47,7 @@ class EditingRequestController extends Controller
             'target_team' => 'required|in:editor,admin,hybrid',
         ]);
 
-        $trackingCode = 'ER-' . Str::upper(Str::random(8));
+        $trackingCode = 'ER-'.Str::upper(Str::random(8));
 
         $editingRequest = EditingRequest::create([
             'shoot_id' => $validated['shoot_id'] ?? null,
@@ -65,19 +65,21 @@ class EditingRequestController extends Controller
             $recipient = config('mail.editing_team_address', 'editing@reprophotos.com');
             $editingRequest->loadMissing(['shoot', 'requester']);
 
-            $subject = 'New special editing request: ' . $editingRequest->tracking_code;
-            $html = view('emails.editing-request', [
+            $subject = 'New special editing request: '.$editingRequest->tracking_code;
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.editing-request', [
                 'request' => $editingRequest,
-            ])->render();
+            ], $subject);
 
-            app(MessagingService::class)->sendEmail([
-                'to' => $recipient,
-                'subject' => $subject,
-                'body_html' => $html,
-                'body_text' => strip_tags($html),
-                'send_source' => 'EDITING_REQUEST',
-                'sender_name' => 'R/E Pro Photos',
-            ]);
+            if ($rendered !== null) {
+                app(MessagingService::class)->sendEmail([
+                    'to' => $recipient,
+                    'subject' => $rendered['subject'],
+                    'body_html' => $rendered['html'],
+                    'body_text' => $rendered['text'],
+                    'send_source' => 'EDITING_REQUEST',
+                    'sender_name' => 'R/E Pro Photos',
+                ]);
+            }
         } catch (\Exception $e) {
             // Log the error but don't fail the request - the editing request was created successfully
             \App\Services\ApiErrorResponder::log($e, 'error');
@@ -104,7 +106,7 @@ class EditingRequestController extends Controller
         $editingRequest = EditingRequest::findOrFail($id);
 
         // Only admins, editors, or the requester can update
-        if (!in_array($user->role, ['admin', 'superadmin', 'editor']) && $user->id !== $editingRequest->requester_id) {
+        if (! in_array($user->role, ['admin', 'superadmin', 'editor']) && $user->id !== $editingRequest->requester_id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -128,7 +130,7 @@ class EditingRequestController extends Controller
         $editingRequest = EditingRequest::findOrFail($id);
 
         // Only admins or the requester can delete
-        if (!in_array($user->role, ['admin', 'superadmin']) && $user->id !== $editingRequest->requester_id) {
+        if (! in_array($user->role, ['admin', 'superadmin']) && $user->id !== $editingRequest->requester_id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 

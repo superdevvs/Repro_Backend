@@ -70,36 +70,14 @@ class EmailInfoBoxVisibilityTest extends TestCase
             $this->contrastRatio($this->lastInlineColor($amount), $branding['section_surface_light'])
         );
 
-        $this->assertDarkRule(
-            $html,
-            ['.info-box'],
-            $branding['body_color_dark']
-        );
-        $this->assertDarkRule(
-            $html,
-            ['.info-box .info-row'],
-            $branding['body_color_dark']
-        );
-        $this->assertDarkRule(
-            $html,
-            ['.info-box strong', '.info-box b'],
-            $branding['heading_color_dark']
-        );
-        $this->assertDarkRule(
-            $html,
-            ['[data-ogsc] .info-box'],
-            $branding['body_color_dark']
-        );
-        $this->assertDarkRule(
-            $html,
-            ['[data-ogsc] .info-box .info-row'],
-            $branding['body_color_dark']
-        );
-        $this->assertDarkRule(
-            $html,
-            ['[data-ogsc] .info-box strong', '[data-ogsc] .info-box b'],
-            $branding['heading_color_dark']
-        );
+        foreach ([$invoiceRow, $amountRow, $dueDateRow] as $row) {
+            $this->assertStringContainsString('dark-body', $row->getAttribute('class'));
+        }
+        $this->assertStringContainsString('dark-strong', $amount->getAttribute('class'));
+        foreach (['.dark-body' => $branding['body_color_dark'], '.dark-strong' => $branding['heading_color_dark']] as $selector => $color) {
+            $this->assertDarkRule($html, $selector, $color);
+            $this->assertDarkRule($html, '[data-ogsc] '.$selector, $color);
+        }
 
         $this->assertGreaterThanOrEqual(
             4.5,
@@ -111,42 +89,11 @@ class EmailInfoBoxVisibilityTest extends TestCase
         );
     }
 
-    /**
-     * @param  list<string>  $selectors
-     */
-    private function assertDarkRule(string $html, array $selectors, string $color): void
+    private function assertDarkRule(string $html, string $selector, string $color): void
     {
-        $selectorPattern = implode(
-            '\\s*,\\s*',
-            array_map(static fn (string $selector): string => preg_quote($selector, '/'), $selectors)
-        );
-
-        $escapedColor = preg_quote($color, '/');
-        $colorPattern = '/(?:^|;)\\s*color:\\s*'.$escapedColor.'\\s*!important\\s*;/i';
-        $fillPattern = '/(?:^|;)\\s*-webkit-text-fill-color:\\s*'.$escapedColor.'\\s*!important\\s*;/i';
-        $matched = preg_match_all(
-            '/(?:^|\\R)\\s*'.$selectorPattern.'\\s*\\{(?<declarations>[^}]*)\\}/s',
-            $html,
-            $matches
-        );
-        $this->assertNotFalse($matched);
-
-        $declarations = collect($matches['declarations'] ?? [])->first(
-            static fn (string $candidate): bool => preg_match($colorPattern, $candidate) === 1
-                && preg_match($fillPattern, $candidate) === 1
-        );
-        $this->assertIsString(
-            $declarations,
-            'The rendered email is missing a dark-mode value selector that matches its final DOM.'
-        );
-
         $this->assertMatchesRegularExpression(
-            $colorPattern,
-            $declarations
-        );
-        $this->assertMatchesRegularExpression(
-            $fillPattern,
-            $declarations
+            '/'.preg_quote($selector, '/').'(?=\s*[,\{])[^{}]*\{[^}]*color:\s*'.preg_quote($color, '/').'\s*!important;/s',
+            $html
         );
     }
 

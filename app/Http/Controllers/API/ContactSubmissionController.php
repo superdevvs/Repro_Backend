@@ -26,7 +26,7 @@ class ContactSubmissionController extends Controller
     public function store(Request $request, string $username)
     {
         $client = $this->resolveClientIdentifier($username);
-        if (!$client) {
+        if (! $client) {
             return response()->json(['message' => 'Client not found'], 404);
         }
 
@@ -72,7 +72,7 @@ class ContactSubmissionController extends Controller
                 'message' => 'Your message has been sent successfully.',
                 'data' => [
                     'id' => $submission->id,
-                ]
+                ],
             ], 201);
         } catch (\Exception $e) {
             \App\Services\ApiErrorResponder::log($e, 'error');
@@ -96,16 +96,19 @@ class ContactSubmissionController extends Controller
     protected function sendContactNotification(User $client, ContactSubmission $submission): void
     {
         try {
-            $html = view('emails.contact_notification', [
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.contact_notification', [
                 'client' => $client,
                 'submission' => $submission,
-            ])->render();
+            ], 'New Contact Form Submission - '.$submission->sender_name);
+            if ($rendered === null) {
+                return;
+            }
 
             app(MessagingService::class)->sendEmail([
                 'to' => $client->email,
-                'subject' => 'New Contact Form Submission - ' . $submission->sender_name,
-                'body_html' => $html,
-                'body_text' => strip_tags($html),
+                'subject' => $rendered['subject'],
+                'body_html' => $rendered['html'],
+                'body_text' => $rendered['text'],
                 'send_source' => 'CONTACT_NOTIFICATION',
                 'sender_name' => 'R/E Pro Photos',
             ]);
@@ -125,16 +128,20 @@ class ContactSubmissionController extends Controller
     protected function sendSenderConfirmation(ContactSubmission $submission): void
     {
         try {
-            $html = view('emails.contact_confirmation', [
+            $rendered = app(\App\Services\SystemEmails\DirectEmailTemplates::class)->render('emails.contact_confirmation', [
                 'submission' => $submission,
                 'client' => $submission->client,
-            ])->render();
+                'recipientName' => $submission->sender_name,
+            ], 'Thank you for contacting us');
+            if ($rendered === null) {
+                return;
+            }
 
             app(MessagingService::class)->sendEmail([
                 'to' => $submission->sender_email,
-                'subject' => 'Thank you for contacting us',
-                'body_html' => $html,
-                'body_text' => strip_tags($html),
+                'subject' => $rendered['subject'],
+                'body_html' => $rendered['html'],
+                'body_text' => $rendered['text'],
                 'send_source' => 'CONTACT_CONFIRMATION',
                 'sender_name' => 'R/E Pro Photos',
             ]);
@@ -159,7 +166,7 @@ class ContactSubmissionController extends Controller
         $query = ContactSubmission::query();
 
         // Clients see their own submissions, admins see all
-        if (!in_array($user->role, ['admin', 'superadmin'])) {
+        if (! in_array($user->role, ['admin', 'superadmin'])) {
             $query->where('client_id', $user->id);
         }
 
@@ -178,7 +185,7 @@ class ContactSubmissionController extends Controller
         $user = $request->user();
 
         // Only the client owner or admin can mark as read
-        if ($submission->client_id !== $user->id && !in_array($user->role, ['admin', 'superadmin'])) {
+        if ($submission->client_id !== $user->id && ! in_array($user->role, ['admin', 'superadmin'])) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -186,7 +193,7 @@ class ContactSubmissionController extends Controller
 
         return response()->json([
             'message' => 'Marked as read',
-            'data' => $submission
+            'data' => $submission,
         ]);
     }
 }

@@ -57,11 +57,15 @@ class MessageTemplateControllerTest extends TestCase
             'to' => 'preview@example.com',
             'template' => [
                 'name' => 'Draft Template',
-                'category' => 'ACCOUNT',
+                'category' => 'PAYMENT',
+                'scope' => 'SYSTEM',
+                'email_type' => 'OFFLINE_PAYMENT_INTENT_SUBMITTED',
+                'override_enabled' => true,
                 'subject' => 'Draft Subject',
                 'body_html' => '<p>{{greeting}}</p><p>Draft body</p>',
                 'body_text' => 'Draft body',
             ],
+            'variables' => ['payment_method_label' => 'Cheque'],
         ]);
 
         $response->assertOk()->assertJson(['status' => 'sent']);
@@ -71,7 +75,10 @@ class MessageTemplateControllerTest extends TestCase
         $this->assertSame('Draft Subject', $capturedPayload['subject']);
         $this->assertStringContainsString('Draft body', $capturedPayload['body_html']);
         $this->assertStringNotContainsString('Original body', $capturedPayload['body_html']);
+        $this->assertStringContainsString('offline_payment_intent_submitted__cheque.png', $capturedPayload['body_html']);
         $this->assertSame('Draft body', $capturedPayload['body_text']);
+        $this->assertSame('Original Subject', $template->fresh()->subject);
+        $this->assertNull($template->fresh()->email_type);
     }
 
     public function test_enabling_override_atomically_disables_previous_template_for_alias(): void
@@ -151,5 +158,184 @@ class MessageTemplateControllerTest extends TestCase
             'email_type' => 'NOT_A_REAL_EMAIL_TYPE',
             'override_enabled' => true,
         ])->assertUnprocessable()->assertJsonValidationErrors('email_type');
+    }
+
+    public function test_unsaved_template_preview_renders_without_persisting_or_sending(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($user);
+        $beforeCount = MessageTemplate::count();
+        $this->mock(MessagingService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendEmail'));
+
+        $response = $this->postJson('/api/messaging/templates/preview', [
+            'template' => [
+                'channel' => 'EMAIL',
+                'name' => 'Unsaved preview',
+                'scope' => 'USER',
+                'category' => 'GENERAL',
+                'subject' => 'My draft subject',
+                'body_html' => '<p>My unsaved details.</p>',
+                'body_text' => 'My unsaved details.',
+            ],
+            'theme' => 'dark',
+        ]);
+
+        $response->assertOk()->assertJsonPath('subject', 'My draft subject');
+        $this->assertStringContainsString('My unsaved details.', $response->json('html'));
+        $this->assertSame('My unsaved details.', $response->json('text'));
+        $this->assertSame($beforeCount, MessageTemplate::count());
+    }
+
+    public function test_saved_preview_uses_complete_draft_metadata_and_does_not_change_saved_template(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($user);
+        $template = $this->makeEditableTemplate($user, [
+            'email_type' => 'ACCOUNT_CREATED',
+            'override_enabled' => false,
+        ]);
+        $before = $template->fresh()->getRawOriginal();
+        $this->mock(MessagingService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendEmail'));
+
+        $response = $this->postJson("/api/messaging/templates/{$template->id}/preview", [
+            'template' => [
+                'name' => 'Draft cheque review',
+                'category' => 'PAYMENT',
+                'scope' => 'SYSTEM',
+                'email_type' => 'OFFLINE_PAYMENT_INTENT_SUBMITTED',
+                'override_enabled' => true,
+                'subject' => 'Review {{payment_method_label}}',
+                'body_html' => '<p>Draft payment: [payment_method_label].</p>',
+                'body_text' => 'Draft payment: [payment_method_label].',
+                'variables_json' => ['payment_method_label'],
+            ],
+            'variables' => ['payment_method_label' => 'Cheque'],
+            'theme' => 'light',
+        ]);
+
+        $response->assertOk()->assertJsonPath('subject', 'Review Cheque');
+        $this->assertStringContainsString('Draft payment: Cheque.', $response->json('html'));
+        $this->assertStringContainsString('offline_payment_intent_submitted__cheque.png', $response->json('html'));
+        $this->assertSame($before, $template->fresh()->getRawOriginal());
+    }
+
+    public function test_template_reads_expose_editable_body_without_rewriting_stored_document(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($user);
+        $document = '<!doctype html><html><body><header>Old masthead</header>'
+            .'<div data-email-content="true"><p>My authored body.</p></div><footer>Old footer</footer></body></html>';
+        $template = $this->makeEditableTemplate($user, ['body_html' => $document]);
+
+        $this->getJson("/api/messaging/templates/{$template->id}")
+            ->assertOk()
+            ->assertJsonPath('body_html', $document)
+            ->assertJsonPath('editable_body_html', '<p>My authored body.</p>');
+        $response = $this->getJson('/api/messaging/templates')->assertOk();
+        $listed = collect($response->json())->firstWhere('id', $template->id);
+        $this->assertSame('<p>My authored body.</p>', $listed['editable_body_html']);
+        $this->assertSame($document, $template->fresh()->body_html);
+    }
+
+    public function test_explicit_editor_save_stores_the_authored_fragment_without_nested_chrome(): void
+    {
+        $user = User::factory()->create(['role' => 'admin']);
+        Sanctum::actingAs($user);
+        $template = $this->makeEditableTemplate($user);
+        $body = '<p>Saved details.</p><a href="https://example.com/my-route">Saved action</a>';
+
+        $this->putJson("/api/messaging/templates/{$template->id}", [
+            'channel' => 'EMAIL',
+            'name' => 'My saved edit',
+            'scope' => 'USER',
+            'subject' => 'My saved subject',
+            'body_html' => '<html><body><div data-email-content="true">'.$body.'</div><footer>Old footer</footer></body></html>',
+            'body_text' => 'Saved details.',
+        ])->assertOk()->assertJsonPath('editable_body_html', $body);
+
+        $this->assertSame($body, $template->fresh()->body_html);
+        $this->assertSame('My saved subject', $template->fresh()->subject);
+    }
+
+    public function test_draft_preview_validates_theme_and_routing_metadata(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+
+        $this->postJson('/api/messaging/templates/preview', [
+            'template' => [
+                'channel' => 'EMAIL',
+                'name' => 'Draft',
+                'email_type' => 'NOT_REGISTERED',
+            ],
+            'theme' => 'invalid',
+        ])->assertUnprocessable()->assertJsonValidationErrors(['theme', 'template.email_type']);
+    }
+
+    public function test_direct_report_preview_supplies_labeled_examples_without_persisting_or_sending(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $template = MessageTemplate::where('slug', 'payout-report')->firstOrFail();
+        $before = $template->getRawOriginal();
+        $this->mock(MessagingService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendEmail'));
+
+        $response = $this->postJson("/api/messaging/templates/{$template->id}/preview", ['theme' => 'dark']);
+
+        $response->assertOk()->assertJsonPath('subject', 'Payout report — preview example');
+        $this->assertStringContainsString('Preview example', $response->json('html'));
+        $this->assertStringContainsString('Live recipient details are inserted here when this email is sent.', $response->json('html'));
+        $this->assertStringContainsString('Jamie Example', $response->json('html'));
+        $this->assertStringNotContainsString('{{payout_report_html}}', $response->json('html'));
+        $this->assertSame($before, $template->fresh()->getRawOriginal());
+    }
+
+    public function test_protected_runtime_block_preview_does_not_enable_or_save_the_override(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $template = MessageTemplate::where('email_type', 'ROLE_CHANGED')->firstOrFail();
+        $before = $template->getRawOriginal();
+
+        $response = $this->postJson("/api/messaging/templates/{$template->id}/preview", ['theme' => 'light']);
+
+        $response->assertOk()->assertJsonPath('subject', 'Role Changed');
+        $this->assertStringContainsString('Preview example', $response->json('html'));
+        $this->assertStringContainsString('Live role changed details', $response->json('text'));
+        $this->assertStringNotContainsString('{{system_body_html}}', $response->json('html'));
+        $this->assertSame($before, $template->fresh()->getRawOriginal());
+        $this->assertFalse($template->fresh()->override_enabled);
+    }
+
+    public function test_new_draft_infers_known_preview_values_from_shortcodes_without_a_declared_list(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $draft = ['channel' => 'EMAIL', 'name' => 'Untitled email', 'subject' => 'Hello {{client_first_name}}',
+            'body_html' => '<p>Hi {{ client_first_name }}.</p><p>{{unsupported_contact}}</p>',
+            'body_text' => 'Client: {{client_first_name}}'];
+
+        $response = $this->postJson('/api/messaging/templates/preview', ['template' => $draft]);
+        $response->assertOk()->assertJsonPath('subject', 'Hello Jamie')->assertJsonPath('text', 'Client: Jamie');
+        $this->assertContains('unsupported_contact', $response->json('missing'));
+        $this->assertNotContains('client_first_name', $response->json('missing'));
+
+        $this->postJson('/api/messaging/templates/preview', [
+            'template' => $draft, 'variables' => ['client_first_name' => 'Actual provided name'],
+        ])->assertOk()->assertJsonPath('subject', 'Hello Actual provided name');
+    }
+
+    private function makeEditableTemplate(User $user, array $attributes = []): MessageTemplate
+    {
+        return MessageTemplate::create(array_merge([
+            'channel' => 'EMAIL',
+            'name' => 'Saved template',
+            'category' => 'GENERAL',
+            'subject' => 'Saved subject',
+            'body_html' => '<p>Saved body</p>',
+            'body_text' => 'Saved body',
+            'scope' => 'USER',
+            'owner_id' => $user->id,
+            'created_by' => $user->id,
+            'updated_by' => $user->id,
+            'is_system' => false,
+            'is_active' => true,
+        ], $attributes));
     }
 }

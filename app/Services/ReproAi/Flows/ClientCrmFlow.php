@@ -7,6 +7,7 @@ use App\Models\Shoot;
 use App\Models\User;
 use App\Models\ShootNote;
 use App\Services\Messaging\MessagingService;
+use App\Services\SystemEmails\EmailAtelierTemplates;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 
@@ -333,36 +334,19 @@ class ClientCrmFlow
             ];
         }
         
-        // Generate message based on type
-        $messageTemplates = [
-            'thank_you' => [
-                'subject' => "Thank you for choosing REPRO-HQ!",
-                'body' => "Hi {$client->name},\n\nThank you for your recent shoot with us! We hope you love your photos.\n\nBest regards,\nREPRO-HQ Team",
-            ],
-            'feedback' => [
-                'subject' => "We'd love your feedback!",
-                'body' => "Hi {$client->name},\n\nWe hope you're enjoying your photos! We'd appreciate if you could take a moment to share your feedback.\n\nThank you!\nREPRO-HQ Team",
-            ],
-            'referral' => [
-                'subject' => "Know someone who needs great photos?",
-                'body' => "Hi {$client->name},\n\nThank you for being a valued client! If you know anyone who could use our services, we'd love a referral.\n\nBest,\nREPRO-HQ Team",
-            ],
-            'rebook' => [
-                'subject' => "Ready for your next shoot?",
-                'body' => "Hi {$client->name},\n\nIt's been a while since your last shoot. We'd love to work with you again!\n\nLet us know when you're ready to book.\n\nBest,\nREPRO-HQ Team",
-            ],
-        ];
-        
-        $template = $messageTemplates[$data['follow_up_type']] ?? $messageTemplates['thank_you'];
-        
         // Send email
         try {
+            $type = in_array($data['follow_up_type'], ['thank_you', 'feedback', 'referral', 'rebook'], true) ? $data['follow_up_type'] : 'thank_you';
+            $rendered = app(EmailAtelierTemplates::class)->render('crm_'.$type, [
+                'recipient_name' => $client->name, 'recipient_id' => $client->id,
+                'recipient_email' => $client->email,
+            ]);
             $messagingService = app(MessagingService::class);
             $messagingService->sendEmail([
                 'to' => $client->email,
-                'subject' => $template['subject'],
-                'body_text' => $template['body'],
-                'body_html' => nl2br($template['body']),
+                'subject' => $rendered['subject'],
+                'body_text' => $rendered['body_text'],
+                'body_html' => $rendered['body_html'],
             ]);
             $emailSent = true;
         } catch (\Exception $e) {

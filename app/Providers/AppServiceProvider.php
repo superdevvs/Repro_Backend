@@ -32,6 +32,8 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        \Illuminate\Support\Facades\View::composer('emails.*', \App\Services\SystemEmails\EmailViewComposer::class);
+
         // Resolve soft-deleted users during token authentication so they are explicitly rejected
         // (Req 17.5) rather than being treated as an absent/unknown user.
         Sanctum::usePersonalAccessTokenModel(PersonalAccessToken::class);
@@ -44,18 +46,18 @@ class AppServiceProvider extends ServiceProvider
         ShootCompensation::observe(ShootCompensationObserver::class);
         ShootFile::observe(ShootFileObserver::class);
 
-        if (!app()->environment('production') || app()->runningInConsole()) {
+        if (! app()->environment('production') || app()->runningInConsole()) {
             return;
         }
 
         $publicStorage = public_path('storage');
         $storageTarget = storage_path('app/public');
 
-        if (!file_exists($publicStorage)) {
+        if (! file_exists($publicStorage)) {
             try {
                 Artisan::call('storage:link');
 
-                if (!file_exists($publicStorage)) {
+                if (! file_exists($publicStorage)) {
                     Log::error('public/storage symlink missing after storage:link', [
                         'public_path' => $publicStorage,
                         'target_path' => $storageTarget,
@@ -73,7 +75,7 @@ class AppServiceProvider extends ServiceProvider
                     'target_path' => $storageTarget,
                 ]);
             }
-        } elseif (!is_link($publicStorage)) {
+        } elseif (! is_link($publicStorage)) {
             Log::warning('public/storage exists but is not a symlink', [
                 'public_path' => $publicStorage,
                 'target_path' => $storageTarget,

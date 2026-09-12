@@ -5,10 +5,15 @@ namespace App\Http\Controllers\API\Messaging;
 use App\Http\Controllers\Controller;
 use App\Models\MessageTemplate;
 use App\Models\Shoot;
+use App\Services\Messaging\EmailPreviewVariables;
 use App\Services\Messaging\ManualNotificationService;
+use App\Services\Messaging\TemplateRenderer;
+use App\Services\SystemEmails\DirectEmailTemplates;
 use App\Services\SystemEmails\EmailTypeRegistry;
+use App\Services\SystemEmails\ProtectedEmailTemplates;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -34,12 +39,12 @@ class MessageTemplateController extends Controller
             ->orderBy('name')
             ->get();
 
-        return response()->json($templates);
+        return response()->json($templates->map(fn (MessageTemplate $template) => $this->templateResponseData($template)));
     }
 
     public function show(MessageTemplate $template): JsonResponse
     {
-        return response()->json($template->load(['creator', 'updater']));
+        return response()->json($this->templateResponseData($template->load(['creator', 'updater'])));
     }
 
     public function store(Request $request): JsonResponse
@@ -57,7 +62,7 @@ class MessageTemplateController extends Controller
             return $template;
         }, 3);
 
-        return response()->json($template, 201);
+        return response()->json($this->templateResponseData($template), 201);
     }
 
     public function update(Request $request, MessageTemplate $template): JsonResponse
@@ -72,7 +77,7 @@ class MessageTemplateController extends Controller
             $this->disableCompetingOverride($template);
         }, 3);
 
-        return response()->json($template->fresh());
+        return response()->json($this->templateResponseData($template->fresh()));
     }
 
     public function destroy(MessageTemplate $template): JsonResponse
@@ -107,29 +112,23 @@ class MessageTemplateController extends Controller
         $newTemplate->updated_by = request()->user()->id;
         $newTemplate->save();
 
-        return response()->json($newTemplate, 201);
+        return response()->json($this->templateResponseData($newTemplate), 201);
     }
 
     public function testSend(Request $request, MessageTemplate $template): JsonResponse
     {
-        $data = $request->validate([
+        $data = $request->validate(array_merge($this->draftPreviewRules(), [
             'to' => ['required', 'email'],
-            'variables' => ['array'],
-            'template' => ['array'],
-            'template.name' => ['sometimes', 'required', 'string', 'max:255'],
-            'template.description' => ['nullable', 'string'],
-            'template.category' => ['nullable', Rule::in(['BOOKING', 'REMINDER', 'PAYMENT', 'INVOICE', 'ACCOUNT', 'GENERAL'])],
-            'template.subject' => ['nullable', 'string', 'max:255'],
-            'template.body_html' => ['nullable', 'string'],
-            'template.body_text' => ['nullable', 'string'],
-            'template.channel' => ['sometimes', Rule::in(['EMAIL', 'SMS'])],
-        ]);
+        ]));
 
         $renderer = app(\App\Services\Messaging\TemplateRenderer::class);
         $resolver = app(\App\Services\Messaging\TemplateVariableResolver::class);
         $variables = $resolver->resolve($data['variables'] ?? []);
         $renderTemplate = $this->buildTestTemplate($template, $data['template'] ?? []);
-        $result = $renderer->render($renderTemplate, $variables);
+        $variables = app(EmailPreviewVariables::class)->apply($renderTemplate, $variables, $data['variables'] ?? []);
+        $variables = app(DirectEmailTemplates::class)->previewVariables($renderTemplate, $variables);
+        $variables = app(ProtectedEmailTemplates::class)->previewVariables($renderTemplate, $variables);
+        $result = $renderer->render($renderTemplate, $variables, $data['theme'] ?? null);
 
         $service = app(\App\Services\Messaging\MessagingService::class);
         $service->sendEmail([
@@ -153,31 +152,73 @@ class MessageTemplateController extends Controller
         }
 
         $draft = $template->replicate();
-        $draft->fill([
-            'channel' => $overrides['channel'] ?? $template->channel,
-            'name' => $overrides['name'] ?? $template->name,
-            'description' => $overrides['description'] ?? $template->description,
-            'category' => $overrides['category'] ?? $template->category,
-            'subject' => $overrides['subject'] ?? $template->subject,
-            'body_html' => $overrides['body_html'] ?? $template->body_html,
-            'body_text' => $overrides['body_text'] ?? $template->body_text,
-        ]);
+        $draft->fill(Arr::only($overrides, [
+            'channel', 'name', 'slug', 'description', 'category', 'subject',
+            'body_html', 'body_text', 'scope', 'email_type', 'override_enabled', 'variables_json',
+        ]));
 
         return $draft;
     }
 
     public function preview(Request $request, MessageTemplate $template): JsonResponse
     {
-        $data = $request->validate([
-            'variables' => ['array'],
-        ]);
+        $data = $request->validate($this->draftPreviewRules());
 
-        $renderer = app(\App\Services\Messaging\TemplateRenderer::class);
+        $renderer = app(TemplateRenderer::class);
         $resolver = app(\App\Services\Messaging\TemplateVariableResolver::class);
         $variables = $resolver->resolve($data['variables'] ?? []);
-        $result = $renderer->render($template, $variables);
+        $renderTemplate = $this->buildTestTemplate($template, $data['template'] ?? []);
+        $variables = app(EmailPreviewVariables::class)->apply($renderTemplate, $variables, $data['variables'] ?? []);
+        $variables = app(DirectEmailTemplates::class)->previewVariables($renderTemplate, $variables);
+        $variables = app(ProtectedEmailTemplates::class)->previewVariables($renderTemplate, $variables);
+        $result = $renderer->render($renderTemplate, $variables, $data['theme'] ?? null);
 
         return response()->json($result);
+    }
+
+    public function previewDraft(Request $request): JsonResponse
+    {
+        $data = $request->validate($this->draftPreviewRules(requireTemplate: true));
+        $template = $this->buildTestTemplate(new MessageTemplate([
+            'scope' => 'USER',
+            'is_active' => true,
+            'is_system' => false,
+        ]), $data['template']);
+        $variables = app(\App\Services\Messaging\TemplateVariableResolver::class)->resolve($data['variables'] ?? []);
+        $variables = app(EmailPreviewVariables::class)->apply($template, $variables, $data['variables'] ?? []);
+        $variables = app(DirectEmailTemplates::class)->previewVariables($template, $variables);
+        $variables = app(ProtectedEmailTemplates::class)->previewVariables($template, $variables);
+
+        return response()->json(app(TemplateRenderer::class)->render($template, $variables, $data['theme'] ?? null));
+    }
+
+    private function draftPreviewRules(bool $requireTemplate = false): array
+    {
+        return [
+            'variables' => ['array'],
+            'theme' => ['nullable', Rule::in(['light', 'dark'])],
+            'template' => [$requireTemplate ? 'required' : 'sometimes', 'array'],
+            'template.name' => $requireTemplate ? ['required', 'string', 'max:255'] : ['sometimes', 'required', 'string', 'max:255'],
+            'template.channel' => [$requireTemplate ? 'required' : 'sometimes', Rule::in(['EMAIL', 'SMS'])],
+            'template.slug' => ['nullable', 'string', 'max:255'],
+            'template.description' => ['nullable', 'string'],
+            'template.category' => ['nullable', Rule::in(['BOOKING', 'REMINDER', 'PAYMENT', 'INVOICE', 'ACCOUNT', 'GENERAL'])],
+            'template.subject' => ['nullable', 'string', 'max:255'],
+            'template.body_html' => ['nullable', 'string'],
+            'template.body_text' => ['nullable', 'string'],
+            'template.scope' => ['sometimes', Rule::in(['SYSTEM', 'GLOBAL', 'ACCOUNT', 'USER'])],
+            'template.email_type' => ['nullable', Rule::in($this->emailTypeRegistry->protectedAliases())],
+            'template.override_enabled' => ['boolean'],
+            'template.variables_json' => ['nullable', 'array'],
+            'template.variables_json.*' => ['string'],
+        ];
+    }
+
+    private function templateResponseData(MessageTemplate $template): array
+    {
+        return array_merge($template->toArray(), [
+            'editable_body_html' => app(TemplateRenderer::class)->editableBodyHtml((string) $template->body_html),
+        ]);
     }
 
     /**
@@ -250,7 +291,7 @@ class MessageTemplateController extends Controller
         $categories = ['BOOKING', 'REMINDER', 'PAYMENT', 'INVOICE', 'ACCOUNT', 'GENERAL'];
         $channels = $request->boolean('override_enabled') ? ['EMAIL'] : ['EMAIL', 'SMS'];
 
-        return $request->validate([
+        $data = $request->validate([
             'channel' => ['required', Rule::in($channels)],
             'name' => ['required', 'string', 'max:255'],
             'slug' => ['nullable', 'string', 'max:255'],
@@ -272,6 +313,12 @@ class MessageTemplateController extends Controller
             ],
             'override_enabled' => ['boolean'],
         ]);
+
+        if (isset($data['body_html'])) {
+            $data['body_html'] = app(TemplateRenderer::class)->editableBodyHtml($data['body_html']);
+        }
+
+        return $data;
     }
 
     private function disableCompetingOverride(MessageTemplate $template): void

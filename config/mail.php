@@ -43,6 +43,8 @@ return [
 
     'contact_address' => env('MAIL_CONTACT_ADDRESS', 'contact@reprophotos.com'),
 
+    'company_address' => env('MAIL_COMPANY_ADDRESS'),
+
     // Canonical client-facing support number. This is deliberately not
     // environment-overridable: an old MAIL_CONTACT_PHONE value on a server
     // must never put the retired support number back into customer messages.
