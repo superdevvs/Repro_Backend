@@ -3,9 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\MessageTemplate;
+use App\Services\Messaging\EmailPreviewVariables;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\Messaging\TemplateVariableResolver;
+use App\Services\SystemEmails\DirectEmailTemplates;
 use App\Services\SystemEmails\EmailBrandingConfig;
+use App\Services\SystemEmails\ProtectedEmailTemplates;
 use App\Support\SupportContact;
 use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -187,7 +190,12 @@ class SupportContactConsistencyTest extends TestCase
         $this->assertNotEmpty($templates, 'Expected the messaging seeder to create EMAIL templates.');
 
         foreach ($templates as $template) {
-            $rendered = $renderer->render($template, $variables);
+            // Live-block templates receive their recipient-scoped body at send
+            // time. Use the actual editor's fictional fixtures for this audit.
+            $previewVariables = app(EmailPreviewVariables::class)->apply($template, $variables, []);
+            $previewVariables = app(DirectEmailTemplates::class)->previewVariables($template, $previewVariables);
+            $previewVariables = app(ProtectedEmailTemplates::class)->previewVariables($template, $previewVariables);
+            $rendered = $renderer->render($template, $previewVariables);
             $body = $rendered['html'] . $rendered['text'];
 
             $this->assertStringContainsString(
