@@ -4,6 +4,9 @@ namespace Tests\Feature;
 
 use App\Models\AutomationRule;
 use App\Models\MessageTemplate;
+use App\Services\SystemEmails\DirectEmailTemplates;
+use App\Services\SystemEmails\EmailAtelierTemplates;
+use App\Services\SystemEmails\EmailTypeRegistry;
 use Database\Seeders\MessagingSystemSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -279,13 +282,13 @@ class ShootEmailCompletenessPreservationTest extends TestCase
 
     private function seededTokensFor(MessageTemplate $t): array
     {
-        return $this->extractTokens((string) $t->body_html . "\n" . (string) $t->body_text);
+        return $this->extractTokens((string) $t->body_html."\n".(string) $t->body_text);
     }
 
     // ---------------------------------------------------------------------
-    // 3.5 - The same SET of seeded SYSTEM templates (24) is produced.
+    // 3.5 - All 24 original templates remain; additive editor migrations are explicit.
     // ---------------------------------------------------------------------
-    public function test_seeded_system_template_set_matches_baseline(): void
+    public function test_seeded_system_template_set_preserves_baseline_and_only_adds_registered_editor_templates(): void
     {
         $expectedSlugs = array_keys($this->baseline());
         sort($expectedSlugs);
@@ -300,9 +303,25 @@ class ShootEmailCompletenessPreservationTest extends TestCase
 
         $this->assertSame(
             $expectedSlugs,
-            $actualSlugs,
-            'The seeded SYSTEM template set must match the baseline 20 templates (3.5).'
+            array_values(array_intersect($actualSlugs, $expectedSlugs)),
+            'All 24 original SYSTEM templates must remain present (3.5).'
         );
+
+        $directSlugs = array_column(DirectEmailTemplates::definitions(), 'slug');
+        $flowSlugs = array_column(EmailAtelierTemplates::definitions(), 'slug');
+        $aliases = app(EmailTypeRegistry::class)->protectedAliases();
+        $protectedSlugs = array_map(fn ($alias) => 'system-'.strtolower(str_replace('_', '-', $alias)), $aliases);
+        $intentionalAdditions = array_merge($directSlugs, $flowSlugs, $protectedSlugs);
+        $actualAdditions = array_values(array_diff($actualSlugs, $expectedSlugs));
+
+        $this->assertNotEmpty($actualAdditions, 'The additive editor migrations must register the additional email families.');
+        $this->assertSame([], array_values(array_diff($actualAdditions, $intentionalAdditions)), 'Unexpected SYSTEM template registrations must not silently enter the baseline.');
+        foreach (array_merge($directSlugs, $flowSlugs) as $slug) {
+            $this->assertContains($slug, $actualSlugs, 'Every direct/flow email must be registered in the editor.');
+        }
+        foreach ($aliases as $alias) {
+            $this->assertTrue(MessageTemplate::where('channel', 'EMAIL')->where('email_type', $alias)->exists(), 'Missing editor registration for '.$alias);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -356,7 +375,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
             $this->assertSame(
                 [],
                 $dropped,
-                "Template '{$slug}' dropped previously-valid token(s): " . implode(', ', $dropped) . ' (3.3).'
+                "Template '{$slug}' dropped previously-valid token(s): ".implode(', ', $dropped).' (3.3).'
             );
 
             // (b) Every seeded token must resolve: it is a mapped runtime
@@ -367,7 +386,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
                 [],
                 $unresolved,
                 "Template '{$slug}' uses token(s) that do not resolve through \$tokenMap/variables_json: "
-                . implode(', ', $unresolved) . ' (3.3).'
+                .implode(', ', $unresolved).' (3.3).'
             );
         }
     }
@@ -385,7 +404,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
         $actualKeys = AutomationRule::query()
             ->where('scope', 'SYSTEM')
             ->get()
-            ->map(fn (AutomationRule $r) => $r->trigger_type . '|' . $r->name)
+            ->map(fn (AutomationRule $r) => $r->trigger_type.'|'.$r->name)
             ->all();
         sort($actualKeys);
 
@@ -408,7 +427,7 @@ class ShootEmailCompletenessPreservationTest extends TestCase
 
         $actual = [];
         foreach (AutomationRule::query()->where('scope', 'SYSTEM')->get() as $rule) {
-            $key = $rule->trigger_type . '|' . $rule->name;
+            $key = $rule->trigger_type.'|'.$rule->name;
             $actual[$key] = $rule->template_id !== null
                 ? ($slugById[$rule->template_id] ?? null)
                 : null;

@@ -60,13 +60,14 @@ class ShootPaidEmailViewTest extends TestCase
         $this->assertStringContainsString('(202) 868-1663', $html);
         $this->assertStringNotContainsString('202-868-1113', $html);
 
-        $this->assertStringContainsString('width="120"', $html);
-        $this->assertStringContainsString('max-width:720px', $html);
-        $this->assertStringContainsString('display:inline-block; padding:14px 22px;', $html);
-        $this->assertStringContainsString('border:0; border-radius:24px 24px 0 0;', $html);
+        $this->assertStringContainsString('data-email-design="atelier-v6"', $html);
+        $this->assertStringContainsString('width="126" height="38"', $html);
+        $this->assertStringContainsString('max-width:640px', $html);
+        $this->assertStringContainsString('data-email-content="true"', $html);
+        $this->assertMatchesRegularExpression('/<a(?=[^>]*class="[^"]*atelier-button)(?=[^>]*style="[^"]*padding:16px;[^"]*border-radius:8px;[^"]*background-color:#155bdd;)[^>]*>Open Dashboard<\/a>/', $html);
         $this->assertStringContainsString('content="light dark"', $html);
-        $this->assertStringContainsString('@media (prefers-color-scheme: dark)', $html);
-        $this->assertStringContainsString('@media only screen and (max-width: 640px)', $html);
+        $this->assertStringContainsString('@media (prefers-color-scheme:dark)', $html);
+        $this->assertStringContainsString('@media only screen and (max-width:600px)', $html);
 
         $this->assertStringContainsString('hero-card-bg', $html);
         $this->assertStringContainsString('section-card-bg', $html);

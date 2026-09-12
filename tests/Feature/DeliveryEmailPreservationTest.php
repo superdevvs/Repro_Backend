@@ -5,15 +5,13 @@ namespace Tests\Feature;
 use App\Jobs\FinalizeShootJob;
 use App\Jobs\PublishShootToBrightMlsJob;
 use App\Jobs\SendShootReadyEmailJob;
-use App\Models\AutomationRule;
 use App\Models\Message;
 use App\Models\MessageChannel;
-use App\Models\MessageTemplate;
+use App\Models\Payment;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootActivityLog;
 use App\Models\ShootFile;
-use App\Models\Payment;
 use App\Models\SystemEmailDispatch;
 use App\Models\User;
 use App\Services\MailService;
@@ -289,10 +287,9 @@ class DeliveryEmailPreservationTest extends TestCase
 
     // ---------------------------------------------------------------------
     // Req 3.4 - shared layout behavior preserved for non-delivered templates
-    // The footer "Website" tile and "Leave a Review" tile must remain present
-    // on non-delivered templates (default-on toggles preserve their output).
+    // The approved shared footer keeps canonical contacts and the website link.
     // ---------------------------------------------------------------------
-    public function test_shared_layout_footer_tiles_preserved_for_non_delivered_template(): void
+    public function test_shared_layout_footer_contacts_are_preserved_for_non_delivered_template(): void
     {
         Mail::fake();
         $this->createDefaultEmailChannel();
@@ -320,15 +317,12 @@ class DeliveryEmailPreservationTest extends TestCase
         $this->assertNotNull($message);
         $html = (string) $message->body_html;
 
-        $this->assertStringContainsString('>Website</a>', $html, 'Non-delivered templates must keep the footer Website tile.');
-        $this->assertStringContainsString('Leave a Review', $html, 'Non-delivered templates must keep the "Leave a Review" tile.');
+        $this->assertAtelierFooter($html);
     }
 
     // ---------------------------------------------------------------------
     // Req 3.4 - non-delivered templates render with their original content.
-    // The content corrections (financials toggle, single URL, no review tile,
-    // hero label) are scoped to the delivered email only, so non-delivered
-    // templates keep their subject, financial summary, and footer tiles.
+    // The global Atelier redesign keeps the original subject and shoot details.
     // ---------------------------------------------------------------------
     public function test_non_delivered_templates_render_with_preserved_content(): void
     {
@@ -349,8 +343,7 @@ class DeliveryEmailPreservationTest extends TestCase
         $mail = $this->app->make(MailService::class);
 
         // Booking, reminder and cancellation are representative non-delivered
-        // notifications. Each must retain the shared-layout footer tiles that
-        // are only removed on the delivered email.
+        // notifications. Each retains its live content and canonical contacts.
         $mail->sendShootScheduledEmail($client, $shoot, 'https://reprodashboard.com/pay/test', false);
         $mail->sendShootReminderEmail($client, $shoot, now()->addDay(), [], false);
         $mail->sendShootCancelledEmail($client, $shoot);
@@ -372,13 +365,20 @@ class DeliveryEmailPreservationTest extends TestCase
             $this->assertSame($expectedSubject, (string) $message->subject);
 
             $html = (string) $message->body_html;
-            // Shared-layout footer tiles remain present on non-delivered
-            // templates (default-on toggles preserve their output).
-            $this->assertStringContainsString('>Website</a>', $html, "{$source} must keep the footer Website tile.");
-            $this->assertStringContainsString('Leave a Review', $html, "{$source} must keep the \"Leave a Review\" tile.");
+            $this->assertAtelierFooter($html);
+            $this->assertStringContainsString('900 Preservation Way', $html, "{$source} must retain its live shoot address.");
             // The corrected canonical support phone is rendered everywhere.
             $this->assertStringContainsString('(202) 868-1663', $html, "{$source} must render the support phone.");
         }
+    }
+
+    private function assertAtelierFooter(string $html): void
+    {
+        $this->assertStringContainsString('data-email-design="atelier-v6"', $html);
+        $this->assertStringContainsString('href="https://reprophotos.com"', $html);
+        $this->assertStringContainsString('href="mailto:contact@reprophotos.com"', $html);
+        $this->assertStringContainsString('href="tel:+12028681663"', $html);
+        $this->assertStringNotContainsString('Leave a Review', $html);
     }
 
     // ---------------------------------------------------------------------
