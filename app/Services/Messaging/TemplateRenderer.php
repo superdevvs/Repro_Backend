@@ -3,6 +3,7 @@
 namespace App\Services\Messaging;
 
 use App\Models\MessageTemplate;
+use App\Services\SystemEmails\EditableEmailContent;
 use App\Services\SystemEmails\EmailArtwork;
 use App\Services\SystemEmails\EmailBrandingConfig;
 use App\Support\InvoiceReference;
@@ -92,6 +93,7 @@ class TemplateRenderer
     {
         return collect($this->variableKeys($template))
             ->reject(fn ($key) => array_key_exists($key, $variables))
+            ->merge(app(EditableEmailContent::class)->missingVariables($template))
             ->values()
             ->all();
     }
@@ -202,6 +204,7 @@ class TemplateRenderer
             'preheaderText' => $this->buildPreheaderText($bodyHtml, $template),
             'branding' => $this->branding(),
             'emailAtelier' => app(EmailArtwork::class)->forTemplate($template, $variables),
+            'emailFooterNote' => (string) ($variables['email_footer_note'] ?? ''),
             'emailPreviewTheme' => in_array($previewTheme, ['light', 'dark'], true) ? $previewTheme : null,
         ])->render();
     }

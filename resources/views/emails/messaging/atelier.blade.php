@@ -11,3 +11,6 @@
 @section('content')
     {!! $bodyHtml !!}
 @endsection
+@section('footer_note')
+    {!! $emailFooterNote ?? '' !!}
+@endsection

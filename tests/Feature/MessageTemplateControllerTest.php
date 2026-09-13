@@ -271,7 +271,7 @@ class MessageTemplateControllerTest extends TestCase
         ])->assertUnprocessable()->assertJsonValidationErrors(['theme', 'template.email_type']);
     }
 
-    public function test_direct_report_preview_supplies_labeled_examples_without_persisting_or_sending(): void
+    public function test_direct_report_preview_uses_real_structure_with_fictional_values_without_persisting_or_sending(): void
     {
         Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
         $template = MessageTemplate::where('slug', 'payout-report')->firstOrFail();
@@ -280,10 +280,10 @@ class MessageTemplateControllerTest extends TestCase
 
         $response = $this->postJson("/api/messaging/templates/{$template->id}/preview", ['theme' => 'dark']);
 
-        $response->assertOk()->assertJsonPath('subject', 'Payout report — preview example');
-        $this->assertStringContainsString('Preview example', $response->json('html'));
-        $this->assertStringContainsString('Live recipient details are inserted here when this email is sent.', $response->json('html'));
-        $this->assertStringContainsString('Jamie Example', $response->json('html'));
+        $response->assertOk()->assertJsonPath('subject', 'Weekly Payout Recap');
+        $this->assertStringNotContainsString('Preview example', $response->json('html'));
+        $this->assertStringContainsString('Here is your payout recap.', $response->json('html'));
+        $this->assertStringContainsString('$2,840.00', $response->json('html'));
         $this->assertStringNotContainsString('{{payout_report_html}}', $response->json('html'));
         $this->assertSame($before, $template->fresh()->getRawOriginal());
     }
@@ -296,9 +296,9 @@ class MessageTemplateControllerTest extends TestCase
 
         $response = $this->postJson("/api/messaging/templates/{$template->id}/preview", ['theme' => 'light']);
 
-        $response->assertOk()->assertJsonPath('subject', 'Role Changed');
-        $this->assertStringContainsString('Preview example', $response->json('html'));
-        $this->assertStringContainsString('Live role changed details', $response->json('text'));
+        $response->assertOk()->assertJsonPath('subject', 'Your Role Has Been Updated');
+        $this->assertStringNotContainsString('Preview example', $response->json('html'));
+        $this->assertStringContainsString('Role Change Details', $response->json('text'));
         $this->assertStringNotContainsString('{{system_body_html}}', $response->json('html'));
         $this->assertSame($before, $template->fresh()->getRawOriginal());
         $this->assertFalse($template->fresh()->override_enabled);
@@ -319,6 +319,51 @@ class MessageTemplateControllerTest extends TestCase
         $this->postJson('/api/messaging/templates/preview', [
             'template' => $draft, 'variables' => ['client_first_name' => 'Actual provided name'],
         ])->assertOk()->assertJsonPath('subject', 'Hello Actual provided name');
+    }
+
+    public function test_actual_content_block_copy_previews_saves_and_reopens_without_changing_the_wrapper(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['role' => 'admin']));
+        $template = MessageTemplate::where('slug', 'payout-digest')->firstOrFail();
+        $this->mock(MessagingService::class, fn (MockInterface $mock) => $mock->shouldNotReceive('sendEmail'));
+        $response = $this->getJson("/api/messaging/templates/{$template->id}")->assertOk();
+        $original = 'Please review these totals and approve any final adjustments so accounting can release payments on schedule.';
+        $block = collect($response->json('editable_content_blocks'))->first(fn ($item) => str_contains($item['body_html'], $original));
+        $this->assertNotNull($block);
+        $copy = [
+            'body_html' => str_replace($original, 'Please review the final contributor totals before Friday.', $block['body_html']),
+            'body_text' => 'Please review the final contributor totals before Friday.',
+        ];
+        $draft = ['content_blocks_json' => [$block['key'] => $copy]];
+        $preview = $this->postJson("/api/messaging/templates/{$template->id}/preview", ['template' => $draft, 'theme' => 'dark'])->assertOk();
+        $this->assertStringContainsString('Please review the final contributor totals before Friday.', $preview->json('html'));
+        $this->assertStringContainsString('Please review the final contributor totals before Friday.', $preview->json('text'));
+        $this->assertStringContainsString('$2,840.00', $preview->json('html'));
+        $this->assertNull($template->fresh()->content_blocks_json);
+        $this->putJson("/api/messaging/templates/{$template->id}", $draft + [
+            'name' => $template->name, 'channel' => 'EMAIL', 'scope' => 'SYSTEM',
+            'slug' => $template->slug, 'subject' => $template->subject,
+            'body_html' => $template->body_html, 'body_text' => $template->body_text,
+        ])->assertOk();
+        $reopened = $this->getJson("/api/messaging/templates/{$template->id}")->assertOk();
+        $saved = collect($reopened->json('editable_content_blocks'))->firstWhere('key', $block['key']);
+        $this->assertSame($copy['body_html'], $saved['body_html']);
+        $this->assertSame($copy['body_text'], $saved['body_text']);
+        $this->assertSame('{{payout_digest_html}}', $template->fresh()->body_html);
+        $this->assertSame('{{email_subject}}', $template->fresh()->subject);
+    }
+
+    public function test_description_upgrade_only_changes_the_exact_previous_generated_instruction(): void
+    {
+        $custom = MessageTemplate::where('slug', 'payout-digest')->firstOrFail();
+        $custom->update(['description' => 'Our accounting team instructions', 'subject' => 'Saved custom subject', 'is_active' => false]);
+        $untouched = $custom->fresh()->getRawOriginal();
+        $default = MessageTemplate::where('slug', 'contact-confirmation')->firstOrFail();
+        $default->update(['description' => 'Editable copy with a live content block. Keep {{contact_confirmation_html}} to include the recipient-specific details.']);
+        \App\Services\SystemEmails\EditableEmailContent::upgradeDefaultDescriptions();
+        $this->assertSame($untouched, $custom->fresh()->getRawOriginal());
+        $this->assertStringNotContainsString('{{', $default->fresh()->description);
+        $this->assertStringContainsString('Edit the message sections.', $default->fresh()->description);
     }
 
     public function test_registered_defaults_have_complete_known_preview_examples_in_both_themes(): void

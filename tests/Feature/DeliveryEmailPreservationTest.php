@@ -378,7 +378,8 @@ class DeliveryEmailPreservationTest extends TestCase
         $this->assertStringContainsString('href="https://reprophotos.com"', $html);
         $this->assertStringContainsString('href="mailto:contact@reprophotos.com"', $html);
         $this->assertStringContainsString('href="tel:+12028681663"', $html);
-        $this->assertStringNotContainsString('Leave a Review', $html);
+        $this->assertStringContainsString('Leave a Review', $html);
+        $this->assertStringContainsString('Thank you for the opportunity.', $html);
     }
 
     // ---------------------------------------------------------------------

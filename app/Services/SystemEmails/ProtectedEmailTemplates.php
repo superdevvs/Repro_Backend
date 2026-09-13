@@ -18,7 +18,7 @@ class ProtectedEmailTemplates
                 'payment' => 'PAYMENT', 'invoice' => 'INVOICE', default => 'GENERAL',
             };
             MessageTemplate::firstOrCreate(['channel' => 'EMAIL', 'slug' => 'system-'.strtolower(str_replace('_', '-', $alias))], [
-                'name' => Str::headline(strtolower($alias)), 'description' => 'Keep {{system_body_html}} for the live recipient-specific details. Enable the protected override to apply edited copy.',
+                'name' => Str::headline(strtolower($alias)), 'description' => 'Edit the message sections and enable the protected override to apply saved copy. Recipient-specific fields and conditional sections stay connected to current data.',
                 'category' => $category, 'subject' => '{{system_subject}}',
                 'body_html' => '{{system_body_html}}', 'body_text' => '{{system_body_text}}',
                 'variables_json' => ['system_subject', 'system_body_html', 'system_body_text', 'recipient_name'],
@@ -38,13 +38,16 @@ class ProtectedEmailTemplates
         if (! $template->email_type || ! app(EmailTypeRegistry::class)->has($template->email_type)) {
             return $variables;
         }
-        $label = Str::headline(strtolower($template->email_type));
-        $variables += [
-            'system_subject' => $label,
-            'system_body_html' => '<div class="info-box"><p><strong>Preview example</strong></p><p>The live '.e(strtolower($label)).' details and action links are inserted here for the recipient when sent.</p><p>Recipient: Jamie Example</p></div>',
-            'system_body_text' => 'Preview example. Live '.strtolower($label).' details and action links are inserted for the recipient when sent.',
-            'recipient_name' => 'Jamie Example',
-        ];
+        $definition = app(EmailTypeRegistry::class)->definition($template->email_type);
+        $payload = EmailPreviewContext::protectedPayload($template->email_type);
+        $rendered = app(SystemEmailRenderer::class)->scopedContent($definition, $payload, $template);
+        $variables = array_merge($variables, [
+            'system_subject' => app(EditableEmailContent::class)->editableSubject($template),
+            'system_body_html' => $rendered['html'],
+            'system_body_text' => $rendered['text'],
+            'email_footer_note' => $rendered['footer_note'],
+            'recipient_name' => $payload['recipient']['name'],
+        ]);
 
         return $variables;
     }

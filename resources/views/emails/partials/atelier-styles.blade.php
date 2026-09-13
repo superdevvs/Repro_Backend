@@ -36,6 +36,9 @@
         .stat-td, .stack-column { display:block !important; width:100% !important; padding:0 0 12px !important; box-sizing:border-box; }
         .section-inner { padding:24px !important; }
         .line-td, .line-th { overflow-wrap:anywhere; word-break:normal; }
+        .footer-brand-column, .footer-social-column { display:block !important; width:100% !important; text-align:left !important; }
+        .footer-social-column { padding-top:20px !important; }
+        .footer-social-column td { padding-left:0 !important; padding-right:12px !important; }
     }
     @if($theme === null)
         @media (prefers-color-scheme:dark) {
@@ -46,9 +49,7 @@
             .dark-body, .body-inner { color:#bdccdf !important; }
             .dark-muted, .info-label, .detail-label, .legal-copy-dark { color:#8da5c4 !important; }
             .email-intro > .dark-muted, .atelier-link, .footer-contact-link, .body-inner a:not(.atelier-button):not(.button):not(.cta-button) { color:#9cbdff !important; }
-            .footer-inner { border-color:#2c425e !important; }
-            .logo-light { display:none !important; }
-            .logo-dark { display:block !important; max-height:none !important; overflow:visible !important; }
+            .footer-inner, .footer-rule { border-color:#2c425e !important; }
         }
         [data-ogsc] .body-bg { background-color:#080f17 !important; }
         [data-ogsc] .content-card-bg { background-color:#121e2c !important; border-color:#2c425e !important; }
@@ -57,7 +58,6 @@
         [data-ogsc] .dark-body, [data-ogsc] .body-inner { color:#bdccdf !important; }
         [data-ogsc] .dark-muted, [data-ogsc] .info-label, [data-ogsc] .detail-label { color:#8da5c4 !important; }
         [data-ogsc] .atelier-link, [data-ogsc] .footer-contact-link { color:#9cbdff !important; }
-        [data-ogsc] .logo-light { display:none !important; }
-        [data-ogsc] .logo-dark { display:block !important; max-height:none !important; }
+        [data-ogsc] .footer-inner, [data-ogsc] .footer-rule { border-color:#2c425e !important; }
     @endif
 </style>

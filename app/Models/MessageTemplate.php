@@ -20,6 +20,7 @@ class MessageTemplate extends Model
         'body_html',
         'body_text',
         'variables_json',
+        'content_blocks_json',
         'created_by',
         'updated_by',
         'scope',
@@ -35,6 +36,7 @@ class MessageTemplate extends Model
 
     protected $casts = [
         'variables_json' => 'array',
+        'content_blocks_json' => 'array',
         'is_system' => 'bool',
         'is_active' => 'bool',
         'override_enabled' => 'bool',
@@ -51,4 +53,3 @@ class MessageTemplate extends Model
         return $this->belongsTo(User::class, 'updated_by');
     }
 }
-

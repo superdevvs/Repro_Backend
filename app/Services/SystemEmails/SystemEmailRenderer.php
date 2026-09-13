@@ -186,10 +186,10 @@ class SystemEmailRenderer
         $variables['system_subject'] = $subject;
         if (ProtectedEmailTemplates::hasScopedRuntimeBlock($template) || str_contains((string) $template->body_text, 'system_body_text')) {
             // Preserve the canonical role/payment-scoped content before applying edited copy.
-            $canonical = view($definition->templateView, $this->viewData($definition, $payload))->render();
-            $variables['system_body_html'] = $renderer->editableBodyHtml($canonical);
-            $plainBody = preg_replace('/<\/(?:p|div|tr|h[1-6])>|<br\s*\/?>/i', "\n", $variables['system_body_html']);
-            $variables['system_body_text'] = trim(html_entity_decode(strip_tags($plainBody), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+            $scoped = $this->scopedContent($definition, $payload, $template);
+            $variables['system_body_html'] = $scoped['html'];
+            $variables['system_body_text'] = $scoped['text'];
+            $variables['email_footer_note'] = $scoped['footer_note'];
         }
         $rendered = $renderer->render($template, $variables);
 
@@ -210,6 +210,22 @@ class SystemEmailRenderer
             'body_html' => $html,
             'body_text' => $text,
             'view_data' => $this->viewData($definition, $payload),
+        ];
+    }
+
+    /** Pure canonical content for editor previews and scoped copy overrides; no template lookup or health writes. */
+    public function scopedContent(EmailTypeDefinition $definition, array $payload, MessageTemplate $template): array
+    {
+        $payload = $this->sanitizePaymentOutcome($payload);
+        $data = $this->viewData($definition, $payload);
+        $content = app(EditableEmailContent::class);
+        $renderer = $this->templateRenderer ?? app(TemplateRenderer::class);
+        $footerNote = $content->footerNote($definition->templateView, $data);
+
+        return [
+            'html' => $renderer->editableBodyHtml($content->render($definition->templateView, $data, $template)),
+            'text' => EditableEmailContent::plainText($renderer->editableBodyHtml($content->render($definition->templateView, $data, $template, 'text'))."\n\n".$footerNote),
+            'footer_note' => $footerNote,
         ];
     }
 

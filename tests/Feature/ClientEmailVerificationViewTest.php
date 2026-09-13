@@ -30,8 +30,8 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertStringContainsString('max-width:640px', $html);
         $this->assertStringContainsString('https://api.reprodashboard.com/api/email/verify/1/hash', $html);
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-dark.png', $html);
+        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringNotContainsString('/images/email-atelier/v6/logo-dark.png', $html);
         $this->assertStringNotContainsString('/images/Repro%20HQ%20dark.png', $html);
         $normalizedHtml = str_replace(' ', '', strtolower($html));
         $this->assertStringContainsString('background-color:#ffffff', $normalizedHtml);
@@ -60,8 +60,8 @@ class ClientEmailVerificationViewTest extends TestCase
             'includePasswordCreationLink' => true,
         ])->render();
 
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-dark.png', $html);
+        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringNotContainsString('/images/email-atelier/v6/logo-dark.png', $html);
         $this->assertStringContainsString('Your dashboard access is ready.', $html);
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
@@ -147,8 +147,8 @@ class ClientEmailVerificationViewTest extends TestCase
         $this->assertStringContainsString('You are all set for updates.', $html);
         $this->assertStringContainsString('Notification Settings', $html);
         $this->assertStringContainsString('https://reprodashboard.com/settings', $html);
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-dark.png', $html);
+        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
+        $this->assertStringNotContainsString('/images/email-atelier/v6/logo-dark.png', $html);
         $this->assertStringContainsString('content="light dark"', $html);
         $this->assertMatchesRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
     }

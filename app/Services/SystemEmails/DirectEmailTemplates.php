@@ -28,7 +28,7 @@ class DirectEmailTemplates
                 'channel' => 'EMAIL',
                 'slug' => str_replace('_', '-', substr($view, strlen('emails.'))),
                 'name' => $name,
-                'description' => 'Editable copy with a live content block. Keep {{'.$htmlVariable.'}} to include the recipient-specific details.',
+                'description' => 'Edit the message sections. Recipient-specific details and repeated report rows use current data when sent.',
                 'category' => $category,
                 'subject' => '{{email_subject}}',
                 'body_html' => '{{'.$htmlVariable.'}}',
@@ -61,15 +61,18 @@ class DirectEmailTemplates
         $renderer = app(TemplateRenderer::class);
         // The original view retains all dynamic tables and its existing data scope.
         // The helper is called at send sites, never from a Blade view/composer.
-        $body = $renderer->editableBodyHtml(view($view, $data)->render());
+        $content = app(EditableEmailContent::class);
+        $body = $renderer->editableBodyHtml($content->render($view, $data, $template));
         $htmlVariable = self::VIEWS[$view][2];
         $textVariable = str_replace('_html', '_text', $htmlVariable);
-        $plainBody = preg_replace('/<\/(?:p|div|tr|h[1-6])>|<br\s*\/?>/i', "\n", $body);
+        $textBody = $renderer->editableBodyHtml($content->render($view, $data, $template, 'text'));
+        $footerNote = $content->footerNote($view, $data);
         $variables = array_merge($data, [
             'email_subject' => $subject,
             'recipient_name' => $data['recipientName'] ?? data_get($data, 'user.name') ?? data_get($data, 'salesRep.name') ?? data_get($data, 'client.name') ?? '',
             $htmlVariable => $body,
-            $textVariable => trim(html_entity_decode(strip_tags($plainBody), ENT_QUOTES | ENT_HTML5, 'UTF-8')),
+            $textVariable => EditableEmailContent::plainText($textBody."\n\n".$footerNote),
+            'email_footer_note' => $footerNote,
         ]);
 
         return $renderer->render($template, $variables);
@@ -84,13 +87,17 @@ class DirectEmailTemplates
             if ($template->slug !== $definition['slug'] && ! str_contains((string) $template->body_html, $htmlVariable) && ! str_contains((string) $template->body_text, $textVariable)) {
                 continue;
             }
-            $example = '<div class="info-box"><p><strong>Preview example</strong></p><p>Live recipient details are inserted here when this email is sent.</p><table role="presentation" width="100%"><tr><td>Recipient</td><td>Jamie Example</td></tr><tr><td>Record</td><td>'.e($definition['name']).' — sample record</td></tr><tr><td>Period</td><td>September 7–13, 2026</td></tr></table></div>';
-            $variables += [
-                'email_subject' => $definition['name'].' — preview example',
+            $data = EmailPreviewContext::directData($view);
+            $renderer = app(TemplateRenderer::class);
+            $content = app(EditableEmailContent::class);
+            $footerNote = $content->footerNote($view, $data);
+            $variables = array_merge($variables, [
+                'email_subject' => $content->editableSubject($template),
                 'recipient_name' => 'Jamie Example',
-                $htmlVariable => $example,
-                $textVariable => 'Preview example. Live recipient details are inserted when sent. Recipient: Jamie Example. Record: '.$definition['name'].'.',
-            ];
+                $htmlVariable => $renderer->editableBodyHtml($content->render($view, $data, $template)),
+                $textVariable => EditableEmailContent::plainText($renderer->editableBodyHtml($content->render($view, $data, $template, 'text'))."\n\n".$footerNote),
+                'email_footer_note' => $footerNote,
+            ]);
         }
 
         return $variables;

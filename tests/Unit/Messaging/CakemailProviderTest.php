@@ -6,6 +6,7 @@ use App\Models\MessageChannel;
 use App\Services\Messaging\Providers\CakemailProvider;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class CakemailProviderTest extends TestCase
@@ -34,7 +35,7 @@ class CakemailProviderTest extends TestCase
             ], 200),
         ]);
 
-        $provider = new CakemailProvider();
+        $provider = new CakemailProvider;
         $provider->clearCache();
 
         $channel = new MessageChannel([
@@ -69,11 +70,79 @@ class CakemailProviderTest extends TestCase
 
             return $payload['sender']['id'] === 'sender-default'
                 && $payload['list_id'] === 8651530
-                && $payload['content']['text'] === "Line one\nLine two\n\n[CLIENT.ADDRESS]"
+                && $payload['content']['type'] === 'transactional'
+                && $payload['content']['text'] === "Line one\nLine two"
                 && str_contains((string) $payload['content']['html'], 'Line one')
                 && str_contains((string) $payload['content']['html'], '<br')
-                && str_contains((string) $payload['content']['html'], '[CLIENT.ADDRESS]');
+                && ! str_contains((string) $payload['content']['html'], '[CLIENT.ADDRESS]');
         });
+    }
+
+    #[DataProvider('legacyAddressMarkerCases')]
+    public function test_send_removes_only_standalone_legacy_address_markers(string $html, ?string $text, string $expectedHtml, string $expectedText): void
+    {
+        config([
+            'services.cakemail.username' => 'mailer@example.com',
+            'services.cakemail.password' => 'synthetic-password',
+            'services.cakemail.sender_id' => 'sender-default',
+            'services.cakemail.list_id' => 8651530,
+            'services.cakemail.base_url' => 'https://cakemail.example/api',
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://cakemail.example/api/token' => Http::response(['access_token' => 'test-token', 'expires_in' => 3600]),
+            'https://cakemail.example/api/v2/emails' => Http::response(['data' => ['id' => 'msg-clean-footer']]),
+        ]);
+        $provider = new CakemailProvider;
+        $provider->clearCache();
+        $channel = new MessageChannel(['type' => 'EMAIL', 'provider' => 'CAKEMAIL', 'display_name' => 'Default Mailer']);
+
+        $this->assertSame('msg-clean-footer', $provider->send($channel, [
+            'to' => 'recipient@example.com', 'subject' => 'A booking update',
+            'body_html' => $html, 'body_text' => $text,
+        ]));
+        Http::assertSent(function (Request $request) use ($expectedHtml, $expectedText): bool {
+            if ($request->url() !== 'https://cakemail.example/api/v2/emails') {
+                return false;
+            }
+            $content = $request['content'];
+
+            return $content['html'] === $expectedHtml
+                && $content['text'] === $expectedText
+                && $content['type'] === 'transactional'
+                && $request['list_id'] === 8651530
+                && $request['tracking'] === ['opens' => true, 'clicks_html' => true, 'clicks_text' => true];
+        });
+    }
+
+    public static function legacyAddressMarkerCases(): array
+    {
+        $body = '<p>Your booking is confirmed.</p><footer>123 Example Lane <a href="https://example.com/preferences">Preferences</a></footer>';
+        $plain = 'Your booking is confirmed. 123 Example Lane Preferences';
+        $marker = '<div style="margin-top:8px; text-align:center; color:#7f8fa3; font-size:11px; line-height:1.6;">[CLIENT.ADDRESS]</div>';
+
+        return [
+            'old appended transport div and text line' => [
+                '<html><body>'.$body.$marker.'</body></html>', $plain."\n\n[CLIENT.ADDRESS]",
+                '<html><body>'.$body.'</body></html>', $plain,
+            ],
+            'standalone paragraph and CRLF text line' => [
+                $body.'<p> [CLIENT.ADDRESS] </p>', $plain."\r\n [CLIENT.ADDRESS] \r\n",
+                $body, $plain,
+            ],
+            'plain text fallback uses cleaned HTML' => [
+                '<p>Booking ready</p>'.$marker, null, '<p>Booking ready</p>', 'Booking ready',
+            ],
+            'bare trailing marker after an HTML block' => [
+                '<p>Booking ready</p> [CLIENT.ADDRESS]', "Booking ready\n[CLIENT.ADDRESS]", '<p>Booking ready</p>', 'Booking ready',
+            ],
+            'authored sentence and real address remain unchanged' => [
+                '<p>The literal shortcode [CLIENT.ADDRESS] is documented here.</p>'.$body,
+                'The literal shortcode [CLIENT.ADDRESS] is documented here. '.$plain,
+                '<p>The literal shortcode [CLIENT.ADDRESS] is documented here.</p>'.$body,
+                'The literal shortcode [CLIENT.ADDRESS] is documented here. '.$plain,
+            ],
+        ];
     }
 
     public function test_send_requires_an_explicit_cakemail_base_url(): void
@@ -86,7 +155,7 @@ class CakemailProviderTest extends TestCase
             'services.cakemail.base_url' => null,
         ]);
 
-        $provider = new CakemailProvider();
+        $provider = new CakemailProvider;
         $provider->clearCache();
 
         $channel = new MessageChannel([
@@ -116,7 +185,7 @@ class CakemailProviderTest extends TestCase
             'services.cakemail.base_url' => null,
         ]);
 
-        $provider = new CakemailProvider();
+        $provider = new CakemailProvider;
         $provider->clearCache();
 
         $result = $provider->testConnection();

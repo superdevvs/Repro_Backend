@@ -9,7 +9,7 @@
     $supportPhone = \App\Support\SupportContact::PHONE_DISPLAY;
     $supportPhoneHref = \App\Support\SupportContact::PHONE_E164;
     $websiteUrl = $brand['website_url'];
-    $assetBase = rtrim((string) config('app.url'), '/').'/images/email-atelier/v6/';
+    $emailLogoUrl = $brand['email_logo_grey_url'];
     $heroHtml = \App\Services\SystemEmails\EmailPresentation::format($__env->yieldContent('hero'), $theme, true);
     $contentHtml = \App\Services\SystemEmails\EmailPresentation::format($__env->yieldContent('content'), $theme, false, !str_starts_with($artwork['design'] ?? '', 'account_created'));
 @endphp
@@ -34,14 +34,7 @@
                 <tr><td class="email-inset" style="padding:32px 48px;">
                     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
                         <td style="vertical-align:middle;">
-                            @if($theme === 'dark')
-                                <img src="{{ $assetBase }}logo-dark.png" alt="{{ $productName }}" width="126" height="38" style="display:block;width:126px;height:38px;border:0;">
-                            @else
-                                <img class="logo-light" src="{{ $assetBase }}logo-light.png" alt="{{ $productName }}" width="126" height="38" style="display:block;width:126px;height:38px;border:0;">
-                                @if($theme === null)
-                                    <!--[if !mso]><!--><img class="logo-dark" src="{{ $assetBase }}logo-dark.png" alt="{{ $productName }}" width="126" height="38" style="display:none;width:126px;height:38px;border:0;max-height:0;overflow:hidden;mso-hide:all;"><!--<![endif]-->
-                                @endif
-                            @endif
+                            <img class="email-logo-universal" src="{{ $emailLogoUrl }}" alt="{{ $productName }}" width="126" height="38" style="display:block;width:126px;height:38px;border:0;">
                         </td>
                         <td align="right" class="brand-tagline dark-muted" style="vertical-align:middle;color:{{ $colors['muted'] }};font-size:11px;line-height:16px;font-weight:600;letter-spacing:1.4px;">PROPERTY<br>MEDIA, REFINED.</td>
                     </tr></table>
@@ -55,18 +48,7 @@
                     <tr><td class="email-inset email-intro" style="padding:0 48px 32px;">{!! $heroHtml !!}</td></tr>
                 @endif
                 <tr><td class="email-inset content-pad body-inner" data-email-content="true" style="padding:0 48px 32px;color:{{ $colors['body'] }};font-size:14px;line-height:24px;overflow-wrap:anywhere;word-wrap:break-word;">{!! $contentHtml !!}</td></tr>
-                <tr><td class="email-inset footer-inner" style="padding:32px 48px;border-top:1px solid {{ $colors['border'] }};">
-                    <p class="dark-heading" style="margin:0 0 8px;color:{{ $colors['ink'] }};font-size:11px;line-height:16px;font-weight:600;letter-spacing:1.4px;text-transform:uppercase;">R/E PRO PHOTOS</p>
-                    <p class="dark-muted footer-contact" style="margin:0;color:{{ $colors['muted'] }};font-size:12px;line-height:19px;">Need a hand? <a class="footer-contact-link" href="mailto:{{ $supportEmail }}" style="color:{{ $colors['accent'] }};text-decoration:underline;">{{ $supportEmail }}</a><br><a class="footer-contact-link" href="tel:{{ $supportPhoneHref }}" style="color:{{ $colors['muted'] }};text-decoration:none;">{{ $supportPhone }}</a></p>
-                    <p class="dark-muted" style="margin:16px 0 0;color:{{ $colors['muted'] }};font-size:12px;line-height:19px;">{{ $artwork['footer_reason'] ?? 'You received this email about your R/E Pro Photos account.' }}</p>
-                    @hasSection('footer_note')
-                        <p class="dark-muted" style="margin:12px 0 0;color:{{ $colors['muted'] }};font-size:12px;line-height:19px;">@yield('footer_note')</p>
-                    @endif
-                    @if(!empty($brand['company_address']))
-                        <p class="dark-muted" style="margin:12px 0 0;color:{{ $colors['muted'] }};font-size:12px;line-height:19px;">{{ $brand['company_address'] }}</p>
-                    @endif
-                    <p style="margin:16px 0 0;font-size:12px;line-height:19px;"><a class="atelier-link" href="{{ $websiteUrl }}" style="color:{{ $colors['accent'] }};text-decoration:none;">reprophotos.com</a></p>
-                </td></tr>
+                @include('emails.partials.atelier-footer')
             </table>
             <!--[if mso]></td></tr></table><![endif]-->
         </td></tr>

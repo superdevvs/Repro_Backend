@@ -15,9 +15,13 @@ class CakemailProvider implements EmailProviderInterface
     private const CLIENT_ADDRESS_TAG = '[CLIENT.ADDRESS]';
 
     protected ?string $baseUrl;
+
     protected string $username;
+
     protected string $password;
+
     protected ?string $defaultSenderId;
+
     protected ?int $defaultListId;
 
     public function __construct()
@@ -83,7 +87,7 @@ class CakemailProvider implements EmailProviderInterface
             'email' => $toEmail,
         ];
 
-        if (!empty($customAttributes)) {
+        if (! empty($customAttributes)) {
             $payload['custom_attributes'] = array_map(function ($key, $value) {
                 return ['name' => $key, 'value' => (string) $value];
             }, array_keys($customAttributes), array_values($customAttributes));
@@ -102,10 +106,11 @@ class CakemailProvider implements EmailProviderInterface
                 'body' => $response->body(),
             ]);
 
-            throw new \RuntimeException('Failed to send template email: ' . $response->body());
+            throw new \RuntimeException('Failed to send template email: '.$response->body());
         }
 
         $responseData = $response->json();
+
         return $responseData['data']['contact_id'] ?? Str::uuid()->toString();
     }
 
@@ -116,10 +121,11 @@ class CakemailProvider implements EmailProviderInterface
     {
         if ($configurationIssue = $this->configurationIssue()) {
             $this->logConfigurationIssue($configurationIssue);
+
             return null;
         }
 
-        $cacheKey = 'cakemail_token_' . md5($this->username);
+        $cacheKey = 'cakemail_token_'.md5($this->username);
 
         // Check cache first
         if (Cache::has($cacheKey)) {
@@ -128,6 +134,7 @@ class CakemailProvider implements EmailProviderInterface
 
         if (empty($this->username) || empty($this->password)) {
             Log::error('Cakemail credentials not configured');
+
             return null;
         }
 
@@ -151,13 +158,13 @@ class CakemailProvider implements EmailProviderInterface
                     Cache::put($cacheKey, $token, now()->addSeconds($expiresIn - 300));
 
                     // Store refresh token if available
-                    if (!empty($data['refresh_token'])) {
-                        Cache::put($cacheKey . '_refresh', $data['refresh_token'], now()->addDays(30));
+                    if (! empty($data['refresh_token'])) {
+                        Cache::put($cacheKey.'_refresh', $data['refresh_token'], now()->addDays(30));
                     }
 
                     // Store account IDs
-                    if (!empty($data['accounts'])) {
-                        Cache::put($cacheKey . '_accounts', $data['accounts'], now()->addDays(30));
+                    if (! empty($data['accounts'])) {
+                        Cache::put($cacheKey.'_accounts', $data['accounts'], now()->addDays(30));
                     }
 
                     Log::info('Cakemail: Access token obtained', [
@@ -187,10 +194,10 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function refreshAccessToken(): ?string
     {
-        $cacheKey = 'cakemail_token_' . md5($this->username);
-        $refreshToken = Cache::get($cacheKey . '_refresh');
+        $cacheKey = 'cakemail_token_'.md5($this->username);
+        $refreshToken = Cache::get($cacheKey.'_refresh');
 
-        if (!$refreshToken) {
+        if (! $refreshToken) {
             return $this->getAccessToken();
         }
 
@@ -211,8 +218,8 @@ class CakemailProvider implements EmailProviderInterface
                 if ($token) {
                     Cache::put($cacheKey, $token, now()->addSeconds($expiresIn - 300));
 
-                    if (!empty($data['refresh_token'])) {
-                        Cache::put($cacheKey . '_refresh', $data['refresh_token'], now()->addDays(30));
+                    if (! empty($data['refresh_token'])) {
+                        Cache::put($cacheKey.'_refresh', $data['refresh_token'], now()->addDays(30));
                     }
 
                     return $token;
@@ -235,7 +242,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return [];
         }
 
@@ -262,7 +269,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return null;
         }
 
@@ -284,6 +291,7 @@ class CakemailProvider implements EmailProviderInterface
                     'sender_id' => $senderId,
                     'confirmed' => $data['data']['confirmed'] ?? false,
                 ]);
+
                 return $senderId;
             }
 
@@ -306,7 +314,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return [];
         }
 
@@ -333,7 +341,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return null;
         }
 
@@ -341,13 +349,13 @@ class CakemailProvider implements EmailProviderInterface
             'email' => $email,
         ];
 
-        if (!empty($attributes)) {
+        if (! empty($attributes)) {
             $payload['custom_attributes'] = array_map(function ($key, $value) {
                 return ['name' => $key, 'value' => (string) $value];
             }, array_keys($attributes), array_values($attributes));
         }
 
-        if (!empty($tags)) {
+        if (! empty($tags)) {
             $payload['tags'] = $tags;
         }
 
@@ -364,6 +372,7 @@ class CakemailProvider implements EmailProviderInterface
                     'list_id' => $listId,
                     'contact_id' => $data['data']['id'] ?? null,
                 ]);
+
                 return $data['data']['id'] ?? null;
             }
 
@@ -389,21 +398,21 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return ['success' => false, 'error' => 'Not authenticated'];
         }
 
         $payload = [
             'contacts' => array_map(function ($contact) {
                 $item = ['email' => $contact['email']];
-                
-                if (!empty($contact['attributes'])) {
+
+                if (! empty($contact['attributes'])) {
                     $item['custom_attributes'] = array_map(function ($key, $value) {
                         return ['name' => $key, 'value' => (string) $value];
                     }, array_keys($contact['attributes']), array_values($contact['attributes']));
                 }
 
-                if (!empty($contact['tags'])) {
+                if (! empty($contact['tags'])) {
                     $item['tags'] = $contact['tags'];
                 }
 
@@ -443,7 +452,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return [];
         }
 
@@ -470,7 +479,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return null;
         }
 
@@ -513,7 +522,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             throw new \RuntimeException('Cakemail email activity is unavailable.');
         }
 
@@ -555,7 +564,7 @@ class CakemailProvider implements EmailProviderInterface
     {
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return null;
         }
 
@@ -600,7 +609,7 @@ class CakemailProvider implements EmailProviderInterface
 
         $token = $this->getAccessToken();
 
-        if (!$token) {
+        if (! $token) {
             return [
                 'success' => false,
                 'error' => 'Failed to authenticate. Check your credentials.',
@@ -642,10 +651,10 @@ class CakemailProvider implements EmailProviderInterface
      */
     public function clearCache(): void
     {
-        $cacheKey = 'cakemail_token_' . md5($this->username);
+        $cacheKey = 'cakemail_token_'.md5($this->username);
         Cache::forget($cacheKey);
-        Cache::forget($cacheKey . '_refresh');
-        Cache::forget($cacheKey . '_accounts');
+        Cache::forget($cacheKey.'_refresh');
+        Cache::forget($cacheKey.'_accounts');
     }
 
     protected function requireAccessToken(): string
@@ -672,10 +681,8 @@ class CakemailProvider implements EmailProviderInterface
         ?int $listId
     ): string {
         $contentType = $payload['type'] ?? 'transactional';
-        $html = $this->resolveHtmlBody($payload);
-        $text = $this->resolveTextBody($payload, $html);
-        $html = $this->ensureClientAddressTagInHtml($html);
-        $text = $this->ensureClientAddressTagInText($text);
+        $html = $this->stripLegacyClientAddressTagFromHtml($this->resolveHtmlBody($payload));
+        $text = $this->stripLegacyClientAddressTagFromText($this->resolveTextBody($payload, $html));
 
         $emailPayload = [
             'sender' => [
@@ -701,11 +708,11 @@ class CakemailProvider implements EmailProviderInterface
             $emailPayload['list_id'] = (int) $listId;
         }
 
-        if (!empty($payload['tags'])) {
+        if (! empty($payload['tags'])) {
             $emailPayload['tags'] = $payload['tags'];
         }
 
-        if (!empty($payload['attachments'])) {
+        if (! empty($payload['attachments'])) {
             $emailPayload['attachment'] = array_map(function ($attachment) {
                 return [
                     'filename' => $attachment['filename'] ?? 'attachment',
@@ -715,7 +722,7 @@ class CakemailProvider implements EmailProviderInterface
             }, $payload['attachments']);
         }
 
-        if (!empty($payload['reply_to'])) {
+        if (! empty($payload['reply_to'])) {
             $emailPayload['additional_headers'] = [
                 ['name' => 'Reply-To', 'value' => $payload['reply_to']],
             ];
@@ -746,11 +753,11 @@ class CakemailProvider implements EmailProviderInterface
                 $errorMessage = json_encode($errorMessage);
             }
             if (in_array($response->status(), [400, 401, 403, 404, 422, 429], true)) {
-                throw new EmailProviderRejectedException('Failed to send email via Cakemail: ' . $errorMessage);
+                throw new EmailProviderRejectedException('Failed to send email via Cakemail: '.$errorMessage);
             }
 
             // Timeouts and server errors may follow provider acceptance.
-            throw new \RuntimeException('Failed to send email via Cakemail: ' . $errorMessage);
+            throw new \RuntimeException('Failed to send email via Cakemail: '.$errorMessage);
         }
 
         $responseData = $response->json();
@@ -768,7 +775,6 @@ class CakemailProvider implements EmailProviderInterface
     }
 
     /**
-     * @param  mixed  $recipients
      * @return array<int, string>
      */
     protected function normalizeRecipientList(mixed $recipients): array
@@ -817,28 +823,29 @@ class CakemailProvider implements EmailProviderInterface
         return trim(html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8'));
     }
 
-    protected function ensureClientAddressTagInHtml(string $html): string
+    protected function stripLegacyClientAddressTagFromHtml(string $html): string
     {
-        if ($html === '' || str_contains($html, self::CLIENT_ADDRESS_TAG)) {
+        if ($html === '' || ! str_contains($html, self::CLIENT_ADDRESS_TAG)) {
             return $html;
         }
 
-        $addressHtml = '<div style="margin-top:8px; text-align:center; color:#7f8fa3; font-size:11px; line-height:1.6;">' . self::CLIENT_ADDRESS_TAG . '</div>';
+        // Remove only the standalone legacy transport marker. Real footer copy,
+        // addresses, links and markers embedded in authored sentences stay intact.
+        $tag = preg_quote(self::CLIENT_ADDRESS_TAG, '#');
+        $html = preg_replace('#<(div|p)\b[^>]*>\s*'.$tag.'\s*</\1>\s*#i', '', $html) ?? $html;
 
-        if (str_contains(strtolower($html), '</body>')) {
-            return preg_replace('/<\/body>/i', $addressHtml . "\n</body>", $html, 1) ?? ($html . $addressHtml);
-        }
-
-        return $html . "\n" . $addressHtml;
+        return preg_replace('#(^|>)\s*'.$tag.'\s*(?=<|$)#i', '$1', $html) ?? $html;
     }
 
-    protected function ensureClientAddressTagInText(string $text): string
+    protected function stripLegacyClientAddressTagFromText(string $text): string
     {
-        if ($text === '' || str_contains($text, self::CLIENT_ADDRESS_TAG)) {
+        if ($text === '' || ! str_contains($text, self::CLIENT_ADDRESS_TAG)) {
             return $text;
         }
 
-        return rtrim($text) . "\n\n" . self::CLIENT_ADDRESS_TAG;
+        $tag = preg_quote(self::CLIENT_ADDRESS_TAG, '/');
+
+        return rtrim(preg_replace('/^[\t ]*'.$tag.'[\t ]*(?:\r\n|\n|\r|$)/m', '', $text) ?? $text);
     }
 
     protected function configurationIssue(): ?string
@@ -851,11 +858,11 @@ class CakemailProvider implements EmailProviderInterface
             return 'Cakemail credentials are not configured. Set CAKEMAIL_USERNAME and CAKEMAIL_PASSWORD before sending transactional email.';
         }
 
-        if (!$this->baseUrl) {
+        if (! $this->baseUrl) {
             return 'Cakemail base URL is not configured. Set CAKEMAIL_BASE_URL before sending transactional email.';
         }
 
-        if (!filter_var($this->baseUrl, FILTER_VALIDATE_URL)) {
+        if (! filter_var($this->baseUrl, FILTER_VALIDATE_URL)) {
             return 'Cakemail base URL is invalid. Set CAKEMAIL_BASE_URL to a valid absolute URL before sending transactional email.';
         }
 

@@ -16,7 +16,7 @@ class EmailBrandingConfig
         $appUrl = rtrim((string) config('app.url', 'https://api.reprodashboard.com'), '/');
         $emailLogoGreyUrl = $appUrl.'/images/repro-email-logo-grey.png';
         $verificationLogoLightUrl = $appUrl.'/images/repro-email-logo-light.png';
-        $socialIconBase = $appUrl.'/images/social';
+        $socialIconBase = $appUrl.'/images/social/atelier-v1';
 
         $branding = array_replace_recursive([
             'product_name' => 'R/E Pro Photos',
@@ -134,7 +134,7 @@ class EmailBrandingConfig
                 }
             }
         }
-        $branding['logo_url'] = $appUrl.'/images/email-atelier/v6/logo-light.png';
+        $branding['logo_url'] = $emailLogoGreyUrl;
         $branding['company_address'] = config('mail.company_address');
 
         // The support number is brand-owned, not tenant/user data. Force the

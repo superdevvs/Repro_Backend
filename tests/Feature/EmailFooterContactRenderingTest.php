@@ -97,6 +97,48 @@ class EmailFooterContactRenderingTest extends TestCase
         ];
     }
 
+    #[DataProvider('emailThemes')]
+    public function test_full_footer_and_universal_logo_do_not_depend_on_dark_mode_image_swapping(?string $theme): void
+    {
+        $html = view('emails.client_email_verified', [
+            'user' => (object) ['name' => 'Jamie Example', 'email' => 'jamie@example.com'],
+            'dashboardUrl' => 'https://reprodashboard.com',
+            'settingsUrl' => 'https://reprodashboard.com/settings',
+            'emailPreviewTheme' => $theme,
+        ])->render();
+        $xpath = $this->xpath($html);
+        $logos = $xpath->query('//img[contains(@class, "email-logo-universal")]');
+        $this->assertCount(2, $logos);
+        foreach ($logos as $logo) {
+            $this->assertStringEndsWith('/images/repro-email-logo-grey.png', $logo->getAttribute('src'));
+            $this->assertStringContainsString('display:block', $logo->getAttribute('style'));
+            $this->assertStringNotContainsString('display:none', $logo->getAttribute('style'));
+            $this->assertStringNotContainsString('max-height:0', $logo->getAttribute('style'));
+        }
+        $this->assertStringNotContainsString('logo-light', $html);
+        $this->assertStringNotContainsString('logo-dark', $html);
+        $this->assertStringNotContainsString('[CLIENT.ADDRESS]', $html);
+        foreach (['Need help with a shoot, invoice, or account question?', 'Website', 'View products and services to order.', 'Leave a Review', 'We are looking for 5 stars and nothing less.', 'Please keep this message for your records', 'Thank you for the opportunity.'] as $copy) {
+            $this->assertStringContainsString($copy, $html);
+        }
+        $branding = app(EmailBrandingConfig::class)->defaults();
+        foreach (['facebook', 'instagram', 'linkedin'] as $network) {
+            $this->assertStringContainsString('href="'.$branding['social_'.$network.'_url'].'"', $html);
+            $icons = $xpath->query('//img[@src="'.$branding['social_'.$network.'_icon_url'].'"]');
+            $this->assertCount(1, $icons);
+            $this->assertSame('28', $icons->item(0)->getAttribute('width'));
+            $assetPath = public_path(ltrim(parse_url($icons->item(0)->getAttribute('src'), PHP_URL_PATH), '/'));
+            $this->assertFileExists($assetPath);
+            $dimensions = getimagesize($assetPath);
+            $this->assertSame([96, 96, IMAGETYPE_PNG], array_slice($dimensions, 0, 3));
+        }
+    }
+
+    public static function emailThemes(): array
+    {
+        return [['light'], ['dark'], [null]];
+    }
+
     private function assertRenderedFooterContacts(string $html): void
     {
         $xpath = $this->xpath($html);
@@ -114,7 +156,7 @@ class EmailFooterContactRenderingTest extends TestCase
                 'The rendered contact anchor must opt into the dark-mode-safe footer link rules.'
             );
             $branding = app(EmailBrandingConfig::class)->defaults();
-            $color = $contact === $email ? $branding['link_color_light'] : $branding['muted_color_light'];
+            $color = $branding['link_color_light'];
             $this->assertMatchesRegularExpression(
                 '/(?:^|;)\s*color:\s*'.preg_quote($color, '/').'\s*;/i',
                 $contact->getAttribute('style'),

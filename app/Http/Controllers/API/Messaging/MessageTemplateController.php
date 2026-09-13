@@ -9,6 +9,7 @@ use App\Services\Messaging\EmailPreviewVariables;
 use App\Services\Messaging\ManualNotificationService;
 use App\Services\Messaging\TemplateRenderer;
 use App\Services\SystemEmails\DirectEmailTemplates;
+use App\Services\SystemEmails\EditableEmailContent;
 use App\Services\SystemEmails\EmailTypeRegistry;
 use App\Services\SystemEmails\ProtectedEmailTemplates;
 use Illuminate\Http\JsonResponse;
@@ -154,7 +155,7 @@ class MessageTemplateController extends Controller
         $draft = $template->replicate();
         $draft->fill(Arr::only($overrides, [
             'channel', 'name', 'slug', 'description', 'category', 'subject',
-            'body_html', 'body_text', 'scope', 'email_type', 'override_enabled', 'variables_json',
+            'body_html', 'body_text', 'scope', 'email_type', 'override_enabled', 'variables_json', 'content_blocks_json',
         ]));
 
         return $draft;
@@ -211,6 +212,10 @@ class MessageTemplateController extends Controller
             'template.override_enabled' => ['boolean'],
             'template.variables_json' => ['nullable', 'array'],
             'template.variables_json.*' => ['string'],
+            'template.content_blocks_json' => ['nullable', 'array'],
+            'template.content_blocks_json.*' => ['array:body_html,body_text'],
+            'template.content_blocks_json.*.body_html' => ['sometimes', 'string'],
+            'template.content_blocks_json.*.body_text' => ['sometimes', 'string'],
         ];
     }
 
@@ -218,6 +223,9 @@ class MessageTemplateController extends Controller
     {
         return array_merge($template->toArray(), [
             'editable_body_html' => app(TemplateRenderer::class)->editableBodyHtml((string) $template->body_html),
+            'editable_body_text' => (string) $template->body_text,
+            'editable_subject' => app(EditableEmailContent::class)->editableSubject($template),
+            'editable_content_blocks' => app(EditableEmailContent::class)->blocks($template),
         ]);
     }
 
@@ -303,6 +311,10 @@ class MessageTemplateController extends Controller
             'scope' => ['required', Rule::in(['SYSTEM', 'GLOBAL', 'ACCOUNT', 'USER'])],
             'owner_id' => ['nullable', 'integer'],
             'variables_json' => ['nullable', 'array'],
+            'content_blocks_json' => ['nullable', 'array'],
+            'content_blocks_json.*' => ['array:body_html,body_text'],
+            'content_blocks_json.*.body_html' => ['sometimes', 'string'],
+            'content_blocks_json.*.body_text' => ['sometimes', 'string'],
             'is_system' => ['boolean'],
             'is_active' => ['boolean'],
             'email_type' => [
@@ -316,6 +328,11 @@ class MessageTemplateController extends Controller
 
         if (isset($data['body_html'])) {
             $data['body_html'] = app(TemplateRenderer::class)->editableBodyHtml($data['body_html']);
+        }
+        foreach ($data['content_blocks_json'] ?? [] as $key => $block) {
+            if (array_key_exists('body_html', $block)) {
+                $data['content_blocks_json'][$key]['body_html'] = app(TemplateRenderer::class)->editableBodyHtml($block['body_html']);
+            }
         }
 
         return $data;

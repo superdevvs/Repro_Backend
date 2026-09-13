@@ -90,7 +90,7 @@ HTML,
         $normalizedHtml = str_replace(' ', '', strtolower($html));
 
         $this->assertStringContainsString('data-email-content', $html);
-        $this->assertStringContainsString('/images/email-atelier/v6/logo-light.png', $html);
+        $this->assertStringContainsString('/images/repro-email-logo-grey.png', $html);
         $this->assertMatchesRegularExpression('/class="info-box[^"\\n]*"[^>]*width:100%;[^>]*border-radius:12px;padding:24px;/s', $html);
         $this->assertStringNotContainsString('body-inner-after-wide', $html);
         $this->assertStringNotContainsString('padding:18px52px', $normalizedHtml);

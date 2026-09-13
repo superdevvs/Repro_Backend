@@ -4,8 +4,8 @@ namespace Tests\Feature;
 
 use App\Jobs\FinalizeShootJob;
 use App\Jobs\SendShootReadyEmailJob;
-use App\Models\MessageChannel;
 use App\Models\Message;
+use App\Models\MessageChannel;
 use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
@@ -30,7 +30,7 @@ use Tests\TestCase;
  *   - Case B: the media-presence gate skips the delivery email on no-media deliveries.
  *   - Case C: rendered email exposes client financials (Subtotal/Tax/Total).
  *   - Case D: rendered email shows the wrong support phone (202-868-1113).
- *   - Case E: rendered email contains "Leave a Review" filler + a duplicate Website URL tile.
+ *   - Case E: the shared support footer is separate from the delivery action.
  *   - Case F: rendered hero/eyebrow label does not match the subject.
  *
  * Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7
@@ -228,14 +228,16 @@ class DeliveryEmailBugConditionTest extends TestCase
     }
 
     // ---------------------------------------------------------------------
-    // Case E: single canonical URL, no "Leave a Review" filler
+    // Case E: the restored shared footer stays separate from the delivery action.
     // ---------------------------------------------------------------------
-    public function test_case_e_delivered_email_has_single_url_and_no_review_filler(): void
+    public function test_case_e_delivered_email_includes_the_requested_shared_support_footer(): void
     {
         $html = $this->renderDeliveredEmailHtml();
 
-        $this->assertStringNotContainsString('Leave a Review', $html, 'The delivered email must not contain the "Leave a Review" filler.');
-        $this->assertStringNotContainsString('>Website</a>', $html, 'The delivered email must present a single canonical URL (no duplicate Website tile).');
+        $this->assertStringContainsString('Leave a Review', $html);
+        $this->assertStringContainsString('>Website</a>', $html);
+        $this->assertStringContainsString('Need help with a shoot, invoice, or account question?', $html);
+        $this->assertStringContainsString('Thank you for the opportunity.', $html);
     }
 
     // ---------------------------------------------------------------------
