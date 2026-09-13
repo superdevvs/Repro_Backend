@@ -285,6 +285,47 @@ class DeliveryEmailPreservationTest extends TestCase
         );
     }
 
+    public function test_cancellation_action_keeps_email_recipients_after_activity_broadcast(): void
+    {
+        \App\Services\Messaging\OutboundDeliveryGuard::allowFakeProviderPipelineForTesting();
+        Mail::fake();
+        Queue::fake();
+        $this->createDefaultEmailChannel();
+        $admin = User::factory()->create(['role' => 'admin']);
+        $client = User::factory()->create(['role' => 'client', 'email_status' => 'verified']);
+        $photographer = User::factory()->photographer()->create(['email_status' => 'verified']);
+        $shoot = $this->createShootForClient($client, [
+            'photographer_id' => $photographer->id,
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+        ]);
+        $shoot->services()->updateExistingPivot($shoot->service_id, [
+            'photographer_id' => $photographer->id, 'photographer_pay' => 75,
+        ]);
+        // Match route model binding: no recipient relations have been loaded.
+        $shoot = Shoot::findOrFail($shoot->id);
+        $request = \Illuminate\Http\Request::create('/cancel', 'POST', [
+            'reason' => 'Regression test cancellation', 'notify_client' => true,
+            'suppress_notifications' => false,
+        ]);
+        $this->actingAs($admin);
+        app(\App\Services\Shoots\Actions\CancelShootAction::class)->execute($request, $shoot, $admin);
+
+        $this->assertSame(Shoot::STATUS_CANCELLED, $shoot->fresh()->status);
+        $this->assertSame($client->email, $shoot->client->email);
+        $dispatches = SystemEmailDispatch::where('email_alias', 'SHOOT_CANCELLED')
+            ->where('related_shoot_id', $shoot->id)->get();
+        $this->assertCount(2, $dispatches, 'Each recipient receives exactly one cancellation.');
+        foreach (['client' => $client, 'photographer' => $photographer] as $type => $recipient) {
+            $dispatch = $dispatches->firstWhere('recipient_email', $recipient->email);
+            $this->assertNotNull($dispatch);
+            $this->assertSame($type, $dispatch->recipient_type);
+            $this->assertSame('sent', $dispatch->status, $dispatch->error_code.': '.$dispatch->error_message);
+        }
+        $photographerBody = $dispatches->firstWhere('recipient_email', $photographer->email)->message->body_html;
+        $this->assertStringNotContainsString('$200.00', $photographerBody);
+    }
+
     // ---------------------------------------------------------------------
     // Req 3.4 - shared layout behavior preserved for non-delivered templates
     // The approved shared footer keeps canonical contacts and the website link.

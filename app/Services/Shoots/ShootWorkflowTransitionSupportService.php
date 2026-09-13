@@ -78,8 +78,7 @@ class ShootWorkflowTransitionSupportService
         $systemEmailAlreadySent = false;
         if ($shoot->client && $shoot->client->email) {
             try {
-                $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
-                $systemEmailAlreadySent = true;
+                $systemEmailAlreadySent = $this->mailService->sendShootCancelledEmail($shoot->client, $shoot);
             } catch (\Throwable $e) {
                 Log::warning('Failed to send cancellation email: ' . $e->getMessage());
             }
@@ -91,8 +90,8 @@ class ShootWorkflowTransitionSupportService
             && (!$shoot->client || (int) $shoot->photographer->id !== (int) $shoot->client->id)
         ) {
             try {
-                $this->mailService->sendShootCancelledEmail($shoot->photographer, $shoot);
-                $systemEmailAlreadySent = true;
+                $photographerEmailSent = $this->mailService->sendShootCancelledEmail($shoot->photographer, $shoot);
+                $systemEmailAlreadySent = $systemEmailAlreadySent || $photographerEmailSent;
             } catch (\Throwable $e) {
                 Log::warning('Failed to send cancellation email to photographer', [
                     'shoot_id' => $shoot->id,

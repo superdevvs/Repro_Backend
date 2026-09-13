@@ -74,7 +74,9 @@ class ShootActivityBroadcast implements ShouldBroadcast
         array $metadata = [],
         ?int $userId = null
     ) {
-        $this->shoot = $shoot->loadMissing(['client:id,name,company_name', 'photographer:id,name', 'editor:id,name']);
+        // Loading display-only relations must not truncate recipients on the
+        // caller's model before subsequent workflow emails are dispatched.
+        $this->shoot = (clone $shoot)->loadMissing(['client:id,name,company_name', 'photographer:id,name', 'editor:id,name']);
         $this->activityType = $activityType;
         $this->message = $message;
         $this->metadata = $metadata;

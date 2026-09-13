@@ -2850,7 +2850,8 @@ class MailService
     {
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
-            $shootData = $this->formatShootData($shoot);
+            $recipientType = (int) $user->id === (int) $shoot->client_id ? 'client' : 'photographer';
+            $shootData = $this->formatShootData($shoot, $user, $recipientType);
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
 
             $payload = $this->buildProtectedEmailPayload([
@@ -2858,14 +2859,16 @@ class MailService
                 'account' => $this->formatUserData($shoot->client),
                 'shoot' => $shootData,
                 'meta' => [
-                    'recipient_type' => 'client',
+                    'recipient_type' => $recipientType,
+                    'is_photographer' => $recipientType === 'photographer',
+                    'shoot_service_ids' => $shootData->service_item_ids ?? [],
                     'event_version' => $shoot->updated_at?->toIso8601String() ?? $shoot->id,
                 ],
             ]);
-            $this->dispatchProtectedEmail('SHOOT_CANCELLED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
+            $sent = $this->dispatchProtectedEmail('SHOOT_CANCELLED', $payload, $user->email, $clientCcEmails, [], $this->automatedClientPayload($user, [
                 'related_shoot_id' => $shoot->id,
             ]), [
-                'idempotency_key' => sprintf('SHOOT_CANCELLED:%d:%d:client', $shoot->id, $user->id),
+                'idempotency_key' => sprintf('SHOOT_CANCELLED:%d:%d:%s', $shoot->id, $user->id, $recipientType),
             ]);
 
             Log::info('Shoot cancelled email sent', [
@@ -2901,7 +2904,7 @@ class MailService
                 }
             }
 
-            return true;
+            return $sent;
         } catch (\Throwable $e) {
             Log::error('Failed to send shoot cancelled email', [
                 'user_id' => $user->id,
