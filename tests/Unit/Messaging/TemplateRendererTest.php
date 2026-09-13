@@ -8,6 +8,37 @@ use Tests\TestCase;
 
 class TemplateRendererTest extends TestCase
 {
+    public function test_receipt_formats_money_and_does_not_repeat_the_personalized_greeting(): void
+    {
+        $template = new MessageTemplate([
+            'channel' => 'EMAIL', 'slug' => 'payment-thank-you', 'subject' => 'Payment received',
+            'body_html' => '<h1>Payment received</h1><p>{{greeting}}, {{client_first_name}} {{client_last_name}}!</p><p>Payment Amount: {{payment_amount}}</p><p>Shoot total: ${{shoot_total}}</p>',
+            'body_text' => 'Receipt: [greeting], [realtor_first] [realtor_last]! Payment Amount: [payment_amount]; Shoot total: $[shoot_total]',
+            'variables_json' => [],
+        ]);
+        $result = app(TemplateRenderer::class)->render($template, [
+            'greeting' => 'Hello Jamie', 'client_first_name' => 'Jamie', 'client_last_name' => 'Example',
+            'realtor_first' => 'Jamie', 'realtor_last' => 'Example', 'payment_amount' => '100.00', 'shoot_total' => 291.5,
+        ]);
+        $this->assertStringContainsString('Hello Jamie!', $result['html']);
+        $this->assertStringNotContainsString('Hello Jamie, Jamie', $result['html']);
+        $this->assertStringContainsString('Payment Amount: $100.00', $result['text']);
+        $this->assertStringContainsString('Shoot total: $291.50', $result['text']);
+        $this->assertStringNotContainsString('$$', $result['html']);
+    }
+
+    public function test_receipt_preserves_zero_formatted_amounts_and_a_non_personalized_greeting(): void
+    {
+        $template = new MessageTemplate([
+            'channel' => 'SMS', 'body_text' => 'Receipt: [greeting], [realtor_first]! Paid $[payment_amount]; Total [shoot_total]',
+            'variables_json' => [],
+        ]);
+        $result = app(TemplateRenderer::class)->render($template, [
+            'greeting' => 'Hello', 'realtor_first' => 'Jamie', 'payment_amount' => 0, 'shoot_total' => '$1,234.50',
+        ]);
+        $this->assertSame('Receipt: Hello, Jamie! Paid $0.00; Total $1,234.50', $result['text']);
+    }
+
     public function test_booking_email_uses_shared_theme_adaptive_artwork_and_preserves_normalization(): void
     {
         $template = new MessageTemplate([

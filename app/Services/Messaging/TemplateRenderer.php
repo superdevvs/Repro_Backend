@@ -120,6 +120,25 @@ class TemplateRenderer
      */
     protected function replacePlaceholders(string $content, array $values): string
     {
+        // Legacy receipts append the recipient's name even though greeting
+        // already contains it. Normalize tokens before inserting user values.
+        if (preg_match('/^(?:hi|hello|dear)\s+\S/i', trim((string) ($values['greeting'] ?? '')))) {
+            $greeting = '(?:\{\{\s*greeting\s*\}\}|\[greeting\])';
+            $first = '(?:\{\{\s*(?:client_first_name|realtor_first)\s*\}\}|\[realtor_first\])';
+            $last = '(?:\{\{\s*(?:client_last_name|realtor_last)\s*\}\}|\[realtor_last\])';
+            $content = preg_replace('/('.$greeting.')\s*,?\s*'.$first.'(?:\s*'.$last.')?/', '$1', $content) ?? $content;
+        }
+
+        foreach (['payment_amount', 'shoot_total'] as $moneyKey) {
+            $value = $values[$moneyKey] ?? null;
+            if ($value !== null && is_numeric(str_replace(['$', ','], '', (string) $value))) {
+                $amount = '$'.number_format((float) str_replace(['$', ','], '', (string) $value), 2);
+                $token = '(?:\{\{\s*'.preg_quote($moneyKey, '/').'\s*\}\}|\['.preg_quote($moneyKey, '/').'\])';
+                $content = preg_replace_callback('/\$?'.$token.'/', fn () => $amount, $content) ?? $content;
+                unset($values[$moneyKey]);
+            }
+        }
+
         if (array_key_exists('invoice_number', $values)) {
             $content = $this->replaceInvoiceNumberPlaceholders($content, $values['invoice_number']);
             unset($values['invoice_number']);
