@@ -45,8 +45,13 @@ class EmailDarkModeVisibilityTest extends TestCase
 
         $this->assertStringContainsString('content="'.$theme.'"', $html);
         $this->assertDoesNotMatchRegularExpression('/@media\s*\(prefers-color-scheme:\s*dark\)/', $html);
-        $this->assertStringContainsString('/logo-'.$theme.'.png', $html);
-        $this->assertStringNotContainsString('/logo-'.($theme === 'light' ? 'dark' : 'light').'.png', $html);
+        $logos = $xpath->query('//img[contains(@class,"email-logo-universal")]');
+        $this->assertCount(2, $logos);
+        foreach ($logos as $logo) {
+            $this->assertStringEndsWith('/images/repro-email-logo-grey.png', $logo->getAttribute('src'));
+            $this->assertStringContainsString('display:block', $logo->getAttribute('style'));
+        }
+        $this->assertStringNotContainsString('/images/email-atelier/v6/logo-', $html);
         foreach ([
             '//*[@data-email-content]//p' => $colors['body'],
             '//*[@data-email-content]//strong' => $colors['ink'],

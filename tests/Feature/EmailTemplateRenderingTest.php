@@ -20,7 +20,7 @@ use Tests\TestCase;
  */
 class EmailTemplateRenderingTest extends TestCase
 {
-    private const SUPPORT_LINE = 'Need a hand?';
+    private const SUPPORT_LINE = 'Need help with a shoot, invoice, or account question?';
 
     private function renderer(): TemplateRenderer
     {
@@ -235,7 +235,7 @@ class EmailTemplateRenderingTest extends TestCase
         }
     }
 
-    public function test_account_created_db_render_uses_single_url_and_new_closing(): void
+    public function test_account_created_db_render_keeps_its_action_and_shared_support_footer(): void
     {
         $seeder = new MessagingSystemSeeder;
         $method = new ReflectionMethod($seeder, 'getAccountCreatedTemplate');
@@ -267,15 +267,14 @@ class EmailTemplateRenderingTest extends TestCase
 
         // New closing.
         $this->assertStringContainsString('Thank you for the opportunity.', $html);
-        // Website footer tile suppressed and the shared footer no longer shows
-        // a Dashboard tile.
-        $this->assertStringNotContainsString('>Website<', $html);
+        // Website support is restored without adding a second Dashboard tile.
+        $this->assertStringContainsString('>Website<', $html);
         $this->assertStringNotContainsString('>Dashboard<', $html);
         // Support line present.
         $this->assertStringContainsString(self::SUPPORT_LINE, $this->visibleText($html));
     }
 
-    public function test_account_created_blade_render_hides_website_and_has_new_closing(): void
+    public function test_account_created_blade_render_has_shared_website_support_and_closing(): void
     {
         $user = (object) [
             'name' => 'Jane Doe',
@@ -289,8 +288,8 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertStringContainsString('Thank you for the opportunity.', $html);
         // The "Open Dashboard" CTA remains (single primary URL type).
         $this->assertStringContainsString('Open Dashboard', $html);
-        // Website and Dashboard footer tiles are suppressed for this email.
-        $this->assertStringNotContainsString('>Website<', $html);
+        // The shared footer includes Website support and no duplicate Dashboard tile.
+        $this->assertStringContainsString('>Website<', $html);
         $this->assertStringNotContainsString('>Dashboard<', $html);
         // Desktop and mobile retain the approved responsive heading sizes.
         $this->assertStringContainsString('font-size:30px', $html);
@@ -324,7 +323,7 @@ class EmailTemplateRenderingTest extends TestCase
         $this->assertSame([], $offenders, 'Hero titles must not use font-size:48px: '.implode(', ', $offenders));
     }
 
-    public function test_new_account_email_exposes_only_dashboard_url_links(): void
+    public function test_new_account_email_retains_dashboard_action_and_shared_support_links(): void
     {
         $user = (object) [
             'name' => 'Jane Doe',
@@ -343,15 +342,10 @@ class EmailTemplateRenderingTest extends TestCase
         $httpLinks = array_values(array_filter($hrefs, fn ($href) => str_starts_with($href, 'http')));
         $this->assertNotEmpty($httpLinks);
 
-        // No http link should point at a bare company-website "Website" tile;
-        // the only product URLs should be the dashboard.
-        foreach ($httpLinks as $href) {
-            if (str_contains($href, 'reprophotos.com')) {
-                // Only the footer brand logo may link to the website; ensure it
-                // is not presented as a second product URL tile.
-                $this->assertStringNotContainsString('>Website<', $html);
-            }
-        }
+        $this->assertContains('https://reprophotos.com', $httpLinks);
+        $this->assertStringContainsString('data-email-footer="atelier"', $html);
+        $this->assertStringContainsString('>Website<', $html);
+        $this->assertStringContainsString('>Leave a Review<', $html);
 
         $dashboardLinks = array_filter($httpLinks, fn ($href) => str_contains($href, 'reprodashboard.com'));
         $this->assertNotEmpty($dashboardLinks, 'Expected at least one dashboard URL in the New Account email.');
