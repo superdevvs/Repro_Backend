@@ -315,7 +315,7 @@ class SystemEmailRenderer
             'password_reset_link' => (string) (Arr::get($links, 'reset_password') ?? ''),
             'shoot_location' => (string) (Arr::get($shoot, 'location') ?? Arr::get($shoot, 'address') ?? ''),
             'shoot_date' => $this->overrideShootDate($shoot, $resolved),
-            'shoot_time' => (string) ($resolved['shoot_time'] ?? Arr::get($shoot, 'time') ?? ''),
+            'shoot_time' => (string) (Arr::get($shoot, 'time') ?? $resolved['shoot_time'] ?? ''),
             'photographer_name' => $photographerName,
             'photographer_first_name' => $photographerFirstName,
             'photographer_last_name' => $photographerLastName,
@@ -347,7 +347,7 @@ class SystemEmailRenderer
     private function overrideShootDate(array $shoot, array $resolved): string
     {
         $resolvedDate = trim((string) ($resolved['shoot_date'] ?? ''));
-        if ($resolvedDate !== '') {
+        if (empty($shoot['date']) && $resolvedDate !== '') {
             return $resolvedDate;
         }
 

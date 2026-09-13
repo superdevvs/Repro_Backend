@@ -318,6 +318,12 @@ class TemplateVariableResolver
             ? $scheduledDate->format('M j, Y')
             : ($scheduledAt?->format('M j, Y'));
         $shootTime = $this->formatShootTime($shoot);
+        $emailSchedule = \App\Support\ShootEmailSchedule::summarize(
+            collect($shoot->relationLoaded('services') ? $shoot->getRelation('services') : [])->map(fn ($service) => $service->pivot?->scheduled_at),
+            $shootDate, $shootTime
+        );
+        $shootDate = $emailSchedule['date'];
+        $shootTime = $emailSchedule['time'];
         $total = $shoot->total_quote ?? $shoot->base_quote ?? null;
         $paymentLink = (
             $shoot->exists
@@ -408,6 +414,10 @@ class TemplateVariableResolver
                 }
 
                 $line = implode(' - ', array_filter($lineParts, fn ($part) => $part !== ''));
+                $schedule = \App\Support\ShootEmailSchedule::format($service->pivot?->scheduled_at);
+                if ($schedule !== null) {
+                    $line .= ' (Scheduled: '.$schedule.')';
+                }
                 if ($assignedPhotographerName !== '') {
                     $line .= ' (Photographer: '.$assignedPhotographerName.')';
                 }
@@ -418,6 +428,7 @@ class TemplateVariableResolver
                     .($quantity > 1 ? ' <span style="color:#64748b;">x'.e((string) $quantity).'</span>' : '')
                     .($price !== null && $price !== '' ? ' <strong style="color:#0f172a;">$'.e(number_format((float) $price, 2)).'</strong>' : '')
                     .($assignedPhotographerName !== '' ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Assigned photographer: '.e($assignedPhotographerName).'</div>' : '')
+                    .($schedule !== null ? '<div style="font-size:12px;color:#64748b;margin-top:2px;">Scheduled: '.e($schedule).'</div>' : '')
                     .'</li>';
             }
 

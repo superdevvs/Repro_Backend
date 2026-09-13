@@ -1890,6 +1890,11 @@ class MailService
 
         $notesText = $this->formatNotes($shoot);
         $serviceRows = $this->formatDetailedServices($shoot, $recipient, $roleContext, $serviceItemIds);
+        $emailSchedule = \App\Support\ShootEmailSchedule::summarize(
+            array_column($serviceRows, 'scheduled_at'), $dateStr, $formattedTime
+        );
+        $dateStr = $emailSchedule['date'];
+        $formattedTime = $emailSchedule['time'];
         $assignedPhotographers = $this->formatAssignedPhotographers($shoot, $serviceRows);
         $packageRows = ($recipient || !empty($serviceItemIds))
             ? $this->formatPackagesFromServiceRows($serviceRows)

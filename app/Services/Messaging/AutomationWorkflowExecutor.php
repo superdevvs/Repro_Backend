@@ -598,7 +598,7 @@ class AutomationWorkflowExecutor
 
             case 'SHOOT_UPDATED':
                 if ($shoot && $client && in_array('client', $recipientTypes, true)) {
-                    $changesSummary = (string) ($context['changes_summary'] ?? $context['changesSummary'] ?? '');
+                    $changesSummary = (string) ($context['shoot_changes'] ?? $context['changes_summary'] ?? $context['changesSummary'] ?? '');
                     if ($this->mailService->sendShootUpdatedEmail($client, $shoot, $changesSummary, true, in_array('photographer', $recipientTypes, true))) {
                         $sentTo[] = $client->email;
                         if (in_array('photographer', $recipientTypes, true)) {

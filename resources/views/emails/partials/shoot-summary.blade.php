@@ -143,6 +143,9 @@
                         @if(!empty($service['photographer_name']))
                             <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">Assigned photographer: {{ $service['photographer_name'] }}</span>
                         @endif
+                        @if(!empty($service['formatted_schedule']))
+                            <span class="dark-muted" style="display:block; margin-top:4px; color:#7188a6; font-size:12px; line-height:1.55;">Scheduled: {{ $service['formatted_schedule'] }}</span>
+                        @endif
                     </td>
                     @if(!$isPhotographer)
                         <td class="line-td amount-td detail-border dark-heading" style="padding:12px 0; border-bottom:1px solid #edf2f7; text-align:right; vertical-align:top; white-space:nowrap; color:#071223; font-weight:800; font-size:14px;">{{ $service['formatted_total'] }}</td>
