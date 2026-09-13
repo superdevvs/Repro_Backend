@@ -163,6 +163,7 @@ class EditableEmailContent
 
     public static function plainText(string $html): string
     {
+        $html = preg_replace('/<(head|style|script)\b[^>]*>.*?<\/\1>/is', '', $html) ?? $html;
         $html = preg_replace('/<\/(?:p|div|tr|h[1-6]|li|table)>|<br\s*\/?>/i', "\n", $html);
 
         return trim(html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8'));

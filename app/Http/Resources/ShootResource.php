@@ -37,44 +37,14 @@ class ShootResource extends JsonResource
      */
     protected function serializePendingPayments(): array
     {
-        $payments = $this->relationLoaded('payments')
-            ? $this->payments
-            : $this->payments()->get();
-
-        return $payments
-            ->filter(fn ($payment) => (string) $payment->status === \App\Models\Payment::STATUS_PENDING
-                && in_array((string) $payment->payment_method, ['cash', 'check'], true))
-            ->map(function ($payment) {
-                $details = is_array($payment->payment_details) ? $payment->payment_details : [];
-
-                return [
-                    'id' => (int) $payment->id,
-                    'amount' => (float) $payment->amount,
-                    'currency' => strtoupper((string) ($payment->currency ?: 'USD')),
-                    'paymentMethod' => (string) $payment->payment_method,
-                    'status' => (string) $payment->status,
-                    'createdAt' => optional($payment->created_at)->toIso8601String(),
-                    'submittedByName' => $details['submitted_by_name'] ?? null,
-                    'submittedByRole' => $details['submitted_by_role'] ?? null,
-                    'checkNumber' => $details['check_number'] ?? null,
-                    'paymentDate' => $details['payment_date'] ?? null,
-                    'notes' => $details['notes'] ?? null,
-                ];
-            })
-            ->values()
-            ->all();
+        return app(\App\Services\Shoots\PendingOfflinePaymentSummary::class)
+            ->forShoot($this->resource)['pendingPayments'];
     }
 
     protected function calculatePendingPaymentTotal(): float
     {
-        $payments = $this->relationLoaded('payments')
-            ? $this->payments
-            : $this->payments()->get();
-
-        return (float) $payments
-            ->filter(fn ($payment) => (string) $payment->status === \App\Models\Payment::STATUS_PENDING
-                && in_array((string) $payment->payment_method, ['cash', 'check'], true))
-            ->sum(fn ($payment) => (float) $payment->amount);
+        return app(\App\Services\Shoots\PendingOfflinePaymentSummary::class)
+            ->forShoot($this->resource)['pendingTotal'];
     }
 
     protected function calculatePhotographerPay(): float
@@ -356,7 +326,7 @@ class ShootResource extends JsonResource
                             'photographer_pay' => $range->photographer_pay !== null ? (float) $range->photographer_pay : null,
                             'photo_count' => $range->photo_count !== null ? (int) $range->photo_count : null,
                         ])->values()->all(),
-                        'photographer_pay' => $service->pivot->photographer_pay ? (float) $service->pivot->photographer_pay : null,
+                        'photographer_pay' => $serviceItemSummary['photographer_pay'] ?? null,
                         // Raw pivot value (may be null)
                         'photographer_id' => $isEditor ? null : ($service->pivot->photographer_id ? (string) $service->pivot->photographer_id : null),
                         // RESOLVED value with fallback (frontend uses this)

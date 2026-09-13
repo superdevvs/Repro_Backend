@@ -89,6 +89,7 @@ class ShootServiceItemSupport
                     ? ShootService::PAYMENT_PAID
                     : ($paidAmount <= 0 ? ShootService::PAYMENT_UNPAID : ShootService::PAYMENT_PARTIALLY_PAID));
             $unlockState = $this->unlockState($shoot, $item, $paymentStatus);
+            $photographerPay = $item->photographer_pay ?? $item->service?->photographer_pay;
 
             return [
                 'id' => $item->id,
@@ -103,8 +104,8 @@ class ShootServiceItemSupport
                 'price' => (float) ($item->price ?? 0),
                 'quantity' => (int) ($item->quantity ?? 1),
                 'subtotal' => $subtotal,
-                'photographer_pay' => $item->photographer_pay !== null ? (float) $item->photographer_pay : null,
-                'photographerPay' => $item->photographer_pay !== null ? (float) $item->photographer_pay : null,
+                'photographer_pay' => $photographerPay !== null ? (float) $photographerPay : null,
+                'photographerPay' => $photographerPay !== null ? (float) $photographerPay : null,
                 'photographer_id' => $item->photographer_id,
                 'photographerId' => $item->photographer_id,
                 'photographer' => $this->compactUser($item->photographer),

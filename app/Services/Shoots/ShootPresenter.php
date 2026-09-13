@@ -448,6 +448,10 @@ class ShootPresenter
             $shoot->photographer_notes = null;
         }
 
+        $shoot->setAttribute('payment', $isEditorRole
+            ? ['pendingPayments' => [], 'pendingTotal' => 0.0]
+            : app(PendingOfflinePaymentSummary::class)->forShoot($shoot));
+
         $ghostUsers = collect($shoot->ghostUsers ?? [])
             ->map(function ($ghostUser) {
                 if (is_array($ghostUser)) {
@@ -778,7 +782,7 @@ class ShootPresenter
                             'photographer_pay' => $range->photographer_pay !== null ? (float) $range->photographer_pay : null,
                             'photo_count' => $range->photo_count !== null ? (int) $range->photo_count : null,
                         ])->values()->all(),
-                        'photographer_pay' => $isEditorRole ? null : ($service->pivot?->photographer_pay ? (float) $service->pivot->photographer_pay : null),
+                        'photographer_pay' => $isEditorRole ? null : ($serviceItemSummary['photographer_pay'] ?? null),
                         'photographer_id' => $isEditorRole ? null : ($pivotPhotographerId ? (string) $pivotPhotographerId : null),
                         'resolved_photographer_id' => $isEditorRole ? null : ($resolvedPhotographerId ? (string) $resolvedPhotographerId : null),
                         'photographer' => $isEditorRole ? null : $resolvedPhotographer,

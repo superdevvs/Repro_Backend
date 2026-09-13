@@ -942,7 +942,7 @@ class AutomationService
             }
         }
 
-        $notes = array_filter($notes, fn($note) => trim((string) $note) !== '');
+        $notes = array_unique(array_filter(array_map('trim', $notes), fn ($note) => $note !== ''));
 
         return $notes ? implode("\n", $notes) : 'N/A';
     }

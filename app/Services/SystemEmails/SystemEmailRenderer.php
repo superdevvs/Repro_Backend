@@ -56,7 +56,7 @@ class SystemEmailRenderer
 
         $viewData = $this->viewData($definition, $payload);
         $html = view($definition->templateView, $viewData)->render();
-        $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)) ?? '');
+        $text = EditableEmailContent::plainText($html);
 
         return [
             'subject' => $subject,
@@ -202,7 +202,7 @@ class SystemEmailRenderer
         $resolvedSubject = trim((string) ($rendered['subject'] ?? ''));
         $text = (string) ($rendered['text'] ?? $rendered['body_text'] ?? '');
         if (trim($text) === '') {
-            $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)) ?? '');
+            $text = EditableEmailContent::plainText($html);
         }
 
         return [

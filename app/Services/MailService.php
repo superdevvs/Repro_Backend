@@ -1989,6 +1989,9 @@ class MailService
             }
         }
 
+        // Legacy scalar notes may also exist as client-visible relation rows.
+        $noteContents = array_unique(array_filter(array_map('trim', $noteContents), fn ($note) => $note !== ''));
+
         return !empty($noteContents) ? implode("\n", $noteContents) : '';
     }
 
@@ -3803,7 +3806,7 @@ HTML;
 
         $text = array_key_exists('body_text', $extraPayload)
             ? (string) $extraPayload['body_text']
-            : trim(preg_replace('/\s+/', ' ', strip_tags($html)));
+            : \App\Services\SystemEmails\EditableEmailContent::plainText($html);
         $payload = [
             'to' => $to,
             'cc' => $this->sanitizeEmailAddresses($cc, $to),
