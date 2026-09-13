@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "option": 18,
+  "sourceId": "364e2500-ee11-4639-8ff8-00bfbb619746",
+  "frameSize": 64,
+  "count": 64,
+  "columns": 8,
+  "rows": 8,
+  "durationMs": 2038.4615384615383,
+  "sprite": "/brand/re/favicon-sprite.png",
+  "static": "/brand/re/favicon-static.svg",
+  "viewBox": [
+    116,
+    116,
+    280,
+    280
+  ],
+  "loop": true
+}

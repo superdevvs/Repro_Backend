@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#030619">
     <title>{{ $title }}</title>
+    @include('partials.brand-favicon')
     <style>
         :root {
             color-scheme: dark;

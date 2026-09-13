@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex, nofollow, noarchive">
     <title>{{ $payload->title }}</title>
+    @if ($payload->branded || in_array($payload->type, ['dashboard', 'portal'], true))
+        @include('partials.brand-favicon')
+    @endif
     <meta name="description" content="{{ $payload->description }}">
     <link rel="canonical" href="{{ $payload->url }}">
 
