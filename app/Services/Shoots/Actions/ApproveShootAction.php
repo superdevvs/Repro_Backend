@@ -4,15 +4,15 @@ namespace App\Services\Shoots\Actions;
 
 use App\Models\Shoot;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
 use App\Services\GoogleCalendar\GoogleCalendarSyncDispatcher;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Messaging\ClientConfirmationRecoveryService;
-use App\Services\ShootWorkflowService;
+use App\Services\ShootMediaStorageService;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\Shoots\ShootMutationSupportService;
+use App\Services\ShootWorkflowService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -38,8 +38,7 @@ class ApproveShootAction
         protected ClientConfirmationRecoveryService $clientConfirmationRecoveryService,
         protected MailService $mailService,
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher
-    ) {
-    }
+    ) {}
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
     {
@@ -50,8 +49,8 @@ class ApproveShootAction
         $validated = $request->validate(array_merge(
             $this->editablePayloadService->validationRules(),
             [
-            'notes' => 'nullable|string|max:2000',
-            'skip_availability_check' => 'nullable|boolean',
+                'notes' => 'nullable|string|max:2000',
+                'skip_availability_check' => 'nullable|boolean',
             ]
         ));
 
@@ -60,14 +59,14 @@ class ApproveShootAction
             : (
                 $shoot->scheduled_at instanceof \DateTimeInterface
                     ? new \DateTime($shoot->scheduled_at->format('Y-m-d H:i:s'))
-                    : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime())
+                    : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime)
             );
 
         $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
-        if (!$skipAvailabilityCheck) {
-            if (!empty($targetPhotographerId)) {
+        if (! $skipAvailabilityCheck) {
+            if (! empty($targetPhotographerId)) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices);
                 $this->support->checkPhotographerAvailability((int) $targetPhotographerId, $scheduledAt, $durationMinutes, $shoot->id);
             }
@@ -81,8 +80,8 @@ class ApproveShootAction
 
         $this->editablePayloadService->apply($shoot, $validated, $user);
 
-        if (!empty($shoot->photographer_id)) {
-            if (!$skipAvailabilityCheck) {
+        if (! empty($shoot->photographer_id)) {
+            if (! $skipAvailabilityCheck) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices(
                     $shoot->services->map(fn ($service) => ['id' => $service->id])->toArray()
                 );
@@ -128,10 +127,11 @@ class ApproveShootAction
         $requestApprovalAttemptedAt = null;
         $requestApprovalClientEmailSent = false;
         if ($wasRequested) {
-            if ($this->hasClientFacingRequestModifications($validated)) {
+            $clientRequestChanges = $this->mailService->buildClientRequestChangeSummary($beforeSnapshot, $shoot);
+            if ($this->hasClientFacingRequestModifications($validated)
+                && (! empty($clientRequestChanges['lines']) || ! empty($clientRequestChanges['service_deltas']))) {
                 $requestApprovalTrigger = 'SHOOT_REQUEST_MODIFIED';
                 $context['request_modified'] = true;
-                $clientRequestChanges = $this->mailService->buildClientRequestChangeSummary($beforeSnapshot, $shoot);
                 $context['shoot_changes'] = $clientRequestChanges['summary'] ?? ($shootChangeSummary['summary'] ?? 'Please review updated details in the dashboard.');
                 $context['shoot_changes_html'] = null;
                 $context['shoot_service_deltas'] = $clientRequestChanges['service_deltas'] ?? [];
@@ -192,11 +192,11 @@ class ApproveShootAction
             );
         }
 
-        if ($shouldUseFallback || !$clientEmailSent || !$photographerEmailSent) {
-            if ($notifyClient !== false && !$clientEmailSent && !$clientConfirmationCoveredByApproval) {
-                if (!$shoot->client) {
+        if ($shouldUseFallback || ! $clientEmailSent || ! $photographerEmailSent) {
+            if ($notifyClient !== false && ! $clientEmailSent && ! $clientConfirmationCoveredByApproval) {
+                if (! $shoot->client) {
                     $this->clientConfirmationRecoveryService->recordNoDeliveryPath($shoot, null, 'SHOOT_SCHEDULED');
-                } elseif (!$this->clientConfirmationRecoveryService->hasDeliverableEmail($shoot->client)) {
+                } elseif (! $this->clientConfirmationRecoveryService->hasDeliverableEmail($shoot->client)) {
                     $this->clientConfirmationRecoveryService->recordSkippedMissingEmail($shoot, $shoot->client, 'SHOOT_SCHEDULED');
                 } else {
                     $paymentLink = $this->mailService->generatePaymentLink($shoot);
@@ -226,7 +226,7 @@ class ApproveShootAction
                 }
             }
 
-            if ($notifyPhotographer !== false && !$photographerEmailSent) {
+            if ($notifyPhotographer !== false && ! $photographerEmailSent) {
                 $this->mailService->sendAssignedPhotographerShootScheduledEmails($shoot);
             }
         }
@@ -242,7 +242,7 @@ class ApproveShootAction
     private function hasClientFacingRequestModifications(array $validated): bool
     {
         foreach (array_keys($validated) as $field) {
-            if (!in_array($field, self::NON_MODIFYING_REQUEST_APPROVAL_FIELDS, true)) {
+            if (! in_array($field, self::NON_MODIFYING_REQUEST_APPROVAL_FIELDS, true)) {
                 return true;
             }
         }
@@ -252,7 +252,7 @@ class ApproveShootAction
 
     private function formatDispatchSummaryForLog(?array $dispatch): array
     {
-        if (!is_array($dispatch)) {
+        if (! is_array($dispatch)) {
             return [
                 'present' => false,
             ];

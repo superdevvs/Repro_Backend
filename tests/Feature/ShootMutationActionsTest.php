@@ -13,12 +13,12 @@ use App\Models\ShootFile;
 use App\Models\ShootMediaAlbum;
 use App\Models\ShootUploadAttempt;
 use App\Models\User;
-use App\Services\ShootMediaStorageService;
 use App\Services\CubiCasaService;
 use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\PhotographerAvailabilityService;
+use App\Services\ShootMediaStorageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -35,10 +35,15 @@ class ShootMutationActionsTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+
     protected User $client;
+
     protected User $photographer;
+
     protected User $salesRep;
+
     protected Service $service;
+
     protected Service $secondService;
 
     protected function setUp(): void
@@ -593,6 +598,42 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
+    public function approving_unchanged_request_fields_does_not_send_a_modified_email(): void
+    {
+        Sanctum::actingAs($this->admin);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id,
+            'service_id' => $this->service->id,
+            'status' => Shoot::STATUS_REQUESTED,
+            'workflow_status' => Shoot::STATUS_REQUESTED,
+            'address' => '123 Original Request St',
+            'city' => 'Baltimore', 'state' => 'MD', 'zip' => '21201',
+            'scheduled_at' => now()->addDays(3)->setTime(12, 0),
+            'scheduled_date' => now()->addDays(3)->toDateString(),
+            'time' => '12:00',
+            'photographer_id' => $this->photographer->id,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $automation = Mockery::mock(AutomationService::class);
+        $automation->shouldIgnoreMissing();
+        $automation->shouldReceive('buildShootContext')->andReturnUsing(fn (Shoot $target) => ['shoot' => $target]);
+        $automation->shouldReceive('handleEvent')->with('SHOOT_REQUEST_MODIFIED', Mockery::any())->never();
+        $automation->shouldReceive('handleEvent')->with('SHOOT_REQUEST_APPROVED', Mockery::any())->once()
+            ->andReturn($this->emptyAutomationDispatchSummary('SHOOT_REQUEST_APPROVED'));
+        $automation->shouldReceive('handleEvent')->with('SHOOT_SCHEDULED', Mockery::any())
+            ->andReturn($this->emptyAutomationDispatchSummary('SHOOT_SCHEDULED'));
+        $this->app->instance(AutomationService::class, $automation);
+
+        $this->postJson("/api/shoots/{$shoot->id}/approve", [
+            'address' => $shoot->address, 'city' => $shoot->city,
+            'state' => $shoot->state, 'zip' => $shoot->zip,
+            'scheduled_at' => $shoot->scheduled_at->format('Y-m-d H:i:s'),
+            'photographer_id' => $this->photographer->id,
+            'notify_client' => true, 'notify_photographer' => false,
+        ])->assertOk();
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
     public function admin_approving_a_requested_shoot_with_client_facing_edits_uses_the_modified_request_trigger(): void
     {
         Sanctum::actingAs($this->admin);
@@ -1052,7 +1093,8 @@ class ShootMutationActionsTest extends TestCase
 
         $mailService = Mockery::mock(MailService::class);
         $mailService->shouldIgnoreMissing();
-        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->andReturn([]);
+        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->passthru();
+        $mailService->shouldReceive('buildClientRequestChangeSummary')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
             'summary' => 'Photographer updated',
             'html' => '<p>Photographer updated</p>',
@@ -2378,7 +2420,8 @@ class ShootMutationActionsTest extends TestCase
 
         $mailService = Mockery::mock(MailService::class);
         $mailService->shouldIgnoreMissing();
-        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->andReturn([]);
+        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->passthru();
+        $mailService->shouldReceive('buildClientRequestChangeSummary')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
             'summary' => 'Shoot details updated',
             'html' => '<p>Shoot details updated</p>',
@@ -2417,7 +2460,8 @@ class ShootMutationActionsTest extends TestCase
     {
         $mailService = Mockery::mock(MailService::class);
         $mailService->shouldIgnoreMissing();
-        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->andReturn([]);
+        $mailService->shouldReceive('captureShootSnapshot')->zeroOrMoreTimes()->passthru();
+        $mailService->shouldReceive('buildClientRequestChangeSummary')->zeroOrMoreTimes()->passthru();
         $mailService->shouldReceive('buildShootChangeSummary')->zeroOrMoreTimes()->andReturn([
             'summary' => 'Shoot details updated',
             'html' => '<p>Shoot details updated</p>',

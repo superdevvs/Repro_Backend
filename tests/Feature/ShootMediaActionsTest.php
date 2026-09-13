@@ -6,16 +6,16 @@ use App\Events\ShootActivityBroadcast;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Jobs\GenerateWatermarkedImageJob;
 use App\Jobs\SyncShootIguideJob;
-use App\Models\Service;
 use App\Models\Payment;
+use App\Models\Service;
 use App\Models\Shoot;
 use App\Models\ShootFile;
-use App\Models\ShootShareLink;
 use App\Models\ShootService;
+use App\Models\ShootShareLink;
 use App\Models\User;
 use App\Services\ShootMediaStorageService;
-use App\Services\Shoots\ShootMediaArchiveService;
 use App\Services\Shoots\Actions\VerifyShootFileAction;
+use App\Services\Shoots\ShootMediaArchiveService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -37,13 +37,21 @@ class ShootMediaActionsTest extends TestCase
     use RefreshDatabase;
 
     protected User $admin;
+
     protected User $superadmin;
+
     protected User $editingManager;
+
     protected User $editor;
+
     protected User $client;
+
     protected User $photographer;
+
     protected User $salesRep;
+
     protected User $unassignedSalesRep;
+
     protected Service $service;
 
     protected function setUp(): void
@@ -112,7 +120,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('uploadToTodo')
             ->once()
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
-                $path = 'shoots/' . $shoot->id . '/todo/' . $file->hashName();
+                $path = 'shoots/'.$shoot->id.'/todo/'.$file->hashName();
                 Storage::disk('public')->put($path, 'raw-upload');
 
                 return ShootFile::create([
@@ -129,7 +137,7 @@ class ShootMediaActionsTest extends TestCase
             });
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'files' => [UploadedFile::fake()->image('raw-upload.jpg')],
             'upload_type' => 'raw',
         ], ['Accept' => 'application/json']);
@@ -150,7 +158,7 @@ class ShootMediaActionsTest extends TestCase
 
         Queue::assertNotPushed(SyncShootIguideJob::class);
 
-        $finalizeResponse = $this->post('/api/shoots/' . $shoot->id . '/upload/finalize-raw', [], [
+        $finalizeResponse = $this->post('/api/shoots/'.$shoot->id.'/upload/finalize-raw', [], [
             'Accept' => 'application/json',
         ]);
 
@@ -182,7 +190,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('uploadToCompleted')
             ->once()
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
-                $path = 'shoots/' . $shoot->id . '/completed/' . $file->hashName();
+                $path = 'shoots/'.$shoot->id.'/completed/'.$file->hashName();
                 Storage::disk('public')->put($path, 'edited-upload');
 
                 return ShootFile::create([
@@ -200,7 +208,7 @@ class ShootMediaActionsTest extends TestCase
             });
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'files' => [UploadedFile::fake()->image('edited-upload.jpg')],
             'upload_type' => 'edited',
         ], ['Accept' => 'application/json']);
@@ -231,7 +239,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('uploadToCompleted')
             ->once()
             ->andReturnUsing(function (Shoot $shoot, UploadedFile $file, int $userId) {
-                $path = 'shoots/' . $shoot->id . '/completed/' . $file->hashName();
+                $path = 'shoots/'.$shoot->id.'/completed/'.$file->hashName();
                 Storage::disk('public')->put($path, 'superadmin-edited-upload');
 
                 return ShootFile::create([
@@ -249,7 +257,7 @@ class ShootMediaActionsTest extends TestCase
             });
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'files' => [UploadedFile::fake()->image('superadmin-upload.jpg')],
             'upload_type' => 'edited',
         ], ['Accept' => 'application/json']);
@@ -265,7 +273,7 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
         $shoot = $this->createShoot();
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'upload_type' => 'raw',
         ], ['Accept' => 'application/json']);
 
@@ -285,7 +293,7 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
         $shoot = $this->createShoot();
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/upload', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/upload', [
             'files' => [UploadedFile::fake()->create('oversized.nef', 2100000)],
             'upload_type' => 'raw',
         ], ['Accept' => 'application/json']);
@@ -314,7 +322,7 @@ class ShootMediaActionsTest extends TestCase
         $file = $this->createShootFile($shoot, [
             'media_type' => 'edited',
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
-            'path' => 'shoots/' . $shoot->id . '/completed/final.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/final.jpg',
         ]);
 
         $dropbox = Mockery::mock(ShootMediaStorageService::class);
@@ -364,7 +372,7 @@ class ShootMediaActionsTest extends TestCase
             'scheduled_at' => '2026-05-14 10:00:00',
         ]);
 
-        $rawPath = 'shoots/' . $shoot->id . '/todo/raw-1.nef';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/raw-1.nef';
         Storage::disk('public')->put($rawPath, 'raw-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -379,7 +387,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->postJson('/api/shoots/' . $shoot->id . '/generate-share-link', [
+        $response = $this->postJson('/api/shoots/'.$shoot->id.'/generate-share-link', [
             'file_ids' => [$file->id],
         ]);
 
@@ -401,7 +409,7 @@ class ShootMediaActionsTest extends TestCase
         ]);
 
         $shareLink = ShootShareLink::query()->where('shoot_id', $shoot->id)->firstOrFail();
-        $this->assertMatchesRegularExpression('/share-links\/' . $shoot->id . '\/share-link-[^\/]+\.zip$/', $shareLink->dropbox_path);
+        $this->assertMatchesRegularExpression('/share-links\/'.$shoot->id.'\/share-link-[^\/]+\.zip$/', $shareLink->dropbox_path);
 
         $this->getJson("/api/public/share-links/{$shareLink->public_token}")
             ->assertOk()
@@ -436,13 +444,13 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot();
-        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
         Storage::disk('public')->put($webPath, 'web-preview');
 
         $file = $this->createShootFile($shoot, [
             'filename' => 'front.jpg',
             'stored_filename' => 'front.jpg',
-            'path' => 'shoots/' . $shoot->id . '/completed/front.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/front.jpg',
             'web_path' => $webPath,
             'media_type' => 'edited',
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
@@ -450,12 +458,12 @@ class ShootMediaActionsTest extends TestCase
             'is_hidden' => false,
         ]);
 
-        $adminCacheKey = 'shoot_files_' . $shoot->id . '__' . $this->admin->id . '_' . $this->admin->role;
-        $clientCacheKey = 'shoot_files_' . $shoot->id . '__' . $this->client->id . '_client';
+        $adminCacheKey = 'shoot_files_'.$shoot->id.'__'.$this->admin->id.'_'.$this->admin->role;
+        $clientCacheKey = 'shoot_files_'.$shoot->id.'__'.$this->client->id.'_client';
         Cache::put($adminCacheKey, ['cached' => true], now()->addMinutes(5));
         Cache::put($clientCacheKey, ['cached' => true], now()->addMinutes(5));
 
-        $response = $this->postJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/cover');
+        $response = $this->postJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/cover');
 
         $response->assertOk()
             ->assertJsonPath('message', 'Cover updated');
@@ -489,11 +497,11 @@ class ShootMediaActionsTest extends TestCase
         $second = $this->createShootFile($shoot, [
             'filename' => 'second.jpg',
             'stored_filename' => 'second.jpg',
-            'path' => 'shoots/' . $shoot->id . '/completed/second.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/second.jpg',
             'sort_order' => 1,
         ]);
 
-        $response = $this->postJson('/api/shoots/' . $shoot->id . '/media/reorder', [
+        $response = $this->postJson('/api/shoots/'.$shoot->id.'/media/reorder', [
             'files' => [
                 ['id' => $first->id, 'sort_order' => 5],
                 ['id' => $second->id, 'sort_order' => 1],
@@ -520,8 +528,8 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot();
-        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/front.jpg';
         Storage::disk('public')->put($webPath, 'small-preview-bytes');
         Storage::disk('public')->put($originalPath, 'original-photo-bytes');
 
@@ -542,13 +550,13 @@ class ShootMediaActionsTest extends TestCase
         $archiveService = app(ShootMediaArchiveService::class);
         $archiveService->generateArchive($shoot, 'edited', 'small');
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small');
 
         $response->assertOk()
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/',
+            '/storage/shoots/'.$shoot->id.'/archives/',
             (string) $response->json('url')
         );
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
@@ -620,16 +628,16 @@ class ShootMediaActionsTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $firstWebPath = 'shoots/' . $shoot->id . '/web/first-service.jpg';
-        $secondWebPath = 'shoots/' . $shoot->id . '/web/second-service.jpg';
+        $firstWebPath = 'shoots/'.$shoot->id.'/web/first-service.jpg';
+        $secondWebPath = 'shoots/'.$shoot->id.'/web/second-service.jpg';
         Storage::disk('public')->put($firstWebPath, 'first-service-web');
         Storage::disk('public')->put($secondWebPath, 'second-service-web');
 
         $this->createShootFile($shoot, [
             'filename' => 'first-service.jpg',
             'stored_filename' => 'first-service.jpg',
-            'path' => 'shoots/' . $shoot->id . '/completed/first-service.jpg',
-            'storage_path' => 'shoots/' . $shoot->id . '/completed/first-service.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/first-service.jpg',
+            'storage_path' => 'shoots/'.$shoot->id.'/completed/first-service.jpg',
             'web_path' => $firstWebPath,
             'shoot_service_id' => $firstServiceItemId,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
@@ -637,8 +645,8 @@ class ShootMediaActionsTest extends TestCase
         $this->createShootFile($shoot, [
             'filename' => 'second-service.jpg',
             'stored_filename' => 'second-service.jpg',
-            'path' => 'shoots/' . $shoot->id . '/completed/second-service.jpg',
-            'storage_path' => 'shoots/' . $shoot->id . '/completed/second-service.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/second-service.jpg',
+            'storage_path' => 'shoots/'.$shoot->id.'/completed/second-service.jpg',
             'web_path' => $secondWebPath,
             'shoot_service_id' => $secondServiceItemId,
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
@@ -650,13 +658,13 @@ class ShootMediaActionsTest extends TestCase
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small', true, $firstServiceItemId);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small&shoot_service_id=' . $firstServiceItemId);
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small&shoot_service_id='.$firstServiceItemId);
 
         $response->assertOk()
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/service-' . $firstServiceItemId . '/',
+            '/storage/shoots/'.$shoot->id.'/archives/service-'.$firstServiceItemId.'/',
             (string) $response->json('url')
         );
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
@@ -678,7 +686,7 @@ class ShootMediaActionsTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small&shoot_service_id=' . $otherServiceItemId);
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small&shoot_service_id='.$otherServiceItemId);
 
         $response->assertStatus(422)
             ->assertJsonPath('message', 'Selected service item does not belong to this shoot');
@@ -689,7 +697,6 @@ class ShootMediaActionsTest extends TestCase
      * ('original') and the web/MLS derivative ('small'). It previously advertised
      * 'medium' and 'large' in validation but silently downgraded both to
      * 'original', so the contract now rejects the sizes it cannot deliver.
-     *
      */
     #[\PHPUnit\Framework\Attributes\Test]
     public function media_zip_download_rejects_unsupported_sizes(): void
@@ -698,7 +705,7 @@ class ShootMediaActionsTest extends TestCase
         $shoot = $this->createShoot();
 
         foreach (['medium', 'large'] as $unsupportedSize) {
-            $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=' . $unsupportedSize)
+            $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size='.$unsupportedSize)
                 ->assertStatus(422)
                 ->assertJsonValidationErrors('size');
         }
@@ -744,8 +751,8 @@ class ShootMediaActionsTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $webPath = 'shoots/' . $shoot->id . '/web/client-service.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/client-service.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/client-service.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/client-service.jpg';
         Storage::disk('public')->put($webPath, 'client-service-web');
         Storage::disk('public')->put($originalPath, 'client-service-original');
 
@@ -765,7 +772,7 @@ class ShootMediaActionsTest extends TestCase
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small', true, $serviceItemId);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small&shoot_service_id=' . $serviceItemId);
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small&shoot_service_id='.$serviceItemId);
 
         $response->assertOk()
             ->assertJsonPath('type', 'redirect');
@@ -811,7 +818,7 @@ class ShootMediaActionsTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small');
 
         $response->assertForbidden()
             ->assertJsonPath('code', 'payment_required');
@@ -827,7 +834,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_UPLOADED,
             'workflow_status' => Shoot::STATUS_UPLOADED,
         ]);
-        $rawPath = 'shoots/' . $shoot->id . '/todo/raw-photo.jpg';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/raw-photo.jpg';
         Storage::disk('public')->put($rawPath, 'raw-photo-bytes');
 
         $this->createShootFile($shoot, [
@@ -843,7 +850,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
+        $response = $this->get('/api/shoots/'.$shoot->id.'/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
             'Origin' => 'https://reprodashboard.com',
         ]);
@@ -866,7 +873,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_UPLOADED,
             'workflow_status' => Shoot::STATUS_UPLOADED,
         ]);
-        $rawPath = 'shoots/' . $shoot->id . '/todo/editing-manager-raw.jpg';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/editing-manager-raw.jpg';
         Storage::disk('public')->put($rawPath, 'editing-manager-raw-bytes');
 
         $this->createShootFile($shoot, [
@@ -882,7 +889,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
+        $response = $this->get('/api/shoots/'.$shoot->id.'/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
         ]);
 
@@ -900,8 +907,8 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->createShoot();
-        $originalPath = 'shoots/' . $shoot->id . '/completed/editing-manager-selected.jpg';
-        $webPath = 'shoots/' . $shoot->id . '/web/editing-manager-selected.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/editing-manager-selected.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/editing-manager-selected.jpg';
         Storage::disk('public')->put($originalPath, 'editing-manager-selected-bytes');
         Storage::disk('public')->put($webPath, 'editing-manager-mls-bytes');
 
@@ -919,7 +926,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/files/download', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/files/download', [
             'file_ids' => [$file->id],
             'size' => 'original',
         ], [
@@ -938,10 +945,40 @@ class ShootMediaActionsTest extends TestCase
         $mlsResponse->assertOk();
         $this->assertStringContainsString('250-media-lane-baltimore-md-21201-selected-mls.zip', $mlsResponse->headers->get('Content-Disposition'));
         $this->assertStringContainsString('Content-Disposition', $mlsResponse->headers->get('Access-Control-Expose-Headers'));
-        $zip = new ZipArchive();
+        $zip = new ZipArchive;
         $this->assertTrue($zip->open($mlsResponse->baseResponse->getFile()->getPathname()));
         $this->assertSame('editing-manager-mls-bytes', $zip->getFromIndex(0));
         $zip->close();
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function selected_web_download_uses_the_derivative_extension_and_preserves_raw_originals(): void
+    {
+        Storage::fake('public');
+        Sanctum::actingAs($this->admin);
+        $shoot = $this->createShoot();
+        $originalPath = 'shoots/'.$shoot->id.'/raw/interior.NEF';
+        $webPath = 'shoots/'.$shoot->id.'/web/interior.jpg';
+        Storage::disk('public')->put($originalPath, 'raw-master-bytes');
+        Storage::disk('public')->put($webPath, 'jpeg-preview-bytes');
+        $file = $this->createShootFile($shoot, [
+            'filename' => 'interior.NEF', 'stored_filename' => 'interior.NEF',
+            'path' => $originalPath, 'storage_path' => $originalPath,
+            'web_path' => $webPath, 'media_type' => 'raw',
+        ]);
+
+        foreach (['small' => ['001_interior.jpg', 'jpeg-preview-bytes'], 'original' => ['001_interior.NEF', 'raw-master-bytes']] as $size => [$name, $bytes]) {
+            $response = $this->post('/api/shoots/'.$shoot->id.'/files/download', [
+                'file_ids' => [$file->id], 'size' => $size,
+            ], ['Accept' => 'application/zip']);
+            $response->assertOk();
+            $zip = new ZipArchive;
+            $this->assertTrue($zip->open($response->baseResponse->getFile()->getPathname()));
+            $this->assertSame($name, $zip->getNameIndex(0));
+            $this->assertSame($bytes, $zip->getFromIndex(0));
+            $zip->close();
+        }
+        $this->assertSame('interior.NEF', $file->fresh()->filename);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -951,7 +988,7 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->createShoot();
-        $originalPath = 'shoots/' . $shoot->id . '/completed/editing-manager-single.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/editing-manager-single.jpg';
         Storage::disk('public')->put($originalPath, 'editing-manager-single-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -963,7 +1000,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download');
 
         $response->assertOk()
             ->assertJsonStructure(['url']);
@@ -1017,7 +1054,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $rawPath = 'shoots/' . $shoot->id . '/todo/editor-raw-download.jpg';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/editor-raw-download.jpg';
         Storage::disk('public')->put($rawPath, 'editor-raw-download-bytes');
 
         $this->createShootFile($shoot, [
@@ -1033,7 +1070,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->get('/api/shoots/' . $shoot->id . '/editor-download-raw', [
+        $response = $this->get('/api/shoots/'.$shoot->id.'/editor-download-raw', [
             'Accept' => 'application/json, application/zip',
         ]);
 
@@ -1056,12 +1093,12 @@ class ShootMediaActionsTest extends TestCase
         $file = $this->createShootFile($shoot, [
             'filename' => 'floorplan-reference.jpg',
             'stored_filename' => 'floorplan-reference.jpg',
-            'path' => 'shoots/' . $shoot->id . '/todo/floorplan-reference.jpg',
+            'path' => 'shoots/'.$shoot->id.'/todo/floorplan-reference.jpg',
             'media_type' => 'raw',
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $this->postJson('/api/shoots/' . $shoot->id . '/files/' . $file->id . '/extra', [
+        $this->postJson('/api/shoots/'.$shoot->id.'/files/'.$file->id.'/extra', [
             'is_extra' => true,
             'required_for_editing' => true,
         ])
@@ -1090,7 +1127,7 @@ class ShootMediaActionsTest extends TestCase
         $normalRaw = $this->createShootFile($shoot, [
             'filename' => 'normal-raw.jpg',
             'stored_filename' => 'normal-raw.jpg',
-            'path' => 'shoots/' . $shoot->id . '/todo/normal-raw.jpg',
+            'path' => 'shoots/'.$shoot->id.'/todo/normal-raw.jpg',
             'media_type' => 'raw',
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => false,
@@ -1100,7 +1137,7 @@ class ShootMediaActionsTest extends TestCase
         $optionalExtra = $this->createShootFile($shoot, [
             'filename' => 'optional-extra.jpg',
             'stored_filename' => 'optional-extra.jpg',
-            'path' => 'shoots/' . $shoot->id . '/extra/optional-extra.jpg',
+            'path' => 'shoots/'.$shoot->id.'/extra/optional-extra.jpg',
             'media_type' => 'extra',
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => true,
@@ -1110,14 +1147,14 @@ class ShootMediaActionsTest extends TestCase
         $requiredExtra = $this->createShootFile($shoot, [
             'filename' => 'required-extra.jpg',
             'stored_filename' => 'required-extra.jpg',
-            'path' => 'shoots/' . $shoot->id . '/extra/required-extra.jpg',
+            'path' => 'shoots/'.$shoot->id.'/extra/required-extra.jpg',
             'media_type' => 'extra',
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => true,
             'required_for_editing' => true,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/files?type=raw')
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/files?type=raw')
             ->assertOk();
 
         $ids = collect($response->json('data'))->pluck('id')->map(fn ($id) => (int) $id)->all();
@@ -1141,7 +1178,7 @@ class ShootMediaActionsTest extends TestCase
         $normalRaw = $this->createShootFile($shoot, [
             'filename' => 'archive-normal-raw.jpg',
             'stored_filename' => 'archive-normal-raw.jpg',
-            'path' => 'shoots/' . $shoot->id . '/todo/archive-normal-raw.jpg',
+            'path' => 'shoots/'.$shoot->id.'/todo/archive-normal-raw.jpg',
             'media_type' => 'raw',
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => false,
@@ -1151,7 +1188,7 @@ class ShootMediaActionsTest extends TestCase
         $optionalExtra = $this->createShootFile($shoot, [
             'filename' => 'archive-optional-extra.jpg',
             'stored_filename' => 'archive-optional-extra.jpg',
-            'path' => 'shoots/' . $shoot->id . '/extra/archive-optional-extra.jpg',
+            'path' => 'shoots/'.$shoot->id.'/extra/archive-optional-extra.jpg',
             'media_type' => 'extra',
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => true,
@@ -1161,7 +1198,7 @@ class ShootMediaActionsTest extends TestCase
         $requiredExtra = $this->createShootFile($shoot, [
             'filename' => 'archive-required-extra.jpg',
             'stored_filename' => 'archive-required-extra.jpg',
-            'path' => 'shoots/' . $shoot->id . '/extra/archive-required-extra.jpg',
+            'path' => 'shoots/'.$shoot->id.'/extra/archive-required-extra.jpg',
             'media_type' => 'extra',
             'workflow_stage' => ShootFile::STAGE_TODO,
             'is_extra' => true,
@@ -1195,7 +1232,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $rawPath = 'shoots/' . $shoot->id . '/todo/unassigned-editor-raw.jpg';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/unassigned-editor-raw.jpg';
         Storage::disk('public')->put($rawPath, 'unassigned-editor-raw-bytes');
 
         $this->createShootFile($shoot, [
@@ -1207,7 +1244,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/editor-download-raw');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/editor-download-raw');
 
         $response->assertForbidden();
     }
@@ -1223,7 +1260,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/editor-archive.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/editor-archive.jpg';
         Storage::disk('public')->put($originalPath, 'editor-archive-bytes');
 
         $this->createShootFile($shoot, [
@@ -1235,7 +1272,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small');
 
         $response->assertForbidden();
     }
@@ -1249,7 +1286,7 @@ class ShootMediaActionsTest extends TestCase
         $shoot = $this->createShoot([
             'editor_id' => $this->editor->id,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/editor-selected.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/editor-selected.jpg';
         Storage::disk('public')->put($originalPath, 'editor-selected-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1261,7 +1298,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->postJson('/api/shoots/' . $shoot->id . '/files/download', [
+        $response = $this->postJson('/api/shoots/'.$shoot->id.'/files/download', [
             'file_ids' => [$file->id],
             'size' => 'original',
         ]);
@@ -1278,7 +1315,7 @@ class ShootMediaActionsTest extends TestCase
         $shoot = $this->createShoot([
             'editor_id' => $this->editor->id,
         ]);
-        $rawPath = 'shoots/' . $shoot->id . '/todo/editor-single-raw.jpg';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/editor-single-raw.jpg';
         Storage::disk('public')->put($rawPath, 'editor-single-raw-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1290,7 +1327,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download');
 
         $response->assertOk()
             ->assertJsonStructure(['url']);
@@ -1307,7 +1344,7 @@ class ShootMediaActionsTest extends TestCase
         $shoot = $this->createShoot([
             'editor_id' => $this->editor->id,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/editor-single-edited.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/editor-single-edited.jpg';
         Storage::disk('public')->put($originalPath, 'editor-single-edited-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1319,7 +1356,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download');
 
         $response->assertForbidden();
     }
@@ -1335,8 +1372,8 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $webPath = 'shoots/' . $shoot->id . '/web/sales-rep-front_web.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/sales-rep-front.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/sales-rep-front_web.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/sales-rep-front.jpg';
         Storage::disk('public')->put($webPath, 'sales-rep-small-preview');
         Storage::disk('public')->put($originalPath, 'sales-rep-original-photo');
 
@@ -1356,13 +1393,13 @@ class ShootMediaActionsTest extends TestCase
 
         app(ShootMediaArchiveService::class)->generateArchive($shoot, 'edited', 'small');
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small');
 
         $response->assertOk()
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/',
+            '/storage/shoots/'.$shoot->id.'/archives/',
             (string) $response->json('url')
         );
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
@@ -1379,8 +1416,8 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $webPath = 'shoots/' . $shoot->id . '/web/unassigned-sales-rep-front_web.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/unassigned-sales-rep-front.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/unassigned-sales-rep-front_web.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/unassigned-sales-rep-front.jpg';
         Storage::disk('public')->put($webPath, 'unassigned-sales-rep-small-preview');
         Storage::disk('public')->put($originalPath, 'unassigned-sales-rep-original-photo');
 
@@ -1394,7 +1431,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=small');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small');
 
         $response->assertForbidden();
         $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
@@ -1413,7 +1450,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/sales-rep-selected.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/sales-rep-selected.jpg';
         Storage::disk('public')->put($originalPath, 'sales-rep-selected-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1429,7 +1466,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->post('/api/shoots/' . $shoot->id . '/files/download', [
+        $response = $this->post('/api/shoots/'.$shoot->id.'/files/download', [
             'file_ids' => [$file->id],
             'size' => 'original',
         ], [
@@ -1454,7 +1491,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/unassigned-sales-rep-selected.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/unassigned-sales-rep-selected.jpg';
         Storage::disk('public')->put($originalPath, 'unassigned-sales-rep-selected-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1466,7 +1503,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->postJson('/api/shoots/' . $shoot->id . '/files/download', [
+        $response = $this->postJson('/api/shoots/'.$shoot->id.'/files/download', [
             'file_ids' => [$file->id],
             'size' => 'original',
         ]);
@@ -1485,7 +1522,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/sales-rep-single.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/sales-rep-single.jpg';
         Storage::disk('public')->put($originalPath, 'sales-rep-single-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1497,7 +1534,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download');
 
         $response->assertOk()
             ->assertJsonStructure(['url']);
@@ -1516,7 +1553,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_DELIVERED,
             'workflow_status' => Shoot::STATUS_DELIVERED,
         ]);
-        $originalPath = 'shoots/' . $shoot->id . '/completed/unassigned-sales-rep-single.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/unassigned-sales-rep-single.jpg';
         Storage::disk('public')->put($originalPath, 'unassigned-sales-rep-single-bytes');
 
         $file = $this->createShootFile($shoot, [
@@ -1528,7 +1565,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_COMPLETED,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/' . $file->id . '/download');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/'.$file->id.'/download');
 
         $response->assertForbidden();
     }
@@ -1544,7 +1581,7 @@ class ShootMediaActionsTest extends TestCase
             'status' => Shoot::STATUS_UPLOADED,
             'workflow_status' => Shoot::STATUS_UPLOADED,
         ]);
-        $rawPath = 'shoots/' . $shoot->id . '/todo/sales-rep-raw.jpg';
+        $rawPath = 'shoots/'.$shoot->id.'/todo/sales-rep-raw.jpg';
         Storage::disk('public')->put($rawPath, 'sales-rep-raw-bytes');
 
         $this->createShootFile($shoot, [
@@ -1556,7 +1593,7 @@ class ShootMediaActionsTest extends TestCase
             'workflow_stage' => ShootFile::STAGE_TODO,
         ]);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/editor-download-raw');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/editor-download-raw');
 
         $response->assertForbidden();
     }
@@ -1569,7 +1606,7 @@ class ShootMediaActionsTest extends TestCase
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot();
-        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/front.jpg';
         Storage::disk('public')->put($originalPath, 'original-photo-bytes');
 
         $this->createShootFile($shoot, [
@@ -1585,7 +1622,7 @@ class ShootMediaActionsTest extends TestCase
         $dropbox->shouldReceive('isEnabled')->andReturnFalse();
         app()->instance(ShootMediaStorageService::class, $dropbox);
 
-        $response = $this->getJson('/api/shoots/' . $shoot->id . '/media/download-zip?type=edited&size=original');
+        $response = $this->getJson('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=original');
 
         $response->assertStatus(202)
             ->assertJsonPath('type', 'preparing');
@@ -1595,7 +1632,7 @@ class ShootMediaActionsTest extends TestCase
         ])->assertStatus(202)->assertJsonPath('type', 'preparing');
 
         $this->assertStringContainsString(
-            '/api/shoots/' . $shoot->id . '/media/download-zip',
+            '/api/shoots/'.$shoot->id.'/media/download-zip',
             (string) $response->json('status_url')
         );
         $this->assertStringContainsString('type=edited', (string) $response->json('status_url'));
@@ -1614,8 +1651,8 @@ class ShootMediaActionsTest extends TestCase
         Storage::fake('public');
 
         $shoot = $this->createShoot();
-        $webPath = 'shoots/' . $shoot->id . '/web/front_web.jpg';
-        $originalPath = 'shoots/' . $shoot->id . '/completed/front.jpg';
+        $webPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
+        $originalPath = 'shoots/'.$shoot->id.'/completed/front.jpg';
         Storage::disk('public')->put($webPath, 'small-preview-bytes');
         Storage::disk('public')->put($originalPath, 'original-photo-bytes');
 
@@ -1651,7 +1688,7 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/' . $shoot->id . '/archives/',
+            '/storage/shoots/'.$shoot->id.'/archives/',
             (string) $response->json('url')
         );
         $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
@@ -1747,7 +1784,7 @@ class ShootMediaActionsTest extends TestCase
             'shoot_id' => $shoot->id,
             'filename' => 'media-file.jpg',
             'stored_filename' => 'media-file.jpg',
-            'path' => 'shoots/' . $shoot->id . '/completed/media-file.jpg',
+            'path' => 'shoots/'.$shoot->id.'/completed/media-file.jpg',
             'file_type' => 'image/jpeg',
             'file_size' => 1024,
             'media_type' => 'edited',

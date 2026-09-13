@@ -22,12 +22,11 @@ class DownloadSelectedShootFilesAction
         protected DeliveryMediaOrderService $deliveryMediaOrderService,
         protected DeliveryFilenameFormatter $deliveryFilenameFormatter,
         protected ShootArchiveFilenameFormatter $archiveFilenameFormatter
-    ) {
-    }
+    ) {}
 
     public function execute(Request $request, Shoot $shoot, ?User $user)
     {
-        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+        if (! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
@@ -46,7 +45,7 @@ class DownloadSelectedShootFilesAction
         ]);
 
         $fileIds = $request->input('file_ids', $request->input('ids', []));
-        if (!is_array($fileIds) || count($fileIds) === 0) {
+        if (! is_array($fileIds) || count($fileIds) === 0) {
             return response()->json(['error' => 'No file IDs provided'], 422);
         }
 
@@ -59,7 +58,7 @@ class DownloadSelectedShootFilesAction
         }
 
         foreach ($files as $file) {
-            if (!$this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
+            if (! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $user)) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
 
@@ -79,12 +78,12 @@ class DownloadSelectedShootFilesAction
         $size = $request->input('size', 'original');
         $needsWatermark = false;
 
-        $zipPath = storage_path('app/temp/shoot-' . $shoot->id . '-download-' . time() . '.zip');
-        if (!file_exists(dirname($zipPath))) {
+        $zipPath = storage_path('app/temp/shoot-'.$shoot->id.'-download-'.time().'.zip');
+        if (! file_exists(dirname($zipPath))) {
             mkdir(dirname($zipPath), 0755, true);
         }
 
-        $zip = new \ZipArchive();
+        $zip = new \ZipArchive;
         if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
             return response()->json(['error' => 'Failed to create ZIP file'], 500);
         }
@@ -100,16 +99,22 @@ class DownloadSelectedShootFilesAction
 
         foreach ($files as $file) {
             $downloadPath = $this->resolveDownloadPath($file, $size, $needsWatermark, $pendingWatermarks);
-            if (!$downloadPath) {
+            if (! $downloadPath) {
                 continue;
             }
 
             $localPath = $this->fileAccess->resolveLocalPath($downloadPath);
 
-
             if ($localPath && file_exists($localPath)) {
+                $downloadName = $this->deliveryFilenameFormatter->baseNameFor($file, basename($localPath));
+                // Preview derivatives may be JPEGs even when the master is NEF/CR3.
+                // Keep the readable master stem, but use the delivered format.
+                $extension = strtolower(pathinfo($downloadPath, PATHINFO_EXTENSION));
+                if ($size === 'small' && in_array($extension, ['jpg', 'jpeg', 'png', 'webp'], true)) {
+                    $downloadName = pathinfo($downloadName, PATHINFO_FILENAME).'.'.$extension;
+                }
                 $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
-                    $this->deliveryFilenameFormatter->formatForFile($file, $position, $total, basename($localPath)),
+                    $this->deliveryFilenameFormatter->format($position, $total, $downloadName),
                     $usedNames
                 ));
                 $addedFiles++;
@@ -119,11 +124,9 @@ class DownloadSelectedShootFilesAction
 
         $zip->close();
 
-
-
         if ($addedFiles === 0) {
             @unlink($zipPath);
-            if (!empty($pendingWatermarks)) {
+            if (! empty($pendingWatermarks)) {
                 return response()->json([
                     'error' => 'Watermarked files are being generated. Please retry in a few minutes.',
                     'pending' => $pendingWatermarks,
@@ -148,7 +151,7 @@ class DownloadSelectedShootFilesAction
                     ?? $file->watermarked_thumbnail_path
                     ?? $file->watermarked_placeholder_path);
 
-            if (!$downloadPath && $file->shouldBeWatermarked()) {
+            if (! $downloadPath && $file->shouldBeWatermarked()) {
                 GenerateWatermarkedImageJob::dispatch($file->fresh());
                 $pendingWatermarks[] = $file->id;
             }
