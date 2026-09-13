@@ -89,7 +89,7 @@ class MmmXmlBuilderTest extends TestCase
     }
 
     #[Test]
-    public function it_keeps_the_vendor_property_node_set_when_optional_values_are_missing(): void
+    public function it_omits_missing_listing_id_and_price_while_preserving_property_and_photo_prefill(): void
     {
         $xml = app(MmmXmlBuilder::class)->buildPunchoutSetupRequest([
             'buyer_cookie' => '00000000-0000-0000-0000-000000000001',
@@ -110,12 +110,41 @@ class MmmXmlBuilderTest extends TestCase
         $document = new \DOMDocument();
         $document->loadXML($xml);
 
-        $this->assertSame('', $document->getElementsByTagName('ID')->item(0)?->textContent);
-        $this->assertSame('', $document->getElementsByTagName('Price')->item(0)?->textContent);
+        $xpath = new \DOMXPath($document);
+        $this->assertSame(0, $xpath->query('//Property/ID')->length);
+        $this->assertSame(0, $xpath->query('//Property/Price')->length);
         $this->assertSame('6275 Kerrydale Drive', $document->getElementsByTagName('Address')->item(0)?->textContent);
         $this->assertSame(0, $document->getElementsByTagName('Description')->length);
         $this->assertSame('', $document->getElementsByTagName('Caption')->item(0)?->textContent);
         $this->assertSame('front.jpg', $document->getElementsByTagName('FileName')->item(0)?->textContent);
+        $this->assertSame('https://cdn.example.test/front.jpg', $xpath->evaluate('string(//Picture/URL)'));
+    }
+
+    #[Test]
+    public function it_omits_blank_listing_fields_but_preserves_zero_values(): void
+    {
+        foreach ([null, '', '   ', '0'] as $value) {
+            $xml = app(MmmXmlBuilder::class)->buildPunchoutSetupRequest([
+                'property' => [
+                    'id' => $value,
+                    'price' => $value,
+                    'address' => '315 Kahler Way',
+                    'city' => 'Glen Burnie',
+                    'state' => 'MD',
+                    'zip' => '21060',
+                ],
+            ]);
+            $document = new \DOMDocument();
+            $document->loadXML($xml);
+            $xpath = new \DOMXPath($document);
+            $expectedCount = $value === '0' ? 1 : 0;
+            $this->assertSame($expectedCount, $xpath->query('//Property/ID')->length);
+            $this->assertSame($expectedCount, $xpath->query('//Property/Price')->length);
+            if ($value === '0') {
+                $this->assertSame('0', $xpath->evaluate('string(//Property/Price)'));
+            }
+            $this->assertSame('315 Kahler Way', $xpath->evaluate('string(//Property/Address)'));
+        }
     }
 
     #[Test]

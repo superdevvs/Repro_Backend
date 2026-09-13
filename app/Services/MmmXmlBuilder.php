@@ -86,8 +86,9 @@ class MmmXmlBuilder
             $properties = $dom->createElement('Properties');
             $propertyNode = $dom->createElement('Property');
 
-            $this->appendRequiredTextElement($dom, $propertyNode, 'ID', $property['id'] ?? null);
-            $this->appendRequiredTextElement($dom, $propertyNode, 'Price', $property['price'] ?? null);
+            // MMM rejects empty listing identifiers and prices with HTTP 500.
+            $this->appendTextElement($dom, $propertyNode, 'ID', $property['id'] ?? null);
+            $this->appendTextElement($dom, $propertyNode, 'Price', $property['price'] ?? null);
             $this->appendRequiredTextElement($dom, $propertyNode, 'Address', $property['address'] ?? $payload['address'] ?? null);
             $this->appendRequiredTextElement($dom, $propertyNode, 'City', $property['city'] ?? null);
             $this->appendRequiredTextElement($dom, $propertyNode, 'State', $property['state'] ?? null);
