@@ -75,7 +75,9 @@ class EditableEmailContent
             return $subject;
         }
         $view = $this->viewFor($template);
-        if ($view && preg_match('/@section\(\s*[\'"]title[\'"]\s*,\s*([\'"])(.*?)\1\s*\)/s', $this->source($view), $match)) {
+        // Only a complete literal title is editable copy. Do not consume a
+        // concatenated Blade expression or continue into the next directive.
+        if ($view && preg_match('/@section\(\s*[\'"]title[\'"]\s*,\s*([\'"])((?:(?!\1)[^\r\n])*)\1\s*\)/', $this->source($view), $match)) {
             return $match[2];
         }
 

@@ -13,6 +13,17 @@ use Tests\TestCase;
 
 class EmailEditableContentTest extends TestCase
 {
+    public function test_dynamic_report_subject_never_exposes_blade_source_in_editor_or_test_send(): void
+    {
+        $template = new MessageTemplate(DirectEmailTemplates::definitions()['emails.weekly_sales_report']);
+        $this->assertSame('Weekly sales report', app(EditableEmailContent::class)->editableSubject($template));
+        $variables = app(DirectEmailTemplates::class)->previewVariables($template, []);
+        $result = app(TemplateRenderer::class)->render($template, $variables);
+        $this->assertSame('Weekly sales report', $result['subject']);
+        $this->assertStringNotContainsString('@section', $result['subject']);
+        $this->assertStringNotContainsString('$weekLabel', $result['subject']);
+    }
+
     public function test_all_direct_and_protected_families_expose_real_copy_and_render_canonical_details(): void
     {
         $content = app(EditableEmailContent::class);
