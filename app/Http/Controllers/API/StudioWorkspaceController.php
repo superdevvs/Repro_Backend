@@ -270,6 +270,7 @@ class StudioWorkspaceController extends StudioController
             'name' => [$presence, 'string', 'max:255'], 'presetId' => [$presence, Rule::in(self::PRESETS)],
             'media' => [$presence, 'array', 'max:300'], 'media.*.id' => ['required', 'string', 'distinct', 'max:100'],
             'media.*.fileId' => ['nullable', 'integer'], 'media.*.shootId' => ['nullable', 'integer'], 'media.*.mediaRef' => ['nullable', 'string', 'max:1024'],
+            'media.*.stackFileIds' => ['sometimes', 'array', 'min:2', 'max:7'], 'media.*.stackFileIds.*' => ['required', 'integer', 'min:1'],
             'config' => ['sometimes', 'array'], 'config.prompt' => ['sometimes', 'nullable', 'string', 'max:4000'],
             'config.ratio' => ['sometimes', Rule::in(['9:16', '16:9', '1:1', '4:5'])], 'config.duration' => ['sometimes', 'integer', 'between:5,120'],
             'config.transition' => ['sometimes', Rule::in(\App\Services\Studio\ReelCompositionService::TRANSITIONS)], 'config.transitionDuration' => ['sometimes', 'numeric', 'between:0.1,2'],

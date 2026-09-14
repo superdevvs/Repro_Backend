@@ -161,6 +161,87 @@ class StudioWorkspaceShootAccessTest extends TestCase
         (new ProcessStudioWorkspace($workspace->id, $workspace->operation['id']))->handle(app(WorkspaceProcessor::class));
     }
 
+    public function test_raw_sources_return_browser_decodable_previews_without_exposing_the_original(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $file = $this->file($shoot, $admin, ['filename' => 'bracket.CR3', 'mime_type' => 'image/x-canon-cr3', 'thumbnail_path' => 'thumb.jpg']);
+        Storage::disk('public')->put('thumb.jpg', UploadedFile::fake()->image('thumb.jpg', 40, 30)->getContent());
+        Sanctum::actingAs($admin);
+        $response = $this->getJson(self::SOURCES."/shoots/{$shoot->id}/media?workflow=photo-enhancement")->assertOk();
+        $url = $response->json('data.0.thumbnailUrl');
+        $this->assertStringContainsString('/sources/files/', $url);
+        $preview = $this->get($url)->assertOk()->assertHeader('Content-Type', 'image/jpeg');
+        $this->assertSame(40, getimagesizefromstring($preview->getContent())[0]);
+        $file->update(['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]);
+        $this->getJson($url)->assertUnprocessable();
+    }
+
+    public function test_hdr_sources_expose_stack_metadata_and_queue_one_private_merge(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $files = collect([1, 2, 3])->map(fn ($sequence) => $this->file($shoot, $admin, ['bracket_group' => 1, 'sequence' => $sequence]));
+        Sanctum::actingAs($admin);
+        $this->getJson(self::SOURCES."/shoots/{$shoot->id}/media?workflow=photo-enhancement")
+            ->assertOk()->assertJsonPath('data.0.bracketGroup', 1)->assertJsonPath('data.0.sequence', 1);
+        $input = ['fileIds' => $files->pluck('id')->all()];
+        $response = $this->postJson(self::SOURCES.'/hdr', $input)->assertAccepted()->assertJsonPath('data.status', 'processing');
+        $this->postJson(self::SOURCES.'/hdr', $input)->assertAccepted();
+        Queue::assertPushed(\App\Jobs\MergeStudioHdr::class, 1);
+        $this->postJson('/api/studio/workspaces', ['name' => 'HDR', 'presetId' => 'listing-ready', 'media' => [$response->json('data.media')]])->assertUnprocessable();
+    }
+
+    public function test_hdr_merge_rejects_mixed_stacks_and_inaccessible_or_quarantined_exposures(): void
+    {
+        $editor = User::factory()->create(['role' => 'editor']);
+        $shoot = Shoot::factory()->create(['editor_id' => $editor->id]);
+        $first = $this->file($shoot, $editor, ['bracket_group' => 1]);
+        $second = $this->file($shoot, $editor, ['bracket_group' => 2]);
+        Sanctum::actingAs($editor);
+        $input = ['fileIds' => [$first->id, $second->id]];
+        $this->postJson(self::SOURCES.'/hdr', $input)->assertUnprocessable();
+        $second->update(['bracket_group' => 1, 'scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]);
+        $this->postJson(self::SOURCES.'/hdr', $input)->assertUnprocessable();
+        $second->update(['scan_status' => ShootFile::SCAN_STATUS_CLEAN]);
+        $shoot->update(['editor_id' => null]);
+        $this->postJson(self::SOURCES.'/hdr', $input)->assertForbidden();
+        Queue::assertNotPushed(\App\Jobs\MergeStudioHdr::class);
+    }
+
+    public function test_hdr_worker_caches_the_merged_image_and_provider_receives_only_that_image(): void
+    {
+        $admin = User::factory()->create(['role' => 'superadmin']);
+        $shoot = Shoot::factory()->create();
+        $files = collect([1, 2, 3])->map(fn ($sequence) => $this->file($shoot, $admin, ['bracket_group' => 1, 'sequence' => $sequence]));
+        $merged = UploadedFile::fake()->image('merged.jpg', 640, 480)->getContent();
+        $this->mock(\App\Services\Studio\HdrExposureFusion::class)->shouldReceive('merge')->once()->with(\Mockery::on(fn ($sources) => count($sources) === 3))->andReturn($merged);
+        Sanctum::actingAs($admin);
+        $input = ['fileIds' => $files->pluck('id')->all()];
+        $this->postJson(self::SOURCES.'/hdr', $input)->assertAccepted();
+        $job = Queue::pushed(\App\Jobs\MergeStudioHdr::class)->first();
+        $job->handle(app(\App\Services\Studio\WorkspaceHdrService::class));
+        $response = $this->getJson(self::SOURCES.'/hdr?'.http_build_query($input))->assertOk()->assertJsonPath('data.status', 'ready');
+        $media = $response->json('data.media');
+        $this->assertArrayNotHasKey('fileId', $media);
+        $this->assertSame($input['fileIds'], $media['stackFileIds']);
+        $this->get($media['url'])->assertOk()->assertHeader('Content-Type', 'image/jpeg');
+        $created = $this->postJson('/api/studio/workspaces', ['name' => 'HDR', 'presetId' => 'listing-ready', 'media' => [$media]])->assertCreated();
+        $workspace = StudioWorkspace::findOrFail($created->json('data.id'));
+        $fal = $this->mock(FalService::class);
+        $this->assertSame($merged, app(\App\Services\Studio\WorkspaceMediaService::class)->bytes($workspace->media[0]));
+        $fal->shouldReceive('submitImageEditFromBuffer')->once()->withArgs(fn ($bytes, ...$rest) => getimagesizefromstring($bytes)[0] === 640)->andReturn(['request_id' => 'hdr-edit']);
+        $fal->shouldReceive('imageEditStatus')->with('hdr-edit')->andReturn(['status' => 'completed']);
+        $fal->shouldReceive('imageEditResult')->with('hdr-edit')->andReturn(['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($merged)]);
+        $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
+        $workspace->refresh();
+        (new ProcessStudioWorkspace($workspace->id, $workspace->operation['id']))->handle(app(WorkspaceProcessor::class));
+        $this->assertCount(1, $workspace->fresh()->outputs);
+        $files->first()->update(['scan_status' => ShootFile::SCAN_STATUS_QUARANTINED]);
+        $this->getJson($media['url'])->assertUnprocessable();
+        $this->postJson('/api/studio/workspaces', ['name' => 'HDR', 'presetId' => 'listing-ready', 'media' => [$media]])->assertUnprocessable();
+    }
+
     private function resolve(Shoot $shoot): \Illuminate\Testing\TestResponse
     {
         return $this->postJson(self::SOURCES.'/resolve', ['destination' => 'studio', 'recordType' => 'shoot', 'recordId' => (string) $shoot->id]);

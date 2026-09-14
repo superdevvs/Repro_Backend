@@ -836,6 +836,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/capabilities', [\App\Http\Controllers\API\StudioProviderSettingsController::class, 'capabilities']);
         Route::get('/sources/shoots', [$sources, 'searchShoots']);
         Route::get('/sources/shoots/{shoot}/media', [$sources, 'shootMedia']);
+        Route::match(['get', 'post'], '/sources/hdr', [$sources, 'hdr'])->middleware('throttle:120,1');
+        Route::get('/sources/hdr/preview', [$sources, 'hdrPreview']);
+        Route::get('/sources/files/{file}/preview', [$sources, 'filePreview'])->whereNumber('file');
         Route::post('/sources/uploads', [$sources, 'upload']);
         Route::get('/sources/uploads/preview', [$sources, 'uploadPreview']);
         Route::post('/sources/resolve', [$sources, 'resolve']);
