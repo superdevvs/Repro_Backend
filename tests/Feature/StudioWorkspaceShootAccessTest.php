@@ -31,6 +31,7 @@ class StudioWorkspaceShootAccessTest extends TestCase
         Queue::fake();
         Storage::fake('public');
         Storage::fake('local');
+        Storage::fake('studio_hdr', config('filesystems.disks.studio_hdr'));
     }
 
     public function test_blank_search_browses_recent_shoots_with_a_stable_twenty_record_limit(): void
@@ -223,6 +224,9 @@ class StudioWorkspaceShootAccessTest extends TestCase
         $job->handle(app(\App\Services\Studio\WorkspaceHdrService::class));
         $response = $this->getJson(self::SOURCES.'/hdr?'.http_build_query($input))->assertOk()->assertJsonPath('data.status', 'ready');
         $media = $response->json('data.media');
+        $path = app(\App\Services\Studio\WorkspaceHdrService::class)->path($media);
+        $this->assertSame(0660, fileperms(Storage::disk('studio_hdr')->path($path)) & 0777);
+        $this->assertFalse(config('filesystems.disks.studio_hdr.serve'));
         $this->assertArrayNotHasKey('fileId', $media);
         $this->assertSame($input['fileIds'], $media['stackFileIds']);
         $this->get($media['url'])->assertOk()->assertHeader('Content-Type', 'image/jpeg');

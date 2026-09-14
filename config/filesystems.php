@@ -45,6 +45,20 @@ return [
             'report' => false,
         ],
 
+        'studio_hdr' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/studio/hdr'),
+            'visibility' => 'private',
+            'directory_visibility' => 'private',
+            'permissions' => [
+                'file' => ['public' => 0660, 'private' => 0660],
+                'dir' => ['public' => 02770, 'private' => 02770],
+            ],
+            'serve' => false,
+            'throw' => true,
+            'report' => false,
+        ],
+
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),

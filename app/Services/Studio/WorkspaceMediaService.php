@@ -153,10 +153,10 @@ class WorkspaceMediaService
     {
         if (! empty($media['stackFileIds'])) {
             $path = app(WorkspaceHdrService::class)->path($media);
-            if (! Storage::disk('local')->exists($path)) {
+            if (! Storage::disk('studio_hdr')->exists($path)) {
                 throw new RuntimeException('The merged HDR image is missing. Reopen the picker to merge it again.');
             }
-            return Storage::disk('local')->get($path);
+            return Storage::disk('studio_hdr')->get($path);
         }
         $cleanup = [];
         try {

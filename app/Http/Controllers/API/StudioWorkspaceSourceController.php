@@ -80,7 +80,7 @@ class StudioWorkspaceSourceController extends StudioSourceController
         $input = $request->validate(['fileIds' => ['required', 'array', 'min:2', 'max:7'], 'fileIds.*' => ['required', 'integer', 'min:1', 'distinct']]);
         $media = $hdr->describe($input['fileIds'], $request->user(), $this->scopeTeamId($request->user()));
         abort_unless($hdr->status($media)['status'] === 'ready', 404, 'The merged HDR image is not ready.');
-        return response(\Illuminate\Support\Facades\Storage::disk('local')->get($hdr->path($media)), 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
+        return response(\Illuminate\Support\Facades\Storage::disk('studio_hdr')->get($hdr->path($media)), 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff']);
     }
 
     public function shootMedia(Request $request, string $shoot): JsonResponse

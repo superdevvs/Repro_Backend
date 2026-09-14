@@ -44,12 +44,12 @@ class WorkspaceHdrService
     {
         abort_unless(preg_match('/^hdr:[a-f0-9]{64}$/', $media['id'] ?? ''), 422, 'Invalid HDR image reference.');
 
-        return 'studio/hdr/'.substr($media['id'], 4).'.jpg';
+        return substr($media['id'], 4).'.jpg';
     }
 
     public function status(array $media): array
     {
-        if (Storage::disk('local')->exists($this->path($media))) {
+        if (Storage::disk('studio_hdr')->exists($this->path($media))) {
             return ['status' => 'ready', 'media' => $media];
         }
 
@@ -90,7 +90,7 @@ class WorkspaceHdrService
         if ($latest['id'] !== $current['id'] || ! @getimagesizefromstring($bytes)) {
             throw ValidationException::withMessages(['media' => 'The HDR merge is invalid or its source stack changed.']);
         }
-        $disk = Storage::disk('local');
+        $disk = Storage::disk('studio_hdr');
         $path = $this->path($current);
         $temporary = $path.'.'.bin2hex(random_bytes(8)).'.tmp';
         try {
