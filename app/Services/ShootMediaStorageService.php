@@ -9,7 +9,9 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\Scanning\ClamAvClient;
 use App\Services\Scanning\FileScanService;
+use App\Support\LockedWrite;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
@@ -18,6 +20,17 @@ use Illuminate\Validation\ValidationException;
 /** Canonical local media intake, scanning and workflow storage. */
 class ShootMediaStorageService
 {
+    /**
+     * Attempts, first try included, for saving one media record. More than
+     * LockedWrite's default because the competing writers are the image-processing
+     * workers, whose commits are frequent while a batch of RAW files is landing,
+     * and giving up means a photographer re-sending a 50MB frame.
+     */
+    public const RECORD_WRITE_ATTEMPTS = 6;
+
+    /** Intake diagnostics channel, kept visible under the production log level. */
+    public const LOG_CHANNEL = 'uploads';
+
     protected RawThumbnailService $rawThumbnailService;
 
     public function __construct(?RawThumbnailService $rawThumbnailService = null)
@@ -296,7 +309,17 @@ class ShootMediaStorageService
     }
 
     /**
-     * Store an upload on local storage and enqueue its scan
+     * Store an upload on local storage and enqueue its scan.
+     *
+     * Two phases, deliberately. The bytes are staged first with no transaction
+     * open, because scanning, EXIF extraction and moving a RAW into place take
+     * seconds. The record is then saved in a transaction short enough to retry
+     * when SQLite refuses the write because a queue worker committed meanwhile.
+     * See {@see StagedShootUpload} for the failure this replaces. Retrying is
+     * safe: nothing inside the transaction touches the staged bytes.
+     *
+     * If the record still cannot be saved, the staged bytes are removed so a
+     * failed upload leaves nothing behind, and the exception surfaces unchanged.
      */
     private function storeLocally(
         Shoot $shoot,
@@ -307,6 +330,85 @@ class ShootMediaStorageService
         ?int $shootServiceId = null,
         ?array $metadataOverride = null
     ): ShootFile {
+        $stagingStartedAt = microtime(true);
+        $staged = $this->stageLocally($shoot, $file, $userId, $stage, $mediaTypeOverride, $shootServiceId, $metadataOverride);
+        $stagingMs = (int) round((microtime(true) - $stagingStartedAt) * 1000);
+
+        $attempts = 0;
+        try {
+            $shootFile = LockedWrite::run(
+                function () use ($staged, &$attempts) {
+                    $attempts++;
+
+                    return DB::transaction(fn () => $this->persistStagedUpload($staged));
+                },
+                "shoot.{$shoot->id}.store-media.{$staged->originalFilename}",
+                self::recordWriteAttempts()
+            );
+        } catch (\Throwable $e) {
+            $staged->discard();
+
+            Log::channel(self::LOG_CHANNEL)->error('Media record could not be saved; staged bytes discarded.', [
+                'shoot_id' => $shoot->id,
+                'shoot_service_id' => $shootServiceId,
+                'file_name' => $staged->originalFilename,
+                'stage' => $stage,
+                'staging_ms' => $stagingMs,
+                'db_attempts' => $attempts,
+                'lock_contention' => LockedWrite::isLockContention($e),
+                'exception' => $e::class,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
+
+        if ($attempts > 1) {
+            // Landed, but only after losing a race. Worth a line of its own because
+            // a rising count here is the early warning that the queue workers are
+            // contending with intake again, well before anything fails outright.
+            Log::channel(self::LOG_CHANNEL)->warning('Media record saved after retrying a locked database.', [
+                'shoot_id' => $shoot->id,
+                'shoot_file_id' => $shootFile->id,
+                'file_name' => $staged->originalFilename,
+                'db_attempts' => $attempts,
+                'staging_ms' => $stagingMs,
+            ]);
+        }
+
+        return $shootFile;
+    }
+
+    /**
+     * How many times the record write may run.
+     *
+     * Retrying is only sound at the outermost transaction level. Inside a
+     * caller's open transaction Laravel turns the inner transaction into a
+     * savepoint and, on a concurrency error, deliberately does not roll that
+     * savepoint back — the statements may or may not have applied, so running
+     * them again could duplicate the row. In that situation the write gets one
+     * attempt and the caller's own transaction decides the outcome.
+     */
+    public static function recordWriteAttempts(): int
+    {
+        return DB::transactionLevel() > 0 ? 1 : self::RECORD_WRITE_ATTEMPTS;
+    }
+
+    /**
+     * Everything about intake that touches disk or another process, and nothing
+     * that writes to the database. Kept transaction-free on purpose: see
+     * {@see StagedShootUpload} for why holding one open across this work made
+     * raw uploads fail intermittently.
+     */
+    private function stageLocally(
+        Shoot $shoot,
+        UploadedFile $file,
+        $userId,
+        string $stage,
+        ?string $mediaTypeOverride = null,
+        ?int $shootServiceId = null,
+        ?array $metadataOverride = null
+    ): StagedShootUpload {
         $isOpaqueIguidePackage = $mediaTypeOverride === ShootFile::MEDIA_TYPE_IGUIDE
             && data_get($metadataOverride, 'kind') === ShootFile::IGUIDE_OFFLINE_PACKAGE_KIND;
         $storageMediaType = in_array($mediaTypeOverride, ['extra', 'floorplan', 'virtual_staging', 'green_grass', 'twilight', 'drone', ShootFile::MEDIA_TYPE_IGUIDE], true)
@@ -410,12 +512,12 @@ class ShootMediaStorageService
         // Attribute the row to its execution row at creation. The caller also sets this,
         // but doing it here means the row is never briefly unattributed, which is what
         // the duplicate lookup above has to match against on a subsequent upload.
-        $shootFile = $existingFile ?: new ShootFile(array_filter([
+        $identity = array_filter([
             'shoot_id' => $shoot->id,
             'filename' => $file->getClientOriginalName(),
             'workflow_stage' => $stage,
             'shoot_service_id' => $shootServiceId,
-        ], fn ($value) => $value !== null));
+        ], fn ($value) => $value !== null);
 
         $attributes = [
             'filename' => $file->getClientOriginalName(),
@@ -455,19 +557,52 @@ class ShootMediaStorageService
             }
         }
 
-        $shootFile->fill($attributes);
-        $shootFile->save();
-
+        // Decided from what the row will hold once filled, so the answer is fixed
+        // here and does not depend on the record having been saved yet.
         $requiresImageProcessing = $this->shouldProcessImage($file)
             && (
                 $isReplacement
-                || ! $shootFile->processed_at
-                || ! $shootFile->thumbnail_path
-                || ! $shootFile->web_path
-                || ! $shootFile->placeholder_path
+                || ! $processedAt
+                || ! $thumbnailPath
+                || ! $webPath
+                || ! $placeholderPath
             );
 
-        if ($requiresImageProcessing && app()->runningUnitTests()) {
+        return new StagedShootUpload(
+            shoot: $shoot,
+            existingFile: $existingFile,
+            identity: $identity,
+            attributes: $attributes,
+            stage: $stage,
+            originalFilename: $file->getClientOriginalName(),
+            storedFilename: $filename,
+            storedPath: $serverPath,
+            storageDisk: $storageDisk,
+            syncScanVerdict: $syncScanVerdict,
+            isOpaqueIguidePackage: $isOpaqueIguidePackage,
+            requiresImageProcessing: $requiresImageProcessing,
+        );
+    }
+
+    /**
+     * Save the media record for bytes that {@see stageLocally()} already put in place.
+     *
+     * Only database work and job dispatch happen here, which is what lets
+     * {@see storeLocally()} run it in a short transaction and retry that
+     * transaction when SQLite reports another writer. Running it again for the
+     * same staged upload after a rolled-back attempt is safe: the bytes are
+     * untouched and the row is created or filled afresh each time.
+     */
+    private function persistStagedUpload(StagedShootUpload $staged): ShootFile
+    {
+        $shoot = $staged->shoot;
+        $serverPath = $staged->storedPath;
+
+        $shootFile = $staged->existingFile ?: new ShootFile($staged->identity);
+        $shootFile->fill($staged->attributes);
+        $shootFile->save();
+
+        if ($staged->requiresImageProcessing && app()->runningUnitTests()) {
             // Inline image processing for tests so derived asset paths are
             // populated immediately. Real environments rely on the queued
             // ProcessImageJob dispatched by FileScanService::release once the
@@ -506,7 +641,7 @@ class ShootMediaStorageService
         // When the synchronous pre-store scan already cleared the file, release it
         // straight to downstream processing; otherwise enqueue the async scan which
         // releases (or flags) the file once clamd becomes reachable.
-        if ($syncScanVerdict === 'clean' && ! app()->runningUnitTests()) {
+        if ($staged->syncScanVerdict === 'clean' && ! app()->runningUnitTests()) {
             try {
                 app(FileScanService::class)->release($shootFile);
             } catch (\Throwable $e) {
@@ -536,7 +671,7 @@ class ShootMediaStorageService
         // Mirror the upload to Cloudflare R2 when the dual-write/R2-only cutover
         // is enabled (config/media.php). The job is idempotent and re-dispatched
         // after image processing/watermarking so derived assets sync too.
-        if (! $isOpaqueIguidePackage && (config('media.dual_write') || config('media.r2_only'))) {
+        if (! $staged->isOpaqueIguidePackage && (config('media.dual_write') || config('media.r2_only'))) {
             try {
                 SyncShootFileToR2Job::dispatch($shootFile->id);
             } catch (\Throwable $e) {
@@ -556,9 +691,9 @@ class ShootMediaStorageService
 
         Log::info('Stored shoot media locally', [
             'shoot_id' => $shoot->id,
-            'filename' => $filename,
+            'filename' => $staged->storedFilename,
             'path' => $serverPath,
-            'stage' => $stage,
+            'stage' => $staged->stage,
         ]);
 
         return $shootFile;

@@ -16,6 +16,7 @@ use App\Services\Shoots\ShootNotesCompatibilityService;
 use App\Services\Shoots\ShootUploadIdempotencyService;
 use App\Services\Shoots\UploadIntakeResolver;
 use App\Services\UploadValidationService;
+use App\Support\LockedWrite;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -26,6 +27,22 @@ use Illuminate\Validation\ValidationException;
 
 class UploadShootFilesAction
 {
+    /**
+     * Attempts for one file's record transaction, first try included. Generous
+     * compared with LockedWrite's default because the competing writers here are
+     * the image-processing workers, whose commits are frequent while a batch of
+     * RAW files is landing, and the cost of giving up is a photographer re-sending
+     * a 50MB frame.
+     */
+    public const LOCKED_WRITE_ATTEMPTS = 6;
+
+    /**
+     * Where intake diagnostics go. A dedicated channel, because the general log
+     * runs at error level in production and the failures that matter here were
+     * warnings — see config/logging.php.
+     */
+    public const LOG_CHANNEL = 'uploads';
+
     public function __construct(
         protected ShootMediaStorageService $mediaStorageService,
         protected ShootMediaMutationSupportService $support,
@@ -61,8 +78,13 @@ class UploadShootFilesAction
         }
 
         $attempt = $claim['attempt'];
+        // One id for the whole request, present on every log line it writes and in
+        // the response, so a photographer's screenshot can be matched to the exact
+        // lines in storage/logs/uploads.log.
+        $correlationId = $attempt?->correlation_id ?? (string) Str::uuid();
         try {
-            $result = $this->executeUpload($request, $shoot, $user);
+            $result = $this->executeUpload($request, $shoot, $user, $correlationId);
+            $result['payload']['correlation_id'] ??= $correlationId;
             if ($attempt) {
                 $this->uploadIdempotency->finish($attempt, $result);
             }
@@ -91,7 +113,6 @@ class UploadShootFilesAction
 
             return ['status' => 422, 'payload' => $payload];
         } catch (\Throwable $exception) {
-            $correlationId = $attempt?->correlation_id ?? (string) Str::uuid();
             $payload = [
                 'error_type' => 'server_error',
                 'message' => 'Failed to upload files.',
@@ -107,12 +128,17 @@ class UploadShootFilesAction
                 'correlation_id' => $correlationId,
             ];
 
-            Log::error('Shoot upload attempt failed unexpectedly.', [
+            $failureContext = [
                 'shoot_id' => $shoot->id,
                 'actor_id' => $user?->id,
                 'correlation_id' => $correlationId,
+                'upload_batch_id' => $request->input('upload_batch_id'),
+                'upload_batch_index' => $request->input('upload_batch_index'),
                 'exception' => $exception::class,
-            ]);
+                'error' => $exception->getMessage(),
+            ];
+            Log::error('Shoot upload attempt failed unexpectedly.', $failureContext);
+            Log::channel(self::LOG_CHANNEL)->error('Upload request failed before any file was processed.', $failureContext);
 
             if ($attempt) {
                 $this->uploadIdempotency->fail($attempt, $payload);
@@ -122,14 +148,20 @@ class UploadShootFilesAction
         }
     }
 
-    private function executeUpload(Request $request, Shoot $shoot, ?User $user): array
+    private function executeUpload(Request $request, Shoot $shoot, ?User $user, ?string $correlationId = null): array
     {
-        Log::info('Upload request received', [
+        Log::channel(self::LOG_CHANNEL)->info('Upload request received.', [
             'shoot_id' => $shoot->id,
+            'actor_id' => $user?->id,
+            'actor_role' => $user?->role,
+            'correlation_id' => $correlationId,
+            'upload_type' => $request->input('upload_type', 'raw'),
+            'shoot_service_id' => $request->input('shoot_service_id'),
+            'upload_batch_id' => $request->input('upload_batch_id'),
+            'upload_batch_index' => $request->input('upload_batch_index'),
+            'upload_batch_total' => $request->input('upload_batch_total'),
             'has_files' => $request->hasFile('files'),
             'file_count' => $request->hasFile('files') ? (is_array($request->file('files')) ? count($request->file('files')) : 1) : 0,
-            'all_keys' => array_keys($request->all()),
-            'php_files' => array_keys($_FILES),
             'content_length' => $request->header('Content-Length'),
             'post_max_size' => ini_get('post_max_size'),
             'upload_max_filesize' => ini_get('upload_max_filesize'),
@@ -599,10 +631,25 @@ class UploadShootFilesAction
                 ? $rawBracketScope($shoot->files())->count()
                 : 0;
 
+            $batchContext = [
+                'shoot_id' => $shoot->id,
+                'actor_id' => $user?->id,
+                'correlation_id' => $correlationId,
+                'upload_type' => $uploadType,
+                'shoot_service_id' => $shootServiceId,
+                'upload_batch_id' => $rawBatchId !== '' ? $rawBatchId : null,
+                'upload_batch_index' => $rawBatchIndex,
+                'upload_batch_total' => $request->input('upload_batch_total'),
+            ];
+
             foreach ($files as $file) {
                 $shootFile = null;
+                $startedAt = microtime(true);
+                $fileContext = $batchContext + [
+                    'file_name' => $file->getClientOriginalName(),
+                    'file_size' => $file->getSize(),
+                ];
                 try {
-                    DB::beginTransaction();
                     $resolvedMediaType = null;
                     if ($mediaTypeOverride && in_array($mediaTypeOverride, ['floorplan', 'extra', 'virtual_staging', 'green_grass', 'twilight', 'drone'], true)) {
                         $resolvedMediaType = $mediaTypeOverride;
@@ -610,6 +657,15 @@ class UploadShootFilesAction
                         $resolvedMediaType = 'extra';
                     }
 
+                    // No transaction is open here, on purpose. Storage scans the file,
+                    // reads its EXIF, moves it into place and only then saves the record in
+                    // its own short, retried transaction. This used to run inside one
+                    // transaction with everything below, and on SQLite that meant a read
+                    // snapshot held open for seconds while the queue workers committed to
+                    // the same file — after which the INSERT was refused as "database is
+                    // locked", no matter the busy_timeout. That was the intermittent
+                    // "media record could not be saved" photographers kept hitting.
+                    //
                     // The execution row is passed into storage so its replace-in-place
                     // duplicate check is scoped to that row. Without it, two services on
                     // one shoot receiving the same filename collapsed into one file.
@@ -617,72 +673,115 @@ class UploadShootFilesAction
                         ? $this->mediaStorageService->uploadToTodo($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId)
                         : $this->mediaStorageService->uploadToCompleted($shoot, $file, auth()->id(), $serviceCategory, $resolvedMediaType, $shootServiceId);
 
-                    if ($shootServiceId && ! $shootFile->shoot_service_id) {
-                        $shootFile->shoot_service_id = $shootServiceId;
-                        $shootFile->save();
-                    }
+                    // The writes that belong with the record: committed together and
+                    // retried as a unit if another writer wins the race. Every statement
+                    // here is an idempotent update on rows that already exist, so a
+                    // rolled-back attempt can simply run again.
+                    $followUpAttempts = 0;
+                    $this->commitWithLockRetry(function () use (
+                        $shootFile,
+                        $shoot,
+                        $shootServiceId,
+                        $uploadType,
+                        $treatment,
+                        $isExtra,
+                        $requiredForEditing,
+                        $rawBracketMode,
+                        $rawBatchOffset,
+                        $rawBatchIndex,
+                        $rawSequenceIndex,
+                        &$followUpAttempts
+                    ): void {
+                        $followUpAttempts++;
 
-                    $flagUpdates = [];
-                    // Recorded alongside the capture identity, not instead of it. Only
-                    // written when asked for, so an untreated frame keeps a null column
-                    // rather than an empty string.
-                    if ($treatment !== null && Schema::hasColumn('shoot_files', 'treatment')) {
-                        $flagUpdates['treatment'] = $treatment;
-                    }
-                    if (Schema::hasColumn('shoot_files', 'is_extra')) {
-                        $flagUpdates['is_extra'] = $isExtra || $shootFile->media_type === 'extra';
-                    }
-                    if (Schema::hasColumn('shoot_files', 'required_for_editing')) {
-                        $flagUpdates['required_for_editing'] = ($isExtra || $shootFile->media_type === 'extra')
-                            && $requiredForEditing;
-                    }
-                    if ($flagUpdates !== []) {
-                        $shootFile->forceFill($flagUpdates)->save();
-                        $shootFile->refresh();
-                    }
+                        if ($shootServiceId && ! $shootFile->shoot_service_id) {
+                            $shootFile->shoot_service_id = $shootServiceId;
+                            $shootFile->save();
+                        }
 
-                    if ($shootServiceId) {
-                        $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
-                        if ($serviceItem) {
-                            if ($uploadType === 'raw' && ! in_array($serviceItem->workflow_status, [
-                                ShootService::WORKFLOW_READY,
-                                ShootService::WORKFLOW_DELIVERED,
-                                ShootService::WORKFLOW_CANCELLED,
-                            ], true)) {
-                                $serviceItem->forceFill([
-                                    'workflow_status' => ShootService::WORKFLOW_IN_PROGRESS,
-                                    'delivery_status' => $serviceItem->delivery_status ?: ShootService::DELIVERY_NOT_STARTED,
-                                ])->save();
-                            }
+                        $flagUpdates = [];
+                        // Recorded alongside the capture identity, not instead of it. Only
+                        // written when asked for, so an untreated frame keeps a null column
+                        // rather than an empty string.
+                        if ($treatment !== null && Schema::hasColumn('shoot_files', 'treatment')) {
+                            $flagUpdates['treatment'] = $treatment;
+                        }
+                        if (Schema::hasColumn('shoot_files', 'is_extra')) {
+                            $flagUpdates['is_extra'] = $isExtra || $shootFile->media_type === 'extra';
+                        }
+                        if (Schema::hasColumn('shoot_files', 'required_for_editing')) {
+                            $flagUpdates['required_for_editing'] = ($isExtra || $shootFile->media_type === 'extra')
+                                && $requiredForEditing;
+                        }
+                        if ($flagUpdates !== []) {
+                            $shootFile->forceFill($flagUpdates)->save();
+                            $shootFile->refresh();
+                        }
 
-                            if ($uploadType === 'edited' && $serviceItem->workflow_status !== ShootService::WORKFLOW_DELIVERED) {
-                                $serviceItem->forceFill([
-                                    'workflow_status' => ShootService::WORKFLOW_READY,
-                                    'delivery_status' => ShootService::DELIVERY_READY,
-                                    'ready_at' => $serviceItem->ready_at ?? now(),
-                                ])->save();
+                        if ($shootServiceId) {
+                            $serviceItem = $shoot->serviceItems()->whereKey($shootServiceId)->first();
+                            if ($serviceItem) {
+                                if ($uploadType === 'raw' && ! in_array($serviceItem->workflow_status, [
+                                    ShootService::WORKFLOW_READY,
+                                    ShootService::WORKFLOW_DELIVERED,
+                                    ShootService::WORKFLOW_CANCELLED,
+                                ], true)) {
+                                    $serviceItem->forceFill([
+                                        'workflow_status' => ShootService::WORKFLOW_IN_PROGRESS,
+                                        'delivery_status' => $serviceItem->delivery_status ?: ShootService::DELIVERY_NOT_STARTED,
+                                    ])->save();
+                                }
+
+                                if ($uploadType === 'edited' && $serviceItem->workflow_status !== ShootService::WORKFLOW_DELIVERED) {
+                                    $serviceItem->forceFill([
+                                        'workflow_status' => ShootService::WORKFLOW_READY,
+                                        'delivery_status' => ShootService::DELIVERY_READY,
+                                        'ready_at' => $serviceItem->ready_at ?? now(),
+                                    ])->save();
+                                }
                             }
                         }
-                    }
 
+                        if ($uploadType === 'raw' && $rawBracketMode > 1 && $shootFile->media_type === 'raw') {
+                            // Prefer the deterministic (batch_offset + batch_index) ordering when
+                            // the frontend provides it (single source of truth across parallel XHRs).
+                            // Fall back to the per-request count when the legacy single-request
+                            // multi-file path is used (no batch metadata).
+                            $orderingIndex = ($rawBatchOffset !== null && $rawBatchIndex !== null)
+                                ? $rawBatchOffset + $rawBatchIndex
+                                : $rawSequenceIndex;
+
+                            $shootFile->update([
+                                'bracket_group' => intdiv($orderingIndex, $rawBracketMode) + 1,
+                                'sequence' => ($orderingIndex % $rawBracketMode) + 1,
+                            ]);
+                        }
+                    }, "shoot.{$shoot->id}.upload.{$file->getClientOriginalName()}");
+
+                    // Advanced only once the file is committed, and outside the retried
+                    // closure so a retry cannot count the same frame twice.
                     if ($uploadType === 'raw' && $rawBracketMode > 1 && $shootFile->media_type === 'raw') {
-                        // Prefer the deterministic (batch_offset + batch_index) ordering when
-                        // the frontend provides it (single source of truth across parallel XHRs).
-                        // Fall back to the per-request count when the legacy single-request
-                        // multi-file path is used (no batch metadata).
-                        $orderingIndex = ($rawBatchOffset !== null && $rawBatchIndex !== null)
-                            ? $rawBatchOffset + $rawBatchIndex
-                            : $rawSequenceIndex;
-
-                        $shootFile->update([
-                            'bracket_group' => intdiv($orderingIndex, $rawBracketMode) + 1,
-                            'sequence' => ($orderingIndex % $rawBracketMode) + 1,
-                        ]);
                         $rawSequenceIndex++;
                     }
 
+                    Log::channel(self::LOG_CHANNEL)->info('Upload file accepted.', $fileContext + [
+                        'shoot_file_id' => $shootFile->id,
+                        'media_type' => $shootFile->media_type,
+                        'replaced_existing' => ! $shootFile->wasRecentlyCreated,
+                        'bracket_group' => $shootFile->bracket_group,
+                        'sequence' => $shootFile->sequence,
+                        'scan_status' => $shootFile->scan_status,
+                        // Above 1 means the record's follow-up writes lost at least one
+                        // race with another writer before landing. A rising count is the
+                        // early warning that the queue is contending with intake again.
+                        'db_attempts' => $followUpAttempts,
+                        'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
+                    ]);
+
                     // Generate a renderable preview for floorplan uploads (PDF -> page JPGs,
-                    // or link the image) so they don't render as empty cards. Non-fatal.
+                    // or link the image) so they don't render as empty cards. Non-fatal, and
+                    // run after the commit: rendering a PDF is more slow I/O that has no
+                    // business inside the transaction.
                     if ($shootFile->media_type === 'floorplan') {
                         try {
                             app(\App\Services\Shoots\FloorplanPreviewService::class)->ensurePreview($shootFile);
@@ -697,36 +796,33 @@ class UploadShootFilesAction
 
                     // A file becomes accepted only after its own database work commits.
                     // Other files in the same batch are not rolled back with it.
-                    DB::commit();
                     $uploadedFiles[] = $this->mediaReadService->formatUploadedFile($shootFile);
                 } catch (\Throwable $e) {
-                    if (DB::transactionLevel() > 0) {
-                        DB::rollBack();
-                    }
+                    // No rollback here: each write phase above ran in its own DB::transaction
+                    // and has already unwound itself. Rolling back "whatever is open" would
+                    // reach a caller's enclosing transaction instead.
 
-                    // Remove only assets created by this failed attempt. Existing-file
-                    // replacements are intentionally left alone for legacy safety.
+                    // The record was saved but its follow-up writes never landed. The row
+                    // and its bytes are removed together so the photographer sees one
+                    // clean failure to retry rather than a half-attributed frame. Only a
+                    // row this attempt created is touched: existing-file replacements are
+                    // intentionally left alone for legacy safety.
                     if ($shootFile?->wasRecentlyCreated) {
-                        try {
-                            $this->support->deleteStoredAssets($shootFile);
-                        } catch (\Throwable $cleanupException) {
-                            Log::warning('Failed to compensate upload storage after DB failure.', [
-                                'shoot_id' => $shoot->id,
-                                'shoot_file_id' => $shootFile->id,
-                                'exception' => $cleanupException::class,
-                            ]);
-                        }
+                        $this->compensateOrphanedRecord($shoot, $shootFile, $fileContext);
                     }
 
                     $classifiedError = $this->classifyUploadException($file->getClientOriginalName(), $e);
                     $errors[] = $classifiedError;
 
-                    Log::warning('Shoot file upload failed for one file.', [
-                        'shoot_id' => $shoot->id,
-                        'file_name' => $file->getClientOriginalName(),
+                    // Carries the driver's own message, which is the one thing support
+                    // needs and the one thing the sanitized response cannot include.
+                    Log::channel(self::LOG_CHANNEL)->error('Upload file failed.', $fileContext + [
                         'error_type' => $classifiedError['error_type'],
                         'retryable' => $classifiedError['retryable'],
+                        'lock_contention' => LockedWrite::isLockContention($e),
                         'exception' => $e::class,
+                        'error' => $e->getMessage(),
+                        'duration_ms' => (int) round((microtime(true) - $startedAt) * 1000),
                     ]);
                 }
             }
@@ -808,6 +904,13 @@ class UploadShootFilesAction
                 }
             }
 
+            Log::channel(self::LOG_CHANNEL)->log(count($errors) > 0 ? 'warning' : 'info', 'Upload request finished.', $batchContext + [
+                'success_count' => count($uploadedFiles),
+                'error_count' => count($errors),
+                'error_types' => array_values(array_unique(array_column($errors, 'error_type'))),
+                'raw_photo_count' => $shoot->raw_photo_count,
+            ]);
+
             return [
                 'status' => 200,
                 'payload' => [
@@ -817,6 +920,7 @@ class UploadShootFilesAction
                     'success_count' => count($uploadedFiles),
                     'error_count' => count($errors),
                     'partial_success' => count($uploadedFiles) > 0 && count($errors) > 0,
+                    'correlation_id' => $correlationId,
                     'upload_limits' => $uploadLimits,
                     'shoot_status' => $shoot->workflow_status,
                     'raw_photo_count' => $shoot->raw_photo_count,
@@ -832,13 +936,17 @@ class UploadShootFilesAction
                 DB::rollBack();
             }
 
-            $correlationId = (string) Str::uuid();
-            Log::error('Shoot upload orchestration failed.', [
+            $correlationId ??= (string) Str::uuid();
+            $failureContext = [
                 'shoot_id' => $shoot->id,
                 'actor_id' => $user?->id,
                 'correlation_id' => $correlationId,
+                'accepted_count' => count($uploadedFiles),
                 'exception' => $e::class,
-            ]);
+                'error' => $e->getMessage(),
+            ];
+            Log::error('Shoot upload orchestration failed.', $failureContext);
+            Log::channel(self::LOG_CHANNEL)->error('Upload request failed after processing files.', $failureContext);
 
             return [
                 'status' => 500,
@@ -879,6 +987,60 @@ class UploadShootFilesAction
             'total_request_bytes' => $this->parseSize((string) ini_get('post_max_size')),
             'max_file_uploads' => (int) ini_get('max_file_uploads'),
         ];
+    }
+
+    /**
+     * Run the database half of one file's intake in a short transaction, retrying
+     * the whole transaction while SQLite reports another writer.
+     *
+     * busy_timeout alone does not cover this. A deferred transaction that has
+     * read and then tries to write inside a snapshot another connection has since
+     * committed past is refused at once with SQLITE_BUSY_SNAPSHOT, and the
+     * driver never waits. The only remedy is to roll back and start a fresh
+     * snapshot, which is what {@see LockedWrite} does. Anything that is not lock
+     * contention — a constraint violation, a missing column — surfaces on the
+     * first attempt exactly as before.
+     *
+     * @template TReturn
+     *
+     * @param  \Closure(): TReturn  $work
+     * @return TReturn
+     */
+    protected function commitWithLockRetry(\Closure $work, string $context)
+    {
+        // Inside a caller's transaction the inner one is a savepoint that Laravel
+        // does not roll back on a concurrency error, so a retry could apply the
+        // same statements twice. Only retry when this is the outermost level.
+        $attempts = DB::transactionLevel() > 0 ? 1 : self::LOCKED_WRITE_ATTEMPTS;
+
+        return LockedWrite::run(fn () => DB::transaction($work), $context, $attempts);
+    }
+
+    /**
+     * Undo a record this attempt created when its follow-up writes could not land.
+     *
+     * Storage has already committed the row and the bytes are in place; the
+     * bracket, flag and service-item writes failed after that. Leaving the row
+     * would show the photographer a frame that is not attributed the way they
+     * asked, and reporting the same frame as failed would then produce a
+     * duplicate on retry. Removing both keeps the failure honest. Best effort:
+     * the file has already been reported as failed, so this cannot make things
+     * worse, only cleaner.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function compensateOrphanedRecord(Shoot $shoot, ShootFile $shootFile, array $context): void
+    {
+        try {
+            $this->support->deleteStoredAssets($shootFile);
+            LockedWrite::run(static fn () => $shootFile->delete(), "shoot.{$shoot->id}.upload.compensate");
+        } catch (\Throwable $cleanupException) {
+            Log::channel(self::LOG_CHANNEL)->error('Failed to remove an orphaned media record after its follow-up writes failed.', $context + [
+                'shoot_file_id' => $shootFile->id,
+                'exception' => $cleanupException::class,
+                'error' => $cleanupException->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -988,6 +1150,19 @@ class UploadShootFilesAction
         $lowerMessage = strtolower($message);
         $extension = strtolower((string) pathinfo($fileName, PATHINFO_EXTENSION));
         $isRawFile = in_array($extension, ['nef', 'cr2', 'cr3', 'arw', 'dng', 'raf', 'rw2', 'orf', 'pef', 'srw'], true);
+
+        // Lock contention that outlasted every retry. Named as what it is, so the
+        // photographer knows a plain retry is the right move and support is not
+        // sent hunting for a corrupt record that does not exist.
+        if (LockedWrite::isLockContention($exception)) {
+            return $this->buildUploadError(
+                $fileName,
+                'storage_failure',
+                'The file reached the server, but the database was busy with other media and its record could not be saved in time.',
+                true,
+                'Retry this file. It normally succeeds on the next attempt; if it keeps failing, support should check for a stuck queue worker.',
+            );
+        }
 
         if ($exception instanceof \Illuminate\Database\QueryException) {
             return $this->buildUploadError(

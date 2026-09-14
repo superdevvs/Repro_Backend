@@ -91,6 +91,22 @@ return [
             'permission' => 0660,
         ],
 
+        // Media intake diagnostics. Production runs LOG_LEVEL=error, which is why
+        // a night of 69 failed RAW uploads left nothing at all in laravel.log:
+        // the per-file failure was a warning. Every accepted file, every failed
+        // file with the driver's own message, and every lock retry lands here so
+        // a photographer's report can be traced by shoot, batch and correlation
+        // id regardless of the general log level.
+        'uploads' => [
+            'driver' => 'daily',
+            'tap' => [\App\Logging\PrivacyLogTap::class],
+            'path' => storage_path('logs/uploads.log'),
+            'level' => env('LOG_UPLOADS_LEVEL', 'info'),
+            'days' => env('LOG_UPLOADS_DAYS', 30),
+            'replace_placeholders' => true,
+            'permission' => 0660,
+        ],
+
         'slack' => [
             'driver' => 'slack',
             'tap' => [\App\Logging\PrivacyLogTap::class],

@@ -5,6 +5,7 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootUploadAttempt;
 use App\Models\User;
+use App\Support\LockedWrite;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -94,6 +95,15 @@ class ShootUploadIdempotencyService
         ];
     }
 
+    /**
+     * Record the outcome of an attempt whose files may already be committed.
+     *
+     * This write must land. If it is refused because a queue worker held the
+     * SQLite lock, the request would report a server error for media that was in
+     * fact saved, and the attempt would stay pending so every replay of the same
+     * key answered "upload in progress" indefinitely. Retrying the single UPDATE
+     * is safe and removes that failure mode.
+     */
     public function finish(ShootUploadAttempt $attempt, array $result): void
     {
         $payload = (array) ($result['payload'] ?? []);
@@ -112,7 +122,9 @@ class ShootUploadIdempotencyService
                 ?? (is_array($firstFile) ? ($firstFile['shoot_service_id'] ?? $firstFile['shootServiceId'] ?? null) : null),
             'completed_at' => $successCount > 0 ? now() : null,
             'failed_at' => $successCount > 0 ? null : now(),
-        ])->save();
+        ]);
+
+        LockedWrite::run(static fn () => $attempt->save(), "shoot.{$attempt->shoot_id}.upload-attempt.finish");
     }
 
     public function fail(ShootUploadAttempt $attempt, array $payload, int $status = 500): void
@@ -124,7 +136,9 @@ class ShootUploadIdempotencyService
             'result_errors' => array_values((array) ($payload['errors'] ?? [])),
             'result_payload' => $payload,
             'failed_at' => now(),
-        ])->save();
+        ]);
+
+        LockedWrite::run(static fn () => $attempt->save(), "shoot.{$attempt->shoot_id}.upload-attempt.fail");
     }
 
     public function fingerprint(Request $request, array $files): string
