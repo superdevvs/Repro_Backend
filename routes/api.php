@@ -54,6 +54,7 @@ use App\Http\Controllers\API\ReelController;
 use App\Http\Controllers\API\ShootController;
 use App\Http\Controllers\API\ShootIssuesController;
 use App\Http\Controllers\API\ShootMediaController;
+use App\Http\Controllers\API\ShootRealtorOptionsController;
 use App\Http\Controllers\API\ShootMessageController;
 use App\Http\Controllers\API\ShootNotesController;
 use App\Http\Controllers\API\ShootPaymentsController;
@@ -678,6 +679,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shoots/{shoot}/editor-download-raw', [ShootMediaController::class, 'editorDownloadRaw'])->middleware('role:editor,admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/generate-share-link', [ShootMediaController::class, 'generateShareLink'])->middleware('role:editor');
     Route::get('/shoots/{shoot}/share-links', [ShootMediaController::class, 'listShareLinks']);
+    Route::get('/shoots/{shoot}/realtor-options', ShootRealtorOptionsController::class);
     Route::post('/shoots/{shoot}/share-links/{linkId}/revoke', [ShootMediaController::class, 'revokeShareLink']);
     Route::post('/shoots/{shoot}/files/{file}/move-to-completed', [ShootMediaController::class, 'moveFileToCompleted']);
     Route::post('/shoots/{shoot}/files/{file}/verify', [ShootMediaController::class, 'verifyFile']);

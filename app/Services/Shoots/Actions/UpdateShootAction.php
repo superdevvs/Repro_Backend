@@ -20,6 +20,7 @@ use App\Services\Shoots\ShootAuthorizationSupport;
 use App\Services\Shoots\ShootEditablePayloadService;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootMutationSupportService;
+use App\Services\Shoots\ShootRealtorOptionsService;
 use App\Services\Shoots\ShootServiceChangeGuard;
 use Carbon\Carbon;
 use App\Exceptions\PublicApiResponseException;
@@ -43,7 +44,8 @@ class UpdateShootAction
         protected GoogleCalendarSyncDispatcher $googleCalendarSyncDispatcher,
         protected ShootServiceChangeGuard $serviceChangeGuard,
         protected ReturnVisitBookingService $returnVisits,
-        protected AuditLogService $auditLog
+        protected AuditLogService $auditLog,
+        protected ShootRealtorOptionsService $realtorOptions
     ) {}
 
     public function execute(Request $request, Shoot $shoot, User $user): Shoot
@@ -103,6 +105,10 @@ class UpdateShootAction
             'property_mls',
             'property_price',
             'property_lot_size',
+            // Which client's branding fronts the tour. Accepted here so the key
+            // passes the whitelist; the value itself is checked further down
+            // against the client's own linked circle, never the whole client list.
+            'realtor_client_id',
         ];
         // Property-access fields a client may self-serve (text/code only, no media).
         $clientEditablePropertyDetailKeys = [
@@ -140,6 +146,21 @@ class UpdateShootAction
                 $invalidTourLinkKeys = array_diff(array_keys($requestedTourLinks), $clientEditableTourLinkKeys);
                 if (! empty($invalidTourLinkKeys)) {
                     $this->abortJson('Forbidden', 403);
+                }
+
+                // A client chooses the tour's realtor only from their own circle:
+                // themselves or an account linked to them. The picker is fed by the
+                // same rule, so a valid UI choice always passes; this stops a crafted
+                // request from putting an unrelated client's branding on the tour.
+                if (array_key_exists('realtor_client_id', $requestedTourLinks)) {
+                    $requestedRealtorId = $requestedTourLinks['realtor_client_id'];
+                    $requestedRealtorId = $requestedRealtorId === null || $requestedRealtorId === ''
+                        ? null
+                        : (is_numeric($requestedRealtorId) ? (int) $requestedRealtorId : -1);
+
+                    if (! $this->realtorOptions->canAssignRealtor($user, $requestedRealtorId)) {
+                        $this->abortJson('You can only assign yourself or a linked account as the realtor.', 403);
+                    }
                 }
 
                 // A client may only submit the whitelisted access-info fields via
