@@ -6,6 +6,7 @@
     td { font-family:Inter,Arial,Helvetica,sans-serif; }
     img { border:0; outline:none; text-decoration:none; -ms-interpolation-mode:bicubic; }
     a { color:{{ $colors['accent'] }}; }
+    .footer-address, .footer-address a, .footer-address span { color:{{ $colors['paper'] }} !important; text-decoration:none !important; }
     .body-bg { background-color:{{ $colors['canvas'] }} !important; }
     .content-card-bg, .hero-card-bg { background-color:{{ $colors['paper'] }} !important; background-image:none !important; }
     .section-card-bg, .stat-card-bg, .note-card-bg, .callout-bg, .callout-success-bg, .callout-warning-bg, .callout-danger-bg, .info-box, .change-card { background-color:{{ $colors['surface'] }} !important; background-image:none !important; border:0 !important; border-radius:12px !important; }
@@ -42,6 +43,7 @@
     }
     @if($theme === null)
         @media (prefers-color-scheme:dark) {
+            .footer-address, .footer-address a, .footer-address span { color:#121e2c !important; }
             .body-bg { background-color:#080f17 !important; }
             .content-card-bg, .hero-card-bg { background-color:#121e2c !important; border-color:#2c425e !important; }
             .section-card-bg, .stat-card-bg, .note-card-bg, .callout-bg, .callout-success-bg, .callout-warning-bg, .callout-danger-bg, .info-box, .change-card, .btn-secondary-bg { background-color:#1b2a3e !important; }
@@ -52,6 +54,7 @@
             .footer-inner, .footer-rule { border-color:#2c425e !important; }
         }
         [data-ogsc] .body-bg { background-color:#080f17 !important; }
+        [data-ogsc] .footer-address, [data-ogsc] .footer-address a, [data-ogsc] .footer-address span { color:#121e2c !important; }
         [data-ogsc] .content-card-bg { background-color:#121e2c !important; border-color:#2c425e !important; }
         [data-ogsc] .section-card-bg, [data-ogsc] .stat-card-bg, [data-ogsc] .note-card-bg, [data-ogsc] .callout-bg, [data-ogsc] .callout-success-bg, [data-ogsc] .callout-warning-bg, [data-ogsc] .callout-danger-bg, [data-ogsc] .info-box, [data-ogsc] .change-card { background-color:#1b2a3e !important; }
         [data-ogsc] .dark-title, [data-ogsc] .dark-heading, [data-ogsc] .dark-strong, [data-ogsc] .info-value, [data-ogsc] .detail-value, [data-ogsc] .hero-title-primary, [data-ogsc] .hero-title-accent { color:#f1f5fc !important; }

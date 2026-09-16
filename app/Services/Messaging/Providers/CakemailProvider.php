@@ -832,7 +832,7 @@ class CakemailProvider implements EmailProviderInterface
         return preg_replace_callback(
             '~(<div\b[^>]*\bdata-email-provider-footer="true"[^>]*>).*?</div>~is',
             static fn (array $match): string => $match[1]
-                .'<p style="margin:12px 0 0;">[CLIENTS.ADDRESS]</p>'
+                .'<p class="footer-address" style="margin:12px 0 0;color:transparent;">[CLIENTS.ADDRESS]</p>'
                 .'<p style="margin:8px 0 0;"><a class="dark-muted" href="[GLOBAL_UNSUBSCRIBE]" style="color:inherit;text-decoration:underline;">Unsubscribe</a></p></div>',
             $html,
             1

@@ -125,7 +125,7 @@ class CakemailProviderTest extends TestCase
             'supported provider tags replace the styled footer address exactly once' => [
                 '<div data-email-provider-footer="true" class="dark-muted" style="color:#65758b;font-size:11px;line-height:19px;"><p>Old configured address</p></div>',
                 'Plain message',
-                '<div data-email-provider-footer="true" class="dark-muted" style="color:#65758b;font-size:11px;line-height:19px;"><p style="margin:12px 0 0;">[CLIENTS.ADDRESS]</p><p style="margin:8px 0 0;"><a class="dark-muted" href="[GLOBAL_UNSUBSCRIBE]" style="color:inherit;text-decoration:underline;">Unsubscribe</a></p></div>',
+                '<div data-email-provider-footer="true" class="dark-muted" style="color:#65758b;font-size:11px;line-height:19px;"><p class="footer-address" style="margin:12px 0 0;color:transparent;">[CLIENTS.ADDRESS]</p><p style="margin:8px 0 0;"><a class="dark-muted" href="[GLOBAL_UNSUBSCRIBE]" style="color:inherit;text-decoration:underline;">Unsubscribe</a></p></div>',
                 'Plain message',
             ],
             'supported tags in custom templates are preserved' => [
