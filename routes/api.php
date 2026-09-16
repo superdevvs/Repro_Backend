@@ -341,7 +341,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Stripe refund
     Route::post('payments/stripe-refund', [StripePaymentController::class, 'refundPayment'])
-        ->middleware('role:admin,superadmin')
+        ->middleware(['role:admin,superadmin', 'permission:accounting'])
         ->name('api.payments.stripe-refund');
 
 });
@@ -381,6 +381,12 @@ Route::middleware('auth:sanctum')->prefix('profile')->group(function () {
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesRep'])->get('/admin/users', [UserController::class, 'index']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->get('/admin/permissions', [PermissionController::class, 'index']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->put('/admin/permissions', [PermissionController::class, 'update']);
+// Per-user tri-state overrides (allow / deny) layered on the role map.
+Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin/permissions/users')->group(function () {
+    Route::get('/', [PermissionController::class, 'users']);
+    Route::get('/{user}', [PermissionController::class, 'showUser']);
+    Route::put('/{user}', [PermissionController::class, 'updateUser']);
+});
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch('/admin/users/{id}/role', [UserController::class, 'updateRole']);
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->patch('/admin/users/{user}/convert-type', [AccountStatusController::class, 'convertType']);
@@ -457,7 +463,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
     Route::post('/{equipmentId}/send-verification-email', [PhotographerEquipmentController::class, 'sendVerificationEmail']);
 });
 
-Route::middleware(['auth:sanctum', 'role:admin,superadmin'])->prefix('admin/accounting-expenses')->group(function () {
+Route::middleware(['auth:sanctum', 'role:admin,superadmin', 'permission:accounting'])->prefix('admin/accounting-expenses')->group(function () {
     Route::get('/', [AccountingExpenseController::class, 'index']);
     Route::post('/', [AccountingExpenseController::class, 'store']);
     Route::get('/{expense}', [AccountingExpenseController::class, 'show']);
@@ -540,47 +546,51 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
         );
     });
 
-    Route::get('invoices', [InvoiceController::class, 'index']);
-    // Static routes MUST come before the {invoice} wildcard to avoid being swallowed
-    Route::post('invoices/generate', [App\Http\Controllers\Admin\InvoiceController::class, 'generate']);
-    Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
-    Route::get('invoices/review-queue', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewQueue']);
-    // Wildcard routes
-    Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
-    Route::get('invoices/{invoice}/review-detail', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewDetail']);
-    Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
-    Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
-    Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
-    Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
-    Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
-    Route::match(['put', 'patch'], 'invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
-    Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
+    // Finance endpoints additionally honour the per-user `accounting` permission so an
+    // admin with accounting denied is blocked at the API, not just in the sidebar.
+    Route::middleware('permission:accounting')->group(function () {
+        Route::get('invoices', [InvoiceController::class, 'index']);
+        // Static routes MUST come before the {invoice} wildcard to avoid being swallowed
+        Route::post('invoices/generate', [App\Http\Controllers\Admin\InvoiceController::class, 'generate']);
+        Route::get('invoices/pending-approval', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'pending']);
+        Route::get('invoices/review-queue', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewQueue']);
+        // Wildcard routes
+        Route::get('invoices/{invoice}/download', [InvoiceController::class, 'download']);
+        Route::get('invoices/{invoice}/review-detail', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reviewDetail']);
+        Route::get('invoices/{invoice}', [App\Http\Controllers\Admin\InvoiceController::class, 'show']);
+        Route::post('invoices/{invoice}/send', [InvoiceController::class, 'send']);
+        Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
+        Route::patch('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
+        Route::post('invoices/{invoice}/misc-items', [App\Http\Controllers\Admin\InvoiceController::class, 'addMiscItem']);
+        Route::match(['put', 'patch'], 'invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'updateMiscItem']);
+        Route::delete('invoices/{invoice}/misc-items/{item}', [App\Http\Controllers\Admin\InvoiceController::class, 'removeMiscItem']);
 
-    // Manual payment reminder (meeting 26 Jul 2026, [00:15:28]). Sales reps and
-    // editing managers chase payment too, so this is not admin-only; the parent
-    // group already restricts to admin/superadmin/editing_manager and the
-    // salesRep case is registered separately below.
-    Route::post('invoices/{invoice}/send-reminder', [App\Http\Controllers\Admin\InvoiceReminderController::class, 'send']);
+        // Manual payment reminder (meeting 26 Jul 2026, [00:15:28]). Sales reps and
+        // editing managers chase payment too, so this is not admin-only; the parent
+        // group already restricts to admin/superadmin/editing_manager and the
+        // salesRep case is registered separately below.
+        Route::post('invoices/{invoice}/send-reminder', [App\Http\Controllers\Admin\InvoiceReminderController::class, 'send']);
 
-    // Invoice approval endpoints
-    Route::post('invoices/{invoice}/approve', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'approve']);
-    Route::post('invoices/{invoice}/reject', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reject']);
+        // Invoice approval endpoints
+        Route::post('invoices/{invoice}/approve', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'approve']);
+        Route::post('invoices/{invoice}/reject', [App\Http\Controllers\Admin\InvoiceApprovalController::class, 'reject']);
 
-    // Payout report endpoints
-    Route::get('payout-report', [App\Http\Controllers\PayoutReportController::class, 'index']);
-    Route::get('payout-report/download', [App\Http\Controllers\PayoutReportController::class, 'download']);
-    Route::post('payout-report/send', [App\Http\Controllers\PayoutReportController::class, 'send']);
+        // Payout report endpoints
+        Route::get('payout-report', [App\Http\Controllers\PayoutReportController::class, 'index']);
+        Route::get('payout-report/download', [App\Http\Controllers\PayoutReportController::class, 'download']);
+        Route::post('payout-report/send', [App\Http\Controllers\PayoutReportController::class, 'send']);
 
-    // Editor payout endpoints
-    Route::get('editors/earnings', [App\Http\Controllers\Admin\EditorPayoutController::class, 'index']);
-    Route::get('editors/{editor}/earnings-detail', [App\Http\Controllers\Admin\EditorPayoutController::class, 'detail']);
-    Route::post('editors/payouts/mark-paid', [App\Http\Controllers\Admin\EditorPayoutController::class, 'markPaid']);
-    Route::get('editors/reports', [App\Http\Controllers\Admin\EditorPayoutController::class, 'report']);
-    Route::post('editors/reports/send', [App\Http\Controllers\Admin\EditorPayoutController::class, 'sendReport']);
+        // Editor payout endpoints
+        Route::get('editors/earnings', [App\Http\Controllers\Admin\EditorPayoutController::class, 'index']);
+        Route::get('editors/{editor}/earnings-detail', [App\Http\Controllers\Admin\EditorPayoutController::class, 'detail']);
+        Route::post('editors/payouts/mark-paid', [App\Http\Controllers\Admin\EditorPayoutController::class, 'markPaid']);
+        Route::get('editors/reports', [App\Http\Controllers\Admin\EditorPayoutController::class, 'report']);
+        Route::post('editors/reports/send', [App\Http\Controllers\Admin\EditorPayoutController::class, 'sendReport']);
 
-    // Sales report endpoints
-    Route::get('sales-reports/{salesRepId}', [App\Http\Controllers\SalesReportController::class, 'salesRepReport']);
-    Route::post('sales-reports/send-weekly', [App\Http\Controllers\SalesReportController::class, 'sendWeeklyReports']);
+        // Sales report endpoints
+        Route::get('sales-reports/{salesRepId}', [App\Http\Controllers\SalesReportController::class, 'salesRepReport']);
+        Route::post('sales-reports/send-weekly', [App\Http\Controllers\SalesReportController::class, 'sendWeeklyReports']);
+    });
 });
 
 Route::middleware(['auth:sanctum', 'role:admin,superadmin,photographer,salesRep,sales_rep'])
@@ -612,7 +622,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Minimal update endpoint for status/workflow updates
     Route::patch('/shoots/{shoot}', [ShootController::class, 'update']);
     // Mark shoot as paid (Admin and Super Admin)
-    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware('role:admin,superadmin');
+    Route::post('/shoots/{shoot}/mark-paid', [ShootPaymentsController::class, 'markAsPaid'])->middleware(['role:admin,superadmin', 'permission:accounting']);
     // State transition endpoints
     Route::post('/shoots/{shoot}/schedule', [ShootController::class, 'schedule']);
     Route::post('/shoots/{shoot}/assign-editor', [ShootWorkflowController::class, 'assignEditor'])
@@ -998,7 +1008,7 @@ Route::middleware(['auth:sanctum', 'role:salesRep'])->prefix('salesrep')->group(
     Route::post('invoices/{invoice}/send-reminder', [App\Http\Controllers\Admin\InvoiceReminderController::class, 'send']);
 });
 
-Route::middleware('auth:sanctum')->prefix('reports/invoices')->group(function () {
+Route::middleware(['auth:sanctum', 'permission:accounting'])->prefix('reports/invoices')->group(function () {
     Route::get('summary', [InvoiceReportController::class, 'summary']);
     Route::get('past-due', [InvoiceReportController::class, 'pastDue']);
 });

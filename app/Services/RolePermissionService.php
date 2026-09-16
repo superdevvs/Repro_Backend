@@ -44,6 +44,106 @@ class RolePermissionService
         );
     }
 
+    /**
+     * Lightweight list of accounts for the per-user override picker.
+     */
+    public function usersOverviewPayload(): array
+    {
+        $users = User::query()
+            ->select(['id', 'name', 'email', 'role', 'secondary_roles', 'permission_overrides', 'avatar', 'account_status'])
+            ->orderBy('name')
+            ->get();
+
+        return [
+            'users' => $users->map(function (User $user) {
+                $overrides = $this->normalizedOverridesForUser($user);
+                $roles = $this->normalizedUserRoles($user);
+
+                return [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'avatar' => $user->avatar,
+                    'accountStatus' => $user->account_status,
+                    'role' => $roles->first(),
+                    'secondaryRoles' => $roles->slice(1)->values()->all(),
+                    'locked' => $roles->contains('superadmin'),
+                    'overrideCount' => count($overrides['allow']) + count($overrides['deny']),
+                ];
+            })->values()->all(),
+        ];
+    }
+
+    public function userOverridesPayload(User $user): array
+    {
+        $roles = $this->normalizedUserRoles($user);
+        $overrides = $this->normalizedOverridesForUser($user);
+
+        return [
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'avatar' => $user->avatar,
+                'role' => $roles->first(),
+                'secondaryRoles' => $roles->slice(1)->values()->all(),
+                'locked' => $roles->contains('superadmin'),
+            ],
+            'roleBaseline' => $this->rolePermissionIdsForUser($user),
+            'overrides' => $overrides,
+            'effective' => $this->effectivePermissionIdsForUser($user),
+        ];
+    }
+
+    /**
+     * @return array{allow: string[], deny: string[]}
+     */
+    public function validateOverridesPayload(array $payload): array
+    {
+        $catalogIds = $this->catalogPermissionIds();
+        $normalized = ['allow' => [], 'deny' => []];
+
+        foreach (['allow', 'deny'] as $mode) {
+            $ids = $payload[$mode] ?? [];
+
+            if (! is_array($ids)) {
+                throw new \App\Exceptions\PublicBusinessRuleException('Overrides must be supplied as allow and deny lists.');
+            }
+
+            foreach ($ids as $permissionId) {
+                if (! is_string($permissionId) || ! in_array($permissionId, $catalogIds, true)) {
+                    throw new \App\Exceptions\PublicBusinessRuleException('Select valid permissions.');
+                }
+            }
+
+            $normalized[$mode] = $this->normalizePermissionIds($ids, $catalogIds);
+        }
+
+        if (array_intersect($normalized['allow'], $normalized['deny']) !== []) {
+            throw new \App\Exceptions\PublicBusinessRuleException('A permission cannot be both allowed and denied.');
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array{allow: string[], deny: string[]} $overrides
+     */
+    public function updateUserOverrides(User $user, array $overrides): array
+    {
+        if ($this->normalizedUserRoles($user)->contains('superadmin')) {
+            throw new \App\Exceptions\PublicBusinessRuleException('Super Admin permissions cannot be overridden.');
+        }
+
+        $hasOverrides = $overrides['allow'] !== [] || $overrides['deny'] !== [];
+
+        $user->forceFill([
+            'permission_overrides' => $hasOverrides ? $overrides : null,
+        ])->save();
+
+        return $this->userOverridesPayload($user->fresh());
+    }
+
     public function updatePermissions(array $rolePermissions): array
     {
         $catalogIds = $this->catalogPermissionIds();
@@ -300,6 +400,28 @@ class RolePermissionService
             return $catalogIds;
         }
 
+        $overrides = $this->normalizedOverridesForUser($user);
+        $collected = array_merge($this->rolePermissionIdsForUser($user), $overrides['allow']);
+
+        // Deny always wins over role grants and explicit allows.
+        $collected = array_diff($collected, $overrides['deny']);
+
+        return $this->normalizePermissionIds($collected, $catalogIds);
+    }
+
+    /**
+     * Union of the stored role map for the user's primary and secondary roles,
+     * before any per-user override is applied.
+     */
+    private function rolePermissionIdsForUser(User $user): array
+    {
+        $roles = $this->normalizedUserRoles($user);
+        $catalogIds = $this->catalogPermissionIds();
+
+        if ($roles->contains('superadmin')) {
+            return $catalogIds;
+        }
+
         $stored = $this->storedPermissions();
         $collected = [];
 
@@ -308,6 +430,27 @@ class RolePermissionService
         }
 
         return $this->normalizePermissionIds($collected, $catalogIds);
+    }
+
+    /**
+     * @return array{allow: string[], deny: string[]}
+     */
+    private function normalizedOverridesForUser(User $user): array
+    {
+        $raw = $user->permission_overrides;
+        $catalogIds = $this->catalogPermissionIds();
+
+        if (! is_array($raw)) {
+            return ['allow' => [], 'deny' => []];
+        }
+
+        $deny = $this->normalizePermissionIds(is_array($raw['deny'] ?? null) ? $raw['deny'] : [], $catalogIds);
+        $allow = $this->normalizePermissionIds(is_array($raw['allow'] ?? null) ? $raw['allow'] : [], $catalogIds);
+
+        return [
+            'allow' => array_values(array_diff($allow, $deny)),
+            'deny' => $deny,
+        ];
     }
 
     private function permissionRuleForId(string $permissionId): ?array
