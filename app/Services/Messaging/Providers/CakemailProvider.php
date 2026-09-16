@@ -683,6 +683,7 @@ class CakemailProvider implements EmailProviderInterface
         $contentType = $payload['type'] ?? 'transactional';
         $html = $this->stripLegacyClientAddressTagFromHtml($this->resolveHtmlBody($payload));
         $text = $this->stripLegacyClientAddressTagFromText($this->resolveTextBody($payload, $html));
+        $html = $this->integrateProviderFooter($html);
 
         $emailPayload = [
             'sender' => [
@@ -821,6 +822,21 @@ class CakemailProvider implements EmailProviderInterface
         }
 
         return trim(html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8'));
+    }
+
+    protected function integrateProviderFooter(string $html): string
+    {
+        // Cakemail substitutes these tags and skips its appended footer when both
+        // are present. Inject only at transport time so previews and other mail
+        // providers never display Cakemail-specific placeholders.
+        return preg_replace_callback(
+            '~(<div\b[^>]*\bdata-email-provider-footer="true"[^>]*>).*?</div>~is',
+            static fn (array $match): string => $match[1]
+                .'<p style="margin:12px 0 0;">[CLIENTS.ADDRESS]</p>'
+                .'<p style="margin:8px 0 0;"><a class="dark-muted" href="[GLOBAL_UNSUBSCRIBE]" style="color:inherit;text-decoration:underline;">Unsubscribe</a></p></div>',
+            $html,
+            1
+        ) ?? $html;
     }
 
     protected function stripLegacyClientAddressTagFromHtml(string $html): string

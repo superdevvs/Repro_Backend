@@ -108,6 +108,12 @@ class EmailFooterContactRenderingTest extends TestCase
         ])->render();
         $xpath = $this->xpath($html);
         $logos = $xpath->query('//img[contains(@class, "email-logo-universal")]');
+        $providerFooters = $xpath->query('//td[@data-email-footer="atelier"]//div[@data-email-provider-footer="true"]');
+        $this->assertCount(1, $providerFooters);
+        $this->assertStringContainsString('dark-muted', $providerFooters->item(0)->getAttribute('class'));
+        $this->assertStringContainsString('font-size:11px', $providerFooters->item(0)->getAttribute('style'));
+        $this->assertStringNotContainsString('[CLIENTS.ADDRESS]', $html);
+        $this->assertStringNotContainsString('[GLOBAL_UNSUBSCRIBE]', $html);
         $this->assertCount(2, $logos);
         foreach ($logos as $logo) {
             $this->assertStringEndsWith('/images/repro-email-logo-grey.png', $logo->getAttribute('src'));

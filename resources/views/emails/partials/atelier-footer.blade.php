@@ -37,7 +37,9 @@
     </table>
     <p class="dark-heading" style="margin:24px 0 10px;color:{{ $colors['ink'] }};font-size:15px;line-height:23px;font-weight:500;">Thank you for the opportunity.</p>
     <p class="dark-muted" style="margin:0;color:{{ $colors['muted'] }};font-size:11px;line-height:19px;">This email was sent by {{ $productName }}. Please keep this message for your records if it relates to a scheduled shoot, payment, or invoice.</p>
-    @if(!empty($brand['company_address']))
-        <p class="dark-muted" style="margin:12px 0 0;color:{{ $colors['muted'] }};font-size:11px;line-height:19px;">{{ $brand['company_address'] }}</p>
-    @endif
+    <div data-email-provider-footer="true" class="dark-muted" style="color:{{ $colors['muted'] }};font-size:11px;line-height:19px;">
+        @if(!empty($brand['company_address']))
+            <p style="margin:12px 0 0;">{{ $brand['company_address'] }}</p>
+        @endif
+    </div>
 </td></tr>

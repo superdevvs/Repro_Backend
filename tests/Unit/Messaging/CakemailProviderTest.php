@@ -122,6 +122,18 @@ class CakemailProviderTest extends TestCase
         $marker = '<div style="margin-top:8px; text-align:center; color:#7f8fa3; font-size:11px; line-height:1.6;">[CLIENT.ADDRESS]</div>';
 
         return [
+            'supported provider tags replace the styled footer address exactly once' => [
+                '<div data-email-provider-footer="true" class="dark-muted" style="color:#65758b;font-size:11px;line-height:19px;"><p>Old configured address</p></div>',
+                'Plain message',
+                '<div data-email-provider-footer="true" class="dark-muted" style="color:#65758b;font-size:11px;line-height:19px;"><p style="margin:12px 0 0;">[CLIENTS.ADDRESS]</p><p style="margin:8px 0 0;"><a class="dark-muted" href="[GLOBAL_UNSUBSCRIBE]" style="color:inherit;text-decoration:underline;">Unsubscribe</a></p></div>',
+                'Plain message',
+            ],
+            'supported tags in custom templates are preserved' => [
+                '<p>[CLIENTS.ADDRESS]</p><a href="[GLOBAL_UNSUBSCRIBE]">Unsubscribe</a>',
+                'Plain message',
+                '<p>[CLIENTS.ADDRESS]</p><a href="[GLOBAL_UNSUBSCRIBE]">Unsubscribe</a>',
+                'Plain message',
+            ],
             'old appended transport div and text line' => [
                 '<html><body>'.$body.$marker.'</body></html>', $plain."\n\n[CLIENT.ADDRESS]",
                 '<html><body>'.$body.'</body></html>', $plain,
