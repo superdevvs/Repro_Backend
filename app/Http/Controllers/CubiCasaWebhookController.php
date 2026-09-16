@@ -34,19 +34,23 @@ class CubiCasaWebhookController extends Controller
             $rawBody = $request->getContent();
             $data = $request->all();
 
-            // Optional shared-secret verification. CubiCasa's exact header
-            // is TBD on first delivery; accept either generic name.
-            $secret = (string) (
+            // Shared-secret verification. Missing secret or missing/invalid
+            // signature fails closed so unauthenticated webhook posts are rejected.
+            $secret = trim((string) (
                 $this->loadCubicasaSetting('webhookSecret')
                 ?? config('services.cubicasa.webhook_secret', '')
-            );
+            ));
+            if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
+                return $unconfigured;
+            }
+
             $signature = (string) (
                 $request->header('X-Cubicasa-Signature')
                 ?: $request->header('X-Hub-Signature-256')
                 ?: $request->header('X-Signature')
                 ?: ''
             );
-            if ($secret !== '' && $signature !== '' && !$this->verifySignature($rawBody, $signature, $secret)) {
+            if (!$this->verifySignature($rawBody, $signature, $secret)) {
                 Log::warning('CubiCasa webhook: invalid signature');
                 return response()->json([
                     'success' => false,

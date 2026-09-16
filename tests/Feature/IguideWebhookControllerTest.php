@@ -9,11 +9,31 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Support\SignsInboundWebhooks;
 use Tests\TestCase;
 
 class IguideWebhookControllerTest extends TestCase
 {
     use RefreshDatabase;
+    use SignsInboundWebhooks;
+
+    private const WEBHOOK_SECRET = 'iguide-test-webhook-secret';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config()->set('services.iguide.webhook_secret', self::WEBHOOK_SECRET);
+    }
+
+    private function postWebhook(array $payload)
+    {
+        return $this->postJsonWithHmac(
+            '/iguide_webhook.php',
+            $payload,
+            self::WEBHOOK_SECRET,
+            'X-Iguide-Signature',
+        );
+    }
 
     private function attachIguideService(Shoot $shoot): void
     {
@@ -60,7 +80,7 @@ class IguideWebhookControllerTest extends TestCase
         ]);
         $this->attachIguideService($shoot);
 
-        $response = $this->postJson('/iguide_webhook.php', $this->buildPayload());
+        $response = $this->postWebhook( $this->buildPayload());
         $response->assertStatus(200)->assertJsonPath('success', true);
 
         $shoot->refresh();
@@ -84,7 +104,7 @@ class IguideWebhookControllerTest extends TestCase
             'iguide_work_order_id' => null,
         ]);
 
-        $response = $this->postJson('/iguide_webhook.php', $this->buildPayload([
+        $response = $this->postWebhook( $this->buildPayload([
             'workOrderId' => 'WO-UNKNOWN',
         ]));
         $response->assertStatus(200)->assertJsonPath('success', true);
@@ -97,7 +117,7 @@ class IguideWebhookControllerTest extends TestCase
     {
         Queue::fake();
 
-        $response = $this->postJson('/iguide_webhook.php', $this->buildPayload([
+        $response = $this->postWebhook( $this->buildPayload([
             'workOrderId' => 'WO-NONE',
             'iguideId' => 'igNONE',
             'property' => ['fullAddress' => 'Nowhere'],
@@ -128,7 +148,7 @@ class IguideWebhookControllerTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        $response = $this->postJson('/iguide_webhook.php', $this->buildPayload());
+        $response = $this->postWebhook( $this->buildPayload());
         $response->assertStatus(200)->assertJsonPath('success', true);
 
         $shoot->refresh();
@@ -153,7 +173,7 @@ class IguideWebhookControllerTest extends TestCase
         ]);
         $this->attachIguideService($shoot);
 
-        $this->postJson('/iguide_webhook.php', $this->buildPayload())
+        $this->postWebhook( $this->buildPayload())
             ->assertStatus(200);
 
         $shoot->refresh();
@@ -181,7 +201,7 @@ class IguideWebhookControllerTest extends TestCase
         ]);
         $this->attachIguideService($shoot);
 
-        $this->postJson('/iguide_webhook.php', $this->buildPayload());
+        $this->postWebhook( $this->buildPayload());
 
         $shoot->refresh();
         $tourLinks = $shoot->tour_links ?? [];
@@ -214,7 +234,7 @@ class IguideWebhookControllerTest extends TestCase
         ]);
         $this->attachIguideService($shoot);
 
-        $this->postJson('/iguide_webhook.php', $this->buildPayload())
+        $this->postWebhook( $this->buildPayload())
             ->assertOk();
 
         $iguideData = $shoot->fresh()->iguide_data;
@@ -234,12 +254,62 @@ class IguideWebhookControllerTest extends TestCase
         $this->attachIguideService($shoot);
 
         $payload = $this->buildPayload();
-        $this->postJson('/iguide_webhook.php', $payload)->assertStatus(200);
-        $this->postJson('/iguide_webhook.php', $payload)
+        $this->postWebhook( $payload)->assertStatus(200);
+        $this->postWebhook( $payload)
             ->assertStatus(200)
             ->assertJsonPath('message', 'Duplicate event ignored');
 
         // Only the first delivery dispatches ingestion.
         Queue::assertPushed(IngestIguideAssetsJob::class, 1);
+    }
+
+    public function test_missing_secret_rejects_webhook_and_does_not_process(): void
+    {
+        config()->set('services.iguide.webhook_secret', '');
+        Queue::fake();
+
+        $shoot = Shoot::factory()->create([
+            'iguide_work_order_id' => 'WO-TEST-1',
+        ]);
+        $this->attachIguideService($shoot);
+
+        $this->postJson('/iguide_webhook.php', $this->buildPayload())
+            ->assertStatus(503);
+
+        $this->assertNull($shoot->fresh()->iguide_property_id);
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
+    }
+
+    public function test_missing_signature_is_rejected_when_secret_is_configured(): void
+    {
+        Queue::fake();
+
+        $shoot = Shoot::factory()->create([
+            'iguide_work_order_id' => 'WO-TEST-1',
+        ]);
+        $this->attachIguideService($shoot);
+
+        $this->postJson('/iguide_webhook.php', $this->buildPayload())
+            ->assertStatus(401);
+
+        $this->assertNull($shoot->fresh()->iguide_property_id);
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
+    }
+
+    public function test_invalid_signature_is_rejected(): void
+    {
+        Queue::fake();
+
+        $shoot = Shoot::factory()->create([
+            'iguide_work_order_id' => 'WO-TEST-1',
+        ]);
+        $this->attachIguideService($shoot);
+
+        $this->withHeader('X-Iguide-Signature', 'sha256=deadbeef')
+            ->postJson('/iguide_webhook.php', $this->buildPayload())
+            ->assertStatus(401);
+
+        $this->assertNull($shoot->fresh()->iguide_property_id);
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
     }
 }

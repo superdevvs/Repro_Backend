@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\OauthToken;
 use App\Models\User;
+use App\Support\UploadLimit;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Crypt;
@@ -46,7 +47,10 @@ class UploadSourceService
         'application/pdf',
     ];
 
-    private const MAX_REMOTE_BYTES = 2000 * 1024 * 1024;
+    private function maxRemoteBytes(): int
+    {
+        return UploadLimit::maxBytes();
+    }
 
     public function statuses(User $user): array
     {
@@ -186,9 +190,9 @@ class UploadSourceService
         }
 
         $size = filesize($tmpPath) ?: 0;
-        if ($size <= 0 || $size > self::MAX_REMOTE_BYTES) {
+        if ($size <= 0 || $size > $this->maxRemoteBytes()) {
             @unlink($tmpPath);
-            throw new RuntimeException('The remote file is empty or exceeds the 2GB limit.');
+            throw new RuntimeException('The remote file is empty or exceeds the '.UploadLimit::label().' limit.');
         }
 
         $contentType = (string) $response->header('Content-Type', 'application/octet-stream');
@@ -214,9 +218,9 @@ class UploadSourceService
         };
 
         $size = filesize($tmpPath) ?: 0;
-        if ($size <= 0 || $size > self::MAX_REMOTE_BYTES) {
+        if ($size <= 0 || $size > $this->maxRemoteBytes()) {
             @unlink($tmpPath);
-            throw new RuntimeException('The source file is empty or exceeds the 2GB limit.');
+            throw new RuntimeException('The source file is empty or exceeds the '.UploadLimit::label().' limit.');
         }
 
         $this->assertSupportedFilename($name, $contentType);

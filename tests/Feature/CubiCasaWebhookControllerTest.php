@@ -10,13 +10,17 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use Tests\Support\SignsInboundWebhooks;
 use Tests\TestCase;
 
 class CubiCasaWebhookControllerTest extends TestCase
 {
     use RefreshDatabase;
+    use SignsInboundWebhooks;
 
     private const ORDER_ID = '9ba65f04-3ee2-4de9-a098-ece787ceee57';
+
+    private const WEBHOOK_SECRET = 'cubicasa-test-webhook-secret';
 
     protected function setUp(): void
     {
@@ -24,7 +28,17 @@ class CubiCasaWebhookControllerTest extends TestCase
         config()->set('services.cubicasa.api_key', 'test-key');
         config()->set('services.cubicasa.owner_email', 'orders@reprophotos.com');
         config()->set('services.cubicasa.base_url', 'https://app.cubi.casa/api/integrate/v3');
-        config()->set('services.cubicasa.webhook_secret', null);
+        config()->set('services.cubicasa.webhook_secret', self::WEBHOOK_SECRET);
+    }
+
+    private function postWebhook(array $payload)
+    {
+        return $this->postJsonWithHmac(
+            '/cubicasa_webhook.php',
+            $payload,
+            self::WEBHOOK_SECRET,
+            'X-Cubicasa-Signature',
+        );
     }
 
     private function attachCubicasaService(Shoot $shoot): void
@@ -102,7 +116,7 @@ class CubiCasaWebhookControllerTest extends TestCase
         ]);
         $this->attachCubicasaService($shoot);
 
-        $response = $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload());
+        $response = $this->postWebhook($this->buildWebhookPayload());
         $response->assertStatus(200)->assertJsonPath('success', true);
 
         $shoot->refresh();
@@ -120,7 +134,7 @@ class CubiCasaWebhookControllerTest extends TestCase
     {
         Queue::fake();
 
-        $response = $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload([
+        $response = $this->postWebhook($this->buildWebhookPayload([
             'id' => 'unknown-order-id',
         ]));
         $response->assertStatus(200)->assertJsonPath('success', false);
@@ -141,7 +155,7 @@ class CubiCasaWebhookControllerTest extends TestCase
         ]);
         // No CubiCasa service attached.
 
-        $response = $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload());
+        $response = $this->postWebhook($this->buildWebhookPayload());
         $response->assertStatus(200)->assertJsonPath('success', true);
 
         Queue::assertNotPushed(IngestCubiCasaAssetsJob::class);
@@ -161,7 +175,7 @@ class CubiCasaWebhookControllerTest extends TestCase
         ]);
         $this->attachCubicasaService($shoot);
 
-        $response = $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload([
+        $response = $this->postWebhook($this->buildWebhookPayload([
             'current_status' => 'Pending',
             'delivery_type' => 'moved_to_pending',
         ]));
@@ -188,8 +202,8 @@ class CubiCasaWebhookControllerTest extends TestCase
         $this->attachCubicasaService($shoot);
 
         $payload = $this->buildWebhookPayload();
-        $this->postJson('/cubicasa_webhook.php', $payload)->assertStatus(200);
-        $this->postJson('/cubicasa_webhook.php', $payload)
+        $this->postWebhook($payload)->assertStatus(200);
+        $this->postWebhook($payload)
             ->assertStatus(200)
             ->assertJsonPath('message', 'Duplicate event ignored');
     }
@@ -210,7 +224,7 @@ class CubiCasaWebhookControllerTest extends TestCase
         ]);
         $this->attachCubicasaService($shoot);
 
-        $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload());
+        $this->postWebhook($this->buildWebhookPayload());
 
         $shoot->refresh();
         $tourLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
@@ -219,5 +233,58 @@ class CubiCasaWebhookControllerTest extends TestCase
         // The raw tour data is still preserved for callers who want it.
         $cubicasaData = is_array($shoot->cubicasa_data) ? $shoot->cubicasa_data : [];
         $this->assertSame('https://visithome.ai/abc?mu=ft', $cubicasaData['tour']['link'] ?? null);
+    }
+
+    public function test_missing_secret_rejects_webhook_and_does_not_process(): void
+    {
+        config()->set('services.cubicasa.webhook_secret', '');
+        Queue::fake();
+        Http::fake();
+
+        $shoot = Shoot::factory()->create([
+            'cubicasa_order_id' => self::ORDER_ID,
+        ]);
+        $this->attachCubicasaService($shoot);
+
+        $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload())
+            ->assertStatus(503);
+
+        $this->assertNull($shoot->fresh()->cubicasa_status);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_missing_signature_is_rejected_when_secret_is_configured(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $shoot = Shoot::factory()->create([
+            'cubicasa_order_id' => self::ORDER_ID,
+        ]);
+        $this->attachCubicasaService($shoot);
+
+        $this->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload())
+            ->assertStatus(401);
+
+        $this->assertNull($shoot->fresh()->cubicasa_status);
+        Queue::assertNothingPushed();
+    }
+
+    public function test_invalid_signature_is_rejected(): void
+    {
+        Queue::fake();
+        Http::fake();
+
+        $shoot = Shoot::factory()->create([
+            'cubicasa_order_id' => self::ORDER_ID,
+        ]);
+        $this->attachCubicasaService($shoot);
+
+        $this->withHeader('X-Cubicasa-Signature', 'sha256=deadbeef')
+            ->postJson('/cubicasa_webhook.php', $this->buildWebhookPayload())
+            ->assertStatus(401);
+
+        $this->assertNull($shoot->fresh()->cubicasa_status);
+        Queue::assertNothingPushed();
     }
 }

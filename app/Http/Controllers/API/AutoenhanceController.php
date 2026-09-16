@@ -1091,19 +1091,21 @@ class AutoenhanceController extends Controller
 
     public function handleWebhook(Request $request)
     {
-        $configuredToken = config('services.autoenhance.webhook_secret');
-        if ($configuredToken) {
-            $providedToken = $request->bearerToken()
-                ?: $request->header('x-autoenhance-webhook-token')
-                ?: $request->header('x-webhook-token')
-                ?: $request->input('token');
+        $configuredToken = trim((string) config('services.autoenhance.webhook_secret'));
+        if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($configuredToken)) {
+            return $unconfigured;
+        }
 
-            if (!hash_equals((string) $configuredToken, (string) $providedToken)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid webhook token',
-                ], 401);
-            }
+        $providedToken = $request->bearerToken()
+            ?: $request->header('x-autoenhance-webhook-token')
+            ?: $request->header('x-webhook-token')
+            ?: $request->input('token');
+
+        if (!hash_equals($configuredToken, (string) $providedToken)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid webhook token',
+            ], 401);
         }
 
         $payload = $request->all();

@@ -17,6 +17,7 @@ use App\Services\Shoots\ShootUploadIdempotencyService;
 use App\Services\Shoots\UploadIntakeResolver;
 use App\Services\UploadValidationService;
 use App\Support\LockedWrite;
+use App\Support\UploadLimit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -218,7 +219,7 @@ class UploadShootFilesAction
                 ];
             }
 
-            if ($file->getSize() > (2000 * 1024 * 1024)) {
+            if ($file->getSize() > UploadLimit::maxBytes()) {
                 return [
                     'status' => 422,
                     'payload' => [
@@ -228,7 +229,7 @@ class UploadShootFilesAction
                             $this->buildUploadError(
                                 $file->getClientOriginalName(),
                                 'oversize',
-                                'File exceeds the 2GB upload limit.',
+                                'File exceeds the '.UploadLimit::label().' upload limit.',
                                 false,
                                 'Split the upload into smaller files or export a smaller version before retrying.',
                             ),
@@ -243,10 +244,9 @@ class UploadShootFilesAction
         // files with HTTP 422 BEFORE creating any ShootFile row or enqueuing a
         // scan job. ValidationException is rendered by Laravel's exception
         // handler as a 422 JSON response with field-keyed errors. Runs after
-        // the legacy in-action 2GB cap and isValid() checks so existing
+        // the in-action per-file cap and isValid() checks so existing
         // response shapes for those specific cases are preserved; this catches
-        // anything still left (e.g. > configured per-file limit but <= 2GB,
-        // or a disallowed extension).
+        // anything still left (e.g. a disallowed extension).
         $this->uploadValidation->validateMany($files, 'files', $user?->role);
 
         $request->files->set('files', $files);
@@ -980,9 +980,11 @@ class UploadShootFilesAction
      */
     protected function buildUploadLimits(): array
     {
+        $perFileBytes = UploadLimit::maxBytes();
+
         return [
-            'per_file' => '2GB',
-            'per_file_bytes' => 2000 * 1024 * 1024,
+            'per_file' => UploadLimit::label(),
+            'per_file_bytes' => $perFileBytes,
             'total_request' => (string) ini_get('post_max_size'),
             'total_request_bytes' => $this->parseSize((string) ini_get('post_max_size')),
             'max_file_uploads' => (int) ini_get('max_file_uploads'),

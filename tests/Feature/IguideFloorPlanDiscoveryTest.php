@@ -13,6 +13,7 @@ use App\Services\IguideService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Support\SignsInboundWebhooks;
 use Tests\TestCase;
 
 /**
@@ -40,6 +41,25 @@ use Tests\TestCase;
 class IguideFloorPlanDiscoveryTest extends TestCase
 {
     use RefreshDatabase;
+    use SignsInboundWebhooks;
+
+    private const WEBHOOK_SECRET = 'iguide-test-webhook-secret';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config()->set('services.iguide.webhook_secret', self::WEBHOOK_SECRET);
+    }
+
+    private function postIguideWebhook(array $payload)
+    {
+        return $this->postJsonWithHmac(
+            '/iguide_webhook.php',
+            $payload,
+            self::WEBHOOK_SECRET,
+            'X-Iguide-Signature',
+        );
+    }
 
     /**
      * Addresses taken from the production shoots that carry an
@@ -303,7 +323,7 @@ class IguideFloorPlanDiscoveryTest extends TestCase
         $this->travel(3)->days();
 
         // The provider writes the street type short and knows nothing about our ids.
-        $response = $this->postJson('/iguide_webhook.php', [
+        $response = $this->postIguideWebhook([
             'type' => 'ready',
             'iguideId' => 'igDELAYED001',
             'workOrderId' => 'WO-NOT-OURS',
@@ -345,7 +365,7 @@ class IguideFloorPlanDiscoveryTest extends TestCase
             'iguide_tour_url' => null,
         ]);
 
-        $response = $this->postJson('/iguide_webhook.php', [
+        $response = $this->postIguideWebhook([
             'type' => 'ready',
             'iguideId' => 'igNEIGHBOUR001',
             'urls' => ['publicUrl' => 'https://youriguide.com/iguide-neighbour/'],

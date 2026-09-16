@@ -28,20 +28,23 @@ class IguideWebhookController extends Controller
             $rawBody = $request->getContent();
             $data = $request->all();
 
-            // Optional shared-secret verification (HMAC-SHA256 of raw body).
-            $secret = (string) (
+            // Shared-secret verification (HMAC-SHA256 of raw body). Missing
+            // secret or missing/invalid signature fails closed.
+            $secret = trim((string) (
                 $this->loadIguideSetting('webhookSecret')
                 ?? config('services.iguide.webhook_secret', '')
-            );
-            if ($secret !== '') {
-                $signature = (string) ($request->header('X-Iguide-Signature') ?: $request->header('X-Signature') ?: '');
-                if (!$this->verifySignature($rawBody, $signature, $secret)) {
-                    Log::warning('iGUIDE webhook: invalid signature');
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'Invalid signature',
-                    ], 401);
-                }
+            ));
+            if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
+                return $unconfigured;
+            }
+
+            $signature = (string) ($request->header('X-Iguide-Signature') ?: $request->header('X-Signature') ?: '');
+            if (!$this->verifySignature($rawBody, $signature, $secret)) {
+                Log::warning('iGUIDE webhook: invalid signature');
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid signature',
+                ], 401);
             }
 
             Log::info('iGUIDE webhook received', [

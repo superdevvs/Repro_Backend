@@ -53,7 +53,7 @@ class AccountStatusService
      * keys used by the directory endpoints (e.g. UserController::photographers).
      */
     private const USER_DIRECTORY_CACHE_KEYS = [
-        'photographers_list_v3',
+        'photographers_list_v4',
     ];
 
     public function __construct(private readonly AuditLogService $auditLog)

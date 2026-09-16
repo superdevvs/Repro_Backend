@@ -27,20 +27,21 @@ class CakemailWebhookController extends Controller
         $payload = $request->all();
         $event = $payload['event'] ?? $request->header('X-Cakemail-Event');
 
+        $secret = trim((string) config('services.cakemail.webhook_secret'));
+        if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
+            return $unconfigured;
+        }
+
+        $signature = $request->header('X-Cakemail-Signature');
+        if (!$this->verifySignature($payload, $signature, $secret)) {
+            Log::warning('Cakemail webhook signature verification failed');
+            return response()->json(['error' => 'Invalid signature'], 401);
+        }
+
         Log::info('Cakemail webhook received', [
             'event' => $event,
             'payload' => $payload,
         ]);
-
-        // Verify webhook signature if configured
-        $secret = config('services.cakemail.webhook_secret');
-        if ($secret) {
-            $signature = $request->header('X-Cakemail-Signature');
-            if (!$this->verifySignature($payload, $signature, $secret)) {
-                Log::warning('Cakemail webhook signature verification failed');
-                return response()->json(['error' => 'Invalid signature'], 401);
-            }
-        }
 
         // Process the event
         match ($event) {

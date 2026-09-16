@@ -602,17 +602,21 @@ class UserController extends Controller
         ]);
     }
 
-    // Lightweight public list (id + name + email + avatar) for UI dropdowns
+    // Lightweight public list (id + name + avatar) for UI dropdowns
     public function simplePhotographers()
     {
-        $photographers = \Illuminate\Support\Facades\Cache::remember('photographers_list_v3', 300, function () {
+        $photographers = \Illuminate\Support\Facades\Cache::remember('photographers_list_v4', 300, function () {
             return User::where(function ($q) {
                     $q->where('role', 'photographer')
                       ->orWhereJsonContains('secondary_roles', 'photographer');
                 })
-                ->select('id', 'name', 'email', 'avatar')
+                ->select('id', 'name', 'avatar')
                 ->orderBy('name')
-                ->get();
+                ->get()
+                ->each(function (User $photographer) {
+                    $photographer->setAppends(['about']);
+                    $photographer->makeHidden(['email']);
+                });
         });
 
         return response()->json([
@@ -2563,7 +2567,7 @@ class UserController extends Controller
         // Route through the canonical lifecycle service so deletion ALSO revokes
         // auth tokens, purges active sessions, and busts cached directory lists in
         // the same request (QA #15) — instead of a bare soft delete that leaves a
-        // valid token and a stale `photographers_list_v3` cache behind.
+        // valid token and a stale `photographers_list_v4` cache behind.
         try {
             app(\App\Services\AccountStatusService::class)
                 ->setStatus($user, \App\Services\AccountStatusService::STATUS_DELETED, $viewer);

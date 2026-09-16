@@ -17,11 +17,13 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\URL;
 use Laravel\Sanctum\Sanctum;
 use Mockery\MockInterface;
+use Tests\Support\SignsInboundWebhooks;
 use Tests\TestCase;
 
 class UserEmailHealthTest extends TestCase
 {
     use RefreshDatabase;
+    use SignsInboundWebhooks;
 
     public function test_admin_creating_client_with_common_typo_domain_requires_confirmation(): void
     {
@@ -101,7 +103,9 @@ class UserEmailHealthTest extends TestCase
             'related_account_id' => $client->id,
         ]);
 
-        $this->postJson('/api/webhooks/cakemail', [
+        config()->set('services.cakemail.webhook_secret', 'cakemail-test-webhook-secret');
+
+        $this->postJsonWithHmac('/api/webhooks/cakemail', [
             'event' => 'email.bounced',
             'data' => [
                 'email_id' => 'cm-123',
@@ -109,7 +113,8 @@ class UserEmailHealthTest extends TestCase
                 'reason' => 'Mailbox unavailable',
                 'bounce_type' => 'hard',
             ],
-        ])->assertOk()->assertJsonPath('status', 'ok');
+        ], 'cakemail-test-webhook-secret', 'X-Cakemail-Signature')
+            ->assertOk()->assertJsonPath('status', 'ok');
 
         $this->assertDatabaseHas('users', [
             'id' => $client->id,
