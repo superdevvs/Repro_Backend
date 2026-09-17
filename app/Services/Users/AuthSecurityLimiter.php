@@ -48,6 +48,12 @@ class AuthSecurityLimiter
         return ['key' => $key, 'expires_at' => $expiry];
     }
 
+    public function register(Request $request): void
+    {
+        $this->consume('register-ip', (string) $request->ip(), 10, 60);
+        $this->consume('register-account', $this->accountIdentity($request->input('email')), 5, 3600);
+    }
+
     public function login(Request $request, Closure $callback): mixed
     {
         $this->consume('login-ip', (string) $request->ip(), 10, 60);

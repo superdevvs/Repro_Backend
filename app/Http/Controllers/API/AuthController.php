@@ -44,6 +44,8 @@ class AuthController extends Controller
 
     public function register(Request $request)
     {
+        app(\App\Services\Users\AuthSecurityLimiter::class)->register($request);
+
         \App\Support\TaxDocumentMetadata::assertWritable($request->all());
         $validated = $request->validate([
             'name' => 'required|string|max:255',

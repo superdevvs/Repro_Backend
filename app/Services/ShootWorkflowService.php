@@ -9,6 +9,7 @@ use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use App\Services\Shoots\ShootListingService;
 use App\Services\Shoots\ShootShareLinkService;
+use App\Support\LockedWrite;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -119,7 +120,7 @@ class ShootWorkflowService
         // reschedule that moves the shoot to a different day busts both buckets (Req 8.1, 8.3).
         $previousLocalDate = $scheduleScope->localDateForShoot($shoot);
 
-        DB::transaction(function () use ($shoot, $scheduledAt, $user, $isAlreadyScheduled, $isResumingFromHold, $scheduleScope) {
+        $this->writeTransaction(function () use ($shoot, $scheduledAt, $user, $isAlreadyScheduled, $isResumingFromHold, $scheduleScope) {
             // Update status if resuming from hold or if not already scheduled
             $shoot->workflow_status = self::STATUS_SCHEDULED;
             $shoot->status = self::STATUS_SCHEDULED;
@@ -145,7 +146,7 @@ class ShootWorkflowService
                     $user
                 );
             }
-        });
+        }, "shoot.{$shoot->id}.workflow.schedule");
 
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
@@ -166,7 +167,7 @@ class ShootWorkflowService
         // In the simplified flow, "start" is equivalent to photos being uploaded
         $this->validateTransition($shoot, self::STATUS_UPLOADED);
 
-        DB::transaction(function () use ($shoot, $user) {
+        $this->writeTransaction(function () use ($shoot, $user) {
             $shoot->workflow_status = self::STATUS_UPLOADED;
             $shoot->status = self::STATUS_UPLOADED;
             $shoot->photos_uploaded_at = now();
@@ -179,7 +180,7 @@ class ShootWorkflowService
                 ['by' => $user?->name ?? auth()->user()?->name],
                 $user
             );
-        });
+        }, "shoot.{$shoot->id}.workflow.start");
     }
 
     /**
@@ -198,7 +199,7 @@ class ShootWorkflowService
 
         $laneAssignments = [];
 
-        DB::transaction(function () use ($shoot, $user, &$laneAssignments) {
+        $this->writeTransaction(function () use ($shoot, $user, &$laneAssignments) {
             $shoot->status = self::STATUS_EDITING;
             $shoot->workflow_status = Shoot::WORKFLOW_EDITING;
             $shoot->photos_uploaded_at = now();
@@ -220,7 +221,7 @@ class ShootWorkflowService
                 ['by' => $user?->name ?? auth()->user()?->name],
                 $user
             );
-        });
+        }, "shoot.{$shoot->id}.workflow.start-editing");
 
         $freshShoot = $shoot->fresh(['services.category']);
         foreach ($laneAssignments as $lane => $assignment) {
@@ -270,7 +271,7 @@ class ShootWorkflowService
     {
         $this->validateTransition($shoot, self::STATUS_DELIVERED);
 
-        DB::transaction(function () use ($shoot, $user) {
+        $this->writeTransaction(function () use ($shoot, $user) {
             $shoot->status = self::STATUS_DELIVERED;
             $shoot->workflow_status = self::STATUS_DELIVERED;
             $shoot->completed_at = now();
@@ -299,7 +300,7 @@ class ShootWorkflowService
 
             // Trigger any completion jobs (archiving, notifications, etc.)
             // This can be dispatched as a job if needed
-        });
+        }, "shoot.{$shoot->id}.workflow.complete");
 
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
@@ -335,7 +336,7 @@ class ShootWorkflowService
     ): void {
         $this->validateTransition($shoot, self::STATUS_ON_HOLD);
 
-        DB::transaction(function () use ($shoot, $user, $reason, $activityType) {
+        $this->writeTransaction(function () use ($shoot, $user, $reason, $activityType) {
             $shoot->status = self::STATUS_ON_HOLD;
             $shoot->workflow_status = self::STATUS_ON_HOLD;
             $shoot->updated_by = $user?->id ?? auth()->id();
@@ -350,7 +351,7 @@ class ShootWorkflowService
                 ],
                 $user
             );
-        });
+        }, "shoot.{$shoot->id}.workflow.hold");
     }
 
     /**
@@ -365,7 +366,7 @@ class ShootWorkflowService
     ): void {
         $this->validateTransition($shoot, self::STATUS_CANCELLED);
 
-        DB::transaction(function () use ($shoot, $user, $reason, $cancellationFee, $suppressNotifications) {
+        $this->writeTransaction(function () use ($shoot, $user, $reason, $cancellationFee, $suppressNotifications) {
             $originalFinancials = [
                 'base_quote' => (float) ($shoot->base_quote ?? 0),
                 'tax_amount' => (float) ($shoot->tax_amount ?? 0),
@@ -413,7 +414,7 @@ class ShootWorkflowService
                 ],
                 $user
             );
-        });
+        }, "shoot.{$shoot->id}.workflow.cancel");
     }
 
     /**
@@ -423,7 +424,7 @@ class ShootWorkflowService
     {
         $this->validateTransition($shoot, self::STATUS_SCHEDULED);
 
-        DB::transaction(function () use ($shoot, $scheduledAt, $user, $notes) {
+        $this->writeTransaction(function () use ($shoot, $scheduledAt, $user, $notes) {
             $shoot->status = self::STATUS_SCHEDULED;
             $shoot->workflow_status = self::STATUS_SCHEDULED;
             $shoot->scheduled_at = $scheduledAt;
@@ -447,7 +448,7 @@ class ShootWorkflowService
                 ],
                 $user
             );
-        });
+        }, "shoot.{$shoot->id}.workflow.approve");
 
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
@@ -460,7 +461,7 @@ class ShootWorkflowService
     {
         $this->validateTransition($shoot, self::STATUS_DECLINED);
 
-        DB::transaction(function () use ($shoot, $user, $reason) {
+        $this->writeTransaction(function () use ($shoot, $user, $reason) {
             $shoot->status = self::STATUS_DECLINED;
             $shoot->workflow_status = self::STATUS_DECLINED;
             $shoot->declined_at = now();
@@ -478,10 +479,24 @@ class ShootWorkflowService
                 ],
                 $user
             );
-        });
+        }, "shoot.{$shoot->id}.workflow.decline");
 
         // Clear dashboard cache so changes reflect immediately
         $this->clearDashboardCache();
+    }
+
+    /**
+     * Short write with SQLite lock retry. Do not wrap long work or HTTP here.
+     *
+     * @template TReturn
+     * @param  callable(): TReturn  $work
+     * @return TReturn
+     */
+    protected function writeTransaction(callable $work, string $context)
+    {
+        $attempts = DB::transactionLevel() > 0 ? 1 : LockedWrite::DEFAULT_ATTEMPTS;
+
+        return LockedWrite::run(fn () => DB::transaction($work), $context, $attempts);
     }
 
     /**
