@@ -28,13 +28,16 @@ class AssignHeroMediaAction
         $file->save();
 
         $freshFile = $file->fresh();
-        $heroImageUrl = $this->fileAccess->resolveOptimizedFileUrl($freshFile);
-        $shoot->hero_image = $heroImageUrl;
+        $heroImageKey = $freshFile->web_path
+            ?: $freshFile->thumbnail_path
+            ?: $freshFile->path;
+        $shoot->hero_image = $heroImageKey;
         $shoot->save();
+        $heroImageUrl = $this->fileAccess->resolvePublicStorageUrl($heroImageKey);
 
         $this->support->clearShootFilesCache($shoot, $user);
 
-        if ((string) $existingCoverId !== (string) $freshFile->id || $previousHeroImage !== $heroImageUrl) {
+        if ((string) $existingCoverId !== (string) $freshFile->id || $previousHeroImage !== $heroImageKey) {
             $this->activityLogger->log(
                 $shoot,
                 'hero_image_updated',

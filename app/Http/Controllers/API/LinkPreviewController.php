@@ -176,7 +176,10 @@ class LinkPreviewController extends Controller
             $parameters['shootId'] = $payload->shootId;
         }
 
-        return route('api.public.link-previews.image', $parameters);
+        $path = route('api.public.link-previews.image', $parameters, false);
+        $origin = rtrim((string) config('link_preview.frontend_url', config('app.url')), '/');
+
+        return $origin.$path;
     }
 
     private function imageAlt(PreviewPayload $payload): string

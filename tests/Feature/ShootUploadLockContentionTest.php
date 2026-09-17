@@ -57,6 +57,7 @@ class ShootUploadLockContentionTest extends TestCase
     public function test_a_record_write_refused_by_a_locked_database_is_retried_and_the_file_is_accepted(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Queue::fake();
         $admin = User::factory()->create(['role' => 'admin']);
         $shoot = Shoot::factory()->create([
@@ -85,12 +86,13 @@ class ShootUploadLockContentionTest extends TestCase
         $this->assertSame(1, ShootFile::query()->where('shoot_id', $shoot->id)->count(), 'a retried transaction must not leave duplicate rows');
 
         $file = ShootFile::query()->where('shoot_id', $shoot->id)->firstOrFail();
-        Storage::disk('public')->assertExists($file->path);
+        Storage::disk('local')->assertExists($file->path);
     }
 
     public function test_contention_that_never_clears_is_reported_as_retryable_and_leaves_nothing_behind(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Queue::fake();
         $admin = User::factory()->create(['role' => 'admin']);
         $shoot = Shoot::factory()->create([
@@ -130,6 +132,7 @@ class ShootUploadLockContentionTest extends TestCase
     public function test_a_constraint_violation_is_not_mistaken_for_contention_and_fails_on_the_first_attempt(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Queue::fake();
         $admin = User::factory()->create(['role' => 'admin']);
         $shoot = Shoot::factory()->create([

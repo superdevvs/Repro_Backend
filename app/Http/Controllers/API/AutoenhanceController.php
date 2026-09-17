@@ -364,8 +364,9 @@ class AutoenhanceController extends Controller
         ]);
         foreach ($candidates as $candidate) {
             $relative = ltrim(preg_replace('#^/?storage/#', '', (string) $candidate), '/');
-            if ($relative && Storage::disk('public')->exists($relative)) {
-                return [Storage::disk('public')->get($relative), $contentType];
+            $media = app(\App\Services\Media\MediaStorage::class);
+            if ($relative && $media->exists($relative)) {
+                return [$media->get($relative), $contentType];
             }
         }
         // Fallback: try fetching via signed URL accessor (for remote storage).

@@ -54,7 +54,23 @@ class MediaUrlGenerationTest extends TestCase
 
         $url = (new MediaStorage())->publicUrl('shoots/1/web/a.jpg');
 
-        $this->assertStringContainsString('/storage/shoots/1/web/a.jpg', $url);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/1/web/a.jpg', $url);
+        $this->assertStringContainsString('signature=', $url);
+        $this->assertStringNotContainsString('/storage/shoots/', $url);
         $this->assertStringNotContainsString('cdn.example.com', $url);
+    }
+
+    public function test_serving_url_rewrites_historical_public_aliases(): void
+    {
+        config()->set('media.read_from_r2', false);
+        config()->set('media.r2_only', false);
+
+        $media = new MediaStorage();
+        $url = $media->servingUrl('https://reprodashboard.com/storage/shoots/9/web/a.jpg');
+
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/9/web/a.jpg', $url);
+        $this->assertStringContainsString('signature=', $url);
+        $this->assertStringNotContainsString('/storage/shoots/', $url);
+        $this->assertNull($media->servingUrl('avatars/logo.png'));
     }
 }

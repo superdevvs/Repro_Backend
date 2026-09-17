@@ -647,12 +647,13 @@ class MmmService
             return $path;
         }
 
-        if ($path && Storage::disk('public')->exists($path)) {
-            return $this->ensureAbsoluteUrl(Storage::disk('public')->url($path));
+        $media = app(\App\Services\Media\MediaStorage::class);
+        if ($path && $media->exists($path)) {
+            return $this->ensureAbsoluteUrl($media->publicUrl($path));
         }
 
         if ($path && !Str::startsWith($path, 'http')) {
-            return $this->ensureAbsoluteUrl(Storage::disk('public')->url($path));
+            return $this->ensureAbsoluteUrl($media->publicUrl($path));
         }
 
 

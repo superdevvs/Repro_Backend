@@ -150,8 +150,8 @@ class ShootMediaMutationSupportService
 
         foreach ($shoot->mediaAlbums as $album) {
             $coverImagePath = $this->normalizePublicStoragePath($album->cover_image_path);
-            if ($coverImagePath && Storage::disk('public')->exists($coverImagePath)) {
-                Storage::disk('public')->delete($coverImagePath);
+            if ($coverImagePath) {
+                app(\App\Services\Media\MediaStorage::class)->delete($coverImagePath);
             }
         }
 
@@ -163,8 +163,8 @@ class ShootMediaMutationSupportService
     public function deleteStoredAssets(ShootFile $file): void
     {
         foreach ($this->collectStoredAssetPaths($file) as $storedPath) {
-            if (Storage::disk('public')->exists($storedPath)) {
-                Storage::disk('public')->delete($storedPath);
+            if ($storedPath) {
+                app(\App\Services\Media\MediaStorage::class)->delete($storedPath);
             }
         }
     }

@@ -34,9 +34,10 @@ use ZipArchive;
  *        - infected -> flagInfected() + notifyAdminInfected()
  *   4. On {@see ClamAvUnavailable}, re-throw so the queue retries with the
  *      configured backoff; the file stays {@see ShootFile::SCAN_STATUS_QUARANTINED}.
- *   5. On final retry exhaustion {@see failed()} flips the file to
- *      {@see ShootFile::SCAN_STATUS_FAILED} (still withheld, but re-scannable
- *      via the retry-scan endpoint, Req 15.2 / 15.8).
+ *   5. If retries are exhausted because clamd stayed down, {@see failed()}
+ *      re-queues a fresh job and leaves the file quarantined. Other terminal
+ *      errors still flip the file to {@see ShootFile::SCAN_STATUS_FAILED}
+ *      (still withheld, but re-scannable via the retry-scan endpoint, Req 15.8).
  *
  * The job is the *only* place in the system that transitions a file to `clean`,
  * which preserves the invariant: a file is never released from Quarantine
@@ -143,7 +144,7 @@ class ScanShootFileJob implements ShouldQueue
             // Req 15.2: keep the file quarantined and let the queue retry with
             // backoff. The terminal `failed` transition only happens once
             // $tries is exhausted, in which case Laravel calls failed() below.
-            Log::warning('ScanShootFileJob: ClamAV unavailable, retrying.', [
+            Log::channel('uploads')->warning('ScanShootFileJob: ClamAV unavailable, retrying.', [
                 'shoot_file_id' => $file->id,
                 'attempt' => $this->attempts(),
                 'tries' => $this->tries,
@@ -174,11 +175,12 @@ class ScanShootFileJob implements ShouldQueue
     /**
      * Final-failure handler: invoked by Laravel after $tries is exhausted.
      *
-     * Marks the file `failed` so it stays withheld but can be re-scanned via
-     * the retry-scan endpoint (Req 15.2 / 15.8). The transition is delegated
-     * to {@see FileScanService::flagFailed()} so the (quarantined|failed) →
-     * failed gate stays in one place — a stale failed() will never demote a
-     * file that has, by then, already been determined clean or infected.
+     * ClamAV unavailability is retried with a fresh job so a clamd blip cannot
+     * permanently fail a quarantined file. Other errors still mark the file
+     * `failed` via {@see FileScanService::flagFailed()} so they stay withheld
+     * but re-scannable (Req 15.8). That transition only fires from
+     * `quarantined`/`failed`, so a stale failed() never demotes a file that is
+     * already clean or infected.
      */
     public function failed(?Throwable $e = null): void
     {
@@ -192,15 +194,34 @@ class ScanShootFileJob implements ShouldQueue
                 return;
             }
 
-            $reason = $e instanceof ClamAvUnavailable
-                ? 'scan_unavailable: '.$e->getMessage()
-                : ($e !== null
-                    ? 'scan_failed: '.$e->getMessage()
-                    : 'scan_unavailable');
+            if ($e instanceof ClamAvUnavailable) {
+                if (in_array($file->scan_status, [
+                    ShootFile::SCAN_STATUS_QUARANTINED,
+                    ShootFile::SCAN_STATUS_FAILED,
+                ], true)) {
+                    if ($file->scan_status === ShootFile::SCAN_STATUS_FAILED) {
+                        $file->scan_status = ShootFile::SCAN_STATUS_QUARANTINED;
+                        $file->save();
+                    }
+
+                    Log::channel('uploads')->warning('ScanShootFileJob: ClamAV still unavailable after retries; re-queueing.', [
+                        'shoot_file_id' => $file->id,
+                        'error' => $e->getMessage(),
+                    ]);
+
+                    static::dispatch($this->shootFileId)->delay(now()->addMinutes(15));
+                }
+
+                return;
+            }
+
+            $reason = $e !== null
+                ? 'scan_failed: '.$e->getMessage()
+                : 'scan_unavailable';
 
             app(FileScanService::class)->flagFailed($file, $reason);
 
-            Log::warning('ScanShootFileJob::failed: file transitioned to failed.', [
+            Log::channel('uploads')->warning('ScanShootFileJob::failed: file transitioned to failed.', [
                 'shoot_file_id' => $file->id,
                 'reason' => $reason,
             ]);

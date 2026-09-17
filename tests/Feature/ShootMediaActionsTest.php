@@ -108,6 +108,7 @@ class ShootMediaActionsTest extends TestCase
     public function admin_can_finalize_raw_upload_after_queue_completes(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Queue::fake();
         Sanctum::actingAs($this->admin);
 
@@ -179,6 +180,7 @@ class ShootMediaActionsTest extends TestCase
     public function admin_can_upload_edited_files_while_a_shoot_is_still_scheduled(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot([
@@ -228,6 +230,7 @@ class ShootMediaActionsTest extends TestCase
     public function superadmin_can_upload_edited_files_after_delivery(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->superadmin);
 
         $shoot = $this->createShoot([
@@ -359,6 +362,7 @@ class ShootMediaActionsTest extends TestCase
     public function editor_can_generate_share_link_with_local_zip_fallback_and_broadcast_activity(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->editor);
 
@@ -440,6 +444,7 @@ class ShootMediaActionsTest extends TestCase
     public function admin_can_set_cover_media_and_clear_cached_file_lists(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->admin);
 
@@ -525,6 +530,7 @@ class ShootMediaActionsTest extends TestCase
     public function media_zip_download_returns_a_cached_archive_redirect_when_small_zip_is_ready(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot();
@@ -556,17 +562,17 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/'.$shoot->id.'/archives/',
+            '/api/public/shoot-media/file/shoots/'.$shoot->id.'/archives/',
             (string) $response->json('url')
         );
-        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
+        $this->assertStringContainsString('-edited-small.zip', (string) $response->json('url'));
 
         $archivePath = $archiveService->getArchivePath($shoot, 'edited', 'small');
         $this->assertSame(
             'shoots/'.$shoot->id.'/archives/250-media-lane-baltimore-md-21201-edited-small.zip',
             $archivePath
         );
-        $expectedZip = Storage::disk('public')->get($archivePath);
+        $expectedZip = Storage::disk('local')->get($archivePath);
         $binaryResponse = $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
             'Accept' => 'application/zip, application/json',
             'Origin' => 'https://reprodashboard.com',
@@ -574,25 +580,27 @@ class ShootMediaActionsTest extends TestCase
         $binaryResponse->assertOk()
             ->assertHeader('Content-Type', 'application/zip')
             ->assertHeader('Content-Length', (string) strlen($expectedZip))
-            ->assertHeader('X-Archive-Download-Url', $response->json('url'))
             ->assertHeader('X-Content-Type-Options', 'nosniff');
+        $this->assertStringContainsString(
+            '/api/public/shoot-media/file/shoots/'.$shoot->id.'/archives/',
+            (string) $binaryResponse->headers->get('X-Archive-Download-Url')
+        );
+        $this->assertStringContainsString('signature=', (string) $binaryResponse->headers->get('X-Archive-Download-Url'));
         $this->assertStringContainsString(basename($archivePath), $binaryResponse->headers->get('Content-Disposition'));
         $this->assertStringContainsString('private', $binaryResponse->headers->get('Cache-Control'));
         $this->assertStringContainsString('no-store', $binaryResponse->headers->get('Cache-Control'));
         $this->assertStringContainsString('Content-Disposition', $binaryResponse->headers->get('Access-Control-Expose-Headers'));
         $this->assertStringContainsString('X-Archive-Download-Url', $binaryResponse->headers->get('Access-Control-Expose-Headers'));
         $this->assertSame($expectedZip, $binaryResponse->streamedContent());
-        Storage::disk('public')->assertExists($archivePath);
+        Storage::disk('local')->assertExists($archivePath);
 
         $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
             'Accept' => 'application/json, application/zip',
         ])->assertOk()->assertJsonPath('type', 'redirect');
 
-        $publicDisk = Mockery::mock(Storage::disk('public'));
-        $publicDisk->shouldReceive('size')->once()->andThrow(new \RuntimeException('synthetic-private-storage-secret /private/archive.zip'));
-        $storageManager = Mockery::mock(Storage::getFacadeRoot());
-        $storageManager->shouldReceive('disk')->with('public')->andReturn($publicDisk);
-        Storage::swap($storageManager);
+        $throwingMedia = \Mockery::mock(\App\Services\Media\MediaStorage::class)->makePartial();
+        $throwingMedia->shouldReceive('downloadResponse')->once()->andThrow(new \RuntimeException('synthetic-private-storage-secret /private/archive.zip'));
+        $this->app->instance(\App\Services\Media\MediaStorage::class, $throwingMedia);
         $failedTransfer = $this->get('/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&size=small', [
             'Accept' => 'application/zip, application/json',
         ])->assertStatus(500);
@@ -604,6 +612,7 @@ class ShootMediaActionsTest extends TestCase
     public function media_zip_download_can_target_a_single_service_item_archive(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot();
@@ -664,10 +673,10 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/'.$shoot->id.'/archives/service-'.$firstServiceItemId.'/',
+            '/api/public/shoot-media/file/shoots/'.$shoot->id.'/archives/service-'.$firstServiceItemId.'/',
             (string) $response->json('url')
         );
-        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
+        $this->assertStringContainsString('-edited-small.zip', (string) $response->json('url'));
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -715,6 +724,7 @@ class ShootMediaActionsTest extends TestCase
     public function client_can_download_a_paid_delivered_service_archive_on_a_partial_order(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->client);
 
         $shoot = $this->createShoot([
@@ -782,6 +792,7 @@ class ShootMediaActionsTest extends TestCase
     public function client_cannot_download_whole_shoot_archive_until_the_partial_order_is_paid(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->client);
 
         $shoot = $this->createShoot([
@@ -828,6 +839,7 @@ class ShootMediaActionsTest extends TestCase
     public function admin_can_download_raw_files_from_an_in_progress_shoot(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->admin);
 
         $shoot = $this->createShoot([
@@ -867,6 +879,7 @@ class ShootMediaActionsTest extends TestCase
     public function editing_manager_can_download_raw_files_from_an_in_progress_shoot(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->createShoot([
@@ -904,6 +917,7 @@ class ShootMediaActionsTest extends TestCase
     public function editing_manager_can_download_selected_files_zip(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->createShoot();
@@ -955,6 +969,7 @@ class ShootMediaActionsTest extends TestCase
     public function selected_web_download_uses_the_derivative_extension_and_preserves_raw_originals(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->admin);
         $shoot = $this->createShoot();
         $originalPath = 'shoots/'.$shoot->id.'/raw/interior.NEF';
@@ -985,6 +1000,7 @@ class ShootMediaActionsTest extends TestCase
     public function editing_manager_can_get_a_single_file_download_url(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editingManager);
 
         $shoot = $this->createShoot();
@@ -1022,6 +1038,7 @@ class ShootMediaActionsTest extends TestCase
     {
         Storage::fake('public');
         Storage::fake('local');
+        Storage::fake('local');
         config(['media.read_from_r2' => false, 'media.r2_only' => false]);
         Sanctum::actingAs($this->admin);
         $shoot = $this->createShoot(['rep_id' => $this->salesRep->id]);
@@ -1047,6 +1064,7 @@ class ShootMediaActionsTest extends TestCase
     public function assigned_editor_can_download_raw_files_via_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1220,6 +1238,7 @@ class ShootMediaActionsTest extends TestCase
     public function unassigned_editor_cannot_download_raw_files_via_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editor);
 
         $otherEditor = User::factory()->create([
@@ -1253,6 +1272,7 @@ class ShootMediaActionsTest extends TestCase
     public function editor_cannot_download_archive_zip_files(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1281,6 +1301,7 @@ class ShootMediaActionsTest extends TestCase
     public function editor_cannot_download_selected_files_zip(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1310,6 +1331,7 @@ class ShootMediaActionsTest extends TestCase
     public function assigned_editor_can_get_a_single_raw_file_download_url(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1339,6 +1361,7 @@ class ShootMediaActionsTest extends TestCase
     public function editor_cannot_download_an_edited_single_file(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->editor);
 
         $shoot = $this->createShoot([
@@ -1365,6 +1388,7 @@ class ShootMediaActionsTest extends TestCase
     public function assigned_sales_rep_can_download_a_delivered_archive(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->salesRep);
 
         $shoot = $this->createShoot([
@@ -1399,16 +1423,17 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/'.$shoot->id.'/archives/',
+            '/api/public/shoot-media/file/shoots/'.$shoot->id.'/archives/',
             (string) $response->json('url')
         );
-        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
+        $this->assertStringContainsString('-edited-small.zip', (string) $response->json('url'));
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
     public function unassigned_sales_rep_cannot_download_a_delivered_archive(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->unassignedSalesRep);
 
         $shoot = $this->createShoot([
@@ -1443,6 +1468,7 @@ class ShootMediaActionsTest extends TestCase
     public function assigned_sales_rep_can_download_selected_edited_files(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->salesRep);
 
         $shoot = $this->createShoot([
@@ -1484,6 +1510,7 @@ class ShootMediaActionsTest extends TestCase
     public function unassigned_sales_rep_cannot_download_selected_edited_files(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->unassignedSalesRep);
 
         $shoot = $this->createShoot([
@@ -1515,6 +1542,7 @@ class ShootMediaActionsTest extends TestCase
     public function assigned_sales_rep_can_download_a_single_media_file(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->salesRep);
 
         $shoot = $this->createShoot([
@@ -1546,6 +1574,7 @@ class ShootMediaActionsTest extends TestCase
     public function unassigned_sales_rep_cannot_download_a_single_media_file(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->unassignedSalesRep);
 
         $shoot = $this->createShoot([
@@ -1574,6 +1603,7 @@ class ShootMediaActionsTest extends TestCase
     public function sales_rep_cannot_download_raw_files_from_the_editor_raw_endpoint(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Sanctum::actingAs($this->salesRep);
 
         $shoot = $this->createShoot([
@@ -1602,6 +1632,7 @@ class ShootMediaActionsTest extends TestCase
     public function original_media_zip_download_returns_preparing_and_queues_generation(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Queue::fake([GenerateShootMediaArchiveJob::class]);
         Sanctum::actingAs($this->admin);
 
@@ -1649,6 +1680,7 @@ class ShootMediaActionsTest extends TestCase
     public function public_signed_media_archive_route_redirects_when_cached_archive_is_ready(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $shoot = $this->createShoot();
         $webPath = 'shoots/'.$shoot->id.'/web/front_web.jpg';
@@ -1688,16 +1720,16 @@ class ShootMediaActionsTest extends TestCase
             ->assertJsonPath('type', 'redirect');
 
         $this->assertStringContainsString(
-            '/storage/shoots/'.$shoot->id.'/archives/',
+            '/api/public/shoot-media/file/shoots/'.$shoot->id.'/archives/',
             (string) $response->json('url')
         );
-        $this->assertStringEndsWith('-edited-small.zip', (string) $response->json('url'));
+        $this->assertStringContainsString('-edited-small.zip', (string) $response->json('url'));
 
         $archivePath = app(ShootMediaArchiveService::class)->getArchivePath($shoot, 'edited', 'small');
         $binaryResponse = $this->get($signedUrl, ['Accept' => 'application/zip, application/json']);
         $binaryResponse->assertOk()->assertHeader('Content-Type', 'application/zip');
-        $this->assertSame(Storage::disk('public')->get($archivePath), $binaryResponse->streamedContent());
-        Storage::disk('public')->assertExists($archivePath);
+        $this->assertSame(Storage::disk('local')->get($archivePath), $binaryResponse->streamedContent());
+        Storage::disk('local')->assertExists($archivePath);
         $this->get('/api/public/shoot-media/'.$shoot->id.'/download-zip?type=edited&size=small', [
             'Accept' => 'application/zip, application/json',
         ])->assertForbidden();

@@ -60,11 +60,11 @@ class FloorplanPreviewService
             return $result;
         }
 
-        $disk = Storage::disk('public');
         $relativeSource = $this->normalizeDiskPath($file->path ?: $file->storage_path);
+        $media = app(\App\Services\Media\MediaStorage::class);
 
-        if (!$relativeSource || !$disk->exists($relativeSource)) {
-            Log::warning('FloorplanPreviewService: source file not found on public disk', [
+        if (!$relativeSource || !$media->exists($relativeSource)) {
+            Log::warning('FloorplanPreviewService: source file not found on media disk', [
                 'shoot_file_id' => $file->id,
                 'path' => $file->path,
                 'storage_path' => $file->storage_path,
@@ -109,8 +109,11 @@ class FloorplanPreviewService
      */
     private function generatePdfPreviews(ShootFile $file, string $relativeSource, array $result): array
     {
-        $disk = Storage::disk('public');
-        $absoluteSource = $disk->path($relativeSource);
+        $absoluteSource = app(\App\Services\Media\MediaStorage::class)->absolutePath($relativeSource);
+        if (!$absoluteSource) {
+            $result['status'] = 'source_missing';
+            return $result;
+        }
 
         $baseName = Str::slug(pathinfo((string) ($file->stored_filename ?: $file->filename), PATHINFO_FILENAME) ?: 'floorplan');
         $uniqueBase = sprintf('%s-%d', $baseName, $file->id);
@@ -158,7 +161,7 @@ class FloorplanPreviewService
             foreach ($generated as $tmpFile) {
                 $pageNum++;
                 $relativePreview = sprintf('%s/%s-p%d.jpg', $previewDir, $uniqueBase, $pageNum);
-                $disk->put($relativePreview, file_get_contents($tmpFile));
+                app(\App\Services\Media\MediaStorage::class)->put($relativePreview, file_get_contents($tmpFile));
                 $previewImages[] = $relativePreview;
             }
 
@@ -231,7 +234,7 @@ class FloorplanPreviewService
     {
         $relative = $this->normalizeDiskPath($path);
 
-        return $relative !== null && Storage::disk('public')->exists($relative);
+        return $relative !== null && app(\App\Services\Media\MediaStorage::class)->exists($relative);
     }
 
     private function normalizeDiskPath(?string $path): ?string

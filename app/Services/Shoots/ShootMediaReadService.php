@@ -65,11 +65,14 @@ class ShootMediaReadService
             }
         }
 
-        if ($file->path && Storage::disk('public')->exists($file->path)) {
-            $path = Storage::disk('public')->path($file->path);
-            $mimeType = mime_content_type($path) ?: 'image/jpeg';
+        $localPath = $this->shootFileAccessService->resolveLocalPath($file->path);
+        if ($localPath && file_exists($localPath)) {
+            $mimeType = mime_content_type($localPath) ?: 'image/jpeg';
 
-            return response()->file($path, ['Content-Type' => $mimeType]);
+            return response()->file($localPath, [
+                'Content-Type' => $mimeType,
+                'Cache-Control' => 'private, no-store',
+            ]);
         }
 
         if ($file->url && Str::startsWith($file->url, 'http')) {
@@ -769,7 +772,7 @@ class ShootMediaReadService
             return null;
         }
         if (preg_match('/^https?:\/\//i', $path)) {
-            return $path;
+            return $this->mediaStorage->servingUrl($path) ?? $path;
         }
 
         $clean = ltrim($path, '/');
@@ -787,7 +790,7 @@ class ShootMediaReadService
             }
         }
 
-        if (Storage::disk('public')->exists($clean)) {
+        if ($this->mediaStorage->exists($clean)) {
             return $this->shootFileAccessService->resolvePublicStorageUrl($clean);
         }
 

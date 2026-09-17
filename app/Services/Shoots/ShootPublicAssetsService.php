@@ -1081,7 +1081,7 @@ class ShootPublicAssetsService
             return null;
         }
         if (preg_match('/^https?:\/\//i', $path)) {
-            return $path;
+            return $this->mediaStorage->servingUrl($path) ?? $path;
         }
 
         $clean = ltrim($path, '/');
@@ -1097,13 +1097,8 @@ class ShootPublicAssetsService
             }
         }
 
-        if (Storage::disk('public')->exists($relative)) {
-            $url = Storage::disk('public')->url($relative);
-            if (!preg_match('/^https?:\/\//i', $url)) {
-                $url = rtrim(config('app.url'), '/') . '/' . ltrim($url, '/');
-            }
-
-            return $url;
+        if ($this->mediaStorage->exists($relative)) {
+            return $this->mediaStorage->publicUrl($relative);
         }
 
         return null;

@@ -27,8 +27,8 @@ use ZipArchive;
  *  - Clean verdict   -> recordResult + release (dispatches ProcessImageJob).
  *  - Infected verdict-> flagInfected + admin notification.
  *  - ClamAvUnavailable bubbles up so the queue retries; file stays quarantined.
- *  - failed() handler flips a still-quarantined file to `failed`, where it is
- *    re-scannable via the retry-scan endpoint (Req 15.8).
+ *  - failed() re-queues ClamAV unavailability instead of flipping the file to
+ *    `failed`; other terminal errors still mark the file failed (Req 15.8).
  */
 class ScanShootFileJobTest extends TestCase
 {
@@ -217,7 +217,7 @@ class ScanShootFileJobTest extends TestCase
     }
 
     #[Test]
-    public function failed_handler_marks_the_file_failed_so_it_can_be_re_scanned(): void
+    public function failed_handler_requeues_clamav_blips_instead_of_failing_the_file(): void
     {
         Storage::fake('public');
         Queue::fake();
@@ -225,18 +225,40 @@ class ScanShootFileJobTest extends TestCase
         $file = $this->makeQuarantinedFile();
 
         $job = new ScanShootFileJob($file->id);
-        // Simulate Laravel calling failed() once $tries is exhausted.
         $job->failed(new ClamAvUnavailable('clamd unreachable after retries'));
+
+        $file->refresh();
+        $this->assertSame(
+            ShootFile::SCAN_STATUS_QUARANTINED,
+            $file->scan_status,
+            'A clamd blip must leave the file quarantined so a later scan can still run.'
+        );
+        $this->assertNull($file->scanned_at);
+        Queue::assertPushed(ScanShootFileJob::class, function (ScanShootFileJob $queued) use ($file): bool {
+            return $queued->shootFileId === $file->id;
+        });
+        Queue::assertNotPushed(ProcessImageJob::class);
+    }
+
+    #[Test]
+    public function failed_handler_marks_the_file_failed_for_non_availability_errors(): void
+    {
+        Storage::fake('public');
+        Queue::fake();
+
+        $file = $this->makeQuarantinedFile();
+
+        $job = new ScanShootFileJob($file->id);
+        $job->failed(new \RuntimeException('scan crashed'));
 
         $file->refresh();
         $this->assertSame(
             ShootFile::SCAN_STATUS_FAILED,
             $file->scan_status,
-            'Retry exhaustion must transition the file to failed (Req 15.2).'
+            'Non-availability failures still transition the file to failed (Req 15.2).'
         );
         $this->assertNotNull($file->scanned_at);
-        $this->assertStringContainsString('scan_unavailable', (string) $file->scan_result);
-        // A `failed` file is still withheld — no downstream dispatch.
+        $this->assertStringContainsString('scan_failed', (string) $file->scan_result);
         Queue::assertNotPushed(ProcessImageJob::class);
     }
 

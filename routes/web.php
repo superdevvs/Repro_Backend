@@ -24,3 +24,10 @@ Route::get('/link-preview/{type}', [LinkPreviewController::class, 'document'])
     ->whereIn('type', array_merge(LinkPreviewService::TOUR_TYPES, LinkPreviewService::STATIC_TYPES))
     ->middleware('throttle:60,1')
     ->name('link-preview.document');
+
+Route::any('/storage/shoots/{path?}', fn () => abort(404))
+    ->where('path', '.*')
+    ->name('storage.shoots.blocked');
+Route::any('/storage/share-links/{path?}', fn () => abort(404))
+    ->where('path', '.*')
+    ->name('storage.share-links.blocked');

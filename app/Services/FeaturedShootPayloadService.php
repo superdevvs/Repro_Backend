@@ -6,7 +6,6 @@ use App\Models\FeaturedShootImage;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class FeaturedShootPayloadService
@@ -121,8 +120,9 @@ class FeaturedShootPayloadService
         }
 
         $path = trim($path);
+        $media = app(\App\Services\Media\MediaStorage::class);
         if (preg_match('/^https?:\/\//i', $path)) {
-            return $path;
+            return $media->servingUrl($path) ?? $path;
         }
 
         $clean = ltrim($path, '/');
@@ -130,15 +130,11 @@ class FeaturedShootPayloadService
             $clean = Str::after($clean, 'storage/');
         }
 
-        if (Storage::disk('public')->exists($clean)) {
-            return Storage::disk('public')->url($clean);
+        if ($media->exists($clean)) {
+            return $media->publicUrl($clean);
         }
 
-        if (Str::startsWith($path, ['/storage/', 'storage/'])) {
-            return url('/' . ltrim($path, '/'));
-        }
-
-        return null;
+        return $media->servingUrl($clean);
     }
 
     protected function updatedAt(Shoot $shoot): ?CarbonInterface

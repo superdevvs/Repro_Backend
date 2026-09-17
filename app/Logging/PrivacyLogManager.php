@@ -7,10 +7,16 @@ use Monolog\Handler\StreamHandler;
 
 class PrivacyLogManager extends \Illuminate\Log\LogManager
 {
+    /** Operational intake logs must keep correlation ids and original messages. */
+    private const UNREDACTED_CHANNELS = ['uploads'];
+
     protected function tap($name, Logger $logger)
     {
         $logger = parent::tap($name, $logger);
-        (new PrivacyLogTap())($logger);
+        if (! in_array($name, self::UNREDACTED_CHANNELS, true)) {
+            (new PrivacyLogTap())($logger);
+        }
+
         return $logger;
     }
 

@@ -8,27 +8,32 @@ return [
     |--------------------------------------------------------------------------
     |
     | Logical disk names used by App\Services\Media\MediaStorage. The "remote"
-    | disk is the Cloudflare R2 (S3-compatible) bucket; the "local" disk is the
-    | historical local public disk that media has always been written to.
+    | disk is the Cloudflare R2 (S3-compatible) bucket. The "local" disk is the
+    | private application disk (storage/app/private). Historical objects that
+    | were written to the public disk remain readable via legacy_public_disk
+    | until an operator migrates them.
     |
     */
 
     'remote_disk' => env('MEDIA_REMOTE_DISK', 'media'),
 
-    'local_disk' => env('MEDIA_LOCAL_DISK', 'public'),
+    'local_disk' => env('MEDIA_LOCAL_DISK', 'local'),
+
+    'legacy_public_disk' => env('MEDIA_LEGACY_PUBLIC_DISK', 'public'),
 
     /*
     |--------------------------------------------------------------------------
     | Migration feature flags (Dropbox/local -> R2 cutover)
     |--------------------------------------------------------------------------
     |
-    | These gate the phased cutover and provide instant rollback. They are all
-    | OFF by default so installing this code is a no-op until R2 is provisioned
-    | and explicitly enabled per environment.
+    | These gate the phased R2 cutover and provide instant rollback. They are all
+    | OFF by default so R2 is unused until provisioned. Shoot media is written to
+    | the private local disk regardless of these flags so `/storage/shoots/` is
+    | not the live path.
     |
     |  - dual_write : mirror every new write to R2 in addition to local.
     |  - read_from_r2 : resolve URLs / serve reads from R2 (local stays as fallback).
-    |  - r2_only : writes go to R2 only; local public disk is no longer written.
+    |  - r2_only : writes go to R2 only; the local private disk is no longer written.
     |
     */
 
@@ -50,5 +55,18 @@ return [
     */
 
     'temporary_url_ttl' => (int) env('MEDIA_TEMPORARY_URL_TTL', 900),
+
+    /*
+    |--------------------------------------------------------------------------
+    | App-signed URL TTL (local / private disk)
+    |--------------------------------------------------------------------------
+    |
+    | Lifetime for Laravel signed URLs that stream private shoot media through
+    | the application. This is not a public nginx alias; expiry is the access
+    | window for <img> tags, emails, and in-app viewers.
+    |
+    */
+
+    'signed_url_ttl' => (int) env('MEDIA_SIGNED_URL_TTL', 604800),
 
 ];

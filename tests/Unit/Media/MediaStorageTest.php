@@ -11,8 +11,10 @@ class MediaStorageTest extends TestCase
     private function makeStorage(): MediaStorage
     {
         Storage::fake('public');
+        Storage::fake('local');
         Storage::fake('media');
-        config()->set('media.local_disk', 'public');
+        config()->set('media.local_disk', 'local');
+        config()->set('media.legacy_public_disk', 'public');
         config()->set('media.remote_disk', 'media');
 
         return new MediaStorage();
@@ -37,7 +39,8 @@ class MediaStorageTest extends TestCase
 
         $media->put('shoots/1/todo/a.jpg', 'data');
 
-        Storage::disk('public')->assertExists('shoots/1/todo/a.jpg');
+        Storage::disk('local')->assertExists('shoots/1/todo/a.jpg');
+        Storage::disk('public')->assertMissing('shoots/1/todo/a.jpg');
         Storage::disk('media')->assertMissing('shoots/1/todo/a.jpg');
     }
 
@@ -49,7 +52,8 @@ class MediaStorageTest extends TestCase
 
         $media->put('shoots/1/todo/a.jpg', 'data');
 
-        Storage::disk('public')->assertExists('shoots/1/todo/a.jpg');
+        Storage::disk('local')->assertExists('shoots/1/todo/a.jpg');
+        Storage::disk('public')->assertMissing('shoots/1/todo/a.jpg');
         Storage::disk('media')->assertExists('shoots/1/todo/a.jpg');
     }
 
@@ -61,6 +65,7 @@ class MediaStorageTest extends TestCase
 
         $media->put('shoots/1/todo/a.jpg', 'data');
 
+        Storage::disk('local')->assertMissing('shoots/1/todo/a.jpg');
         Storage::disk('public')->assertMissing('shoots/1/todo/a.jpg');
         Storage::disk('media')->assertExists('shoots/1/todo/a.jpg');
     }
@@ -68,7 +73,7 @@ class MediaStorageTest extends TestCase
     public function test_copy_local_to_r2_uses_identical_key(): void
     {
         $media = $this->makeStorage();
-        Storage::disk('public')->put('shoots/2/web/b.jpg', 'web-bytes');
+        Storage::disk('local')->put('shoots/2/web/b.jpg', 'web-bytes');
 
         $this->assertTrue($media->copyLocalToR2('shoots/2/web/b.jpg'));
 
@@ -95,5 +100,17 @@ class MediaStorageTest extends TestCase
         Storage::disk('public')->put('shoots/4/todo/d.jpg', 'local-only');
 
         $this->assertSame('local-only', $media->get('shoots/4/todo/d.jpg'));
+    }
+
+    public function test_exists_and_get_fall_back_to_legacy_public_disk(): void
+    {
+        $media = $this->makeStorage();
+        config()->set('media.read_from_r2', false);
+        config()->set('media.r2_only', false);
+
+        Storage::disk('public')->put('shoots/5/web/legacy.jpg', 'historical');
+
+        $this->assertTrue($media->exists('shoots/5/web/legacy.jpg'));
+        $this->assertSame('historical', $media->get('shoots/5/web/legacy.jpg'));
     }
 }

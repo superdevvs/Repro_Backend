@@ -48,12 +48,14 @@ class PublicShootShareLinkController extends Controller
             ], 404);
         }
 
+        $disk = $this->zipDisk($link);
+
         $link->incrementDownloadCount();
 
         return response()->download(
-            Storage::disk('public')->path($link->dropbox_path),
+            Storage::disk($disk)->path($link->dropbox_path),
             $this->buildDownloadFilename($link),
-            ['Content-Type' => 'application/zip']
+            ['Content-Type' => 'application/zip', 'Cache-Control' => 'private, no-store']
         );
     }
 
@@ -87,9 +89,22 @@ class PublicShootShareLinkController extends Controller
 
     private function isLocalPublicZip(ShootShareLink $link): bool
     {
-        return is_string($link->dropbox_path)
-            && str_starts_with($link->dropbox_path, 'share-links/')
-            && Storage::disk('public')->exists($link->dropbox_path);
+        return $this->zipDisk($link) !== null;
+    }
+
+    private function zipDisk(ShootShareLink $link): ?string
+    {
+        if (! is_string($link->dropbox_path) || ! str_starts_with($link->dropbox_path, 'share-links/')) {
+            return null;
+        }
+
+        foreach (['local', 'public'] as $disk) {
+            if (Storage::disk($disk)->exists($link->dropbox_path)) {
+                return $disk;
+            }
+        }
+
+        return null;
     }
 
     private function buildDownloadFilename(ShootShareLink $link): string

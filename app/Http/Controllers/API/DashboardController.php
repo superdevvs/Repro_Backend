@@ -14,6 +14,7 @@ use App\Models\WorkflowLog;
 use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Schedule\ScheduleDateScopeService;
 use App\Services\Schedule\ScheduleInstantResolver;
+use App\Services\Media\MediaStorage;
 use App\Services\Shoots\ShootEditingAssignmentService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -417,6 +418,11 @@ class DashboardController extends Controller
     {
         if (! $path) {
             return null;
+        }
+
+        $signed = app(MediaStorage::class)->servingUrl($path);
+        if ($signed !== null) {
+            return $signed;
         }
 
         if (Str::startsWith($path, ['http://', 'https://'])) {

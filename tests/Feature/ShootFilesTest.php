@@ -217,6 +217,7 @@ class ShootFilesTest extends TestCase
     public function uploading_the_same_edited_filename_replaces_in_place_and_keeps_preview_files_available(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Queue::fake([
             ProcessImageJob::class,
             SyncShootFileToDropboxJob::class,
@@ -245,7 +246,7 @@ class ShootFilesTest extends TestCase
                 ];
 
                 foreach ($paths as $path) {
-                    Storage::disk('public')->put($path, 'generated-preview');
+                    Storage::disk('local')->put($path, 'generated-preview');
                 }
 
                 return $paths;
@@ -273,10 +274,10 @@ class ShootFilesTest extends TestCase
         $this->assertNotNull($originalThumbnailPath);
         $this->assertNotNull($originalWebPath);
         $this->assertNotNull($originalPlaceholderPath);
-        Storage::disk('public')->assertExists($originalPath);
-        Storage::disk('public')->assertExists($originalThumbnailPath);
-        Storage::disk('public')->assertExists($originalWebPath);
-        Storage::disk('public')->assertExists($originalPlaceholderPath);
+        Storage::disk('local')->assertExists($originalPath);
+        Storage::disk('local')->assertExists($originalThumbnailPath);
+        Storage::disk('local')->assertExists($originalWebPath);
+        Storage::disk('local')->assertExists($originalPlaceholderPath);
 
         $replacementUpload = UploadedFile::fake()->image('edited-shot.jpg', 1800, 1000);
         $replacementFile = $service->uploadToCompleted($shoot->fresh(), $replacementUpload, $admin->id)->fresh();
@@ -299,11 +300,11 @@ class ShootFilesTest extends TestCase
                 ->count()
         );
 
-        Storage::disk('public')->assertMissing($originalPath);
-        Storage::disk('public')->assertExists($replacementFile->path);
-        Storage::disk('public')->assertExists($replacementFile->thumbnail_path);
-        Storage::disk('public')->assertExists($replacementFile->web_path);
-        Storage::disk('public')->assertExists($replacementFile->placeholder_path);
+        Storage::disk('local')->assertMissing($originalPath);
+        Storage::disk('local')->assertExists($replacementFile->path);
+        Storage::disk('local')->assertExists($replacementFile->thumbnail_path);
+        Storage::disk('local')->assertExists($replacementFile->web_path);
+        Storage::disk('local')->assertExists($replacementFile->placeholder_path);
     }
 
     #[Test]
@@ -545,8 +546,8 @@ class ShootFilesTest extends TestCase
         $this->assertNull($payload['thumbnail_path']);
         $this->assertNull($payload['web_path']);
         $this->assertArrayHasKey('watermarked_web_path', $payload);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/preview_web.jpg', $payload['url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/preview_web.jpg', $payload['original_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/watermarked/preview_web.jpg', $payload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/watermarked/preview_web.jpg', $payload['original_url']);
     }
 
     #[Test]
@@ -588,8 +589,8 @@ class ShootFilesTest extends TestCase
         $this->assertNull($payload['path']);
         $this->assertNull($payload['web_path']);
         $this->assertNull($payload['thumbnail_path']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['original_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/watermarked/partial-preview_web.jpg', $payload['original_url']);
     }
 
     #[Test]
@@ -737,7 +738,7 @@ class ShootFilesTest extends TestCase
         $this->assertFalse($clientPayload['uses_watermark']);
         $this->assertArrayNotHasKey('watermarked_web_path', $clientPayload);
         $this->assertSame($clientPayload['url'], $clientPayload['original_url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final.jpg', $clientPayload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final.jpg', $clientPayload['url']);
 
         $shoot->update(['payment_status' => 'unpaid']);
 
@@ -749,7 +750,7 @@ class ShootFilesTest extends TestCase
         $this->assertFalse($adminPayload['uses_watermark']);
         $this->assertArrayNotHasKey('watermarked_web_path', $adminPayload);
         $this->assertSame($adminPayload['url'], $adminPayload['original_url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final.jpg', $adminPayload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final.jpg', $adminPayload['url']);
     }
 
     #[Test]
@@ -783,11 +784,11 @@ class ShootFilesTest extends TestCase
             ->json('data.0');
 
         $this->assertFalse($payload['uses_watermark']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['web_url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['medium_url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb.jpg', $payload['thumb_url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-web-original.jpg', $payload['original_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['web_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-web.jpg', $payload['medium_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-thumb.jpg', $payload['thumb_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-web-original.jpg', $payload['original_url']);
     }
 
     #[Test]
@@ -959,12 +960,12 @@ class ShootFilesTest extends TestCase
             ->json('data.0');
 
         $this->assertFalse($payload['uses_watermark']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg', $payload['url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg', $payload['thumb_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg', $payload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-thumb-only-thumb.jpg', $payload['thumb_url']);
         $this->assertArrayNotHasKey('web_url', $payload);
         $this->assertArrayNotHasKey('medium_url', $payload);
         $this->assertArrayNotHasKey('large_url', $payload);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/final-thumb-only-original.jpg', $payload['original_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/final-thumb-only-original.jpg', $payload['original_url']);
     }
 
     #[Test]
@@ -991,7 +992,7 @@ class ShootFilesTest extends TestCase
                 ];
 
                 foreach ($paths as $path) {
-                    Storage::disk('public')->put($path, 'generated-preview');
+                    Storage::disk('local')->put($path, 'generated-preview');
                 }
 
                 return $paths;
@@ -1012,9 +1013,9 @@ class ShootFilesTest extends TestCase
             ->json('data.0');
 
         $this->assertFalse($payload['uses_watermark']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['web_url']);
-        $this->assertStringContainsString('/storage/shoots/' . $shoot->id . '/completed/generated-thumb.jpg', $payload['thumb_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-web.jpg', $payload['web_url']);
+        $this->assertStringContainsString('/api/public/shoot-media/file/shoots/' . $shoot->id . '/completed/generated-thumb.jpg', $payload['thumb_url']);
         $this->assertStringContainsString('/storage/remote/final.jpg', $payload['original_url']);
         \Illuminate\Support\Facades\Http::assertNothingSent();
     }

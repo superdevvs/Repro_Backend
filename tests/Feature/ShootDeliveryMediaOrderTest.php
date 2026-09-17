@@ -197,6 +197,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function archive_entry_names_are_zero_padded_in_delivery_order(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -235,6 +236,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function archive_entry_names_keep_the_master_filenames_untouched(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -276,6 +278,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function duplicate_master_filenames_do_not_collapse_into_one_archive_entry(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -308,6 +311,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function reordering_invalidates_a_cached_archive_and_rebuilds_it_in_the_new_order(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -345,6 +349,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function regenerating_without_changes_is_idempotent(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -373,6 +378,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function selected_file_downloads_are_numbered_in_delivery_order(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot(['payment_status' => 'paid', 'bypass_paywall' => true]);
@@ -493,6 +499,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function the_snapshot_drives_archive_order_and_late_uploads_trail_it(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot([
@@ -523,6 +530,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function a_single_direct_download_is_named_after_its_delivery_position(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot(['bypass_paywall' => true]);
@@ -551,6 +559,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function a_raw_download_is_numbered_against_the_raw_set_not_the_delivered_one(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -584,6 +593,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
     public function the_public_gallery_sequences_photos_the_same_way_as_the_archive(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot([
@@ -724,7 +734,7 @@ class ShootDeliveryMediaOrderTest extends TestCase
         string $size
     ): array {
         $zip = new ZipArchive();
-        $path = Storage::disk('public')->path($archiveService->getArchivePath($shoot, $type, $size));
+        $path = Storage::disk('local')->path($archiveService->getArchivePath($shoot, $type, $size));
         $this->assertTrue($zip->open($path) === true, "Could not open archive at {$path}");
 
         $entries = [];

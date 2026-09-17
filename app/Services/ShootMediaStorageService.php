@@ -435,7 +435,11 @@ class ShootMediaStorageService
             ShootFile::MEDIA_TYPE_IGUIDE => "secure/iguide-packages/{$shoot->id}",
             default => "shoots/{$shoot->id}/".($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
         };
-        $storageDisk = $isOpaqueIguidePackage ? 'local' : 'public';
+        $storageDisk = $isOpaqueIguidePackage
+            ? 'local'
+            : (config('media.r2_only')
+                ? (string) config('media.remote_disk', 'media')
+                : (string) config('media.local_disk', 'local'));
         $serverPath = $dir.'/'.$filename;
         $defaultMediaType = $storageMediaType
             ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
@@ -610,7 +614,7 @@ class ShootMediaStorageService
             $generatedPaths = app(ImageProcessingService::class)->processImageFromPath(
                 $shoot->id,
                 $shootFile->filename,
-                Storage::disk('public')->path($serverPath)
+                Storage::disk($staged->storageDisk)->path($serverPath)
             );
 
             if (! empty($generatedPaths)) {
@@ -707,10 +711,8 @@ class ShootMediaStorageService
 
         foreach ($attributes as $attribute) {
             $storedPath = $shootFile->{$attribute};
-            if ($storedPath && Storage::disk('public')->exists($storedPath)) {
-                Storage::disk('public')->delete($storedPath);
-            } elseif ($storedPath && Storage::disk('local')->exists($storedPath)) {
-                Storage::disk('local')->delete($storedPath);
+            if ($storedPath) {
+                app(\App\Services\Media\MediaStorage::class)->delete($storedPath);
             }
         }
     }
@@ -785,8 +787,8 @@ class ShootMediaStorageService
             return;
         }
 
-        $disk = Storage::disk('public');
-        if (! $disk->exists($currentPath)) {
+        $media = app(\App\Services\Media\MediaStorage::class);
+        if (! $media->exists($currentPath)) {
             // Source missing locally; nothing to copy. Read path will resolve
             // via existing local or configured R2 preview pipelines.
             Log::info('Skipping local-final copy: source missing on disk', [
@@ -805,10 +807,32 @@ class ShootMediaStorageService
         }
 
         try {
-            // Storage::copy is implemented as a streamed copy in flysystem and
-            // auto-creates parent directories. Avoids reading whole file into
-            // PHP memory.
-            $disk->copy($currentPath, $serverPath);
+            $sourceDisk = $media->diskFor($currentPath);
+            $key = $media->normalizeKey($currentPath);
+            if ($sourceDisk === null || $key === null) {
+                return;
+            }
+
+            $stream = $sourceDisk->readStream($key);
+            if ($stream === false || $stream === null) {
+                return;
+            }
+
+            if (! $media->r2Only()) {
+                $media->localDisk()->writeStream($serverPath, $stream);
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+                if ($media->dualWriteEnabled()) {
+                    $media->copyLocalToR2($serverPath);
+                }
+            } else {
+                $media->remoteDisk()->writeStream($serverPath, $stream);
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+            }
+
             $shootFile->path = $serverPath;
         } catch (\Throwable $e) {
             // Permission / disk / mkdir errors must NOT block finalize. Keep

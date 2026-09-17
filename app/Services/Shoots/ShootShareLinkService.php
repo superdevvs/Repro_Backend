@@ -160,16 +160,16 @@ class ShootShareLinkService
             }
 
             $publicDir = "share-links/{$shoot->id}";
-            Storage::disk('public')->makeDirectory($publicDir);
             $zipFilename = 'share-link-' . Str::uuid()->toString() . '.zip';
             $publicPath = $publicDir . '/' . $zipFilename;
+            $media = app(\App\Services\Media\MediaStorage::class);
 
             $stream = fopen($zipPath, 'r');
             if ($stream === false) {
                 throw new \RuntimeException('Failed to read shareable ZIP file');
             }
 
-            $stored = Storage::disk('public')->put($publicPath, $stream);
+            $stored = $media->put($publicPath, $stream);
             if (is_resource($stream)) {
                 fclose($stream);
             }
@@ -179,7 +179,7 @@ class ShootShareLinkService
                 throw new \RuntimeException('Failed to store shareable ZIP file');
             }
 
-            $shareLink = Storage::disk('public')->url($publicPath);
+            $shareLink = route('api.public.share-links.download', ['token' => 'pending']);
             $shareLinkSourcePath = $publicPath;
         }
 
@@ -197,6 +197,10 @@ class ShootShareLinkService
                 'download_count' => 0,
                 'expires_at' => now()->addDays(7),
             ]);
+            $shareLinkRecord->share_url = route('api.public.share-links.download', [
+                'token' => $shareLinkRecord->public_token,
+            ]);
+            $shareLinkRecord->save();
             $shareLinkId = $shareLinkRecord->id;
             $expiresAt = $shareLinkRecord->expires_at?->toIso8601String();
         } catch (\Exception $dbError) {

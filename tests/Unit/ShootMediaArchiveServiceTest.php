@@ -43,6 +43,7 @@ class ShootMediaArchiveServiceTest extends TestCase
     public function it_generates_small_archives_from_optimized_media_when_available(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -65,7 +66,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archiveService->generateArchive($shoot, 'edited', 'small');
 
         $zip = new ZipArchive();
-        $archivePath = Storage::disk('public')->path($archiveService->getArchivePath($shoot, 'edited', 'small'));
+        $archivePath = Storage::disk('local')->path($archiveService->getArchivePath($shoot, 'edited', 'small'));
 
         $this->assertTrue($zip->open($archivePath) === true);
         // Entry names carry their delivery position (min width 3) so the curated
@@ -78,6 +79,7 @@ class ShootMediaArchiveServiceTest extends TestCase
     public function it_generates_full_archives_from_original_media_sources(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -100,7 +102,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archiveService->generateArchive($shoot, 'edited', 'original');
 
         $zip = new ZipArchive();
-        $archivePath = Storage::disk('public')->path($archiveService->getArchivePath($shoot, 'edited', 'original'));
+        $archivePath = Storage::disk('local')->path($archiveService->getArchivePath($shoot, 'edited', 'original'));
 
         $this->assertTrue($zip->open($archivePath) === true);
         $this->assertSame('original-photo-bytes', $zip->getFromName('001_front.jpg'));
@@ -111,6 +113,7 @@ class ShootMediaArchiveServiceTest extends TestCase
     public function it_marks_cached_archives_as_stale_when_the_selected_source_changes(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -147,6 +150,7 @@ class ShootMediaArchiveServiceTest extends TestCase
     public function it_generates_service_scoped_archives_for_only_the_selected_service_item(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         $this->mockDropboxDisabled();
 
         $shoot = $this->createShoot();
@@ -192,7 +196,7 @@ class ShootMediaArchiveServiceTest extends TestCase
         $archiveService->generateArchive($shoot, 'edited', 'original', false, $firstServiceItemId);
 
         $zip = new ZipArchive();
-        $archivePath = Storage::disk('public')->path(
+        $archivePath = Storage::disk('local')->path(
             $archiveService->getArchivePath($shoot, 'edited', 'original', $firstServiceItemId)
         );
 

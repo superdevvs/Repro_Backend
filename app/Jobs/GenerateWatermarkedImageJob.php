@@ -798,6 +798,16 @@ class GenerateWatermarkedImageJob implements ShouldQueue
             return $path;
         }
 
+        $resolved = app(\App\Services\Media\MediaStorage::class)->absolutePath($path);
+        if ($resolved) {
+            return $resolved;
+        }
+
+        $resolved = app(\App\Services\Media\MediaStorage::class)->absolutePath($path);
+        if ($resolved) {
+            return $resolved;
+        }
+
         if (Storage::disk('public')->exists($path)) {
             return Storage::disk('public')->path($path);
         }
@@ -817,17 +827,13 @@ class GenerateWatermarkedImageJob implements ShouldQueue
         if ($sizeName) {
 
             $destinationPath = $this->buildLocalWatermarkSizePath($sizeName);
-            $publicDisk = Storage::disk('public');
-            $publicDisk->makeDirectory(Str::beforeLast($destinationPath, '/'));
-            $publicDisk->put($destinationPath, file_get_contents($localTempPath));
+            app(\App\Services\Media\MediaStorage::class)->put($destinationPath, file_get_contents($localTempPath));
 
             return $destinationPath;
         }
 
         $destinationPath = $this->buildLocalWatermarkPath();
-        $publicDisk = Storage::disk('public');
-        $publicDisk->makeDirectory(Str::beforeLast($destinationPath, '/'));
-        $publicDisk->put($destinationPath, file_get_contents($localTempPath));
+        app(\App\Services\Media\MediaStorage::class)->put($destinationPath, file_get_contents($localTempPath));
 
         return $destinationPath;
     }

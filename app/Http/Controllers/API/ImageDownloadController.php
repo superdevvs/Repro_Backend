@@ -71,13 +71,13 @@ class ImageDownloadController extends Controller
             }
 
             // Check if file exists
-            if (!Storage::disk('local')->exists($shootFile->path)) {
+            $media = app(\App\Services\Media\MediaStorage::class);
+            if (! $media->exists($shootFile->path)) {
                 Log::warning("File not found for download", [
                     'file_id' => $fileId,
                     'path' => $shootFile->path
                 ]);
 
-                // Try to fetch from Dropbox if available
                 if ($shootFile->dropbox_file_id && $shootFile->dropbox_path) {
                     return $this->downloadFromDropbox($shootFile);
                 }
@@ -87,12 +87,9 @@ class ImageDownloadController extends Controller
                 ], 404);
             }
 
-            // Get file info
             $fileName = $shootFile->filename;
             $mimeType = $shootFile->mime_type ?? 'application/octet-stream';
-            $fileSize = Storage::disk('local')->size($shootFile->path);
 
-            // Log download
             Log::info("File downloaded", [
                 'file_id' => $fileId,
                 'filename' => $fileName,
@@ -101,11 +98,8 @@ class ImageDownloadController extends Controller
                 'shoot_id' => $shoot->id
             ]);
 
-            // Return file as download
-            return Storage::disk('local')->download($shootFile->path, $fileName, [
+            return $media->downloadResponse($shootFile->path, $fileName, [
                 'Content-Type' => $mimeType,
-                'Content-Length' => $fileSize,
-                'Cache-Control' => 'private, no-store',
                 'Content-Disposition' => 'attachment; filename="' . $fileName . '"'
             ]);
 
@@ -171,23 +165,20 @@ class ImageDownloadController extends Controller
                 }
             }
 
-            if (!$webPath || !Storage::disk('public')->exists($webPath)) {
+            if (!$webPath || !app(\App\Services\Media\MediaStorage::class)->exists($webPath)) {
                 return response()->json([
                     'error' => 'Web version not available'
                 ], 404);
             }
 
-            // Get file info
             $fileName = pathinfo($shootFile->filename, PATHINFO_FILENAME) . '_web.jpg';
             $mimeType = 'image/jpeg';
-            $fileSize = Storage::disk('public')->size($webPath);
+            $disk = app(\App\Services\Media\MediaStorage::class)->diskFor($webPath);
 
-            // Return file
-            return Storage::disk('public')->download($webPath, $fileName, [
+            return $disk->download($webPath, $fileName, [
                 'Content-Type' => $mimeType,
-                'Content-Length' => $fileSize,
                 'Cache-Control' => 'private, no-store',
-                'Content-Disposition' => 'inline; filename="' . $fileName . '"' // Inline for preview
+                'Content-Disposition' => 'inline; filename="' . $fileName . '"'
             ]);
 
         } catch (\Exception $e) {
@@ -235,7 +226,7 @@ class ImageDownloadController extends Controller
                 }
                 if ($this->canDownloadFile($user, $file->shoot, $file)) {
                     $onR2 = $r2Reads && ($key = $media->normalizeKey($file->path)) && $media->existsOnR2($key);
-                    if (Storage::disk('local')->exists($file->path) || $onR2) {
+                    if ($media->exists($file->path) || $onR2) {
                         $downloadableFiles[] = $file;
                     }
                 }
@@ -274,8 +265,8 @@ class ImageDownloadController extends Controller
                     $usedNames
                 );
 
-                $filePath = Storage::disk('local')->path($file->path);
-                if (file_exists($filePath)) {
+                $filePath = $media->absolutePath($file->path);
+                if ($filePath && file_exists($filePath)) {
                     $zip->addFile($filePath, $entryName);
                     $position++;
                     continue;

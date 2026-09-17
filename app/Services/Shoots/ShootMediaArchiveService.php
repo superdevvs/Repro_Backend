@@ -6,6 +6,7 @@ use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Services\ShootMediaStorageService;
+use App\Services\Media\MediaStorage;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -15,7 +16,6 @@ use Illuminate\Support\Str;
 
 class ShootMediaArchiveService
 {
-    private const ARCHIVE_DISK = 'public';
     private const LOCK_TTL_SECONDS = 600;
     public const POLL_AFTER_MS = 3000;
     private const DEFAULT_FRONTEND_URL = 'https://reprodashboard.com';
@@ -146,9 +146,9 @@ class ShootMediaArchiveService
             }
 
             $archivePath = $this->getArchivePath($shoot, $type, $size, $shootServiceId);
-            Storage::disk(self::ARCHIVE_DISK)->makeDirectory(dirname($archivePath));
+            $this->archiveWriteDisk()->makeDirectory(dirname($archivePath));
 
-            $zipAbsolutePath = Storage::disk(self::ARCHIVE_DISK)->path($archivePath);
+            $zipAbsolutePath = $this->archiveWriteDisk()->path($archivePath);
 
             // ZipArchive writes through the native filesystem, not the Storage
             // abstraction, and fails outright if the parent directory is missing.
@@ -193,7 +193,7 @@ class ShootMediaArchiveService
             }
 
             if ($addedFiles === 0) {
-                Storage::disk(self::ARCHIVE_DISK)->delete($archivePath);
+                $this->mediaStorage()->delete($archivePath);
                 throw new \RuntimeException('No downloadable files available');
             }
 
@@ -298,13 +298,9 @@ class ShootMediaArchiveService
     public function getArchiveUrl(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): string
     {
         $archivePath = $this->getArchivePath($shoot, $type, $size, $shootServiceId);
-        $diskUrl = Storage::disk(self::ARCHIVE_DISK)->url($archivePath);
 
-        if (preg_match('/^https?:\/\//i', $diskUrl)) {
-            return $diskUrl;
-        }
-
-        return $this->shootFileAccessService->resolvePublicStorageUrl($diskUrl) ?? $diskUrl;
+        return $this->shootFileAccessService->resolvePublicStorageUrl($archivePath)
+            ?? $this->mediaStorage()->publicUrl($archivePath);
     }
 
     public function buildPublicDownloadUrl(
@@ -531,12 +527,12 @@ class ShootMediaArchiveService
     protected function readManifest(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): ?array
     {
         $manifestPath = $this->getManifestPath($shoot, $type, $size, $shootServiceId);
-        if (!Storage::disk(self::ARCHIVE_DISK)->exists($manifestPath)) {
+        if (!$this->mediaStorage()->exists($manifestPath)) {
             return null;
         }
 
         try {
-            $decoded = json_decode((string) Storage::disk(self::ARCHIVE_DISK)->get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode((string) $this->mediaStorage()->get($manifestPath), true, 512, JSON_THROW_ON_ERROR);
         } catch (\Throwable $exception) {
             return null;
         }
@@ -546,7 +542,7 @@ class ShootMediaArchiveService
 
     protected function writeManifest(Shoot $shoot, string $type, string $size, array $manifest, ?int $shootServiceId = null): void
     {
-        Storage::disk(self::ARCHIVE_DISK)->put(
+        $this->mediaStorage()->put(
             $this->getManifestPath($shoot, $type, $size, $shootServiceId),
             json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
         );
@@ -554,7 +550,7 @@ class ShootMediaArchiveService
 
     protected function archiveExists(Shoot $shoot, string $type, string $size, ?int $shootServiceId = null): bool
     {
-        return Storage::disk(self::ARCHIVE_DISK)->exists($this->getArchivePath($shoot, $type, $size, $shootServiceId));
+        return $this->mediaStorage()->exists($this->getArchivePath($shoot, $type, $size, $shootServiceId));
     }
 
     protected function buildPreparingMessage(string $size): string
@@ -739,5 +735,15 @@ class ShootMediaArchiveService
         }
 
         return rtrim((string) config('app.url', self::DEFAULT_API_URL), '/') . '/' . ltrim($path, '/');
+    }
+
+    protected function mediaStorage(): MediaStorage
+    {
+        return app(MediaStorage::class);
+    }
+
+    protected function archiveWriteDisk(): \Illuminate\Contracts\Filesystem\Filesystem
+    {
+        return Storage::disk((string) config('media.local_disk', 'local'));
     }
 }

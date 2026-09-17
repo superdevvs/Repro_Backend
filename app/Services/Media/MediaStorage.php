@@ -5,18 +5,20 @@ namespace App\Services\Media;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\URL;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Single funnel for all shoot-media storage access.
  *
- * Every read/write decision between the local public disk and the Cloudflare
- * R2 ("media") disk lives here, gated by the config/media.php feature flags so
- * the phased cutover (dual-write -> read-from-r2 -> r2-only) and instant
- * rollback are driven from one place. Object keys are kept byte-for-byte
- * identical across disks (e.g. shoots/{id}/todo/<file>); the only normalization
- * applied is stripping a historical leading "storage/" prefix that the
- * iGuide/CubiCasa ingest jobs persisted into ShootFile::$path.
+ * Every read/write decision between the private local disk, the historical
+ * public disk, and the Cloudflare R2 ("media") disk lives here, gated by the
+ * config/media.php feature flags so the phased cutover (dual-write ->
+ * read-from-r2 -> r2-only) and instant rollback are driven from one place.
+ * Object keys are kept byte-for-byte identical across disks (e.g.
+ * shoots/{id}/todo/<file>); the only normalization applied is stripping a
+ * historical leading "storage/" prefix that the iGuide/CubiCasa ingest jobs
+ * persisted into ShootFile::$path. New writes never go to the public disk.
  */
 class MediaStorage
 {
@@ -47,10 +49,31 @@ class MediaStorage
         return Storage::disk(config('media.remote_disk', 'media'));
     }
 
-    /** The historical local public disk. */
+    /** The private local disk used for new writes. */
     public function localDisk(): Filesystem
     {
-        return Storage::disk(config('media.local_disk', 'public'));
+        return Storage::disk($this->localDiskName());
+    }
+
+    /** Historical public disk; reads fall back here until those objects are migrated. */
+    public function legacyPublicDisk(): Filesystem
+    {
+        return Storage::disk($this->legacyPublicDiskName());
+    }
+
+    public function localDiskName(): string
+    {
+        return (string) config('media.local_disk', 'local');
+    }
+
+    public function legacyPublicDiskName(): string
+    {
+        return (string) config('media.legacy_public_disk', 'public');
+    }
+
+    public function usesPrivateLocalDisk(): bool
+    {
+        return $this->localDiskName() !== $this->legacyPublicDiskName();
     }
 
     public function dualWriteEnabled(): bool
@@ -113,6 +136,9 @@ class MediaStorage
         }
 
         $local = $this->localDisk();
+        if (! $local->exists($key) && $this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
+            $local = $this->legacyPublicDisk();
+        }
         if (! $local->exists($key)) {
             return false;
         }
@@ -140,11 +166,19 @@ class MediaStorage
     public function localSize(string $key): ?int
     {
         $key = $this->normalizeKey($key);
-        if ($key === null || ! $this->localDisk()->exists($key)) {
+        if ($key === null) {
             return null;
         }
 
-        return $this->localDisk()->size($key);
+        if ($this->localDisk()->exists($key)) {
+            return $this->localDisk()->size($key);
+        }
+
+        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
+            return $this->legacyPublicDisk()->size($key);
+        }
+
+        return null;
     }
 
     public function remoteSize(string $key): ?int
@@ -217,6 +251,10 @@ class MediaStorage
             return $this->localDisk()->get($key);
         }
 
+        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
+            return $this->legacyPublicDisk()->get($key);
+        }
+
         return null;
     }
 
@@ -283,7 +321,10 @@ class MediaStorage
             }
         }
 
-        return ! $this->r2Only() && $this->localDisk()->exists($key);
+        return ! $this->r2Only() && (
+            $this->localDisk()->exists($key)
+            || ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key))
+        );
     }
 
     public function existsOnR2(string $key): bool
@@ -316,6 +357,10 @@ class MediaStorage
             $ok = $this->localDisk()->delete($key) && $ok;
         }
 
+        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
+            $ok = $this->legacyPublicDisk()->delete($key) && $ok;
+        }
+
         if ($this->dualWriteEnabled() || $this->r2Only()) {
             try {
                 $ok = $this->remoteDisk()->delete($key) && $ok;
@@ -329,10 +374,85 @@ class MediaStorage
     }
 
     /**
+     * Filesystem that currently holds $key for serving (R2, private local, then public).
+     */
+    public function diskFor(string $key): ?Filesystem
+    {
+        $key = $this->normalizeKey($key);
+        if ($key === null) {
+            return null;
+        }
+
+        if ($this->readFromR2Enabled() || $this->r2Only()) {
+            try {
+                if ($this->remoteDisk()->exists($key)) {
+                    return $this->remoteDisk();
+                }
+            } catch (\Throwable $e) {
+                Log::warning('MediaStorage R2 disk probe failed', ['key' => $key, 'error' => $e->getMessage()]);
+            }
+
+            if ($this->r2Only()) {
+                return null;
+            }
+        }
+
+        if ($this->localDisk()->exists($key)) {
+            return $this->localDisk();
+        }
+
+        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
+            return $this->legacyPublicDisk();
+        }
+
+        return null;
+    }
+
+    /** Absolute path when the serving disk is local-filesystem backed. */
+    public function absolutePath(string $key): ?string
+    {
+        $key = $this->normalizeKey($key);
+        if ($key === null) {
+            return null;
+        }
+
+        foreach ([$this->localDisk(), $this->usesPrivateLocalDisk() ? $this->legacyPublicDisk() : null] as $disk) {
+            if ($disk === null || ! $disk->exists($key)) {
+                continue;
+            }
+
+            try {
+                return $disk->path($key);
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * App-signed URL that streams $key through the authenticated media controller.
+     *
+     * These URLs are the replacement for `/storage/shoots/...` aliases.
+     */
+    public function signedAppUrl(string $key, ?int $ttlSeconds = null): string
+    {
+        $key = $this->normalizeKey($key) ?? '';
+        $ttl = $ttlSeconds ?? (int) config('media.signed_url_ttl', 604800);
+
+        return URL::temporarySignedRoute(
+            'api.public.shoot-media.file',
+            now()->addSeconds(max(1, $ttl)),
+            ['path' => $key]
+        );
+    }
+
+    /**
      * Public (CDN) URL for delivered/watermarked/public-tour assets.
      *
-     * Returns the R2 custom-domain URL when reads are flipped, otherwise the
-     * local public URL.
+     * Returns the R2 custom-domain URL when reads are flipped, otherwise a
+     * short-lived application signed URL to the private local object.
      */
     public function publicUrl(string $key): string
     {
@@ -342,13 +462,50 @@ class MediaStorage
             return $this->remoteDisk()->url($key);
         }
 
-        return $this->localDisk()->url($key);
+        return $this->signedAppUrl($key, (int) config('media.signed_url_ttl', 604800));
+    }
+
+    /**
+     * Convert a stored path or a historical `/storage/shoots|share-links` URL
+     * into the URL the app should hand to browsers. Other http(s) values pass
+     * through. Non-media relative paths return null so callers can keep using
+     * the public disk for avatars/branding.
+     */
+    public function servingUrl(?string $path): ?string
+    {
+        if ($path === null) {
+            return null;
+        }
+
+        $path = trim($path);
+        if ($path === '') {
+            return null;
+        }
+
+        if (preg_match('#^https?://#i', $path) === 1) {
+            $pathname = parse_url($path, PHP_URL_PATH) ?: '';
+            if (str_starts_with($pathname, '/storage/shoots/')
+                || str_starts_with($pathname, '/storage/share-links/')) {
+                return $this->publicUrl(ltrim(substr($pathname, strlen('/storage/')), '/'));
+            }
+
+            return $path;
+        }
+
+        $key = $this->normalizeKey($path);
+        if ($key === null) {
+            return null;
+        }
+
+        if (str_starts_with($key, 'shoots/') || str_starts_with($key, 'share-links/')) {
+            return $this->publicUrl($key);
+        }
+
+        return null;
     }
 
     /**
      * Short-lived presigned URL for raw originals and unpaid/locked media.
-     *
-     * Falls back to the public URL only while R2 reads are not yet enabled.
      */
     public function temporaryUrl(string $key, ?int $ttlSeconds = null): string
     {
@@ -359,7 +516,7 @@ class MediaStorage
             return $this->remoteDisk()->temporaryUrl($key, now()->addSeconds($ttl));
         }
 
-        return $this->localDisk()->url($key);
+        return $this->signedAppUrl($key, $ttl);
     }
 
     /**
@@ -368,13 +525,13 @@ class MediaStorage
      * Replaces the historical response()->file($localAbsolutePath) pattern that
      * assumed local-filesystem semantics.
      */
-    public function streamResponse(string $key, ?string $mimeType = null): StreamedResponse
+    public function streamResponse(string $key, ?string $mimeType = null, array $headers = []): StreamedResponse
     {
         $key = $this->normalizeKey($key) ?? '';
-
-        $disk = ($this->readFromR2Enabled() || $this->r2Only()) && $this->existsOnR2($key)
-            ? $this->remoteDisk()
-            : $this->localDisk();
+        $disk = $this->diskFor($key);
+        if ($disk === null) {
+            abort(404);
+        }
 
         $mime = $mimeType ?: ($disk->mimeType($key) ?: 'application/octet-stream');
 
@@ -387,8 +544,24 @@ class MediaStorage
             if (is_resource($stream)) {
                 fclose($stream);
             }
-        }, 200, [
+        }, 200, array_merge([
             'Content-Type' => $mime,
-        ]);
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ], $headers));
+    }
+
+    public function downloadResponse(string $key, string $filename, array $headers = [])
+    {
+        $key = $this->normalizeKey($key) ?? '';
+        $disk = $this->diskFor($key);
+        if ($disk === null) {
+            abort(404);
+        }
+
+        return $disk->download($key, $filename, array_merge([
+            'Cache-Control' => 'private, no-store',
+            'X-Content-Type-Options' => 'nosniff',
+        ], $headers));
     }
 }

@@ -43,7 +43,7 @@ class ShootFileAccessService
             }
         }
 
-        if ($file->path && Storage::disk('public')->exists($file->path)) {
+        if ($file->path && $this->mediaStorage->exists($file->path)) {
             return $this->resolvePublicStorageUrl($file->path);
         }
 
@@ -67,11 +67,11 @@ class ShootFileAccessService
             }
         }
 
-        if (!empty($file->web_path) && Storage::disk('public')->exists($file->web_path)) {
+        if (!empty($file->web_path) && $this->mediaStorage->exists($file->web_path)) {
             return $this->resolvePublicStorageUrl($file->web_path);
         }
 
-        if (!empty($file->thumbnail_path) && Storage::disk('public')->exists($file->thumbnail_path)) {
+        if (!empty($file->thumbnail_path) && $this->mediaStorage->exists($file->thumbnail_path)) {
             return $this->resolvePublicStorageUrl($file->thumbnail_path);
         }
 
@@ -92,25 +92,21 @@ class ShootFileAccessService
             return null;
         }
 
+        $served = $this->mediaStorage->servingUrl($path);
+        if ($served !== null) {
+            return $served;
+        }
+
         if (preg_match('/^https?:\/\//i', $path)) {
             return $path;
         }
 
-        // When reads are flipped to R2, public/delivered/preview assets are served
-        // from the R2 public CDN custom domain. This is the single funnel for all
-        // hand-built public URLs across presenter/preview/public-asset services.
-        if ($this->mediaStorage->readFromR2Enabled() || $this->mediaStorage->r2Only()) {
-            return $this->mediaStorage->publicUrl($path);
+        $key = $this->mediaStorage->normalizeKey($path);
+        if ($key === null) {
+            return null;
         }
 
-        $clean = ltrim($path, '/');
-        if (Str::startsWith($clean, 'storage/')) {
-            $clean = Str::after($clean, 'storage/');
-        }
-
-        $encoded = implode('/', array_map('rawurlencode', explode('/', $clean)));
-
-        return $this->makeAbsoluteAppUrl('/storage/' . $encoded);
+        return Storage::disk('public')->url($key);
     }
 
     protected function makeAbsoluteAppUrl(string $path): string
@@ -212,6 +208,11 @@ class ShootFileAccessService
         $clean = ltrim($path, '/');
         if (Str::startsWith($clean, 'storage/')) {
             $clean = Str::after($clean, 'storage/');
+        }
+
+        $resolved = $this->mediaStorage->absolutePath($clean);
+        if ($resolved) {
+            return $resolved;
         }
 
         if (Storage::disk('public')->exists($clean)) {

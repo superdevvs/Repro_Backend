@@ -49,6 +49,7 @@ use App\Http\Controllers\API\Messaging\TelnyxWebhookController;
 use App\Http\Controllers\API\OnboardingEventController;
 use App\Http\Controllers\API\ProfileSecurityController;
 use App\Http\Controllers\API\PublicShootMediaArchiveController;
+use App\Http\Controllers\API\PublicShootMediaFileController;
 use App\Http\Controllers\API\PublicShootShareLinkController;
 use App\Http\Controllers\API\ReelController;
 use App\Http\Controllers\API\ShootController;
@@ -191,6 +192,10 @@ Route::get('/public/share-links/{token}/download', [PublicShootShareLinkControll
 Route::get('/public/shoot-media/{shoot}/download-zip', [PublicShootMediaArchiveController::class, 'show'])
     ->middleware('signed')
     ->name('api.public.shoot-media.download');
+Route::get('/public/shoot-media/file/{path}', [PublicShootMediaFileController::class, 'show'])
+    ->where('path', '.*')
+    ->middleware('signed')
+    ->name('api.public.shoot-media.file');
 
 // Short-lived bearer route used by the manual iGUIDE viewer. The signature is
 // deliberately a path segment so index.html's relative asset requests retain it.

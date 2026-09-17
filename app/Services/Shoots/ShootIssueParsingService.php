@@ -490,15 +490,8 @@ class ShootIssueParsingService
             $clean = substr($clean, 8);
         }
 
-        if (Storage::disk('public')->exists($clean)) {
-            $encoded = implode('/', array_map('rawurlencode', explode('/', $clean)));
-            $url = Storage::disk('public')->url($encoded);
-            if (!preg_match('/^https?:\/\//i', $url)) {
-                $base = rtrim(config('app.url'), '/');
-                $url = $base . '/' . ltrim($url, '/');
-            }
-
-            return $url;
+        if (app(\App\Services\Media\MediaStorage::class)->exists($clean)) {
+            return app(\App\Services\Media\MediaStorage::class)->publicUrl($clean);
         }
 
 

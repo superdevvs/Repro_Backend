@@ -124,14 +124,11 @@ class DownloadShootMediaZipAction
         if ($archiveResponse['status'] === 200
             && $request->prefers(['application/json', 'application/zip']) === 'application/zip') {
             $archivePath = $this->shootMediaArchiveService->getArchivePath($shoot, $type, $resolvedSize, $shootServiceId);
-            $disk = Storage::disk('public');
+            $media = app(\App\Services\Media\MediaStorage::class);
 
-            return $disk->download($archivePath, basename($archivePath), [
+            return $media->downloadResponse($archivePath, basename($archivePath), [
                 'Content-Type' => 'application/zip',
-                'Content-Length' => $disk->size($archivePath),
                 'X-Archive-Download-Url' => $archiveResponse['payload']['url'],
-                'Cache-Control' => 'private, no-store',
-                'X-Content-Type-Options' => 'nosniff',
             ]);
         }
 

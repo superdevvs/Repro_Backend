@@ -48,7 +48,7 @@ class DropboxRetirementMediaTest extends TestCase
         $shoot = Shoot::factory()->create(['payment_status' => 'paid']);
         $storage = app(ShootMediaStorageService::class);
         $file = $storage->uploadToTodo($shoot, UploadedFile::fake()->image('photo.jpg', 1600, 900), $owner->id);
-        Storage::disk('public')->assertExists($file->path);
+        Storage::disk('local')->assertExists($file->path);
         $this->assertNull($file->dropbox_path);
         Queue::assertPushed(ScanShootFileJob::class);
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
@@ -58,23 +58,23 @@ class DropboxRetirementMediaTest extends TestCase
         $file->refresh();
         foreach (['thumbnail_path', 'grid_path', 'web_path', 'placeholder_path'] as $attribute) {
             $this->assertNotEmpty($file->{$attribute}, $attribute);
-            Storage::disk('public')->assertExists($file->{$attribute});
-            $this->assertNotFalse(getimagesize(Storage::disk('public')->path($file->{$attribute})));
+            Storage::disk('local')->assertExists($file->{$attribute});
+            $this->assertNotFalse(getimagesize(Storage::disk('local')->path($file->{$attribute})));
         }
 
         (new GenerateWatermarkedImageJob($file))->handle($storage);
         $file->refresh();
         foreach (['watermarked_storage_path', 'watermarked_thumbnail_path', 'watermarked_web_path', 'watermarked_placeholder_path'] as $attribute) {
             $this->assertNotEmpty($file->{$attribute}, $attribute);
-            Storage::disk('public')->assertExists($file->{$attribute});
-            $this->assertNotFalse(getimagesize(Storage::disk('public')->path($file->{$attribute})));
+            Storage::disk('local')->assertExists($file->{$attribute});
+            $this->assertNotFalse(getimagesize(Storage::disk('local')->path($file->{$attribute})));
         }
-        $originalHash = hash_file('sha256', Storage::disk('public')->path($file->path));
+        $originalHash = hash_file('sha256', Storage::disk('local')->path($file->path));
         $storage->moveToCompleted($file, $owner->id);
         $storage->moveToFinal($file, $owner->id);
         $file->refresh();
         $this->assertSame(ShootFile::STAGE_VERIFIED, $file->workflow_stage);
-        $this->assertSame($originalHash, hash_file('sha256', Storage::disk('public')->path($file->path)));
+        $this->assertSame($originalHash, hash_file('sha256', Storage::disk('local')->path($file->path)));
         Http::assertNothingSent();
     }
 
@@ -91,7 +91,7 @@ class DropboxRetirementMediaTest extends TestCase
         $this->assertSame($album->id, $file->album_id);
         $this->assertNull($file->dropbox_path);
         $this->assertSame('local', $album->refresh()->source);
-        Storage::disk('public')->assertExists($file->path);
+        Storage::disk('local')->assertExists($file->path);
         Storage::disk('local')->assertMissing('temp/uploads/queued.jpg');
         Queue::assertPushed(ScanShootFileJob::class);
         Http::assertNothingSent();
@@ -126,11 +126,11 @@ class DropboxRetirementMediaTest extends TestCase
         $result = app(ShootShareLinkService::class)->createShootShareLink($shoot, $admin, [$file->id]);
         $record = \App\Models\ShootShareLink::findOrFail($result['share_link_id']);
         $this->assertStringStartsWith('share-links/', $record->dropbox_path);
-        Storage::disk('public')->assertExists($record->dropbox_path);
+        Storage::disk('local')->assertExists($record->dropbox_path);
         $zip = new \ZipArchive;
-        $this->assertTrue($zip->open(Storage::disk('public')->path($record->dropbox_path)));
+        $this->assertTrue($zip->open(Storage::disk('local')->path($record->dropbox_path)));
         $this->assertSame(1, $zip->numFiles);
-        $this->assertSame(Storage::disk('public')->get($file->path), $zip->getFromIndex(0));
+        $this->assertSame(Storage::disk('local')->get($file->path), $zip->getFromIndex(0));
         $zip->close();
         Http::assertNothingSent();
     }

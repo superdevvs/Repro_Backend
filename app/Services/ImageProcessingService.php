@@ -131,9 +131,12 @@ class ImageProcessingService
             
             // Resolve full path (supports local disk or absolute path)
             $fullPath = null;
-            if ($filePath && Storage::disk('local')->exists($filePath)) {
+            if ($filePath) {
+                $fullPath = app(\App\Services\Media\MediaStorage::class)->absolutePath($filePath);
+            }
+            if (!$fullPath && $filePath && Storage::disk('local')->exists($filePath)) {
                 $fullPath = Storage::disk('local')->path($filePath);
-            } elseif ($filePath && file_exists($filePath)) {
+            } elseif (!$fullPath && $filePath && file_exists($filePath)) {
                 $fullPath = $filePath;
             }
 
@@ -599,23 +602,14 @@ class ImageProcessingService
             
             // Determine storage path
             $storagePath = "shoots/{$shootId}/{$sizeName}s/{$newFileName}";
-            
-            // Save to appropriate disk. Every browser-facing rendition must land
-            // on `public`; the `local` disk root is storage/app/private, which is
-            // not web-accessible. `grid` was missing from this list, so it was
-            // written somewhere the browser could never fetch it — generation
-            // reported success and grid_path was stored, but tiles silently fell
-            // back to the 300px thumbnail and looked blurred.
-            $disk = in_array($sizeName, ['thumbnail', 'grid', 'web', 'placeholder']) ? 'public' : 'local';
-            
-            // Create temporary file
+
             $tempFile = tempnam(sys_get_temp_dir(), 'img_process_') . '.jpg';
-            
-            // Save image
             imagejpeg($newImage, $tempFile, $config['quality']);
-            
-            // Store file
-            $success = Storage::disk($disk)->put($storagePath, file_get_contents($tempFile));
+
+            // Browser-facing renditions used to land on the public disk so
+            // `/storage/shoots/...` could serve them. That alias bypasses
+            // paywall/watermark, so they now go through MediaStorage (private).
+            $success = app(\App\Services\Media\MediaStorage::class)->put($storagePath, file_get_contents($tempFile));
             
             // Clean up
             imagedestroy($newImage);
@@ -698,11 +692,14 @@ class ImageProcessingService
 
     protected function getStoredImageDimensions(?string $path): ?array
     {
-        if (!$path || !Storage::disk('public')->exists($path)) {
+        if (!$path || !app(\App\Services\Media\MediaStorage::class)->exists($path)) {
             return null;
         }
 
-        $absolutePath = Storage::disk('public')->path($path);
+        $absolutePath = app(\App\Services\Media\MediaStorage::class)->absolutePath($path);
+        if (!$absolutePath) {
+            return null;
+        }
         $imageInfo = @getimagesize($absolutePath);
         if ($imageInfo === false) {
             return null;

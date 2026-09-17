@@ -149,7 +149,7 @@ class ShootPresenter
         }
 
         if (preg_match('/^https?:\/\//i', $path)) {
-            return $path;
+            return $this->mediaStorage->servingUrl($path) ?? $path;
         }
 
         $clean = ltrim($path, '/');
@@ -168,7 +168,7 @@ class ShootPresenter
             }
         }
 
-        if (Storage::disk('public')->exists($clean)) {
+        if ($this->mediaStorage->exists($clean)) {
             return $this->fileAccessService->resolvePublicStorageUrl($clean);
         }
 
@@ -523,6 +523,9 @@ class ShootPresenter
         $shoot->media_summary = $this->buildMediaSummary($shoot);
         if (! $shoot->hero_image || in_array($requestingRole, ['photographer', 'editor', 'client'], true)) {
             $shoot->hero_image = $this->resolveHeroImage($shoot, false);
+        } else {
+            $shoot->hero_image = $this->fileAccessService->resolvePublicStorageUrl($shoot->hero_image)
+                ?: $shoot->hero_image;
         }
         $shoot->primary_action = $this->getPrimaryActionForRole(
             $shoot,
