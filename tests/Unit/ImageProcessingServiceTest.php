@@ -15,6 +15,7 @@ class ImageProcessingServiceTest extends TestCase
     public function it_processes_uploaded_images_from_temp_paths_without_relying_on_the_tmp_extension(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $uploadedImage = UploadedFile::fake()->image('preview-source.jpg', 1600, 900);
 
@@ -29,15 +30,16 @@ class ImageProcessingServiceTest extends TestCase
         $this->assertArrayHasKey('web', $generated);
         $this->assertArrayHasKey('placeholder', $generated);
 
-        Storage::disk('public')->assertExists($generated['thumbnail']);
-        Storage::disk('public')->assertExists($generated['web']);
-        Storage::disk('public')->assertExists($generated['placeholder']);
+        Storage::disk('local')->assertExists($generated['thumbnail']);
+        Storage::disk('local')->assertExists($generated['web']);
+        Storage::disk('local')->assertExists($generated['placeholder']);
     }
 
     #[Test]
     public function it_uses_the_raw_thumbnail_service_pipeline_for_cr3_files(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $previewSource = UploadedFile::fake()->image('embedded-preview.jpg', 1600, 900);
         $tempRawPath = tempnam(sys_get_temp_dir(), 'raw-preview-test-');
@@ -66,11 +68,11 @@ class ImageProcessingServiceTest extends TestCase
         $this->assertArrayHasKey('web', $generated);
         $this->assertArrayHasKey('placeholder', $generated);
 
-        Storage::disk('public')->assertExists($generated['thumbnail']);
-        Storage::disk('public')->assertExists($generated['web']);
-        Storage::disk('public')->assertExists($generated['placeholder']);
+        Storage::disk('local')->assertExists($generated['thumbnail']);
+        Storage::disk('local')->assertExists($generated['web']);
+        Storage::disk('local')->assertExists($generated['placeholder']);
 
-        $webImageInfo = getimagesize(Storage::disk('public')->path($generated['web']));
+        $webImageInfo = getimagesize(Storage::disk('local')->path($generated['web']));
         $this->assertNotFalse($webImageInfo);
         $this->assertGreaterThan(360, $webImageInfo[0]);
 
@@ -81,6 +83,7 @@ class ImageProcessingServiceTest extends TestCase
     public function an_unextractable_raw_file_is_reported_as_failed_instead_of_becoming_a_fake_thumbnail(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $tempRawPath = tempnam(sys_get_temp_dir(), 'bad-raw-preview-');
         $rawPath = $tempRawPath . '.cr3';
@@ -98,26 +101,22 @@ class ImageProcessingServiceTest extends TestCase
             ->processImageFromPath(457, 'broken.cr3', $rawPath);
 
         $this->assertSame([], $generated);
+        Storage::disk('local')->assertMissing('shoots/457/thumbnails/broken_thumbnail.jpg');
         Storage::disk('public')->assertMissing('shoots/457/thumbnails/broken_thumbnail.jpg');
 
         @unlink($rawPath);
     }
 
     /**
-     * The `grid` rendition (600px) is what every card and tile displays. It is
-     * only useful if the browser can actually fetch it, which means it must land
-     * on the PUBLIC disk alongside the other web-facing renditions.
-     *
-     * It previously fell through to the `local` disk, whose root is
-     * storage/app/private — outside the web-accessible tree. Generation
-     * reported success and grid_path was recorded, but the file could never be
-     * served, so every tile silently fell back to the 300px thumbnail and
-     * looked blurred.
+     * The `grid` rendition (600px) is what every card and tile displays. Shoot
+     * media now lives on the private local disk and is served through signed
+     * app URLs, so the file must land there rather than on the public alias.
      */
     #[Test]
-    public function it_stores_the_grid_rendition_on_the_public_disk(): void
+    public function it_stores_the_grid_rendition_on_the_private_local_disk(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $uploadedImage = UploadedFile::fake()->image('grid-source.jpg', 2400, 1600);
 
@@ -129,7 +128,8 @@ class ImageProcessingServiceTest extends TestCase
         );
 
         $this->assertArrayHasKey('grid', $generated, 'the grid rendition must be generated');
-        Storage::disk('public')->assertExists($generated['grid']);
+        Storage::disk('local')->assertExists($generated['grid']);
+        Storage::disk('public')->assertMissing($generated['grid']);
     }
 
     /**
@@ -145,6 +145,7 @@ class ImageProcessingServiceTest extends TestCase
     public function the_grid_rendition_is_tuned_to_600px_and_larger_than_the_thumbnail(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $uploadedImage = UploadedFile::fake()->image('grid-size.jpg', 2400, 1600);
 
@@ -155,8 +156,8 @@ class ImageProcessingServiceTest extends TestCase
             $uploadedImage->getRealPath()
         );
 
-        $grid = getimagesize(Storage::disk('public')->path($generated['grid']));
-        $thumb = getimagesize(Storage::disk('public')->path($generated['thumbnail']));
+        $grid = getimagesize(Storage::disk('local')->path($generated['grid']));
+        $thumb = getimagesize(Storage::disk('local')->path($generated['thumbnail']));
 
         $this->assertNotFalse($grid);
         $this->assertSame([600, 400], [$grid[0], $grid[1]], 'a 3:2 source must produce exactly 600x400');
@@ -172,6 +173,7 @@ class ImageProcessingServiceTest extends TestCase
     public function the_grid_rendition_keeps_a_600px_long_edge_for_portrait_sources(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
 
         $uploadedImage = UploadedFile::fake()->image('grid-portrait.jpg', 1600, 2400);
 
@@ -182,7 +184,7 @@ class ImageProcessingServiceTest extends TestCase
             $uploadedImage->getRealPath()
         );
 
-        $grid = getimagesize(Storage::disk('public')->path($generated['grid']));
+        $grid = getimagesize(Storage::disk('local')->path($generated['grid']));
 
         $this->assertNotFalse($grid);
         $this->assertSame([400, 600], [$grid[0], $grid[1]]);

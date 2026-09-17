@@ -27,8 +27,8 @@ class BackfillAndVerifyR2Test extends TestCase
 
         $original = "shoots/{$shoot->id}/todo/orig.jpg";
         $web = "shoots/{$shoot->id}/web/orig.jpg";
-        Storage::disk('public')->put($original, 'ORIGINAL');
-        Storage::disk('public')->put($web, 'WEB');
+        Storage::disk('local')->put($original, 'ORIGINAL');
+        Storage::disk('local')->put($web, 'WEB');
 
         return ShootFile::create([
             'shoot_id' => $shoot->id,
@@ -48,6 +48,7 @@ class BackfillAndVerifyR2Test extends TestCase
     public function test_backfill_copies_local_media_to_r2_and_verify_passes(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Storage::fake('media');
 
         $file = $this->seedMedia();
@@ -63,6 +64,7 @@ class BackfillAndVerifyR2Test extends TestCase
     public function test_dry_run_does_not_write_to_r2(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Storage::fake('media');
 
         $file = $this->seedMedia();
@@ -75,6 +77,7 @@ class BackfillAndVerifyR2Test extends TestCase
     public function test_verify_reports_gap_when_object_missing_on_r2(): void
     {
         Storage::fake('public');
+        Storage::fake('local');
         Storage::fake('media');
 
         $file = $this->seedMedia();
