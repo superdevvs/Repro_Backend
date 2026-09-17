@@ -225,7 +225,11 @@ return [
         'base_url' => env('IGUIDE_API_URL', 'https://manage.youriguide.com/api/v1'),
         'legacy_base_url' => env('IGUIDE_LEGACY_API_URL', 'https://api.iguide.com'),
         'webhook_url' => env('IGUIDE_WEBHOOK_URL', env('APP_URL').'/iguide_webhook.php'),
-        // Optional shared secret used to verify HMAC-SHA256 signature on webhook bodies.
+        // Query token on the registered webhook URL. iGUIDE deliveries are unsigned
+        // (User-Agent: iGUIDE-Event-Dispatcher); HMAC is unused because the portal
+        // has no signing secret. Keep IGUIDE_WEBHOOK_SECRET empty in production.
+        'webhook_token' => env('IGUIDE_WEBHOOK_TOKEN'),
+        // Optional HMAC-SHA256 of the raw body (X-Iguide-Signature). Not sent by iGUIDE.
         'webhook_secret' => env('IGUIDE_WEBHOOK_SECRET'),
     ],
 

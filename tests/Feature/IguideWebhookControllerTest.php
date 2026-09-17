@@ -19,10 +19,13 @@ class IguideWebhookControllerTest extends TestCase
 
     private const WEBHOOK_SECRET = 'iguide-test-webhook-secret';
 
+    private const WEBHOOK_TOKEN = 'iguide-test-url-token';
+
     protected function setUp(): void
     {
         parent::setUp();
         config()->set('services.iguide.webhook_secret', self::WEBHOOK_SECRET);
+        config()->set('services.iguide.webhook_token', '');
     }
 
     private function postWebhook(array $payload)
@@ -266,6 +269,7 @@ class IguideWebhookControllerTest extends TestCase
     public function test_missing_secret_rejects_webhook_and_does_not_process(): void
     {
         config()->set('services.iguide.webhook_secret', '');
+        config()->set('services.iguide.webhook_token', '');
         Queue::fake();
 
         $shoot = Shoot::factory()->create([
@@ -277,6 +281,84 @@ class IguideWebhookControllerTest extends TestCase
             ->assertStatus(503);
 
         $this->assertNull($shoot->fresh()->iguide_property_id);
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
+    }
+
+    public function test_missing_url_token_is_rejected_when_token_is_configured(): void
+    {
+        config()->set('services.iguide.webhook_secret', '');
+        config()->set('services.iguide.webhook_token', self::WEBHOOK_TOKEN);
+        Queue::fake();
+
+        $shoot = Shoot::factory()->create([
+            'iguide_work_order_id' => 'WO-TEST-1',
+        ]);
+        $this->attachIguideService($shoot);
+
+        $this->withHeaders([
+            'User-Agent' => 'iGUIDE-Event-Dispatcher',
+            'X-Plntr-Event' => 'ready',
+        ])->postJson('/iguide_webhook.php', $this->buildPayload())
+            ->assertStatus(401);
+
+        $this->assertNull($shoot->fresh()->iguide_property_id);
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
+    }
+
+    public function test_wrong_url_token_is_rejected(): void
+    {
+        config()->set('services.iguide.webhook_secret', '');
+        config()->set('services.iguide.webhook_token', self::WEBHOOK_TOKEN);
+        Queue::fake();
+
+        $shoot = Shoot::factory()->create([
+            'iguide_work_order_id' => 'WO-TEST-1',
+        ]);
+        $this->attachIguideService($shoot);
+
+        $this->withHeaders([
+            'User-Agent' => 'iGUIDE-Event-Dispatcher',
+            'X-Plntr-Event' => 'ready',
+        ])->postJson('/iguide_webhook.php?token=wrong-token', $this->buildPayload())
+            ->assertStatus(401);
+
+        $this->assertNull($shoot->fresh()->iguide_property_id);
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
+    }
+
+    public function test_unsigned_payload_with_valid_url_token_is_accepted(): void
+    {
+        config()->set('services.iguide.webhook_secret', '');
+        config()->set('services.iguide.webhook_token', self::WEBHOOK_TOKEN);
+        Queue::fake();
+
+        $this->withHeaders([
+            'User-Agent' => 'iGUIDE-Event-Dispatcher',
+            'X-Plntr-Event' => 'ready',
+        ])->postJson('/iguide_webhook.php?token='.self::WEBHOOK_TOKEN, $this->buildPayload([
+            'workOrderId' => 'WO-NONE',
+            'iguideId' => 'igNONE',
+            'property' => ['fullAddress' => 'Nowhere'],
+        ]))->assertStatus(200);
+
+        Queue::assertNotPushed(IngestIguideAssetsJob::class);
+    }
+
+    public function test_unsigned_official_dispatcher_is_accepted_when_token_and_hmac_are_empty(): void
+    {
+        config()->set('services.iguide.webhook_secret', '');
+        config()->set('services.iguide.webhook_token', '');
+        Queue::fake();
+
+        $this->withHeaders([
+            'User-Agent' => 'iGUIDE-Event-Dispatcher',
+            'X-Plntr-Event' => 'ready',
+        ])->postJson('/iguide_webhook.php', $this->buildPayload([
+            'workOrderId' => 'WO-NONE',
+            'iguideId' => 'igNONE',
+            'property' => ['fullAddress' => 'Nowhere'],
+        ]))->assertStatus(200);
+
         Queue::assertNotPushed(IngestIguideAssetsJob::class);
     }
 

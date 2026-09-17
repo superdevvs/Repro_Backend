@@ -1097,6 +1097,7 @@ class AutoenhanceController extends Controller
         }
 
         $providedToken = $request->bearerToken()
+            ?: $request->header('authentication')
             ?: $request->header('x-autoenhance-webhook-token')
             ?: $request->header('x-webhook-token')
             ?: $request->input('token');

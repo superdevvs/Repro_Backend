@@ -28,23 +28,48 @@ class IguideWebhookController extends Controller
             $rawBody = $request->getContent();
             $data = $request->all();
 
-            // Shared-secret verification (HMAC-SHA256 of raw body). Missing
-            // secret or missing/invalid signature fails closed.
+            // iGUIDE's dispatcher POSTs unsigned JSON (User-Agent:
+            // iGUIDE-Event-Dispatcher). Authenticate with a high-entropy query
+            // token on the registered URL. HMAC is optional and unused in
+            // production because the portal has no signing secret — setting one
+            // would 401 real callbacks, and iGUIDE drops 4xx with no retry.
+            $token = trim((string) (
+                $this->loadIguideSetting('webhookToken')
+                ?? config('services.iguide.webhook_token', '')
+            ));
             $secret = trim((string) (
                 $this->loadIguideSetting('webhookSecret')
                 ?? config('services.iguide.webhook_secret', '')
             ));
-            if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
-                return $unconfigured;
-            }
 
-            $signature = (string) ($request->header('X-Iguide-Signature') ?: $request->header('X-Signature') ?: '');
-            if (!$this->verifySignature($rawBody, $signature, $secret)) {
-                Log::warning('iGUIDE webhook: invalid signature');
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid signature',
-                ], 401);
+            if ($token !== '') {
+                if (!$this->verifyUrlToken($request, $token)) {
+                    Log::warning('iGUIDE webhook: invalid URL token');
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Invalid token',
+                    ], 401);
+                }
+            } elseif ($secret !== '') {
+                $signature = (string) ($request->header('X-Iguide-Signature') ?: $request->header('X-Signature') ?: '');
+                if (!$this->verifySignature($rawBody, $signature, $secret)) {
+                    Log::warning('iGUIDE webhook: invalid signature');
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Invalid signature',
+                    ], 401);
+                }
+            } elseif ($this->isOfficialIguideDispatcher($request)) {
+                // LAST RESORT: iGUIDE's portal has no signing secret and signed
+                // apps cannot update the account webhook URL. Official deliveries
+                // use User-Agent iGUIDE-Event-Dispatcher and are unsigned. Allow
+                // this controller only; Autoenhance/CakeMail/CubiCasa still fail
+                // closed via InboundWebhookGuard. Prefer IGUIDE_WEBHOOK_TOKEN on
+                // the registered URL once the portal callback can be updated.
+            } else {
+                if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
+                    return $unconfigured;
+                }
             }
 
             Log::info('iGUIDE webhook received', [
@@ -207,6 +232,23 @@ class IguideWebhookController extends Controller
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    private function isOfficialIguideDispatcher(Request $request): bool
+    {
+        $userAgent = trim((string) $request->userAgent());
+
+        return $userAgent === 'iGUIDE-Event-Dispatcher';
+    }
+
+    private function verifyUrlToken(Request $request, string $token): bool
+    {
+        $provided = (string) ($request->query('token') ?: $request->header('X-Iguide-Webhook-Token') ?: '');
+        if ($provided === '') {
+            return false;
+        }
+
+        return hash_equals($token, $provided);
     }
 
     private function verifySignature(string $rawBody, string $signatureHeader, string $secret): bool

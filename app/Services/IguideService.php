@@ -469,7 +469,7 @@ class IguideService
                     'message' => $message,
                     'mode' => 'webhook-only',
                     'app_id_verified' => $authVerified,
-                    'webhook_url' => $this->webhookUrl,
+                    'webhook_url' => $this->webhookReceiveUrl(),
                 ];
             }
 
@@ -729,6 +729,36 @@ class IguideService
     private function hasPortalCredentials(): bool
     {
         return filled($this->appId) && filled($this->appToken);
+    }
+
+    /**
+     * Public URL iGUIDE should POST to, including the query token when configured.
+     */
+    public function webhookReceiveUrl(): string
+    {
+        $base = trim((string) ($this->webhookUrl ?: ''));
+        if ($base === '') {
+            $base = rtrim((string) config('app.url'), '/').'/iguide_webhook.php';
+        }
+
+        $token = trim((string) (
+            ($this->loadSettings('integrations.iguide')['webhookToken'] ?? null)
+            ?? config('services.iguide.webhook_token', '')
+        ));
+        if ($token === '') {
+            return $base;
+        }
+
+        $parts = parse_url($base) ?: [];
+        parse_str($parts['query'] ?? '', $query);
+        $query['token'] = $token;
+
+        $scheme = $parts['scheme'] ?? 'https';
+        $host = $parts['host'] ?? parse_url((string) config('app.url'), PHP_URL_HOST);
+        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+        $path = $parts['path'] ?? '/iguide_webhook.php';
+
+        return $scheme.'://'.$host.$port.$path.'?'.http_build_query($query);
     }
 
     private function portalRequest(string $method, string $path, array $data = []): ?Response

@@ -100,4 +100,16 @@ class AutoenhanceWebhookControllerTest extends TestCase
         $this->assertIsArray($job->fresh()->provider_result);
         $this->assertArrayHasKey('webhook', $job->fresh()->provider_result);
     }
+
+    public function test_authentication_header_token_is_accepted(): void
+    {
+        config()->set('services.autoenhance.webhook_secret', self::SECRET);
+
+        $this->withHeader('Authentication', self::SECRET)
+            ->postJson('/api/webhooks/autoenhance', [
+                'event' => 'ping',
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Webhook received');
+    }
 }

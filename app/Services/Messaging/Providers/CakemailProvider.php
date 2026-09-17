@@ -578,13 +578,15 @@ class CakemailProvider implements EmailProviderInterface
                 ]);
 
             if ($response->successful()) {
-                return $response->json()['data']['id'] ?? null;
+                return $response->json()['data']['id'] ?? $response->json()['id'] ?? null;
             }
 
+            $detail = $response->json('detail') ?? $response->json('message');
             Log::warning('Cakemail: Failed to register webhook', [
                 'event' => $event,
                 'url' => $url,
                 'status' => $response->status(),
+                'detail' => is_string($detail) || is_array($detail) ? $detail : null,
             ]);
         } catch (\Exception $e) {
             Log::error('Cakemail: Webhook registration error', ['error' => $e->getMessage()]);

@@ -104,4 +104,60 @@ class CakemailWebhookFailClosedTest extends TestCase
 
         $this->assertSame('bounced', $client->fresh()->email_status);
     }
+
+    public function test_vendor_base64_raw_body_signature_is_accepted(): void
+    {
+        config()->set('services.cakemail.webhook_secret', self::SECRET);
+
+        $payload = [
+            'event' => 'Email.Opened',
+            'data' => [
+                'email_id' => 'cm-vendor-format',
+            ],
+        ];
+        $raw = json_encode($payload);
+        $signature = base64_encode(hash_hmac('sha256', $raw, self::SECRET, true));
+
+        $this->call(
+            'POST',
+            '/api/webhooks/cakemail',
+            [],
+            [],
+            [],
+            [
+                'CONTENT_TYPE' => 'application/json',
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_X_CAKEMAIL_SIGNATURE' => $signature,
+            ],
+            $raw,
+        )->assertOk()->assertJsonPath('status', 'ok');
+    }
+
+    public function test_vendor_reported_as_spam_event_marks_user_risky(): void
+    {
+        config()->set('services.cakemail.webhook_secret', self::SECRET);
+
+        $client = User::factory()->create([
+            'role' => 'client',
+            'email' => 'spam-target@example.test',
+            'email_status' => 'verified',
+        ]);
+
+        $payload = [
+            'event' => 'Email.ReportedAsSpam',
+            'data' => [
+                'email_id' => 'cm-spam-report',
+                'email_address' => $client->email,
+            ],
+        ];
+
+        $this->postJsonWithHmac(
+            '/api/webhooks/cakemail',
+            $payload,
+            self::SECRET,
+            'X-Cakemail-Signature',
+        )->assertOk()->assertJsonPath('status', 'ok');
+
+        $this->assertSame('risky', $client->fresh()->email_status);
+    }
 }

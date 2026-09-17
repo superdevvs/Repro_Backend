@@ -26,6 +26,9 @@ class CakemailWebhookController extends Controller
     {
         $payload = $request->all();
         $event = $payload['event'] ?? $request->header('X-Cakemail-Event');
+        if (is_string($event)) {
+            $event = strtolower($event);
+        }
 
         $secret = trim((string) config('services.cakemail.webhook_secret'));
         if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($secret)) {
@@ -33,7 +36,7 @@ class CakemailWebhookController extends Controller
         }
 
         $signature = $request->header('X-Cakemail-Signature');
-        if (!$this->verifySignature($payload, $signature, $secret)) {
+        if (!$this->verifySignature($payload, $signature, $secret, $request->getContent())) {
             Log::warning('Cakemail webhook signature verification failed');
             return response()->json(['error' => 'Invalid signature'], 401);
         }
@@ -49,8 +52,8 @@ class CakemailWebhookController extends Controller
             'email.opened' => $this->handleOpened($payload),
             'email.clicked' => $this->handleClicked($payload),
             'email.bounced' => $this->handleBounced($payload),
-            'email.unsubscribed' => $this->handleUnsubscribed($payload),
-            'email.complained' => $this->handleComplained($payload),
+            'email.unsubscribed', 'contact.unsubscribed' => $this->handleUnsubscribed($payload),
+            'email.complained', 'email.reportedasspam' => $this->handleComplained($payload),
             default => Log::info('Unhandled Cakemail event', ['event' => $event]),
         };
 
@@ -189,7 +192,11 @@ class CakemailWebhookController extends Controller
      */
     protected function handleUnsubscribed(array $payload): void
     {
-        $email = $payload['data']['email'] ?? $payload['email'] ?? null;
+        $email = $payload['data']['email']
+            ?? $payload['data']['email_address']
+            ?? $payload['email']
+            ?? $payload['email_address']
+            ?? null;
         
         if ($email) {
             Log::info('Cakemail: Contact unsubscribed', ['email' => $email]);
@@ -204,7 +211,11 @@ class CakemailWebhookController extends Controller
      */
     protected function handleComplained(array $payload): void
     {
-        $email = $payload['data']['email'] ?? $payload['email'] ?? null;
+        $email = $payload['data']['email']
+            ?? $payload['data']['email_address']
+            ?? $payload['email']
+            ?? $payload['email_address']
+            ?? null;
         $messageId = $payload['data']['email_id'] ?? $payload['email_id'] ?? null;
         
         Log::warning('Cakemail: Spam complaint received', [
@@ -256,7 +267,9 @@ class CakemailWebhookController extends Controller
 
         $email = strtolower(trim((string) (
             $payload['data']['email']
+            ?? $payload['data']['email_address']
             ?? $payload['email']
+            ?? $payload['email_address']
             ?? $payload['data']['recipient']
             ?? $payload['recipient']
             ?? $message?->to_address
@@ -275,13 +288,31 @@ class CakemailWebhookController extends Controller
     /**
      * Verify webhook signature
      */
-    protected function verifySignature(array $payload, ?string $signature, string $secret): bool
+    protected function verifySignature(array $payload, ?string $signature, string $secret, string $rawBody = ''): bool
     {
         if (!$signature) {
             return false;
         }
 
-        $computed = hash_hmac('sha256', json_encode($payload), $secret);
-        return hash_equals($computed, $signature);
+        $provided = trim($signature);
+        $candidates = [
+            // Existing tests and older probes: hex HMAC of json_encode($payload).
+            hash_hmac('sha256', json_encode($payload), $secret),
+        ];
+        if ($rawBody !== '') {
+            $rawHex = hash_hmac('sha256', $rawBody, $secret);
+            $rawBinary = hash_hmac('sha256', $rawBody, $secret, true);
+            $candidates[] = $rawHex;
+            // CakeMail next-gen docs: HMAC-SHA256 of the raw body, Base64-encoded.
+            $candidates[] = base64_encode($rawBinary);
+        }
+
+        foreach ($candidates as $expected) {
+            if (hash_equals($expected, $provided)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

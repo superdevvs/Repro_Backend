@@ -49,6 +49,7 @@ class IguideFloorPlanDiscoveryTest extends TestCase
     {
         parent::setUp();
         config()->set('services.iguide.webhook_secret', self::WEBHOOK_SECRET);
+        config()->set('services.iguide.webhook_token', '');
     }
 
     private function postIguideWebhook(array $payload)
