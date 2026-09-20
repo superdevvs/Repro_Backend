@@ -556,7 +556,7 @@ class DashboardController extends Controller
             [
                 'key' => 'booked',
                 'label' => 'Booked',
-                'statuses' => [Shoot::STATUS_SCHEDULED],
+                'statuses' => [Shoot::STATUS_SCHEDULED, 'booked'],
                 'accent' => '#3b82f6',
             ],
             [
