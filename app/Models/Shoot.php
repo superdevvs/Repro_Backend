@@ -1354,13 +1354,30 @@ class Shoot extends Model
             $pivotPay = $service->pivot->photographer_pay ?? null;
             $quantity = $service->pivot->quantity ?? 1;
             
-            // Fallback to service-level default photographer_pay
+            // Fallback through the catalog resolver so percent pay matches invoices.
             $pay = ($pivotPay !== null && $pivotPay !== '')
                 ? (float) $pivotPay
-                : (float) ($service->photographer_pay ?? 0);
+                : (float) ($service->getPhotographerPayForSqft($this->propertySqft()) ?? 0);
             
             return $pay * $quantity;
         });
+    }
+
+    public function propertySqft(): ?int
+    {
+        $propertyDetails = $this->property_details;
+
+        if (is_string($propertyDetails)) {
+            $propertyDetails = json_decode($propertyDetails, true);
+        }
+
+        if (! is_array($propertyDetails)) {
+            return null;
+        }
+
+        $sqft = $propertyDetails['sqft'] ?? $propertyDetails['squareFeet'] ?? $propertyDetails['square_feet'] ?? null;
+
+        return is_numeric($sqft) ? (int) $sqft : null;
     }
 
     /**

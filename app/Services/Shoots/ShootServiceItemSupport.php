@@ -89,7 +89,10 @@ class ShootServiceItemSupport
                     ? ShootService::PAYMENT_PAID
                     : ($paidAmount <= 0 ? ShootService::PAYMENT_UNPAID : ShootService::PAYMENT_PARTIALLY_PAID));
             $unlockState = $this->unlockState($shoot, $item, $paymentStatus);
-            $photographerPay = $item->photographer_pay ?? $item->service?->photographer_pay;
+            $photographerPay = $item->photographer_pay;
+            if ($photographerPay === null || $photographerPay === '') {
+                $photographerPay = $item->service?->getPhotographerPayForSqft($shoot->propertySqft());
+            }
 
             return [
                 'id' => $item->id,

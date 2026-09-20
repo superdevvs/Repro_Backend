@@ -56,16 +56,7 @@ class ShootResource extends JsonResource
             $this->services->load('category');
         }
 
-        return (float) $this->services->sum(function ($service) {
-            $pivotPay = $service->pivot->photographer_pay ?? null;
-            $quantity = (int) ($service->pivot->quantity ?? 1);
-
-            $pay = ($pivotPay !== null && $pivotPay !== '')
-                ? (float) $pivotPay
-                : (float) ($service->photographer_pay ?? 0);
-
-            return $pay * max(1, $quantity);
-        });
+        return (float) $this->resource->total_photographer_pay;
     }
 
     /**

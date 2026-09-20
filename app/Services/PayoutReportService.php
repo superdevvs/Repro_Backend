@@ -73,11 +73,11 @@ class PayoutReportService
                     continue;
                 }
                 
-                // Pivot photographer_pay → service default photographer_pay → 0
+                // Pivot snapshot → catalog pay (fixed or percent of price) → 0
                 $pivotPay = $service->pivot->photographer_pay;
                 $pay = $pivotPay !== null && $pivotPay !== ''
                     ? (float) $pivotPay
-                    : (float) ($service->photographer_pay ?? 0);
+                    : (float) ($service->getPhotographerPayForSqft($shoot->propertySqft()) ?? 0);
                 $qty = (int) ($service->pivot->quantity ?? 1);
                 
                 $serviceRows->push([
