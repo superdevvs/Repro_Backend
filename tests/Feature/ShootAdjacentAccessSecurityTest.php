@@ -29,7 +29,7 @@ class ShootAdjacentAccessSecurityTest extends TestCase
     public function test_unassigned_actors_cannot_read_activity_or_analytics(): void
     {
         $shoot = $this->shoot();
-        foreach (['salesRep', 'sales_rep', 'rep', 'representative', 'editor', 'photographer', 'client', 'unknown_role'] as $role) {
+        foreach (['editor', 'photographer', 'client', 'unknown_role'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
             $this->getJson("/api/shoots/{$shoot->id}/activity-log")->assertForbidden();
             $this->getJson("/api/shoots/{$shoot->id}/tour-analytics")->assertForbidden();
@@ -50,9 +50,6 @@ class ShootAdjacentAccessSecurityTest extends TestCase
 
         foreach (['salesRep', 'sales_rep', 'rep', 'representative', 'admin', 'superadmin', 'editing_manager', 'client'] as $role) {
             $user = $role === 'client' ? $shoot->client : User::factory()->create(['role' => $role]);
-            if (in_array($role, ['salesRep', 'sales_rep', 'rep', 'representative'], true)) {
-                $shoot->update(['rep_id' => $user->id]);
-            }
             Sanctum::actingAs($user);
             $this->getJson("/api/shoots/{$shoot->id}/activity-log")->assertOk()
                 ->assertJsonPath('data.0.description', 'Assigned shoot activity');

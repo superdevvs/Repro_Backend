@@ -865,7 +865,6 @@ class ShootOperatorService
                     ->orWhereHas('serviceItems', fn ($serviceQuery) => $serviceQuery->where('photographer_id', $user->id));
             }),
             'editor' => $query->where('editor_id', $user->id),
-            'salesRep' => $query->where('rep_id', $user->id),
             default => $query,
         };
     }
@@ -873,12 +872,11 @@ class ShootOperatorService
     protected function canAccessShoot(Shoot $shoot, User $user): bool
     {
         return match ($user->role) {
-            'admin', 'superadmin', 'editing_manager' => true,
+            'admin', 'superadmin', 'editing_manager', 'salesRep', 'sales_rep', 'salesrep', 'rep', 'representative' => true,
             'client' => (string) $shoot->client_id === (string) $user->id,
             'photographer' => (string) $shoot->photographer_id === (string) $user->id
                 || $shoot->serviceItems()->where('photographer_id', $user->id)->exists(),
             'editor' => (string) $shoot->editor_id === (string) $user->id,
-            'salesRep' => (string) $shoot->rep_id === (string) $user->id,
             default => false,
         };
     }

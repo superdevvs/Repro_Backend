@@ -24,44 +24,47 @@ class ShootListingAuthorizationTest extends TestCase
         Http::preventStrayRequests();
     }
 
-    public function test_sales_queries_counts_and_filter_metadata_are_assignment_scoped(): void
+    public function test_sales_queries_counts_and_filter_metadata_include_every_shoot(): void
     {
         $sales = User::factory()->create(['role' => 'salesRep']);
         $otherSales = User::factory()->create(['role' => 'salesRep']);
         $mine = $this->shoot(['rep_id' => $sales->id]);
         $other = $this->shoot(['rep_id' => $otherSales->id]);
+        $unassigned = $this->shoot(['rep_id' => null]);
 
         foreach (['salesRep', 'sales_rep', 'rep', 'representative'] as $role) {
             $sales->role = $role;
             $payload = $this->listing($sales);
-            $this->assertSame([$mine->id], array_column($payload['data'], 'id'));
-            $this->assertSame(1, $payload['meta']['count']);
-            $this->assertSame([$mine->client_id], array_column($payload['meta']['filters']['clients'], 'id'));
-            $this->assertSame([$mine->photographer_id], array_column($payload['meta']['filters']['photographers'], 'id'));
-            $this->assertNotContains($other->service->name, $payload['meta']['filters']['services']);
-            $this->assertSame(0, $this->listing($sales, ['client_id' => $other->client_id])['meta']['count']);
-            $this->assertSame(0, $this->listing($sales, ['search' => $other->client->email])['meta']['count']);
+            $this->assertEqualsCanonicalizing(
+                [$mine->id, $other->id, $unassigned->id],
+                array_column($payload['data'], 'id')
+            );
+            $this->assertSame(3, $payload['meta']['count']);
+            $this->assertEqualsCanonicalizing(
+                [$mine->client_id, $other->client_id, $unassigned->client_id],
+                array_column($payload['meta']['filters']['clients'], 'id')
+            );
+            $this->assertEqualsCanonicalizing(
+                [$mine->photographer_id, $other->photographer_id, $unassigned->photographer_id],
+                array_column($payload['meta']['filters']['photographers'], 'id')
+            );
+            $this->assertContains($other->service->name, $payload['meta']['filters']['services']);
+            $this->assertSame(1, $this->listing($sales, ['client_id' => $other->client_id])['meta']['count']);
+            $this->assertSame(1, $this->listing($sales, ['search' => $other->client->email])['meta']['count']);
         }
     }
 
-    public function test_assignment_removal_and_old_cached_payloads_cannot_restore_visibility(): void
+    public function test_sales_visibility_survives_assignment_removal(): void
     {
         $sales = User::factory()->create(['role' => 'salesRep']);
         $shoot = $this->shoot(['rep_id' => $sales->id]);
         $this->assertSame(1, $this->listing($sales)['meta']['count']);
-        // Bypass model cache invalidation to prove authorization does not depend on it.
         DB::table('shoots')->where('id', $shoot->id)->update(['rep_id' => null]);
-        $stale = ['data' => [['id' => $shoot->id]], 'meta' => ['count' => 1]];
-        foreach (['shoots_index_', 'shoots_index_access_v2_'] as $prefix) {
-            Cache::put($prefix.$sales->id.'_salesRep_scheduled_1_25', $stale, 300);
-        }
-        Cache::put('shoots_filter_meta_'.$sales->id.'_scheduled', ['clients' => [['id' => $shoot->client_id]]], 300);
-        Cache::put('shoots_filter_meta_access_v2_'.$sales->id.'_salesRep', ['clients' => [['id' => $shoot->client_id]]], 300);
 
         $payload = $this->listing($sales);
-        $this->assertSame([], $payload['data']);
-        $this->assertSame(0, $payload['meta']['count']);
-        $this->assertSame(['clients' => [], 'photographers' => [], 'services' => []], $payload['meta']['filters']);
+        $this->assertSame([$shoot->id], array_column($payload['data'], 'id'));
+        $this->assertSame(1, $payload['meta']['count']);
+        $this->assertSame([$shoot->client_id], array_column($payload['meta']['filters']['clients'], 'id'));
     }
 
     public function test_guests_and_unknown_roles_are_denied_before_cache_lookup(): void

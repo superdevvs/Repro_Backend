@@ -50,7 +50,7 @@ class ShootAccessSecurityTest extends TestCase
     public function test_unrelated_roles_cannot_read_shoots_or_their_auxiliary_endpoints(): void
     {
         $shoot = $this->shoot();
-        foreach (['salesRep', 'sales_rep', 'rep', 'representative', 'editor', 'photographer', 'client', 'unknown_role'] as $role) {
+        foreach (['editor', 'photographer', 'client', 'unknown_role'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
             foreach (['', '/files', '/media', '/messages', '/workflow-status', '/issues', '/reschedule-requests'] as $suffix) {
                 $this->getJson("/api/shoots/{$shoot->id}{$suffix}")->assertForbidden();
@@ -103,17 +103,15 @@ class ShootAccessSecurityTest extends TestCase
         $this->getJson('/api/photographer/shoots')->assertForbidden();
     }
 
-    public function test_assigned_sales_aliases_have_details_access_and_revocation_is_immediate(): void
+    public function test_sales_aliases_can_read_details_without_an_assignment(): void
     {
         foreach (['salesRep', 'sales_rep', 'rep', 'representative'] as $role) {
             $rep = User::factory()->create(['role' => $role]);
-            $shoot = $this->shoot(['rep_id' => $rep->id]);
+            $shoot = $this->shoot(['rep_id' => null]);
             Sanctum::actingAs($rep);
             $this->getJson("/api/shoots/{$shoot->id}")->assertOk();
             $this->getJson("/api/shoots/{$shoot->id}/files")->assertOk();
-            $shoot->update(['rep_id' => null]);
-            $this->getJson("/api/shoots/{$shoot->id}")->assertForbidden();
-            $this->getJson("/api/shoots/{$shoot->id}/files")->assertForbidden();
+            $this->getJson("/api/shoots/{$shoot->id}/media")->assertOk();
         }
     }
 
@@ -130,8 +128,8 @@ class ShootAccessSecurityTest extends TestCase
         $this->assertDatabaseCount('shoot_messages', 2);
         $this->postJson("/api/shoots/{$shoot->id}/messages", ['recipient_id' => $shoot->client_id, 'message' => 'yes'])->assertCreated();
         $shoot->update(['rep_id' => null]);
-        $this->postJson("/api/shoots/messages/{$own->id}/read")->assertForbidden();
-        $this->assertNull($own->fresh()->read_at);
+        $this->postJson("/api/shoots/messages/{$own->id}/read")->assertOk();
+        $this->assertNotNull($own->fresh()->read_at);
     }
 
     public function test_issue_media_ids_and_assignees_cannot_reference_another_shoot(): void

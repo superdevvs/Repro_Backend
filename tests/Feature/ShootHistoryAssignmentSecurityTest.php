@@ -13,7 +13,7 @@ class ShootHistoryAssignmentSecurityTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_sales_history_export_and_aggregates_require_shoot_assignment(): void
+    public function test_sales_history_export_and_aggregates_include_every_shoot(): void
     {
         $rep = User::factory()->create(['role' => 'salesRep']);
         $otherRep = User::factory()->create(['role' => 'salesRep']);
@@ -36,22 +36,23 @@ class ShootHistoryAssignmentSecurityTest extends TestCase
 
         Sanctum::actingAs($rep);
         $this->getJson('/api/shoots/history')
-            ->assertOk()->assertJsonPath('meta.total', 1)
-            ->assertJsonPath('data.0.id', $assigned->id)
-            ->assertJsonPath('data.0.client.totalShoots', 1)
-            ->assertJsonMissing(['street' => 'Unassigned private property']);
+            ->assertOk()->assertJsonPath('meta.total', 2)
+            ->assertJsonPath('data.0.client.totalShoots', 2);
+        $historyIds = collect($this->getJson('/api/shoots/history')->json('data'))->pluck('id')->all();
+        $this->assertEqualsCanonicalizing([$assigned->id, $foreign->id], $historyIds);
         $this->getJson('/api/shoots/history?search=Unassigned')
-            ->assertOk()->assertJsonPath('meta.total', 0);
+            ->assertOk()->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', $foreign->id);
         $this->getJson('/api/shoots/history?group_by=services')
             ->assertOk()->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.shootCount', 1);
+            ->assertJsonPath('data.0.shootCount', 2);
 
         $csv = $this->get('/api/shoots/history/export')->assertOk()->streamedContent();
         $this->assertStringContainsString('Assigned property', $csv);
-        $this->assertStringNotContainsString('Unassigned private property', $csv);
+        $this->assertStringContainsString('Unassigned private property', $csv);
 
         $assigned->update(['rep_id' => $otherRep->id]);
-        $this->getJson('/api/shoots/history')->assertOk()->assertJsonPath('meta.total', 0);
+        $this->getJson('/api/shoots/history')->assertOk()->assertJsonPath('meta.total', 2);
     }
 
     public function test_explicit_finance_access_remains_and_unknown_roles_are_denied(): void

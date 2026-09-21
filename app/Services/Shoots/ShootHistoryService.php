@@ -164,7 +164,6 @@ class ShootHistoryService
                 Log::debug('Filtering shoots for client', ['client_id' => $user->id]);
                 $query->where('client_id', $user->id);
             } elseif (app(ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])) {
-                // Account ownership/creation is not assignment to every shoot for that client.
                 app(ShootAuthorizationSupport::class)->scopeAccessibleShootMedia($query, $user);
             } elseif ($user->role === 'editor') {
                 app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);

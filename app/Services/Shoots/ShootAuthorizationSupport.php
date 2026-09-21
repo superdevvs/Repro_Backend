@@ -116,14 +116,11 @@ class ShootAuthorizationSupport
     /** Query counterpart of canAccessShootMedia; per-file and release checks still apply. */
     public function scopeAccessibleShootMedia(Builder $query, ?User $user): Builder
     {
-        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
             return $query;
         }
         if ($this->hasRole($user, ['editor'])) {
             return app(ShootEditingAssignmentService::class)->scopeAssignedToEditor($query, $user->id);
-        }
-        if ($this->hasRole($user, ['salesRep', 'rep', 'representative'])) {
-            return $query->where('rep_id', $user->id);
         }
         if ($this->hasRole($user, ['photographer'])) {
             return $query->where(fn (Builder $scope) => $scope->where('photographer_id', $user->id)
@@ -148,12 +145,8 @@ class ShootAuthorizationSupport
             return false;
         }
 
-        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager'])) {
+        if ($this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'])) {
             return true;
-        }
-
-        if ($this->hasRole($user, ['salesRep', 'rep', 'representative'])) {
-            return (string) $shoot->rep_id === (string) $user->id;
         }
 
         if ($this->hasRole($user, ['photographer'])) {
@@ -260,8 +253,12 @@ class ShootAuthorizationSupport
             return (string) $shoot->client_id === (string) $user->id;
         }
 
+        if ($this->hasRole($user, ['salesRep'])) {
+            return (string) $shoot->rep_id === (string) $user->id;
+        }
+
         return $this->hasRole($user, [
-            'admin', 'superadmin', 'editing_manager', 'salesRep', 'photographer', 'editor',
+            'admin', 'superadmin', 'editing_manager', 'photographer', 'editor',
         ]);
     }
 

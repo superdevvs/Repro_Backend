@@ -167,7 +167,9 @@ class ShootController extends Controller
         $user = $request->user();
 
         if (! $this->shootAuthorizationSupport->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep'])
-            || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)) {
+            || ! $this->shootAuthorizationSupport->canViewShootDetails($shoot, $user)
+            || ($this->shootAuthorizationSupport->hasRole($user, ['salesRep'])
+                && (string) $shoot->rep_id !== (string) $user->id)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
