@@ -7,6 +7,7 @@ use App\Models\ShootFile;
 use App\Models\ShortLink;
 use App\Models\User;
 use App\Services\ShortLinks\ShortLinkService;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -121,8 +122,25 @@ class IguideOfflineViewerService
         int $expires,
         string $signature,
         ?string $requestedPath = null
-    ): StreamedResponse {
-        if ($expires <= now()->timestamp || ! $this->hasValidSignature($shootId, $fileId, $expires, $signature)) {
+    ): StreamedResponse|RedirectResponse {
+        if (! $this->hasValidSignature($shootId, $fileId, $expires, $signature)) {
+            abort(403, 'This iGUIDE viewer link is invalid or has expired.');
+        }
+
+        if ($this->shortLinks->enabled(ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER)) {
+            [, $lifecycle] = $this->resolveReadyPackage($shootId, $fileId);
+
+            return redirect()->to($this->shortLinks->url(
+                $this->shortLinks->remember(
+                    ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER,
+                    ShortLink::TARGET_SHOOT,
+                    $shootId
+                ),
+                $this->normalizeRequestedPath($requestedPath, $lifecycle)
+            ));
+        }
+
+        if ($expires <= now()->timestamp) {
             abort(403, 'This iGUIDE viewer link is invalid or has expired.');
         }
 

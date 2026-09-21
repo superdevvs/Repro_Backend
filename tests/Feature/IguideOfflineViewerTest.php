@@ -507,6 +507,24 @@ class IguideOfflineViewerTest extends TestCase
     }
 
     #[Test]
+    public function expired_hmac_links_upgrade_to_the_stable_short_alias(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-09-01 00:00:00 UTC'));
+        [$shoot] = $this->readyPackage();
+        $hmacPath = (string) parse_url($this->issueHmacLink($shoot), PHP_URL_PATH);
+
+        Config::set('short_links.types.iguide_offline_viewer', true);
+        Carbon::setTestNow(now()->addMinutes(61));
+
+        $response = $this->get($hmacPath);
+        $response->assertRedirect();
+        $location = (string) parse_url((string) $response->headers->get('Location'), PHP_URL_PATH);
+        $this->assertIguideShortViewerPath($location);
+
+        $this->get($location)->assertOk()->assertStreamed();
+    }
+
+    #[Test]
     public function traversal_and_paths_outside_the_validated_wrapper_are_not_served(): void
     {
         [$shoot, $file] = $this->readyPackage([

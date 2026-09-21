@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Services\IguideOfflineViewerService;
+use Illuminate\Http\RedirectResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class IguideOfflineViewerAssetController extends Controller
@@ -15,7 +16,7 @@ class IguideOfflineViewerAssetController extends Controller
         string $signature,
         IguideOfflineViewerService $viewer,
         ?string $path = null
-    ): StreamedResponse {
+    ): StreamedResponse|RedirectResponse {
         $shootKey = $this->routeInteger($shootId);
         $fileKey = $this->routeInteger($fileId);
         $expiry = $this->routeInteger($expires);
