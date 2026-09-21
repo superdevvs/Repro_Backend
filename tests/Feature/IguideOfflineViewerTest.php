@@ -39,7 +39,7 @@ class IguideOfflineViewerTest extends TestCase
     }
 
     #[Test]
-    public function authorized_staff_receive_a_path_signed_link_for_the_current_clean_package(): void
+    public function authorized_staff_receive_a_short_path_preserving_link_for_the_current_clean_package(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-09-01 00:00:00 UTC'));
         [$shoot, $file] = $this->readyPackage();
@@ -52,14 +52,8 @@ class IguideOfflineViewerTest extends TestCase
             ->assertJsonStructure(['viewer_url', 'expires_at']);
 
         $url = (string) $response->json('viewer_url');
-        $this->assertMatchesRegularExpression(
-            "#/api/iguide/offline-view/{$shoot->id}/{$file->id}/[0-9]+/[a-f0-9]{64}/tour/index\.html$#",
-            rawurldecode((string) parse_url($url, PHP_URL_PATH))
-        );
-        $this->assertSame(
-            now()->addMinutes(60)->timestamp,
-            Carbon::parse((string) $response->json('expires_at'))->timestamp
-        );
+        $this->assertIguideShortViewerPath($url);
+        $this->assertNull($response->json('expires_at'));
 
         // Trusted staff retain the existing source-package download access.
         $this->get("/api/images/{$file->id}/download/original")->assertOk();
@@ -175,17 +169,8 @@ class IguideOfflineViewerTest extends TestCase
         $this->assertSame('published_offline_package', $response->json('iguide_viewer.source'));
         $this->assertSame($viewerUrl, $response->json('iguide_viewer.inline_url'));
         $this->assertSame($viewerUrl, $response->json('iguide_viewer.open_url'));
-        $this->assertSame(
-            now()->addMinutes(60)->toIso8601String(),
-            $response->json('iguide_viewer.expires_at')
-        );
-        $this->assertStringContainsString('no-store', (string) $response->headers->get('Cache-Control'));
-        $response->assertHeader('Pragma', 'no-cache')
-            ->assertHeader('Expires', '0');
-        $this->assertMatchesRegularExpression(
-            "#/api/iguide/offline-view/{$shoot->id}/{$file->id}/[0-9]+/[a-f0-9]{64}/tour/index\.html$#",
-            rawurldecode((string) parse_url($viewerUrl, PHP_URL_PATH))
-        );
+        $this->assertNull($response->json('iguide_viewer.expires_at'));
+        $this->assertIguideShortViewerPath($viewerUrl);
 
         $serializedPayload = json_encode($response->json(), JSON_THROW_ON_ERROR);
         $this->assertStringNotContainsString('offline-tour.zip', $serializedPayload);
@@ -218,7 +203,8 @@ class IguideOfflineViewerTest extends TestCase
         $mls->assertOk()
             ->assertJsonPath('iguide_viewer.source', 'published_offline_package');
         $localViewer = (string) $mls->json('iguide_tour_url');
-        $this->assertStringContainsString('/iguide/offline-view/', $localViewer);
+        $this->assertIguideShortViewerPath($localViewer);
+        $this->assertStringNotContainsString('/iguide/offline-view/', $localViewer);
         $this->assertSame($localViewer, $mls->json('iguide_url'));
         $this->assertSame($localViewer, $mls->json('tour_links.iguide_mls'));
         $this->assertArrayNotHasKey('iguide_branded', $mls->json('tour_links'));
@@ -273,6 +259,7 @@ class IguideOfflineViewerTest extends TestCase
             ->assertJsonPath('iguide_viewer.source', 'provider_fetched')
             ->assertJsonPath('iguide_viewer.expires_at', null);
         $this->assertStringNotContainsString('/iguide/offline-view/', (string) $response->getContent());
+        $this->assertStringNotContainsString('/api/g/', (string) $response->getContent());
     }
 
     #[Test]
@@ -443,11 +430,67 @@ class IguideOfflineViewerTest extends TestCase
     }
 
     #[Test]
+    public function a_ready_package_reuses_the_same_short_viewer_code(): void
+    {
+        [$shoot] = $this->readyPackage();
+        $first = $this->assertIguideShortViewerPath($this->issueLink($shoot));
+        $second = $this->assertIguideShortViewerPath($this->issueLink($shoot));
+
+        $this->assertSame($first, $second);
+        $this->assertSame(1, \App\Models\ShortLink::query()->count());
+    }
+
+    #[Test]
+    public function replacing_the_package_keeps_the_same_short_code_and_serves_the_new_archive(): void
+    {
+        [$shoot] = $this->readyPackage([
+            'tour/index.html' => '<html>first tour</html>',
+            'tour/assets/app.js' => 'console.log("first")',
+        ]);
+        $path = $this->assertIguideShortViewerPath($this->issueLink($shoot));
+        $this->assertStringContainsString('first tour', $this->get($path)->assertOk()->streamedContent());
+
+        $this->readyReplacementPackage($shoot, [
+            'tour/index.html' => '<html>replacement tour</html>',
+            'tour/assets/app.js' => 'console.log("replacement")',
+        ]);
+
+        $this->assertSame($path, $this->assertIguideShortViewerPath($this->issueLink($shoot->fresh())));
+        $this->assertStringContainsString('replacement tour', $this->get($path)->assertOk()->streamedContent());
+        $this->assertSame(1, \App\Models\ShortLink::query()->count());
+    }
+
+    #[Test]
+    public function an_unknown_or_revoked_short_code_does_not_open_the_archive(): void
+    {
+        [$shoot] = $this->readyPackage();
+        $path = $this->assertIguideShortViewerPath($this->issueLink($shoot));
+        $this->get('/api/g/notAReal1/tour/index.html')->assertNotFound();
+
+        \App\Models\ShortLink::query()->update(['revoked_at' => now()]);
+        $this->get($path)->assertNotFound();
+    }
+
+    #[Test]
+    public function disabling_iguide_shortening_issues_the_legacy_signed_path(): void
+    {
+        Config::set('short_links.types.iguide_offline_viewer', false);
+        [$shoot, $file] = $this->readyPackage();
+        $url = $this->issueLink($shoot);
+
+        $this->assertMatchesRegularExpression(
+            "#/api/iguide/offline-view/{$shoot->id}/{$file->id}/[0-9]+/[a-f0-9]{64}/tour/index\.html$#",
+            rawurldecode((string) parse_url($url, PHP_URL_PATH))
+        );
+        $this->get((string) parse_url($url, PHP_URL_PATH))->assertOk();
+    }
+
+    #[Test]
     public function expired_and_tampered_links_are_rejected_before_archive_access(): void
     {
         Carbon::setTestNow(Carbon::parse('2026-09-01 00:00:00 UTC'));
         [$shoot] = $this->readyPackage();
-        $path = (string) parse_url($this->issueLink($shoot), PHP_URL_PATH);
+        $path = (string) parse_url($this->issueHmacLink($shoot), PHP_URL_PATH);
 
         $segments = explode('/', trim($path, '/'));
         $this->assertSame('offline-view', $segments[2]);
@@ -470,7 +513,7 @@ class IguideOfflineViewerTest extends TestCase
             'tour/index.html' => '<html>tour</html>',
             'tour/assets/app.js' => 'console.log("tour")',
         ]);
-        $path = (string) parse_url($this->issueLink($shoot), PHP_URL_PATH);
+        $path = (string) parse_url($this->issueHmacLink($shoot), PHP_URL_PATH);
         $segments = explode('/', trim($path, '/'));
         $expires = (int) $segments[5];
         $signature = $segments[6];
@@ -614,6 +657,49 @@ class IguideOfflineViewerTest extends TestCase
         return (string) $this->postJson($this->viewLinkEndpoint($shoot))
             ->assertOk()
             ->json('viewer_url');
+    }
+
+    private function issueHmacLink(Shoot $shoot): string
+    {
+        Config::set('short_links.types.iguide_offline_viewer', false);
+
+        return $this->issueLink($shoot);
+    }
+
+    private function assertIguideShortViewerPath(string $url, string $indexSuffix = 'tour/index.html'): string
+    {
+        $path = rawurldecode((string) parse_url($url, PHP_URL_PATH));
+        $this->assertMatchesRegularExpression(
+            '#^/api/g/[A-Za-z0-9]{8,12}/'.preg_quote($indexSuffix, '#').'$#',
+            $path
+        );
+
+        return $path;
+    }
+
+    /**
+     * @param  array<string,string>  $entries
+     */
+    private function readyReplacementPackage(Shoot $shoot, array $entries, string $wrapper = 'tour'): void
+    {
+        [$replacementShoot, $file] = $this->readyPackage($entries, $wrapper);
+        $file->update(['shoot_id' => $shoot->id]);
+        $storagePath = "secure/iguide-packages/{$shoot->id}/offline-tour-replacement.zip";
+        Storage::disk('local')->put(
+            $storagePath,
+            Storage::disk('local')->get($file->path)
+        );
+        $file->update(['path' => $storagePath]);
+
+        $lifecycle = data_get($replacementShoot->iguide_data, 'manual_offline_package');
+        $this->assertIsArray($lifecycle);
+        $shoot->update([
+            'iguide_data' => [
+                'manual_offline_package' => array_merge($lifecycle, [
+                    'file_id' => $file->id,
+                ]),
+            ],
+        ]);
     }
 
     private function viewLinkEndpoint(Shoot $shoot): string

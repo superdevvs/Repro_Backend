@@ -4,6 +4,8 @@ namespace App\Services\Payments;
 
 use App\Models\PublicPaymentAccessToken;
 use App\Models\Shoot;
+use App\Models\ShortLink;
+use App\Services\ShortLinks\ShortLinkService;
 
 class PublicPaymentAccessTokenService
 {
@@ -33,8 +35,14 @@ class PublicPaymentAccessTokenService
     public function buildPublicUrl(Shoot $shoot, ?int $createdBy = null): string
     {
         $token = $this->ensureActiveToken($shoot, $createdBy);
+        $canonical = $this->buildPublicUrlFromToken($token);
 
-        return $this->buildPublicUrlFromToken($token);
+        return app(ShortLinkService::class)->maybeShorten(
+            ShortLink::TYPE_PAYMENT,
+            ShortLink::TARGET_SHOOT,
+            (int) $shoot->id,
+            $canonical
+        );
     }
 
     public function buildPublicUrlFromToken(PublicPaymentAccessToken $token): string

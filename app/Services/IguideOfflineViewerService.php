@@ -4,7 +4,9 @@ namespace App\Services;
 
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShortLink;
 use App\Models\User;
+use App\Services\ShortLinks\ShortLinkService;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -24,35 +26,51 @@ class IguideOfflineViewerService
 
     private const MAX_URL_TTL_MINUTES = 60;
 
+    public function __construct(protected ?ShortLinkService $shortLinks = null)
+    {
+        $this->shortLinks ??= app(ShortLinkService::class);
+    }
+
     /** Bound the only HTML prefix retained while inserting the storage shim. */
     private const HTML_INJECTION_PREFIX_BYTES = 256 * 1024;
 
     /**
-     * @return array{url:string,expires_at:string,file_id:int}
+     * @return array{url:string,expires_at:?string,file_id:int}
      */
     public function issueViewerLink(Shoot $shoot): array
     {
         [$file, $lifecycle] = $this->resolveReadyPackage((int) $shoot->getKey());
+        $entryPath = $this->indexEntryPath($lifecycle);
+
+        if ($this->shortLinks->enabled(ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER)) {
+            return [
+                'url' => $this->shortLinks->url(
+                    $this->shortLinks->remember(
+                        ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER,
+                        ShortLink::TARGET_SHOOT,
+                        (int) $shoot->getKey()
+                    ),
+                    $entryPath
+                ),
+                'expires_at' => null,
+                'file_id' => (int) $file->getKey(),
+            ];
+        }
 
         $ttlMinutes = max(
             1,
             min(self::MAX_URL_TTL_MINUTES, (int) config('iguide.offline_viewer.url_ttl_minutes', 60))
         );
         $expiresAt = now()->addMinutes($ttlMinutes);
-        $expires = $expiresAt->timestamp;
-        $signature = $this->signature((int) $shoot->getKey(), (int) $file->getKey(), $expires);
-        $entryPath = $this->indexEntryPath($lifecycle);
-
         $routePrefix = route('api.public.iguide-offline-viewer.asset', [
             'shootId' => $shoot->getKey(),
             'fileId' => $file->getKey(),
-            'expires' => $expires,
-            'signature' => $signature,
+            'expires' => $expiresAt->timestamp,
+            'signature' => $this->signature((int) $shoot->getKey(), (int) $file->getKey(), $expiresAt->timestamp),
         ]);
-        $encodedEntryPath = implode('/', array_map('rawurlencode', explode('/', $entryPath)));
 
         return [
-            'url' => rtrim($routePrefix, '/').'/'.$encodedEntryPath,
+            'url' => rtrim($routePrefix, '/').'/'.implode('/', array_map('rawurlencode', explode('/', $entryPath))),
             'expires_at' => $expiresAt->toIso8601String(),
             'file_id' => (int) $file->getKey(),
         ];
@@ -63,7 +81,7 @@ class IguideOfflineViewerService
      * ready package. Public tour payloads use this best-effort variant so a
      * stale lifecycle pointer cannot make the rest of a property tour fail.
      *
-     * @return array{url:string,expires_at:string,file_id:int}|null
+     * @return array{url:string,expires_at:?string,file_id:int}|null
      */
     public function issueViewerLinkIfReady(Shoot $shoot): ?array
     {
@@ -82,7 +100,7 @@ class IguideOfflineViewerService
      * Public pages may publish only a delivered/admin-verified package whose
      * upload lifecycle explicitly attests the requested audience.
      *
-     * @return array{url:string,expires_at:string,file_id:int}|null
+     * @return array{url:string,expires_at:?string,file_id:int}|null
      */
     public function issuePublicViewerLinkIfEligible(Shoot $shoot, string $audience): ?array
     {
@@ -108,6 +126,15 @@ class IguideOfflineViewerService
             abort(403, 'This iGUIDE viewer link is invalid or has expired.');
         }
 
+        return $this->streamReadyPackage($shootId, $fileId, $requestedPath, max(0, $expires - now()->timestamp));
+    }
+
+    public function streamReadyPackage(
+        int $shootId,
+        ?int $fileId,
+        ?string $requestedPath,
+        int $maxAgeSeconds
+    ): StreamedResponse {
         [$file, $lifecycle] = $this->resolveReadyPackage($shootId, $fileId);
         $entryPath = $this->normalizeRequestedPath($requestedPath, $lifecycle);
         $archivePath = $this->resolvePrivateArchivePath($file, $shootId);
@@ -132,7 +159,7 @@ class IguideOfflineViewerService
 
         $isHtml = in_array(strtolower(pathinfo($entryPath, PATHINFO_EXTENSION)), ['html', 'htm'], true);
         $storageShim = $isHtml ? $this->storageShim() : '';
-        $remainingLifetime = max(0, $expires - now()->timestamp);
+        $remainingLifetime = max(0, $maxAgeSeconds);
         $filename = basename($entryPath);
         $fallbackFilename = preg_replace('/[^A-Za-z0-9._ -]/', '_', Str::ascii($filename));
         $fallbackFilename = is_string($fallbackFilename) && $fallbackFilename !== ''

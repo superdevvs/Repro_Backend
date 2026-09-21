@@ -28,6 +28,8 @@ use App\Http\Controllers\API\IguideOfflineChunkUploadController;
 use App\Http\Controllers\API\IguideOfflinePackageController;
 use App\Http\Controllers\API\IguideOfflineViewerAssetController;
 use App\Http\Controllers\API\IguideOfflineViewerLinkController;
+use App\Http\Controllers\API\ShortLinkController;
+use App\Http\Controllers\API\ShortLinkSettingsController;
 use App\Http\Controllers\API\ImageDownloadController;
 use App\Http\Controllers\API\ImageProcessingController;
 use App\Http\Controllers\API\IntegrationController;
@@ -206,6 +208,11 @@ Route::get('/iguide/offline-view/{shootId}/{fileId}/{expires}/{signature}/{path?
     ->where('signature', '[a-f0-9]{64}')
     ->where('path', '.*')
     ->name('api.public.iguide-offline-viewer.asset');
+
+Route::get('/g/{code}/{path?}', ShortLinkController::class)
+    ->where('code', '[A-Za-z0-9]{8,16}')
+    ->where('path', '.*')
+    ->name('api.public.short-links.show');
 
 $shootMediaCorsPreflight = function (Request $request) {
     $origin = $request->headers->get('Origin', '*');
@@ -977,6 +984,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin/settings')->group(function () {
         Route::get('/{key}', [App\Http\Controllers\API\SettingsController::class, 'get']);
         Route::post('/', [App\Http\Controllers\API\SettingsController::class, 'store']);
+    });
+
+    Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->prefix('admin/short-links')->group(function () {
+        Route::get('/settings', [ShortLinkSettingsController::class, 'show']);
+        Route::put('/settings', [ShortLinkSettingsController::class, 'update']);
     });
 
     // Watermark settings (superadmin only)

@@ -7,15 +7,17 @@ use App\Models\ShootShareLink;
 
 class ShootShareLinkReadService
 {
+    public function __construct(protected ShootShareLinkService $shareLinks)
+    {
+    }
+
     public function formatLink(ShootShareLink $link): array
     {
         $link->loadMissing('creator:id,name');
-        $frontendBaseUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
-        $publicShareUrl = "{$frontendBaseUrl}/share/{$link->public_token}";
 
         return [
             'id' => $link->id,
-            'share_url' => $publicShareUrl,
+            'share_url' => $this->shareLinks->buildPublicShareUrl($link),
             'public_token' => $link->public_token,
             'media_stage' => $link->media_stage ?: 'raw',
             'download_count' => $link->download_count,

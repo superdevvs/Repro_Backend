@@ -5,9 +5,11 @@ namespace App\Services\Shoots;
 use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\ShootShareLink;
+use App\Models\ShortLink;
 use App\Models\User;
 use App\Services\ShootMediaStorageService;
 use App\Services\ShootActivityLogger;
+use App\Services\ShortLinks\ShortLinkService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -23,8 +25,10 @@ class ShootShareLinkService
         protected ShootMediaStorageService $mediaStorageService,
         protected ShootActivityLogger $activityLogger,
         protected ShootFileAccessService $fileAccessService,
-        protected DeliveryFilenameFormatter $deliveryFilenameFormatter
+        protected DeliveryFilenameFormatter $deliveryFilenameFormatter,
+        protected ?ShortLinkService $shortLinks = null
     ) {
+        $this->shortLinks ??= app(ShortLinkService::class);
     }
 
     public function generateFilesZip(Shoot $shoot, $files): ?string
@@ -279,7 +283,13 @@ class ShootShareLinkService
     public function buildPublicShareUrl(ShootShareLink $shareLink): string
     {
         $frontendBaseUrl = rtrim((string) config('app.frontend_url', config('app.url')), '/');
+        $canonical = "{$frontendBaseUrl}/share/{$shareLink->public_token}";
 
-        return "{$frontendBaseUrl}/share/{$shareLink->public_token}";
+        return $this->shortLinks->maybeShorten(
+            ShortLink::TYPE_SHARE_DOWNLOAD,
+            ShortLink::TARGET_SHARE_LINK,
+            (int) $shareLink->id,
+            $canonical
+        );
     }
 }

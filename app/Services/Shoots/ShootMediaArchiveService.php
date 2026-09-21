@@ -5,8 +5,10 @@ namespace App\Services\Shoots;
 use App\Jobs\GenerateShootMediaArchiveJob;
 use App\Models\Shoot;
 use App\Models\ShootFile;
+use App\Models\ShortLink;
 use App\Services\ShootMediaStorageService;
 use App\Services\Media\MediaStorage;
+use App\Services\ShortLinks\ShortLinkService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -304,6 +306,23 @@ class ShootMediaArchiveService
     }
 
     public function buildPublicDownloadUrl(
+        Shoot $shoot,
+        string $type,
+        string $size,
+        ?\DateTimeInterface $expiresAt = null
+    ): string {
+        $canonical = $this->buildCanonicalPublicDownloadUrl($shoot, $type, $size, $expiresAt);
+
+        return app(ShortLinkService::class)->maybeShorten(
+            ShortLink::TYPE_MEDIA_ZIP,
+            ShortLink::TARGET_SHOOT,
+            (int) $shoot->id,
+            $canonical,
+            $this->normalizeType($type).':'.$this->normalizeSize($size)
+        );
+    }
+
+    public function buildCanonicalPublicDownloadUrl(
         Shoot $shoot,
         string $type,
         string $size,
