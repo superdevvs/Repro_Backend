@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API\Voice;
 
 use App\Http\Controllers\Controller;
 use App\Services\TelnyxAi\VoiceSettingsService;
+use App\Services\Voice\VoiceTimezone;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -16,6 +17,7 @@ class VoiceSettingsController extends Controller
 
     public function update(Request $request, VoiceSettingsService $settings): JsonResponse
     {
+        $request->merge(VoiceTimezone::normalizeWindows($request->only(['business_hours', 'quiet_hours'])));
         $data = $request->validate([
             'enabled' => ['sometimes', 'boolean'],
             'recording_enabled' => ['sometimes', 'boolean'],

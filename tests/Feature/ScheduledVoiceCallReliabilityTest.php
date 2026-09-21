@@ -140,6 +140,21 @@ class ScheduledVoiceCallReliabilityTest extends TestCase
         $this->assertSame('dialing', $scheduled->fresh()->status);
     }
 
+    public function test_legacy_scheduled_timezone_alias_defers_without_a_call_or_attempt(): void
+    {
+        $this->travelTo(CarbonImmutable::parse('2026-09-21 21:00:00', 'UTC'));
+        $scheduled = $this->scheduled(['quiet_hours' => [
+            'enabled' => true, 'start' => '20:00', 'end' => '08:00', 'timezone' => 'Asia/Calcutta',
+        ]]);
+        $calls = Mockery::mock(VoiceCallService::class);
+        $calls->shouldNotReceive('startOutbound');
+        (new ScheduledVoiceCallJob($scheduled->id))->handle($calls, app(ScheduledVoiceCallService::class));
+        $this->assertSame('deferred', $scheduled->fresh()->status);
+        $this->assertSame(0, $scheduled->fresh()->attempts);
+        $this->assertSame('2026-09-22 02:30:00', $scheduled->fresh()->next_attempt_at->format('Y-m-d H:i:s'));
+        Http::assertNothingSent();
+    }
+
     public function test_answered_then_ended_webhooks_complete_the_current_attempt_once(): void
     {
         [$scheduled, $call] = $this->startScheduledCall();

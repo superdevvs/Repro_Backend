@@ -126,6 +126,24 @@ class VoiceAutomationRuleTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_alias_rule_is_stored_canonically_and_legacy_rule_snapshots_schedule_with_the_canonical_zone(): void
+    {
+        $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum');
+        $quiet = ['enabled' => true, 'start' => '20:00', 'end' => '08:00', 'timezone' => 'Asia/Calcutta'];
+        $payload = array_merge($this->definition(['quiet_hours' => $quiet]), ['idempotency_key' => '33333333-3333-4333-8333-333333333333']);
+        $id = $this->postJson('/api/voice/automation-rules', $payload)->assertCreated()
+            ->assertJsonPath('quiet_hours.timezone', 'Asia/Kolkata')->json('id');
+        $payload['quiet_hours']['timezone'] = 'Asia/Kolkata';
+        $this->postJson('/api/voice/automation-rules', $payload)->assertOk()->assertJsonPath('id', $id);
+        $rule = VoiceAutomationRule::query()->findOrFail($id);
+        $this->assertSame('Asia/Kolkata', $rule->quiet_hours['timezone']);
+        $rule->update(['quiet_hours' => $quiet]); // Simulate a pre-normalization saved rule.
+        $scheduled = app(ScheduledVoiceCallService::class)->createCallbackForCall($this->sourceCall(), 'missed_call');
+        $this->assertSame('Asia/Kolkata', $scheduled->quiet_hours['timezone']);
+        $this->assertSame('2026-09-22 02:30:00', $scheduled->scheduled_at->format('Y-m-d H:i:s'));
+        Http::assertNothingSent();
+    }
+
     public function test_rule_creation_requires_a_key_and_replays_without_duplicate_rules_or_callbacks(): void
     {
         $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum');

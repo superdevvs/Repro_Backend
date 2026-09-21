@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Setting;
 use App\Models\User;
 use App\Services\TelnyxAi\VoiceSettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -49,15 +50,28 @@ class VoiceSettingsReliabilityTest extends TestCase
         config(['app.timezone' => 'Asia/Calcutta']);
         $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum');
         $defaults = app(VoiceSettingsService::class)->all();
-        $this->assertSame('Asia/Calcutta', $defaults['business_hours']['timezone']);
-        $this->assertSame('Asia/Calcutta', $defaults['quiet_hours']['timezone']);
+        $this->assertSame('Asia/Kolkata', $defaults['business_hours']['timezone']);
+        $this->assertSame('Asia/Kolkata', $defaults['quiet_hours']['timezone']);
         $this->patchJson('/api/voice/settings', [
-            'business_hours' => $defaults['business_hours'], 'quiet_hours' => $defaults['quiet_hours'],
+            'business_hours' => ['timezone' => 'Asia/Calcutta'], 'quiet_hours' => ['timezone' => 'Asia/Calcutta'],
         ])->assertOk()
-            ->assertJsonPath('business_hours.timezone', 'Asia/Calcutta')
-            ->assertJsonPath('quiet_hours.timezone', 'Asia/Calcutta');
+            ->assertJsonPath('business_hours.timezone', 'Asia/Kolkata')
+            ->assertJsonPath('quiet_hours.timezone', 'Asia/Kolkata');
         $this->getJson('/api/voice/settings')->assertOk()
-            ->assertJsonPath('business_hours.timezone', 'Asia/Calcutta')
-            ->assertJsonPath('quiet_hours.timezone', 'Asia/Calcutta');
+            ->assertJsonPath('business_hours.timezone', 'Asia/Kolkata')
+            ->assertJsonPath('quiet_hours.timezone', 'Asia/Kolkata');
+        $stored = json_decode(Setting::query()->where('key', VoiceSettingsService::SETTINGS_KEY)->value('value'), true);
+        $this->assertSame('Asia/Kolkata', $stored['business_hours']['timezone']);
+        $this->assertSame('Asia/Kolkata', $stored['quiet_hours']['timezone']);
+    }
+
+    public function test_saved_legacy_timezone_aliases_are_normalized_for_scheduling_without_rewriting_on_read(): void
+    {
+        $raw = json_encode(['business_hours' => ['timezone' => 'Asia/Calcutta'], 'quiet_hours' => ['timezone' => 'US/Eastern']]);
+        Setting::query()->create(['key' => VoiceSettingsService::SETTINGS_KEY, 'value' => $raw, 'type' => 'json']);
+        $settings = app(VoiceSettingsService::class)->all();
+        $this->assertSame('Asia/Kolkata', $settings['business_hours']['timezone']);
+        $this->assertSame('America/New_York', $settings['quiet_hours']['timezone']);
+        $this->assertSame($raw, Setting::query()->where('key', VoiceSettingsService::SETTINGS_KEY)->value('value'));
     }
 }

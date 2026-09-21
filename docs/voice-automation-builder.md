@@ -39,3 +39,9 @@ All endpoints are under `/api/voice/automation-rules` and require Calls view per
 - `PATCH /tasks/{task}`: `{status: "open" | "completed"}` for automation-owned tasks only.
 
 Supported conditions are customer matched, call direction/intent, shoot status, invoice balance, and days overdue, restricted to compatible triggers and types. The system accepts no arbitrary code, URL or message action.
+
+## Timezone portability
+
+Calls settings and automation definitions normalize exact IANA backward aliases before validation and new storage. Existing saved windows are normalized when read or scheduled, without rewriting historical rows. `Asia/Calcutta` becomes `Asia/Kolkata`; `UTC` retains its spelling. Unknown names still fail validation, and the canonical target must exist in the runtime's timezone list. No timezone is guessed or silently replaced with UTC.
+
+`resources/data/voice-timezone-aliases.php` contains the 252 public-domain `Link` records from [IANA tzdb 2026d](https://data.iana.org/time-zones/releases/tzdata2026d.tar.gz), `backward`, with the source SHA-256 recorded in the file. This avoids requiring the optional OS backward-alias package. The helper performs no network fetch and never constructs the missing alias timezone.

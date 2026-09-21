@@ -20,6 +20,7 @@ class VoiceAutomationDefinition
 
     public function validate(array $input): array
     {
+        $input = VoiceTimezone::normalizeWindows($input);
         $data = Validator::make($input, [
             'name' => ['required', 'string', 'max:100'],
             'trigger_type' => ['required', Rule::in(self::TRIGGERS)],

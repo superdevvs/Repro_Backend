@@ -8,6 +8,7 @@ use App\Models\VoiceAutomationRun;
 use App\Models\VoiceCall;
 use App\Services\TelnyxAi\ScheduledVoiceCallService;
 use App\Services\Voice\VoiceCallService;
+use App\Services\Voice\VoiceTimezone;
 use App\Support\LockedWrite;
 use Carbon\CarbonImmutable;
 use Illuminate\Bus\Queueable;
@@ -163,7 +164,7 @@ class ScheduledVoiceCallJob implements ShouldQueue
             return null;
         }
 
-        $timezone = (string) ($quiet['timezone'] ?? config('app.timezone', 'UTC'));
+        $timezone = (string) VoiceTimezone::normalize($quiet['timezone'] ?? config('app.timezone', 'UTC'));
         $start = (string) ($quiet['start'] ?? '20:00');
         $end = (string) ($quiet['end'] ?? '08:00');
         // Match the business-schedule contract: equal start/end means no window.
@@ -186,7 +187,7 @@ class ScheduledVoiceCallJob implements ShouldQueue
             $endAt = $endAt->addDay();
         }
 
-        return $endAt->timezone(config('app.timezone', 'UTC'));
+        return $endAt->timezone(VoiceTimezone::normalize(config('app.timezone', 'UTC')));
     }
 
     private function fallbackUserId(): int

@@ -3,6 +3,7 @@
 namespace App\Services\TelnyxAi;
 
 use App\Models\Setting;
+use App\Services\Voice\VoiceTimezone;
 use App\Support\LockedWrite;
 use Illuminate\Support\Facades\DB;
 
@@ -104,11 +105,12 @@ class VoiceSettingsService
         $settings['canary_mode'] = $settings['outbound_mode'] === 'canary';
         $settings['canary_numbers'] = $this->normalizeCanaryNumbers($settings['canary_numbers'] ?? []);
 
-        return $settings;
+        return VoiceTimezone::normalizeWindows($settings);
     }
 
     public function update(array $settings): array
     {
+        $settings = VoiceTimezone::normalizeWindows($settings);
         $allowed = array_intersect_key($settings, array_flip([
             'recording_enabled',
             'disclosure_text',

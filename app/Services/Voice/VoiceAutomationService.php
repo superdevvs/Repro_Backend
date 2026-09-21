@@ -83,7 +83,7 @@ class VoiceAutomationService
                 if ($existing) {
                     return $existing;
                 }
-                $definition = $rule->only(['name', 'trigger_type', 'enabled', 'conditions', 'delay_minutes', 'quiet_hours', 'max_attempts', 'retry_delay_minutes', 'action_type', 'action_config']);
+                $definition = VoiceTimezone::normalizeWindows($rule->only(['name', 'trigger_type', 'enabled', 'conditions', 'delay_minutes', 'quiet_hours', 'max_attempts', 'retry_delay_minutes', 'action_type', 'action_config']));
                 $plan = $this->plan($definition, $context);
                 $run = VoiceAutomationRun::query()->create([
                     'voice_automation_rule_id' => $rule->id, 'source_event_key' => $sourceEventKey,
@@ -122,7 +122,7 @@ class VoiceAutomationService
                         'status' => ScheduledVoiceCall::STATUS_SCHEDULED, 'automation_type' => $trigger,
                         'reason' => $context['reason'] ?? $trigger, 'summary' => $context['summary'] ?? $rule->name,
                         'scheduled_at' => $plan['scheduled_at'], 'next_attempt_at' => $plan['scheduled_at'],
-                        'max_attempts' => $rule->max_attempts, 'quiet_hours' => $rule->quiet_hours,
+                        'max_attempts' => $rule->max_attempts, 'quiet_hours' => $definition['quiet_hours'],
                         'metadata' => [
                             'source' => 'voice_automation_rule', 'automation_rule_id' => $rule->id,
                             'automation_run_id' => $run->id, 'retry_delay_minutes' => $rule->retry_delay_minutes,
@@ -174,7 +174,7 @@ class VoiceAutomationService
                 if (empty($quiet['enabled']) || ($quiet['start'] ?? '20:00') === ($quiet['end'] ?? '08:00')) {
                     continue;
                 }
-                $local = $at->setTimezone($quiet['timezone'] ?? 'UTC');
+                $local = $at->setTimezone(VoiceTimezone::normalize($quiet['timezone'] ?? 'UTC'));
                 $start = $local->setTimeFromTimeString($quiet['start'] ?? '20:00');
                 $end = $local->setTimeFromTimeString($quiet['end'] ?? '08:00');
                 $inside = $start->lessThan($end)
