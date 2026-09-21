@@ -120,6 +120,13 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Add CORS headers to all error responses
         $exceptions->render(function (\Throwable $e, \Illuminate\Http\Request $request) {
+            $responder = app(\App\Services\ApiErrorResponder::class);
+            $status = $responder->status($e);
+
+            if (\App\Support\PublicHtmlErrorPage::shouldRender($request, $status)) {
+                return \App\Support\PublicHtmlErrorPage::response($request, $status);
+            }
+
             // Only handle API routes
             if ($request->is('api/*')) {
                 $allowedOrigins = config('cors.allowed_origins', []);
@@ -134,8 +141,6 @@ return Application::configure(basePath: dirname(__DIR__))
                     $origin = config('app.frontend_url');
                 }
 
-                $responder = app(\App\Services\ApiErrorResponder::class);
-                $status = $responder->status($e);
                 if ($request->user()) {
                     try {
                         app(SystemOverviewTelemetryService::class)->recordException($request, $e, $status);
