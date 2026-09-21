@@ -20,6 +20,9 @@ class VoiceBrowserSessionTest extends TestCase
             'services.telnyx.voice.credential_connection_id' => 'browser-connection', 'services.telnyx.voice.connection_id' => 'server-app',
             'services.telnyx.voice.webhook_url' => 'https://example.test/voice']);
         Http::fake(function ($r) {
+            if (str_contains($r->url(), '/sip_registration_status')) {
+                return Http::response(['registered' => true, 'sip_registration_status' => 'registered', 'connection_id' => 'browser-connection']);
+            }
             if (str_ends_with($r->url(), '/token')) {
                 return Http::response('header.payload.signature', 201, ['Content-Type' => 'text/plain']);
             }

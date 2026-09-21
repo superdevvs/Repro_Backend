@@ -11,9 +11,9 @@ use Throwable;
 
 class VoiceBrowserGateway
 {
-    public function request(string $method, string $path, array $payload = [], bool $plain = false): mixed
+    public function request(string $method, string $path, array $payload = [], bool $plain = false, int $timeout = 15): mixed
     {
-        $request = Http::withToken((string) config('services.telnyx.api_key'))->acceptJson()->connectTimeout(5)->timeout(15);
+        $request = Http::withToken((string) config('services.telnyx.api_key'))->acceptJson()->connectTimeout(min(5, $timeout))->timeout($timeout);
         try {
             $response = $request->send($method, rtrim((string) config('services.telnyx.api_base', 'https://api.telnyx.com/v2'), '/').$path,
                 $method === 'GET' ? ['query' => $payload] : ['json' => $payload]);

@@ -47,9 +47,12 @@ class VoiceBrowserController extends Controller
     public function heartbeat(Request $request, VoiceBrowserSession $session): JsonResponse
     {
         $this->authorizeSession($request, $session);
-        $data = $request->validate(['registered' => ['required', 'boolean']]);
+        $data = $request->validate([
+            'registered' => ['required_without:transport_connected', 'boolean'],
+            'transport_connected' => ['required_without:registered', 'boolean'],
+        ]);
 
-        return $this->respond(fn () => $this->sessions->heartbeat($session, $data['registered']));
+        return $this->respond(fn () => $this->sessions->heartbeat($session, (bool) ($data['registered'] ?? false), $data['transport_connected'] ?? null));
     }
 
     public function disconnect(Request $request, VoiceBrowserSession $session): JsonResponse

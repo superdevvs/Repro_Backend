@@ -17,11 +17,11 @@ All paths have prefix `/api/voice`. Session endpoints require operate **or** sup
 
 | Endpoint | Input / result |
 | --- | --- |
-| `GET browser/config` | `enabled`, `ready`, `blockers`, capabilities `human_outbound`, `receive_calls`, `takeover`, `monitor`, `whisper`, `barge` |
+| `GET browser/config` | `enabled`, `ready`, `presence_verification: "provider"`, `blockers`, capabilities `human_outbound`, `receive_calls`, `takeover`, `monitor`, `whisper`, `barge` |
 | `POST browser/sessions` | UUID `device_id`; returns safe session, JWT `token`, `registration_delay_ms` (5000 for a new credential) |
 | `POST browser/sessions/{id}/token` | Same owner/device UUID; refreshes credential and returns new JWT |
 | `GET browser/sessions/{id}` | `id`, `device_id`, `status`, `expires_at`, `registered`, `offers` |
-| `POST browser/sessions/{id}/heartbeat` | Boolean `registered`; returns safe session |
+| `POST browser/sessions/{id}/heartbeat` | Boolean `transport_connected`; returns safe session with provider-confirmed `registered`. Legacy `registered` input remains accepted as a transport hint. |
 | `DELETE browser/sessions/{id}` | Disconnect owned legs and revoke registration |
 | `POST calls/human` | Operate; `session_id`, E.164 `to`, optional company `from`, `contact_id`, `related_shoot_id`, `reason`, required `idempotency_key`; returns canonical VoiceCall |
 | `GET calls/{id}/browser` | Browser state, owned leg identities, capabilities and capture state |
@@ -33,6 +33,8 @@ All paths have prefix `/api/voice`. Session endpoints require operate **or** sup
 | `PATCH calls/{id}/browser-consent` | Owner + operate; `consented`, optional `idempotency_key`; explicit consent does not itself start capture |
 
 Offers contain `voice_call_id`, `agent_call_control_id`, `browser_call_control_id`, `role`, `mode`, `state`, `caller_name`, and `remote_phone`. The SDK must accept only a call-control identity present in its authenticated session offers. The receiving credential-connection identity may differ from the server-created SIP leg. The server binds that alias from signed provider events using `call_session_id`, or the server's opaque `X-Repro-Offer` header plus the expected device SIP destination when the receiving event races the original dial response. Conference commands always target the originating server leg.
+
+Presence requires a connected browser transport plus Telnyx confirmation from `GET /sip_registration_status` for the session's server-owned telephony credential. Carrier checks time out after three seconds and are cached for at most ten seconds. Unknown or failed checks return unavailable. A disconnected transport clears availability immediately; a delayed check cannot override a newer disconnect or revive a revoked or expired session. The browser must use the authoritative returned `registered` flag and `status: "ready"` rather than interpreting raw SDK gateway-state values.
 
 Browser state includes `voice_call_id`, `state`, `session_id`, both leg identities, `conference_id`, `role`, `mode`, `muted`, `held`, `error`, and capabilities `can_takeover`, `can_monitor`, `can_whisper`, `can_barge`, `can_control`, `can_end`, `can_transfer`, `can_record`. Capture state is `recording.{consent_given,active,stop_pending,transcription_active,transcription_pending}`. Display unconfirmed capture separately from revoked consent; allow retry stop. Retrying recording start reuses the recording/transcription generation and does not restart confirmed capture.
 

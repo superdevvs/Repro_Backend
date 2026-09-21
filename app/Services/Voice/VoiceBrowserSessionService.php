@@ -7,6 +7,7 @@ use App\Models\VoiceBrowserSession;
 use App\Services\RolePermissionService;
 use App\Support\LockedWrite;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 class VoiceBrowserSessionService
@@ -48,7 +49,7 @@ class VoiceBrowserSessionService
         $operate = $ready && $this->canOperate($user);
         $supervise = $ready && $this->canSupervise($user);
 
-        return ['enabled' => $enabled, 'ready' => $ready, 'blockers' => $blockers, 'capabilities' => [
+        return ['enabled' => $enabled, 'ready' => $ready, 'presence_verification' => 'provider', 'blockers' => $blockers, 'capabilities' => [
             'human_outbound' => $operate, 'receive_calls' => $operate, 'takeover' => $operate,
             'monitor' => $supervise, 'whisper' => $supervise, 'barge' => $supervise,
         ]];
@@ -131,12 +132,55 @@ class VoiceBrowserSessionService
         ];
     }
 
-    public function heartbeat(VoiceBrowserSession $session, bool $registered): array
+    public function heartbeat(VoiceBrowserSession $session, bool $registered, ?bool $transportConnected = null): array
     {
-        abort_if($session->revoked_at || $session->expires_at->isPast(), 409, 'Reconnect this browser phone.');
-        LockedWrite::run(fn () => $session->update(['heartbeat_at' => now(), 'registered' => $registered]));
+        $session->refresh();
+        abort_if($session->revoked_at || $session->expires_at->isPast() || $session->status !== 'ready', 409, 'Reconnect this browser phone.');
+        $credentialId = $session->credential_id;
+        $cacheKey = 'voice-browser-registration:'.hash('sha256', $credentialId.'|'.config('services.telnyx.voice.credential_connection_id'));
+        $attemptKey = 'voice-browser-presence-attempt:'.$session->id;
+        $attempt = (string) Str::uuid();
+        $writeLock = 'voice-browser-presence-write:'.$session->id;
+        Cache::lock($writeLock, 10)->block(1, fn () => Cache::put($attemptKey, $attempt, 30));
+        // Legacy registered=true is also only a transport hint. Availability
+        // requires the carrier to confirm this session's server-owned identity.
+        if (! ($transportConnected ?? $registered)) {
+            Cache::forget($cacheKey);
+            $registered = false;
+        } else {
+            try {
+                $registered = Cache::remember($cacheKey, 10, function () use ($session): bool {
+                    if (! filled($session->credential_id) || ! filled($session->sip_username)) {
+                        return false;
+                    }
+                    $state = $this->gateway->request('GET', '/sip_registration_status', [
+                        'credential_type' => 'telephony_credential', 'username' => $session->sip_username,
+                    ], timeout: 3);
 
-        return $this->safeState($session);
+                    return ($state['registered'] ?? null) === true
+                        && ($state['sip_registration_status'] ?? null) === 'registered'
+                        && (! array_key_exists('connection_id', $state) || (string) $state['connection_id'] === (string) config('services.telnyx.voice.credential_connection_id'))
+                        && (! array_key_exists('credential_type', $state) || $state['credential_type'] === 'telephony_credential')
+                        && (! array_key_exists('credential_username', $state) || $state['credential_username'] === $session->sip_username);
+                });
+            } catch (\Throwable $exception) {
+                $registered = false;
+            }
+        }
+        // Provider I/O must not hold a SQLite write transaction. Recheck in the
+        // write predicate so a concurrent revocation/expiry cannot be revived.
+        Cache::lock($writeLock, 10)->block(1, function () use ($session, $attemptKey, $attempt, $credentialId, $registered): void {
+            if (Cache::get($attemptKey) !== $attempt) {
+                return; // A newer disconnect or presence request wins.
+            }
+            $updated = LockedWrite::run(fn () => VoiceBrowserSession::query()->whereKey($session->id)
+                ->whereNull('revoked_at')->where('status', 'ready')->where('expires_at', '>', now())
+                ->where('credential_id', $credentialId)
+                ->update(['heartbeat_at' => now(), 'registered' => $registered, 'updated_at' => now()]));
+            abort_unless($updated === 1, 409, 'Reconnect this browser phone.');
+        });
+
+        return $this->safeState($session->fresh());
     }
 
     public function usable(VoiceBrowserSession $session): bool
