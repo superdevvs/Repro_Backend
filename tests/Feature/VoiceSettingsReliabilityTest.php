@@ -43,4 +43,21 @@ class VoiceSettingsReliabilityTest extends TestCase
         $this->patchJson('/api/voice/settings', ['business_hours' => ['weekly' => ['monday' => [['29:00', '18:00']]]]])->assertUnprocessable();
         $this->assertSame($before, app(VoiceSettingsService::class)->all());
     }
+
+    public function test_timezone_alias_from_application_defaults_can_be_saved_and_read_back(): void
+    {
+        config(['app.timezone' => 'Asia/Calcutta']);
+        $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum');
+        $defaults = app(VoiceSettingsService::class)->all();
+        $this->assertSame('Asia/Calcutta', $defaults['business_hours']['timezone']);
+        $this->assertSame('Asia/Calcutta', $defaults['quiet_hours']['timezone']);
+        $this->patchJson('/api/voice/settings', [
+            'business_hours' => $defaults['business_hours'], 'quiet_hours' => $defaults['quiet_hours'],
+        ])->assertOk()
+            ->assertJsonPath('business_hours.timezone', 'Asia/Calcutta')
+            ->assertJsonPath('quiet_hours.timezone', 'Asia/Calcutta');
+        $this->getJson('/api/voice/settings')->assertOk()
+            ->assertJsonPath('business_hours.timezone', 'Asia/Calcutta')
+            ->assertJsonPath('quiet_hours.timezone', 'Asia/Calcutta');
+    }
 }

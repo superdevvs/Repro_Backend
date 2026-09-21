@@ -85,6 +85,28 @@ class VoiceAutomationRuleTest extends TestCase
         $this->assertDatabaseCount('voice_automation_rules', 0);
     }
 
+    public function test_preview_accepts_browser_timezone_alias_with_correct_quiet_hours_and_rejects_invalid_zones(): void
+    {
+        $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum');
+        foreach (['Asia/Calcutta', 'Asia/Kolkata'] as $timezone) {
+            $this->postJson('/api/voice/automation-rules/preview', [
+                'rule' => $this->definition(['quiet_hours' => ['enabled' => true, 'start' => '20:00', 'end' => '08:00', 'timezone' => $timezone]]),
+                'sample' => ['known_caller' => true, 'target_phone' => '+12025550124'],
+            ])->assertOk()->assertJsonPath('preview_only', true)
+                ->assertJsonPath('would_run', true)->assertJsonPath('quiet_hours_adjusted', true)
+                ->assertJsonPath('scheduled_at', '2026-09-22T02:30:00+00:00');
+        }
+        $this->postJson('/api/voice/automation-rules/preview', [
+            'rule' => $this->definition(['quiet_hours' => ['enabled' => true, 'start' => '20:00', 'end' => '08:00', 'timezone' => 'Invalid/Zone']]),
+            'sample' => ['known_caller' => true],
+        ])->assertUnprocessable()->assertJsonValidationErrors('quiet_hours.timezone');
+        $this->assertDatabaseCount('voice_automation_rules', 0);
+        $this->assertDatabaseCount('voice_automation_runs', 0);
+        $this->assertDatabaseCount('scheduled_voice_calls', 0);
+        Queue::assertNothingPushed();
+        Http::assertNothingSent();
+    }
+
     public function test_duplicate_source_events_create_one_callback_with_the_custom_budget_and_delay(): void
     {
         $rule = VoiceAutomationRule::query()->create($this->definition());

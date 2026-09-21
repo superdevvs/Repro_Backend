@@ -32,7 +32,7 @@ class VoiceAutomationDefinition
             'delay_minutes' => ['required', 'integer', 'min:0', 'max:10080'],
             'quiet_hours' => ['required', 'array:enabled,timezone,start,end'],
             'quiet_hours.enabled' => ['required', 'boolean'],
-            'quiet_hours.timezone' => ['required', 'timezone'],
+            'quiet_hours.timezone' => ['required', 'timezone:all_with_bc'],
             'quiet_hours.start' => ['required', 'date_format:H:i'],
             'quiet_hours.end' => ['required', 'date_format:H:i'],
             'max_attempts' => ['required', 'integer', 'min:1', 'max:5'],
