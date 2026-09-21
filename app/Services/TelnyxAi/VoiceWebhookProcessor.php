@@ -19,6 +19,7 @@ class VoiceWebhookProcessor
         private readonly VoiceRoutingService $routing,
         private readonly VoiceLiveStreamService $liveStream,
         private readonly VoiceIntelligenceService $intelligence,
+        private readonly VoiceNumberSettingsResolver $numberSettings,
     ) {}
 
     public function process(array $payload, string $rawBody): array
@@ -47,6 +48,9 @@ class VoiceWebhookProcessor
 
         try {
             $voiceCall = $this->handleEvent($eventType, $data);
+            if ($voiceCall) {
+                app(ScheduledVoiceCallService::class)->syncResult($voiceCall);
+            }
             $event->forceFill([
                 'related_voice_call_id' => $voiceCall?->id,
                 'processed_at' => now(),
@@ -92,6 +96,8 @@ class VoiceWebhookProcessor
         $direction = strtoupper((string) ($voiceCall?->direction ?? $this->directionFrom($payload)));
         $callerPhone = $direction === 'OUTBOUND' ? $to : $from;
         $resolved = $this->calls->resolveCaller($callerPhone);
+        $localPhone = $direction === 'INBOUND' ? ($to ?: $voiceCall?->to_phone) : ($from ?: $voiceCall?->from_phone);
+        $routing = $this->numberSettings->forNumber((string) $localPhone);
 
         if (! $voiceCall) {
             $voiceCall = VoiceCall::query()->create([
@@ -99,18 +105,18 @@ class VoiceWebhookProcessor
                 'direction' => $direction,
                 'status' => $direction === 'INBOUND' ? 'active' : 'dialing',
                 'external_provider_status' => 'initiated',
-                'handled_by' => 'ai',
+                'handled_by' => $direction === 'INBOUND' ? null : 'ai',
                 'from_phone' => $from,
                 'to_phone' => $to,
                 'caller_user_id' => $resolved['user']?->id,
                 'caller_contact_id' => $resolved['contact']?->id,
-                'assistant_id' => config('services.telnyx.voice.assistant_id'),
+                'assistant_id' => $routing['assistant_id'],
                 'call_control_id' => $payload['call_control_id'] ?? null,
                 'telnyx_conversation_id' => $payload['conversation_id'] ?? $payload['telnyx_conversation_id'] ?? null,
                 'client_state' => $payload['client_state'] ?? null,
                 'started_at' => now(),
                 'provider_event_last_seen_at' => now(),
-                'metadata' => ['raw_initiated' => $payload],
+                'metadata' => ['raw_initiated' => $payload, 'voice_routing' => $routing],
             ]);
         } else {
             $voiceCall->forceFill([
@@ -126,10 +132,17 @@ class VoiceWebhookProcessor
 
         $this->ensureSession($voiceCall, $resolved, $callerPhone);
         if ($direction === 'INBOUND' && empty(($voiceCall->metadata ?? [])['inbound_routing_started_at'])) {
+            $snapshot = $voiceCall->metadata['voice_routing'] ?? $routing;
             $voiceCall->forceFill([
-                'metadata' => array_merge($voiceCall->metadata ?? [], ['inbound_routing_started_at' => now()->toIso8601String()]),
+                'assistant_id' => $snapshot['assistant_id'],
+                'metadata' => array_merge($voiceCall->metadata ?? [], [
+                    'voice_routing' => $snapshot,
+                ]),
             ])->save();
             $this->routing->beginInboundCall($voiceCall, $resolved);
+            $voiceCall->refresh()->forceFill([
+                'metadata' => array_merge($voiceCall->metadata ?? [], ['inbound_routing_started_at' => now()->toIso8601String()]),
+            ])->save();
         }
 
         return $voiceCall->fresh();
@@ -179,7 +192,18 @@ class VoiceWebhookProcessor
 
         $payload = $this->payload($data);
         if ($voiceCall->recording_consent_given) {
-            $voiceCall->forceFill(['recording_url' => $payload['recording_urls'][0] ?? $payload['recording_url'] ?? null])->save();
+            // Telnyx sends a format-keyed map; older integrations sent a list.
+            // A late metadata-only callback must not erase an existing recording.
+            $url = data_get($payload, 'recording_urls.mp3')
+                ?? data_get($payload, 'recording_urls.wav')
+                ?? data_get($payload, 'recording_urls.0')
+                ?? ($payload['recording_url'] ?? null);
+            if (is_string($url) && filter_var($url, FILTER_VALIDATE_URL) && in_array(parse_url($url, PHP_URL_SCHEME), ['https', 'http'], true)) {
+                $voiceCall->forceFill(['recording_url' => $url, 'metadata' => array_merge($voiceCall->metadata ?? [], [
+                    'recording_id' => $payload['recording_id'] ?? data_get($voiceCall->metadata, 'recording_id'),
+                    'recording_saved_at' => now()->toIso8601String(),
+                ])])->save();
+            }
         }
 
         return $voiceCall;
@@ -307,18 +331,25 @@ class VoiceWebhookProcessor
         }
 
         $payload = $this->payload($data);
-        $started = $voiceCall->started_at;
-        $ended = now();
-        $disposition = $voiceCall->disposition ?: 'caller_hangup';
+        $answered = $voiceCall->answered_at;
+        $ended = $voiceCall->ended_at ?: now();
+        $status = in_array($voiceCall->status, ['failed', 'cancelled'], true)
+            ? $voiceCall->status
+            : ($answered ? 'completed' : 'missed');
+        $disposition = $voiceCall->disposition ?: ($answered ? 'caller_hangup' : 'missed');
         if ($voiceCall->intent === 'routing' && $voiceCall->menu_digit === null && ! $voiceCall->ai_chat_session_id) {
             $disposition = 'missed';
         }
 
         $voiceCall->forceFill([
-            'status' => 'completed',
+            'status' => $status,
             'disposition' => $disposition,
             'ended_at' => $ended,
-            'duration_seconds' => $payload['duration_seconds'] ?? ($started ? $started->diffInSeconds($ended) : null),
+            // A ringing leg is not conversation time. Use answer time when
+            // the provider does not supply the connected call's duration.
+            'duration_seconds' => $answered
+                ? max(0, (int) ($payload['duration_seconds'] ?? $answered->diffInSeconds($ended, false)))
+                : 0,
         ])->save();
 
         if ($voiceCall->aiChatSession) {
@@ -327,11 +358,13 @@ class VoiceWebhookProcessor
             ])->save();
         }
 
-        // Layer 2: always-on final enrichment when the call ends.
-        try {
-            $this->intelligence->finalize($voiceCall->fresh());
-        } catch (Throwable $e) {
-            \Log::warning('Voice final enrichment failed', ['error' => $e->getMessage(), 'call' => $voiceCall->id]);
+        // There is no conversation to summarize when the leg never answered.
+        if ($answered) {
+            try {
+                $this->intelligence->finalize($voiceCall->fresh());
+            } catch (Throwable $e) {
+                \Log::warning('Voice final enrichment failed', ['error' => $e->getMessage(), 'call' => $voiceCall->id]);
+            }
         }
 
         return $voiceCall->fresh();
@@ -344,13 +377,22 @@ class VoiceWebhookProcessor
             return null;
         }
 
+        $alreadyEnded = $voiceCall->ended_at !== null;
+        $endedStatus = in_array($voiceCall->status, ['failed', 'cancelled', 'transferred'], true)
+            ? $voiceCall->status : 'completed';
         $voiceCall->forceFill([
-            'status' => 'active',
-            'external_provider_status' => 'answered',
+            'status' => $alreadyEnded ? $endedStatus : 'active',
+            'external_provider_status' => $alreadyEnded ? $voiceCall->external_provider_status : 'answered',
             'provider_event_last_seen_at' => now(),
             'started_at' => $voiceCall->started_at ?: now(),
             'answered_at' => $voiceCall->answered_at ?: now(),
         ])->save();
+
+        // The answer event may arrive after hangup. Keep the leg terminal and
+        // record the answer evidence without starting an assistant on a dead leg.
+        if ($alreadyEnded) {
+            return $voiceCall->fresh();
+        }
 
         // Telnyx's POST /v2/calls does NOT auto-start the AI assistant when
         // the called party answers an outbound call. Without an explicit
@@ -363,6 +405,9 @@ class VoiceWebhookProcessor
             && ! empty($voiceCall->assistant_id)
             && ! empty($voiceCall->call_control_id)
         ) {
+            if (! $this->numberSettings->aiEnabledForCall($voiceCall)) {
+                return $this->routing->routeWithoutAi($voiceCall, 'voice_ai_disabled');
+            }
             $resolved = $this->calls->resolveCaller((string) ($voiceCall->to_phone ?: $voiceCall->from_phone));
             $dynamicVariables = $this->calls->buildDynamicVariables($voiceCall, $resolved);
             $existing = (array) ($voiceCall->metadata['dynamic_variables'] ?? []);
@@ -393,6 +438,21 @@ class VoiceWebhookProcessor
         $voiceCall = $this->findCall($data);
         if (! $voiceCall) {
             return null;
+        }
+
+        if ($voiceCall->ended_at && $voiceCall->answered_at) {
+            return $voiceCall->fresh();
+        }
+        $voiceCall->forceFill([
+            'status' => 'missed',
+            'ended_at' => $voiceCall->ended_at ?: now(),
+            'duration_seconds' => $voiceCall->answered_at ? $voiceCall->duration_seconds : 0,
+        ])->save();
+
+        if (! empty($voiceCall->metadata['dynamic_variables']['scheduled_voice_call_id'])) {
+            // The existing scheduled attempt owns its retry budget. Do not make
+            // a fresh callback row for every unanswered retry of that callback.
+            return $voiceCall->fresh();
         }
 
         return $this->routing->createCallback($voiceCall, 'missed_call');

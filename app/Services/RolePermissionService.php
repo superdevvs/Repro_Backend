@@ -365,10 +365,14 @@ class RolePermissionService
 
         foreach (['admin'] as $roleId) {
             $rolePermissions = $permissions[$roleId] ?? [];
-            if (in_array('voice-calls-view', $catalogIds, true) && ! in_array('voice-calls-view', $rolePermissions, true)) {
-                $rolePermissions[] = 'voice-calls-view';
-                $permissions[$roleId] = $this->normalizePermissionIds($rolePermissions, $catalogIds);
+            // Existing administrators retain their voice capabilities when the
+            // former view permission is split. Per-user denials still win.
+            foreach (['voice-calls-view', 'voice-calls-operate', 'voice-calls-manage', 'voice-calls-supervise'] as $permissionId) {
+                if (in_array($permissionId, $catalogIds, true) && ! in_array($permissionId, $rolePermissions, true)) {
+                    $rolePermissions[] = $permissionId;
+                }
             }
+            $permissions[$roleId] = $this->normalizePermissionIds($rolePermissions, $catalogIds);
         }
 
         return $permissions;

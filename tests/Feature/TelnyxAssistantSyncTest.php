@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\User;
 use App\Services\ReproAi\ToolDispatcher;
 use App\Services\TelnyxAi\TelnyxAssistantSyncService;
 use App\Services\TelnyxAi\ToolBridgeRegistry;
@@ -82,10 +83,86 @@ class TelnyxAssistantSyncTest extends TestCase
 
             return $request['promote_to_main'] === false
                 && data_get($request->data(), 'telephony_settings.recording_settings.enabled') === false
-                && $tools->count() === 12
+                && $tools->count() === 9
                 && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'set_recording_consent')
+                && $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'get_shoot_details')
+                && ! $tools->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'verify_caller')
                 && str_contains((string) $request['instructions'], 'RePro voice call-control policy');
         });
+    }
+
+    public function test_apply_does_not_duplicate_existing_named_tools(): void
+    {
+        $assistant = $this->currentAssistant();
+        $assistant['tools'][] = ['name' => 'verify_caller'];
+        $assistant['tools'][] = ['type' => 'handoff', 'name' => 'handoff_to_staff'];
+
+        Http::fake(function (Request $request) use ($assistant) {
+            if ($request->method() === 'GET') {
+                return Http::response($assistant);
+            }
+
+            return Http::response(['version_id' => 'version-unique-1'], 200);
+        });
+
+        app(TelnyxAssistantSyncService::class)->sync(true, 'unique-version');
+
+        Http::assertSent(function (Request $request): bool {
+            if ($request->method() !== 'POST') {
+                return false;
+            }
+            $names = collect($request['tools'] ?? [])
+                ->map(fn ($tool) => data_get($tool, 'webhook.name') ?? ($tool['name'] ?? null))
+                ->filter()
+                ->values();
+
+            return $names->count() === $names->unique()->count()
+                && ! $names->contains('verify_caller')
+                && $names->contains('get_shoot_details')
+                && $names->contains('set_recording_consent');
+        });
+    }
+
+    public function test_apply_can_promote_the_synced_version_to_main(): void
+    {
+        Http::fake(function (Request $request) {
+            if ($request->method() === 'GET') {
+                return Http::response($this->currentAssistant());
+            }
+
+            return Http::response(['version_id' => 'version-live-1'], 200);
+        });
+
+        $result = app(TelnyxAssistantSyncService::class)->sync(true, 'live-version', true);
+
+        $this->assertTrue($result['applied']);
+        $this->assertTrue($result['promote_to_main']);
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST'
+            && $request['promote_to_main'] === true
+            && collect($request['tools'] ?? [])->contains(fn ($tool) => data_get($tool, 'webhook.name') === 'get_shoot_details'));
+    }
+
+    public function test_admin_can_sync_and_promote_assistant_via_http(): void
+    {
+        Http::fake(function (Request $request) {
+            if ($request->method() === 'GET' && str_contains($request->url(), '/ai/assistants/assistant-1')) {
+                return Http::response($this->currentAssistant());
+            }
+            if ($request->method() === 'POST' && str_ends_with($request->url(), '/ai/assistants/assistant-1')) {
+                return Http::response(['version_id' => 'version-live-1'], 200);
+            }
+
+            return Http::response([], 200);
+        });
+
+        $admin = User::factory()->create(['role' => 'admin']);
+
+        $this->actingAs($admin, 'sanctum')
+            ->postJson('/api/voice/assistant/sync', ['promote_to_main' => true])
+            ->assertOk()
+            ->assertJsonPath('applied', true)
+            ->assertJsonPath('promote_to_main', true)
+            ->assertJsonPath('created_version_id', 'version-live-1');
     }
 
     public function test_canary_route_targets_only_allowlisted_number_and_preserves_main_fallback(): void

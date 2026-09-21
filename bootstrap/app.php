@@ -24,6 +24,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withSchedule(function (Schedule $schedule) {
+        $schedule->command('voice-browser:reconcile')->everyMinute()->withoutOverlapping();
         // Laravel 11 in this project boots schedules from the application builder.
         $schedule->command('automations:run-system')->everyFifteenMinutes();
         $schedule->job(new DispatchScheduledMessages)->everyMinute();

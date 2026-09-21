@@ -9,7 +9,8 @@ use Throwable;
 class SyncTelnyxVoiceAssistant extends Command
 {
     protected $signature = 'voice:sync-telnyx-assistant
-        {--apply : Create a new non-main Telnyx assistant version}
+        {--apply : Create a new Telnyx assistant version}
+        {--promote-main : Promote the new version to the live main assistant}
         {--route-canary : Route VOICE_CANARY_NUMBERS to the newly-created version}
         {--remove-canary : Remove VOICE_CANARY_NUMBERS from Telnyx version routing}
         {--version-name= : Optional name for the new assistant version}';
@@ -31,13 +32,17 @@ class SyncTelnyxVoiceAssistant extends Command
                 return self::SUCCESS;
             }
 
-            if ($this->option('route-canary') && ! $this->option('apply')) {
-                $this->error('--route-canary requires --apply.');
+            if (($this->option('route-canary') || $this->option('promote-main')) && ! $this->option('apply')) {
+                $this->error('--route-canary and --promote-main require --apply.');
 
                 return self::INVALID;
             }
 
-            $result = $sync->sync((bool) $this->option('apply'), $this->option('version-name') ?: null);
+            $result = $sync->sync(
+                (bool) $this->option('apply'),
+                $this->option('version-name') ?: null,
+                (bool) $this->option('promote-main'),
+            );
             if ($this->option('route-canary')) {
                 $versionId = (string) ($result['created_version_id'] ?? '');
                 if ($versionId === '') {
@@ -56,7 +61,7 @@ class SyncTelnyxVoiceAssistant extends Command
             ['Assistant', $result['assistant_id']],
             ['Current version', $result['current_version_id'] ?: 'unknown'],
             ['New version', $result['created_version_id'] ?? 'not created'],
-            ['Promoted to main', 'no'],
+            ['Promoted to main', ! empty($result['promote_to_main']) ? 'yes' : 'no'],
             ['Desired tools', implode(', ', $result['desired_tools'])],
             ['Missing tools', implode(', ', $result['missing_tools']) ?: 'none'],
             ['Removed legacy webhooks', implode(', ', $result['removed_webhook_tools']) ?: 'none'],
@@ -67,7 +72,11 @@ class SyncTelnyxVoiceAssistant extends Command
         if (! $result['applied']) {
             $this->info('Dry-run only. Use --apply to create a non-main version after reviewing the diff.');
         } else {
-            $this->info('Created a non-main assistant version. No live traffic routing was changed.');
+            $this->info(
+                ! empty($result['promote_to_main'])
+                    ? 'Created and promoted a live assistant version.'
+                    : 'Created a non-main assistant version. No live traffic routing was changed.'
+            );
         }
 
         return self::SUCCESS;

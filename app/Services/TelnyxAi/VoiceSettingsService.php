@@ -3,18 +3,24 @@
 namespace App\Services\TelnyxAi;
 
 use App\Models\Setting;
+use App\Support\LockedWrite;
+use Illuminate\Support\Facades\DB;
 
 class VoiceSettingsService
 {
     public const SETTINGS_KEY = 'messaging.telnyx_voice';
 
+    /** @var list<string> */
+    public const OUTBOUND_MODES = ['all', 'canary', 'none'];
+
     public function all(): array
     {
         $stored = $this->stored();
 
-        $settings = array_merge([
+        $settings = $this->mergeSettings([
             'provider' => config('services.voice.provider', 'telnyx'),
             'canary_mode' => (bool) config('services.voice.canary_mode', true),
+            'canary_numbers' => (array) config('services.voice.canary_numbers', []),
             'enabled' => (bool) config('services.telnyx.voice.enabled', false),
             'assistant_id' => config('services.telnyx.voice.assistant_id'),
             'webhook_url' => config('services.telnyx.voice.webhook_url'),
@@ -94,13 +100,15 @@ class VoiceSettingsService
             is_array($settings['tool_allowlist'] ?? null) ? $settings['tool_allowlist'] : [],
             ['set_recording_consent'],
         )));
+        $settings['outbound_mode'] = $this->outboundMode($settings);
+        $settings['canary_mode'] = $settings['outbound_mode'] === 'canary';
+        $settings['canary_numbers'] = $this->normalizeCanaryNumbers($settings['canary_numbers'] ?? []);
 
         return $settings;
     }
 
     public function update(array $settings): array
     {
-        $current = $this->all();
         $allowed = array_intersect_key($settings, array_flip([
             'recording_enabled',
             'disclosure_text',
@@ -127,20 +135,72 @@ class VoiceSettingsService
             'tool_allowlist',
             'confirmation_gated_tools',
             'debug_capture',
+            'outbound_mode',
+            'canary_numbers',
         ]));
 
-        $next = array_merge($current, $allowed);
+        return LockedWrite::run(fn () => DB::transaction(function () use ($allowed): array {
+            $next = $this->mergeSettings($this->all(), $allowed);
+            $next['outbound_mode'] = $this->outboundMode($next);
+            $next['canary_mode'] = $next['outbound_mode'] === 'canary';
+            $next['canary_numbers'] = $this->normalizeCanaryNumbers($next['canary_numbers'] ?? []);
 
-        Setting::query()->updateOrCreate(
-            ['key' => self::SETTINGS_KEY],
-            [
-                'value' => json_encode($next, JSON_PRETTY_PRINT),
-                'type' => 'json',
-                'description' => 'Telnyx AI voice runtime settings.',
-            ]
-        );
+            Setting::query()->updateOrCreate(
+                ['key' => self::SETTINGS_KEY],
+                [
+                    'value' => json_encode($next, JSON_PRETTY_PRINT),
+                    'type' => 'json',
+                    'description' => 'Telnyx AI voice runtime settings.',
+                ]
+            );
 
-        return $next;
+            return $next;
+        }), 'voice-settings.update');
+    }
+
+    /** Merge named settings without retaining removed list items or reopening a closed day. */
+    private function mergeSettings(array $current, array $changes): array
+    {
+        foreach ($changes as $key => $value) {
+            $current[$key] = is_array($value) && ! array_is_list($value) && is_array($current[$key] ?? null)
+                ? $this->mergeSettings($current[$key], $value)
+                : $value;
+        }
+
+        return $current;
+    }
+
+    public function outboundMode(?array $settings = null): string
+    {
+        $source = $settings ?? $this->all();
+        $mode = strtolower((string) ($source['outbound_mode'] ?? ''));
+        if (in_array($mode, self::OUTBOUND_MODES, true)) {
+            return $mode;
+        }
+
+        return ! empty($source['canary_mode']) ? 'canary' : 'all';
+    }
+
+    /** @return list<string> */
+    private function normalizeCanaryNumbers(mixed $numbers): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            fn ($number) => $this->normalizePhone((string) $number),
+            is_array($numbers) ? $numbers : [],
+        ))));
+    }
+
+    private function normalizePhone(string $phone): string
+    {
+        $digits = preg_replace('/\D/', '', $phone) ?? '';
+        if ($digits === '') {
+            return '';
+        }
+        if (strlen($digits) === 10) {
+            $digits = '1'.$digits;
+        }
+
+        return '+'.ltrim($digits, '+');
     }
 
     private function stored(): array

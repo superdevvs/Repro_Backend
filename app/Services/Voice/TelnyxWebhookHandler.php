@@ -4,12 +4,13 @@ namespace App\Services\Voice;
 
 use App\Models\VoiceCall;
 use App\Models\VoiceCallEvent;
+use App\Services\TelnyxAi\ScheduledVoiceCallService;
 use App\Services\TelnyxAi\VoiceWebhookProcessor;
 use Illuminate\Support\Arr;
 
 class TelnyxWebhookHandler
 {
-    public function __construct(private readonly VoiceWebhookProcessor $legacyProcessor) {}
+    public function __construct(private readonly VoiceWebhookProcessor $legacyProcessor, private readonly VoiceBrowserCallService $browserCalls) {}
 
     public function process(array $payload, string $rawBody): array
     {
@@ -28,11 +29,20 @@ class TelnyxWebhookHandler
             ]
         );
 
-        $result = $this->legacyProcessor->process($payload, $rawBody);
+        if ($event->processed_at) {
+            return ['status' => 'duplicate', 'event_id' => $eventId, 'voice_call_id' => $event->voice_call_id];
+        }
+        $browserResult = $this->browserCalls->handleWebhook($payload);
+        $result = $browserResult ?? $this->legacyProcessor->process($payload, $rawBody);
         $call = $this->findCall($data, $result['voice_call_id'] ?? null);
 
         if ($call) {
-            $this->applyCarrierDiagnostics($call, $eventType, $data);
+            // Staff/supervisor call IDs must never overwrite the canonical
+            // customer leg or classify its carrier state.
+            if ($browserResult === null) {
+                $this->applyCarrierDiagnostics($call, $eventType, $data);
+            }
+            app(ScheduledVoiceCallService::class)->syncResult($call->fresh());
         }
 
         $event->forceFill([
@@ -54,7 +64,11 @@ class TelnyxWebhookHandler
         ];
 
         if (in_array($eventType, ['call.failed', 'call.no_answer', 'call.hangup'], true) && ! in_array($call->status, ['completed'], true)) {
-            $fields['status'] = $eventType === 'call.no_answer' ? 'missed' : 'failed';
+            $fields['status'] = match ($eventType) {
+                'call.no_answer' => 'missed',
+                'call.failed' => 'failed',
+                default => $call->status,
+            };
             $fields['telnyx_failure_code'] = $payload['failure_code'] ?? $payload['hangup_cause'] ?? $payload['sip_hangup_cause'] ?? null;
             $fields['carrier_failure_reason'] = $payload['failure_reason'] ?? $payload['hangup_source'] ?? $payload['cause'] ?? null;
         }

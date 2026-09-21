@@ -215,7 +215,7 @@ class TelnyxToolBridgeTest extends TestCase
         Http::assertSent(fn ($request) => str_ends_with($request->url(), '/calls/'.$call->call_control_id.'/actions/transfer')
             && ($request['to'] ?? null) === '+12025559999'
             && filled($request['command_id'] ?? null));
-        $this->assertSame('transferred', $call->fresh()->status);
+        $this->assertSame('human_handoff', $call->fresh()->status);
     }
 
     public function test_recording_starts_only_after_explicit_consent_and_decline_never_records(): void

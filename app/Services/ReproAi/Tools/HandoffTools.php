@@ -46,13 +46,13 @@ class HandoffTools
                 );
                 $voiceCall->forceFill([
                     'disposition' => 'handoff_to_staff',
-                    'callback_status' => $scheduled->status,
-                    'scheduled_voice_call_id' => $scheduled->id,
+                    'callback_status' => $scheduled?->status,
+                    'scheduled_voice_call_id' => $scheduled?->id,
                     'escalation_reason' => $params['reason'] ?? 'ai_handoff_requested',
                     'metadata' => array_merge($voiceCall->metadata ?? [], [
                         'handoff_requested_at' => now()->toIso8601String(),
                         'handoff_reason' => $params['reason'] ?? null,
-                        'scheduled_voice_call_id' => $scheduled->id,
+                        'scheduled_voice_call_id' => $scheduled?->id,
                     ]),
                 ])->save();
                 event(new VoiceCallHandoffRequested($voiceCall));
@@ -96,6 +96,9 @@ class HandoffTools
         if ($voiceCall) {
             if (! $transferOk) {
                 $scheduled = $this->scheduledCalls->createCallbackForCall($voiceCall, 'transfer_failed');
+                if (! $scheduled) {
+                    return ['ok' => false, 'error' => 'transfer_failed', 'scheduled_voice_call_id' => null, 'follow_up' => 'custom_automation'];
+                }
                 $voiceCall->forceFill([
                     'status' => 'callback_needed',
                     'disposition' => 'callback_needed',
@@ -113,8 +116,8 @@ class HandoffTools
             }
 
             $voiceCall->forceFill([
-                'status' => 'transferred',
-                'disposition' => 'transferred',
+                'status' => 'human_handoff',
+                'disposition' => 'transfer_requested',
                 'last_telnyx_command_status' => [
                     'action' => 'transfer',
                     'ok' => true,
@@ -122,8 +125,8 @@ class HandoffTools
                     'at' => now()->toIso8601String(),
                 ],
                 'metadata' => array_merge($voiceCall->metadata ?? [], [
-                    'transferred_to' => $to,
-                    'transferred_at' => now()->toIso8601String(),
+                    'transfer_destination' => $to,
+                    'transfer_command_accepted_at' => now()->toIso8601String(),
                 ]),
             ])->save();
             event(new VoiceCallTransferred($voiceCall));
@@ -132,7 +135,8 @@ class HandoffTools
         return [
             'ok' => true,
             'result' => [
-                'transferred' => true,
+                'transfer_requested' => true,
+                'transferred' => false,
                 'to' => $to,
                 'call_control_id' => $callControlId,
             ],

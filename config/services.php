@@ -164,6 +164,9 @@ return [
         ],
         'voice' => [
             'enabled' => env('TELNYX_VOICE_ENABLED', false),
+            'browser_enabled' => env('TELNYX_WEBRTC_ENABLED', false),
+            'credential_connection_id' => env('TELNYX_WEBRTC_CREDENTIAL_CONNECTION_ID'),
+            'browser_session_ttl' => 3600,
             'assistant_id' => env('TELNYX_VOICE_ASSISTANT_ID'),
             'connection_id' => env('TELNYX_VOICE_CONNECTION_ID'),
             'webhook_url' => env('TELNYX_VOICE_WEBHOOK_URL'),

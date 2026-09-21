@@ -26,9 +26,14 @@ class TelnyxAssistantSyncService
         }
 
         return Cache::remember($cacheKey, now()->addMinute(), function () use ($assistantId): array {
+            $settings = $this->settings->all();
+            $canaryActive = $this->settings->outboundMode($settings) === 'canary';
+            $canaryNumbers = (array) ($settings['canary_numbers'] ?? config('services.voice.canary_numbers', []));
             $main = $this->currentAssistant($assistantId);
             $canary = $this->canaryDeployment($assistantId);
-            $routedVersionId = $this->routedVersionId($canary['rules'] ?? [], (array) config('services.voice.canary_numbers', []));
+            $routedVersionId = $canaryActive
+                ? $this->routedVersionId($canary['rules'] ?? [], $canaryNumbers)
+                : null;
             $current = $routedVersionId ? $this->assistantVersion($assistantId, $routedVersionId) : $main;
             $configured = $this->toolNames($current['tools'] ?? []);
             $desired = $this->registry->allowedTools();
@@ -43,7 +48,7 @@ class TelnyxAssistantSyncService
                 'version_id' => $current['version_id'] ?? null,
                 'main_version_id' => $main['version_id'] ?? null,
                 'canary_version_id' => $routedVersionId,
-                'canary_route_status' => (bool) config('services.voice.canary_mode', true)
+                'canary_route_status' => $canaryActive
                     ? ($routedVersionId ? 'routed' : 'missing')
                     : 'not_required',
                 'configured_tools' => $configured,
@@ -58,7 +63,7 @@ class TelnyxAssistantSyncService
     }
 
     /** @return array<string,mixed> */
-    public function sync(bool $apply = false, ?string $versionName = null): array
+    public function sync(bool $apply = false, ?string $versionName = null, bool $promoteToMain = false): array
     {
         $assistantId = $this->assistantId();
         $current = $this->currentAssistant($assistantId);
@@ -78,7 +83,7 @@ class TelnyxAssistantSyncService
                 ]],
             ),
             'version_name' => mb_substr($versionName ?: 'repro-voice-wiring-'.now()->format('Ymd-His'), 0, 50),
-            'promote_to_main' => false,
+            'promote_to_main' => $promoteToMain,
         ];
 
         $result = [
@@ -90,7 +95,7 @@ class TelnyxAssistantSyncService
             'missing_tools' => array_values(array_diff($desiredToolNames, $configuredToolNames)),
             'removed_webhook_tools' => array_values(array_diff($this->webhookToolNames($current['tools'] ?? []), $desiredToolNames)),
             'automatic_recording_will_be_disabled' => (bool) data_get($current, 'telephony_settings.recording_settings.enabled', false),
-            'promote_to_main' => false,
+            'promote_to_main' => $promoteToMain,
             'version_name' => $payload['version_name'],
         ];
 
@@ -117,7 +122,7 @@ class TelnyxAssistantSyncService
     public function routeCanary(string $versionId): array
     {
         $assistantId = $this->assistantId();
-        $numbers = array_values(array_filter((array) config('services.voice.canary_numbers', [])));
+        $numbers = array_values(array_filter((array) ($this->settings->all()['canary_numbers'] ?? [])));
         if ($numbers === []) {
             throw new RuntimeException('VOICE_CANARY_NUMBERS must be configured before routing a canary version.');
         }
@@ -155,7 +160,7 @@ class TelnyxAssistantSyncService
     public function removeCanaryRoute(): array
     {
         $assistantId = $this->assistantId();
-        $numbers = array_values(array_filter((array) config('services.voice.canary_numbers', [])));
+        $numbers = array_values(array_filter((array) ($this->settings->all()['canary_numbers'] ?? [])));
         if ($numbers === []) {
             throw new RuntimeException('VOICE_CANARY_NUMBERS must be configured before removing its route.');
         }
@@ -190,14 +195,14 @@ class TelnyxAssistantSyncService
             throw new RuntimeException('TELNYX_TOOL_BRIDGE_SECRET is not configured.');
         }
 
-        $tools = array_values(array_filter(
-            $currentTools,
-            static fn ($tool) => is_array($tool) && ($tool['type'] ?? null) !== 'webhook',
-        ));
-
+        // Telnyx merges posted tools into the current version, so only send
+        // webhook tools that are not already configured. Re-sending hangup or
+        // existing webhooks is rejected as a duplicate.
+        $tools = [];
+        $configuredNames = $this->toolNames($currentTools);
         foreach ($this->registry->allowedTools() as $name) {
             $definition = $this->registry->definition($name);
-            if (! $definition) {
+            if (! $definition || in_array($name, $configuredNames, true)) {
                 continue;
             }
 

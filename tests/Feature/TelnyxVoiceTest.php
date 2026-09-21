@@ -93,6 +93,7 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_voice_webhook_initiated_is_idempotent(): void
     {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'assistant-1']);
         config(['services.telnyx.public_key' => null]);
         config(['services.telnyx.api_key' => 'test-key']);
         Http::fake();
@@ -129,6 +130,7 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_gather_digit_routes_to_booking_assistant(): void
     {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'assistant-1']);
         config(['services.telnyx.public_key' => null]);
         config(['services.telnyx.api_key' => 'test-key']);
         Http::fake();
@@ -159,6 +161,7 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_zero_digit_transfer_failure_creates_callback(): void
     {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'assistant-1']);
         config(['services.telnyx.public_key' => null]);
         config(['services.telnyx.api_key' => 'test-key']);
         Setting::query()->create([
@@ -285,6 +288,7 @@ class TelnyxVoiceTest extends TestCase
     public function test_scheduled_voice_call_job_places_outbound_call(): void
     {
         $this->configureDirectTelnyx('+12025550123');
+        app(\App\Services\TelnyxAi\VoiceSettingsService::class)->update(['quiet_hours' => ['enabled' => false]]);
         Http::fake([
             'https://api.telnyx.com/v2/calls' => Http::response(['data' => [
                 'call_control_id' => 'telnyx-scheduled-1',
@@ -308,7 +312,8 @@ class TelnyxVoiceTest extends TestCase
         );
 
         $scheduled->refresh();
-        $this->assertSame('completed', $scheduled->status);
+        $this->assertSame('dialing', $scheduled->status);
+        $this->assertNull($scheduled->completed_at);
         $this->assertNotNull($scheduled->result_voice_call_id);
         $this->assertDatabaseHas('voice_calls', [
             'id' => $scheduled->result_voice_call_id,
@@ -321,6 +326,7 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_outbound_answer_starts_assistant_once_with_current_telnyx_contract(): void
     {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'assistant-1']);
         config(['services.telnyx.public_key' => null, 'services.telnyx.api_key' => 'test-key']);
         Http::fake(['*' => Http::response(['data' => ['result' => 'ok', 'conversation_id' => 'conv-new']])]);
         $call = VoiceCall::query()->create([
@@ -356,6 +362,7 @@ class TelnyxVoiceTest extends TestCase
 
     public function test_answered_event_retries_after_a_transient_assistant_start_failure(): void
     {
+        config(['services.telnyx.voice.enabled' => true, 'services.telnyx.voice.assistant_id' => 'assistant-1']);
         config(['services.telnyx.public_key' => null, 'services.telnyx.api_key' => 'test-key']);
         Http::fakeSequence()
             ->push(['errors' => [['detail' => 'temporary failure']]], 500)

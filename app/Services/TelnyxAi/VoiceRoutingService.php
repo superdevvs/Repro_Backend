@@ -5,6 +5,7 @@ namespace App\Services\TelnyxAi;
 use App\Events\VoiceCallHandoffRequested;
 use App\Events\VoiceCallTransferred;
 use App\Models\VoiceCall;
+use RuntimeException;
 
 class VoiceRoutingService
 {
@@ -15,10 +16,14 @@ class VoiceRoutingService
         private readonly VoiceMemoryService $memory,
         private readonly BusinessScheduleService $schedule,
         private readonly VoiceIntelligenceService $intelligence,
+        private readonly VoiceNumberSettingsResolver $numbers,
     ) {}
 
     public function beginInboundCall(VoiceCall $voiceCall, array $resolved): VoiceCall
     {
+        if (! $this->numbers->aiEnabledForCall($voiceCall) || ! filled($voiceCall->assistant_id)) {
+            return $this->routeWithoutAi($voiceCall, 'voice_ai_unavailable');
+        }
         // Memory Tier 1 — instant context loaded before the greeting.
         try {
             $tier1 = $this->memory->loadTier1($voiceCall, $resolved);
@@ -39,7 +44,9 @@ class VoiceRoutingService
             ]),
         ])->save();
 
-        $this->calls->answer($voiceCall);
+        if (! $this->calls->answer($voiceCall)) {
+            throw new RuntimeException('The inbound call could not be answered.');
+        }
         $gatherStarted = $this->calls->gatherUsingSpeak($voiceCall);
 
         if (! $gatherStarted) {
@@ -51,6 +58,19 @@ class VoiceRoutingService
 
     public function routeMenuInput(VoiceCall $voiceCall, ?string $digit, array $resolved = []): VoiceCall
     {
+        if ($voiceCall->ended_at) {
+            return $voiceCall;
+        }
+        if (! empty($voiceCall->metadata['non_ai_unavailable_at'])) {
+            if (! $this->calls->hangup($voiceCall)) {
+                throw new RuntimeException('The unavailable call could not be ended.');
+            }
+
+            return $voiceCall->fresh();
+        }
+        if (! $this->numbers->aiEnabledForCall($voiceCall)) {
+            return $this->routeWithoutAi($voiceCall);
+        }
         $digit = trim((string) $digit);
 
         return match ($digit) {
@@ -90,11 +110,11 @@ class VoiceRoutingService
         }
 
         $voiceCall->forceFill([
-            'status' => 'transferred',
-            'disposition' => 'transferred',
+            'status' => 'human_handoff',
+            'disposition' => 'transfer_requested',
             'metadata' => array_merge($voiceCall->metadata ?? [], [
-                'transferred_to' => $to,
-                'transferred_at' => now()->toIso8601String(),
+                'transfer_destination' => $to,
+                'transfer_command_accepted_at' => now()->toIso8601String(),
             ]),
         ])->save();
         event(new VoiceCallTransferred($voiceCall));
@@ -104,7 +124,13 @@ class VoiceRoutingService
 
     public function createCallback(VoiceCall $voiceCall, string $reason): VoiceCall
     {
+        if (! $this->numbers->aiEnabledForCall($voiceCall) && ! $this->scheduledCalls->hasCustomRuleForReason($reason)) {
+            return $this->routeWithoutAi($voiceCall, $reason);
+        }
         $scheduled = $this->scheduledCalls->createCallbackForCall($voiceCall, $reason);
+        if (! $scheduled) {
+            return $voiceCall->fresh();
+        }
 
         $voiceCall->refresh()->forceFill([
             'status' => in_array($voiceCall->status, ['completed', 'transferred'], true) ? $voiceCall->status : 'callback_needed',
@@ -121,6 +147,9 @@ class VoiceRoutingService
 
     private function startAssistant(VoiceCall $voiceCall, string $intent, array $extraVariables = [], array $resolved = []): VoiceCall
     {
+        if (! $this->numbers->aiEnabledForCall($voiceCall) || ! filled($voiceCall->assistant_id)) {
+            return $this->routeWithoutAi($voiceCall, 'voice_ai_unavailable');
+        }
         $voiceCall->forceFill([
             'intent' => $intent,
             'menu_digit' => $extraVariables['menu_digit'] ?? $voiceCall->menu_digit,
@@ -136,7 +165,76 @@ class VoiceRoutingService
             array_filter($extraVariables, static fn ($value) => $value !== null)
         );
 
-        $this->calls->startAssistant($voiceCall, $variables);
+        if (! $this->calls->startAssistant($voiceCall, $variables)) {
+            throw new RuntimeException('The voice assistant could not be started.');
+        }
+
+        return $voiceCall->fresh();
+    }
+
+    /** Route a disabled line without invoking AI or scheduling an AI callback. */
+    public function routeWithoutAi(VoiceCall $voiceCall, string $reason = 'voice_ai_disabled', bool $skipBrowser = false): VoiceCall
+    {
+        $voiceCall->refresh();
+        $metadata = $voiceCall->metadata ?? [];
+        if (! empty($metadata['non_ai_route_completed_at'])) {
+            return $voiceCall;
+        }
+        $voiceCall->forceFill([
+            'handled_by' => null,
+            'needs_follow_up' => true,
+            'ai_current_state' => 'disabled',
+            'metadata' => array_merge($metadata, [
+                'needs_follow_up' => true, 'non_ai_routing_reason' => $reason,
+                'voice_routing' => array_merge($metadata['voice_routing'] ?? [], ['enabled' => false]),
+            ]),
+        ])->save();
+        if ($voiceCall->ended_at) {
+            return $voiceCall->fresh();
+        }
+        if (! $skipBrowser && app(\App\Services\Voice\VoiceBrowserCallService::class)->offerInbound($voiceCall)) {
+            return $voiceCall->fresh();
+        }
+        if (! $voiceCall->answered_at && ! $this->calls->answer($voiceCall)) {
+            throw new RuntimeException('The inbound call could not be answered.');
+        }
+
+        $destination = $this->numbers->normalize((string) ($this->settings->all()['support_handoff_number'] ?? ''));
+        $localNumber = $this->numbers->forCall($voiceCall)['phone_number'];
+        if ($destination !== '' && $destination !== $localNumber) {
+            $voiceCall->forceFill(['metadata' => array_merge($voiceCall->fresh()->metadata ?? [], [
+                'transfer_requested_at' => now()->toIso8601String(), 'transfer_to' => $destination,
+            ])])->save();
+            if ($this->calls->transfer($voiceCall, $destination)) {
+                $voiceCall->forceFill([
+                    'status' => 'human_handoff', 'disposition' => 'transfer_requested',
+                    'metadata' => array_merge($voiceCall->fresh()->metadata ?? [], [
+                        'transfer_destination' => $destination,
+                        'transfer_command_accepted_at' => now()->toIso8601String(),
+                        'non_ai_route_completed_at' => now()->toIso8601String(),
+                    ]),
+                ])->save();
+
+                return $voiceCall->fresh();
+            }
+        }
+
+        // A static prompt is followed by hang-up on call.gather.ended; hanging
+        // up immediately after command acceptance would cut the message off.
+        $voiceCall->forceFill([
+            'disposition' => 'staff_unavailable',
+            'metadata' => array_merge($voiceCall->fresh()->metadata ?? [], [
+                'non_ai_unavailable_at' => now()->toIso8601String(),
+            ]),
+        ])->save();
+        if (! $this->calls->gatherUsingSpeak($voiceCall, 'Our team is unavailable right now. Please contact us by text or email. Thank you for calling.')) {
+            if (! $this->calls->hangup($voiceCall)) {
+                throw new RuntimeException('The unavailable call could not be ended.');
+            }
+        }
+        $voiceCall->forceFill(['metadata' => array_merge($voiceCall->fresh()->metadata ?? [], [
+            'non_ai_route_completed_at' => now()->toIso8601String(),
+        ])])->save();
 
         return $voiceCall->fresh();
     }

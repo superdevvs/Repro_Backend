@@ -34,10 +34,12 @@ class VoiceSettingsController extends Controller
             'outbound_script_presets.*.intent' => ['nullable', 'string', 'max:120'],
             'outbound_script_presets.*.prompt' => ['required_with:outbound_script_presets', 'string', 'max:1000'],
             'business_hours' => ['sometimes', 'array'],
-            'business_hours.timezone' => ['sometimes', 'string', 'max:64'],
+            'business_hours.timezone' => ['sometimes', 'timezone'],
             'business_hours.weekly' => ['sometimes', 'array'],
             'business_hours.weekly.*' => ['array'],
-            'business_hours.weekly.*.*' => ['array'],
+            'business_hours.weekly.*.*' => ['array', 'size:2'],
+            'business_hours.weekly.*.*.0' => ['required', 'date_format:H:i'],
+            'business_hours.weekly.*.*.1' => ['required', 'date_format:H:i'],
             'holidays' => ['sometimes', 'array'],
             'holidays.*.date' => ['required_with:holidays', 'date_format:Y-m-d'],
             'holidays.*.label' => ['nullable', 'string', 'max:120'],
@@ -64,7 +66,7 @@ class VoiceSettingsController extends Controller
             'quiet_hours.enabled' => ['sometimes', 'boolean'],
             'quiet_hours.start' => ['sometimes', 'date_format:H:i'],
             'quiet_hours.end' => ['sometimes', 'date_format:H:i'],
-            'quiet_hours.timezone' => ['sometimes', 'string', 'max:64'],
+            'quiet_hours.timezone' => ['sometimes', 'timezone'],
             'callback_retry_delay_minutes' => ['sometimes', 'integer', 'min:5', 'max:10080'],
             'callback_max_attempts' => ['sometimes', 'integer', 'min:1', 'max:10'],
             'automation_toggles' => ['sometimes', 'array'],
@@ -78,6 +80,9 @@ class VoiceSettingsController extends Controller
             'confirmation_gated_tools' => ['sometimes', 'array'],
             'confirmation_gated_tools.*' => ['string', 'max:255'],
             'debug_capture' => ['sometimes', 'boolean'],
+            'outbound_mode' => ['sometimes', 'string', 'in:all,canary,none'],
+            'canary_numbers' => ['sometimes', 'array', 'max:20'],
+            'canary_numbers.*' => ['string', 'max:32'],
         ]);
 
         return response()->json($settings->update($data));

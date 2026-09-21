@@ -4,6 +4,7 @@ namespace App\Services\TelnyxAi;
 
 use App\Models\VoiceCall;
 use App\Services\Messaging\AiSms\SmsContextResolverService;
+use App\Support\LockedWrite;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -15,13 +16,15 @@ class TelnyxVoiceCallService
     public function __construct(
         private readonly VoiceSettingsService $settings,
         private readonly SmsContextResolverService $resolver,
+        private readonly VoiceNumberSettingsResolver $numbers,
     ) {}
 
     public function dial(array $data, int $createdByUserId): VoiceCall
     {
         $to = $this->resolver->normalize((string) ($data['to'] ?? ''));
         $from = $this->resolver->normalize((string) ($data['from'] ?? config('services.telnyx.from_number', '')));
-        $assistantId = (string) ($data['assistant_id'] ?? $this->settings->all()['assistant_id'] ?? '');
+        $numberPolicy = $this->numbers->forNumber($from);
+        $assistantId = (string) ($data['assistant_id'] ?? $numberPolicy['assistant_id'] ?? '');
         $blockers = $this->outboundBlockers($to, $from, $assistantId);
 
         if ($blockers !== []) {
@@ -52,6 +55,7 @@ class TelnyxVoiceCallService
                 'assistant_mode' => $data['assistant_mode'] ?? 'robbie_ai',
                 'source' => $data['source'] ?? ($dynamicVariables['source'] ?? 'voice_outbound'),
                 'telnyx_command_ids' => ['dial' => $dialCommandId],
+                'voice_routing' => $numberPolicy,
             ],
         ]);
 
@@ -105,6 +109,7 @@ class TelnyxVoiceCallService
     public function outboundBlockers(?string $to = null, ?string $from = null, ?string $assistantId = null): array
     {
         $settings = $this->settings->all();
+        $numberPolicy = $this->numbers->forNumber($from ?? (string) config('services.telnyx.from_number', ''));
         $blockers = [];
 
         if (strtolower((string) config('services.voice.provider', 'telnyx')) !== 'telnyx') {
@@ -112,6 +117,8 @@ class TelnyxVoiceCallService
         }
         if (! ($settings['enabled'] ?? false)) {
             $blockers[] = 'Telnyx voice is disabled.';
+        } elseif (! $numberPolicy['enabled']) {
+            $blockers[] = 'AI calling is disabled for the selected phone number.';
         }
         if ($this->apiKey() === '') {
             $blockers[] = 'TELNYX_API_KEY is not configured.';
@@ -119,7 +126,7 @@ class TelnyxVoiceCallService
         if (! filled(config('services.telnyx.voice.connection_id'))) {
             $blockers[] = 'TELNYX_VOICE_CONNECTION_ID is not configured.';
         }
-        if (($assistantId ?? (string) ($settings['assistant_id'] ?? '')) === '') {
+        if (($assistantId ?? (string) ($numberPolicy['assistant_id'] ?? '')) === '') {
             $blockers[] = 'TELNYX_VOICE_ASSISTANT_ID is not configured.';
         }
         if (($from ?? $this->resolver->normalize((string) config('services.telnyx.from_number', ''))) === '') {
@@ -129,12 +136,15 @@ class TelnyxVoiceCallService
             $blockers[] = 'TELNYX_VOICE_WEBHOOK_URL is not configured.';
         }
 
-        if ((bool) config('services.voice.canary_mode', true)) {
+        $mode = $this->settings->outboundMode($settings);
+        if ($mode === 'none') {
+            $blockers[] = 'Outbound calling is turned off.';
+        } elseif ($mode === 'canary') {
             $allowed = $this->canaryNumbers();
             if ($allowed === []) {
-                $blockers[] = 'VOICE_CANARY_NUMBERS is empty while canary mode is enabled.';
+                $blockers[] = 'No canary numbers are allowlisted.';
             } elseif ($to !== null && $to !== '' && ! in_array($this->resolver->normalize($to), $allowed, true)) {
-                $blockers[] = 'The destination is not allowlisted in VOICE_CANARY_NUMBERS.';
+                $blockers[] = 'The destination is not allowlisted for canary outbound.';
             }
         }
 
@@ -144,9 +154,11 @@ class TelnyxVoiceCallService
     /** @return list<string> */
     public function canaryNumbers(): array
     {
+        $settings = $this->settings->all();
+
         return array_values(array_unique(array_filter(array_map(
             fn ($number) => $this->resolver->normalize((string) $number),
-            (array) config('services.voice.canary_numbers', []),
+            (array) ($settings['canary_numbers'] ?? config('services.voice.canary_numbers', [])),
         ))));
     }
 
@@ -188,6 +200,16 @@ class TelnyxVoiceCallService
             if (! empty($metadata['assistant_started_at'])) {
                 return true;
             }
+            if (! $this->numbers->aiEnabledForCall($voiceCall)) {
+                $this->recordCommandStatus($voiceCall, 'ai_assistant_start', false, error: 'voice_ai_disabled');
+
+                return false;
+            }
+            if (! filled($voiceCall->assistant_id)) {
+                $this->recordCommandStatus($voiceCall, 'ai_assistant_start', false, error: 'missing_assistant_id');
+
+                return false;
+            }
 
             $commandId = $this->commandIdFor($voiceCall, 'ai_assistant_start');
             $result = $this->callActionResult($voiceCall, 'ai_assistant_start', [
@@ -204,6 +226,7 @@ class TelnyxVoiceCallService
                 $voiceCall->forceFill([
                     'telnyx_conversation_id' => $result['data']['conversation_id'] ?? $voiceCall->telnyx_conversation_id,
                     'ai_current_state' => 'active',
+                    'handled_by' => 'ai',
                     'metadata' => array_merge($metadata, [
                         'assistant_started_at' => now()->toIso8601String(),
                         'assistant_dynamic_variables' => $dynamicVariables,
@@ -237,61 +260,107 @@ class TelnyxVoiceCallService
         return $this->callAction($voiceCall, 'transfer', ['to' => $this->resolver->normalize($to)]);
     }
 
-    public function setRecordingConsent(VoiceCall $voiceCall, bool $consented): array
+    public function setRecordingConsent(VoiceCall $voiceCall, bool $consented, ?string $operationId = null): array
     {
-        $metadata = $voiceCall->metadata ?? [];
-        $metadata['recording_consent'] = [
-            'consented' => $consented,
-            'recorded_at' => now()->toIso8601String(),
-        ];
-        $wasRecording = ! empty($metadata['recording_started_at']);
-
-        $voiceCall->forceFill([
-            'recording_consent_given' => $consented,
-            'recording_provider' => $consented ? 'telnyx' : null,
-            'recording_url' => $consented ? $voiceCall->recording_url : null,
-            'metadata' => $metadata,
-        ])->save();
-
-        if (! $consented) {
-            if ($wasRecording) {
-                $stopped = $this->callAction($voiceCall, 'record_stop');
-                if ($stopped) {
-                    $voiceCall->refresh();
-                    $metadata = $voiceCall->metadata ?? [];
-                    unset($metadata['recording_started_at']);
-                    $metadata['recording_stopped_at'] = now()->toIso8601String();
-                    $voiceCall->forceFill(['metadata' => $metadata])->save();
+        return Cache::lock('voice-recording-control:'.$voiceCall->id, 75)->block(5, function () use ($voiceCall, $consented, $operationId): array {
+            $voiceCall->refresh();
+            $this->updateRecordingState($voiceCall, function (array $metadata) use ($consented, $operationId): array {
+                if (($metadata['recording_consent']['consented'] ?? null) !== $consented) {
+                    $metadata['recording_consent'] = ['consented' => $consented, 'recorded_at' => now()->toIso8601String()];
                 }
+                if ($operationId) {
+                    $metadata['recording_consent']['operation_id'] = $operationId;
+                }
+
+                return $metadata;
+            }, ['recording_consent_given' => $consented, 'recording_provider' => $consented ? 'telnyx' : null,
+                'recording_url' => $consented ? $voiceCall->recording_url : null]);
+            if (! $consented) {
+                return $this->performRecordingStop($voiceCall);
+            }
+            $metadata = $voiceCall->metadata ?? [];
+            if (! empty($metadata['recording_stop_pending'])) {
+                throw new RuntimeException('The previous stop is not confirmed. Retry stopping before starting a new recording.');
+            }
+            if (! empty($metadata['recording_started_at'])) {
+                return ['recording' => true, 'consented' => true, 'reason' => null];
+            }
+            if (! $this->recordingEnabled()) {
+                return ['recording' => false, 'consented' => true, 'reason' => 'recording_disabled'];
+            }
+            abort_if($voiceCall->ended_at, 409, 'This call has ended.');
+            $generation = (int) ($metadata['recording_generation'] ?? 0);
+            $commandId = $this->commandIdFor($voiceCall, 'record_start:'.$generation);
+            $this->updateRecordingState($voiceCall, fn (array $state): array => array_merge($state, ['recording_start_pending' => true]));
+            $result = $this->callActionResult($voiceCall, 'record_start', ['format' => 'mp3', 'channels' => 'dual'], $commandId);
+            if ($result['ok']) {
+                $this->updateRecordingState($voiceCall, fn (array $state): array => array_merge($state, [
+                    'recording_started_at' => now()->toIso8601String(), 'recording_start_pending' => false,
+                ]));
             }
 
-            return ['recording' => false, 'consented' => false];
+            return ['recording' => $result['ok'], 'consented' => true, 'reason' => $result['ok'] ? null : 'recording_start_failed'];
+        });
+    }
+
+    /** Stop both media captures independently; a failed stop must remain retryable. */
+    public function stopRecording(VoiceCall $voiceCall, ?string $operationId = null): array
+    {
+        return Cache::lock('voice-recording-control:'.$voiceCall->id, 75)->block(5, fn (): array => $this->performRecordingStop($voiceCall));
+    }
+
+    private function performRecordingStop(VoiceCall $voiceCall): array
+    {
+        $voiceCall->refresh();
+        $metadata = $voiceCall->metadata ?? [];
+        $recording = ! empty($metadata['recording_started_at']) || ! empty($metadata['recording_start_pending']);
+        $transcribing = ! empty($metadata['browser_transcription_enabled']) || ! empty($metadata['browser_transcription_pending']);
+        $pending = ! empty($metadata['recording_stop_pending']);
+        $generation = (int) ($metadata['recording_generation'] ?? 0);
+        if (! $recording && ! $transcribing && ! $pending) {
+            return ['recording' => false, 'consented' => $voiceCall->recording_consent_given, 'reason' => null];
         }
+        $this->updateRecordingState($voiceCall, fn (array $state): array => array_merge($state, ['recording_stop_pending' => true]));
+        $failures = [];
+        foreach (['record_stop' => $recording, 'transcription_stop' => $transcribing] as $action => $needed) {
+            if (! $needed) {
+                continue;
+            }
+            $result = $this->callActionResult($voiceCall, $action, [], $this->commandIdFor($voiceCall, $action.':'.$generation));
+            if (! $result['ok']) {
+                $failures[] = $action;
 
-        if ($wasRecording) {
-            return ['recording' => true, 'consented' => true, 'reason' => null];
+                continue;
+            }
+            $this->updateRecordingState($voiceCall, function (array $state) use ($action): array {
+                if ($action === 'record_stop') {
+                    unset($state['recording_started_at']);
+                    $state['recording_start_pending'] = false;
+                    $state['recording_stopped_at'] = now()->toIso8601String();
+                } else {
+                    $state['browser_transcription_enabled'] = false;
+                    $state['browser_transcription_pending'] = false;
+                }
+
+                return $state;
+            });
         }
-
-        if (! $this->recordingEnabled()) {
-            return ['recording' => false, 'consented' => true, 'reason' => 'recording_disabled'];
+        if ($failures !== []) {
+            throw new RuntimeException('The provider did not confirm '.implode(' and ', array_map(fn ($action) => $action === 'record_stop' ? 'recording stopped' : 'transcription stopped', $failures)).'. Retry stopping the capture.');
         }
+        $this->updateRecordingState($voiceCall, fn (array $state): array => array_merge($state, [
+            'recording_stop_pending' => false, 'recording_generation' => $generation + 1,
+        ]));
 
-        $ok = $this->callAction($voiceCall, 'record_start', [
-            'format' => 'mp3',
-            'channels' => 'dual',
-        ]);
+        return ['recording' => false, 'consented' => $voiceCall->recording_consent_given, 'reason' => null];
+    }
 
-        if ($ok) {
+    private function updateRecordingState(VoiceCall $voiceCall, callable $change, array $fields = []): void
+    {
+        LockedWrite::run(function () use ($voiceCall, $change, $fields): void {
             $voiceCall->refresh();
-            $voiceCall->forceFill([
-                'recording_provider' => 'telnyx',
-                'metadata' => array_merge($voiceCall->metadata ?? [], [
-                    'recording_started_at' => now()->toIso8601String(),
-                ]),
-            ])->save();
-        }
-
-        return ['recording' => $ok, 'consented' => true, 'reason' => $ok ? null : 'recording_start_failed'];
+            $voiceCall->forceFill(array_merge($fields, ['metadata' => $change($voiceCall->metadata ?? [])]))->save();
+        }, 'voice-recording-state');
     }
 
     public function gatherUsingSpeak(VoiceCall $voiceCall, ?string $prompt = null): bool

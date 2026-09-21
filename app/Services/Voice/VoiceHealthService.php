@@ -48,22 +48,25 @@ class VoiceHealthService
                     'assistant_id' => $voiceSettings['assistant_id'] ?? null,
                     'missing_tools' => [],
                     'extra_webhook_tools' => [],
-                    'canary_route_status' => (bool) config('services.voice.canary_mode', true) ? 'unknown' : 'not_required',
+                    'canary_route_status' => $this->settings->outboundMode($voiceSettings) === 'canary' ? 'unknown' : 'not_required',
                 ];
             }
         }
 
+        $outboundMode = $this->settings->outboundMode($voiceSettings);
         $blockers = $provider === 'telnyx'
             ? $this->telnyxCalls->outboundBlockers()
             : $this->vapiBlockers();
-        if ($provider === 'telnyx' && $assistantError) {
-            $blockers[] = 'The configured Telnyx assistant could not be inspected.';
-        } elseif ($provider === 'telnyx' && ($assistant['status'] ?? null) !== 'synced') {
-            $blockers[] = 'The Telnyx assistant tools, policy, or recording settings are not synchronized.';
+        if ($outboundMode !== 'all') {
+            if ($provider === 'telnyx' && $assistantError) {
+                $blockers[] = 'The configured Telnyx assistant could not be inspected.';
+            } elseif ($provider === 'telnyx' && ($assistant['status'] ?? null) !== 'synced') {
+                $blockers[] = 'The Telnyx assistant tools, policy, or recording settings are not synchronized.';
+            }
         }
         if (
             $provider === 'telnyx'
-            && (bool) config('services.voice.canary_mode', true)
+            && $outboundMode === 'canary'
             && ($assistant['canary_route_status'] ?? null) !== 'routed'
         ) {
             $blockers[] = 'The allowlisted canary numbers are not routed to a synchronized assistant version.';
@@ -75,8 +78,9 @@ class VoiceHealthService
             'enabled' => (bool) ($voiceSettings['enabled'] ?? false),
             'can_place_calls' => $blockers === [],
             'readiness_blockers' => $blockers,
-            'canary_mode' => (bool) config('services.voice.canary_mode', true),
-            'canary_number_count' => count((array) config('services.voice.canary_numbers', [])),
+            'outbound_mode' => $outboundMode,
+            'canary_mode' => $outboundMode === 'canary',
+            'canary_number_count' => count($this->telnyxCalls->canaryNumbers()),
             'webhook_url_configured' => filled($voiceSettings['webhook_url'] ?? null),
             'webhook_url' => $voiceSettings['webhook_url'] ?? null,
             'telnyx_carrier' => [
