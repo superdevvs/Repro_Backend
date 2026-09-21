@@ -13,6 +13,7 @@ use App\Services\Invoices\InvoiceAdjustmentService;
 use App\Services\Invoices\InvoicePricingBreakdown;
 use App\Services\Messaging\AutomationService;
 use App\Services\Schedule\ScheduleInstantResolver;
+use App\Services\Shoots\ShootMutationSupportService;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -784,6 +785,7 @@ class InvoiceService
         $shoots = Shoot::with([
             'service.sqftRanges',
             'services' => fn ($query) => $query->withPivot(['price', 'quantity', 'photographer_pay', 'photographer_id']),
+            'client:id,name,created_by_id,metadata,role',
             'rep:id,name,email,role,secondary_roles,metadata,account_status',
         ])
             ->where(function ($query) {
@@ -795,13 +797,13 @@ class InvoiceService
                 $end->copy()->endOfDay()->toDateTimeString(),
             ])
             ->where('sales_rep_pay_enabled', true)
-            ->whereNotNull('rep_id')
             ->whereNotIn('workflow_status', [
                 Shoot::STATUS_ON_HOLD,
                 Shoot::STATUS_CANCELLED,
                 Shoot::STATUS_DECLINED,
             ])
             ->get();
+        $shoots = $this->assignMissingSalesReps($shoots);
 
         return DB::transaction(function () use ($shoots, $start, $end, $sendEmails) {
             $this->acquirePayoutGenerationLock(Invoice::ROLE_SALES_REP, $start, $end);
@@ -1256,6 +1258,36 @@ class InvoiceService
             'address' => $shoot->address,
             'message' => $message,
         ], $extra);
+    }
+
+    private function assignMissingSalesReps(Collection $shoots): Collection
+    {
+        $support = app(ShootMutationSupportService::class);
+
+        return $shoots
+            ->map(function (Shoot $shoot) use ($support) {
+                if ($shoot->rep_id) {
+                    return $shoot;
+                }
+
+                $clientId = (int) ($shoot->client_id ?? 0);
+                if ($clientId <= 0) {
+                    return $shoot;
+                }
+
+                $resolvedRepId = $support->getClientRep($clientId);
+                if (! $resolvedRepId) {
+                    return $shoot;
+                }
+
+                $shoot->rep_id = $resolvedRepId;
+                $shoot->save();
+                $shoot->setRelation('rep', User::query()->find($resolvedRepId));
+
+                return $shoot;
+            })
+            ->filter(fn (Shoot $shoot) => $shoot->rep_id)
+            ->values();
     }
 
     private function isActiveSalesRep(?User $user): bool

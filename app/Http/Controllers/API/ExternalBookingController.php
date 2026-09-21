@@ -456,14 +456,11 @@ class ExternalBookingController extends Controller
     }
 
     /**
-     * Get client's rep from most recent shoot.
+     * Get client's sales rep from account metadata, prior shoots, or creator.
      */
     protected function getClientRep(int $clientId): ?int
     {
-        return Shoot::where('client_id', $clientId)
-            ->whereNotNull('rep_id')
-            ->orderBy('created_at', 'desc')
-            ->value('rep_id');
+        return $this->shootSupport->getClientRep($clientId);
     }
 
 }

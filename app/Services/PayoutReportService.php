@@ -6,6 +6,7 @@ use App\Models\EditorPayout;
 use App\Models\Shoot;
 use App\Models\ShootCompensation;
 use App\Models\User;
+use App\Services\Shoots\ShootMutationSupportService;
 use App\Support\ReportingWeek;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -157,13 +158,13 @@ class PayoutReportService
                 $end->copy()->endOfDay()->toDateTimeString(),
             ])
             ->where('sales_rep_pay_enabled', true)
-            ->whereNotNull('rep_id')
             ->whereNotIn('workflow_status', [
                 Shoot::STATUS_ON_HOLD,
                 Shoot::STATUS_CANCELLED,
                 Shoot::STATUS_DECLINED,
             ])
             ->get();
+        $shoots = $this->resolveMissingSalesReps($shoots);
 
         $compensations = ShootCompensation::query()
             ->where('recipient_type', ShootCompensation::RECIPIENT_SALES_REP)
@@ -298,6 +299,29 @@ class PayoutReportService
             'nominal_period_basis' => 'shoot_schedule',
             'cost_period_basis' => 'earned_or_completed',
         ];
+    }
+
+    private function resolveMissingSalesReps(Collection $shoots): Collection
+    {
+        $support = app(ShootMutationSupportService::class);
+
+        return $shoots->map(function (Shoot $shoot) use ($support) {
+            if ($shoot->rep_id) {
+                return $shoot;
+            }
+
+            $clientId = (int) ($shoot->client_id ?? 0);
+            if ($clientId <= 0) {
+                return $shoot;
+            }
+
+            $resolvedRepId = $support->getClientRep($clientId);
+            if ($resolvedRepId) {
+                $shoot->setAttribute('rep_id', $resolvedRepId);
+            }
+
+            return $shoot;
+        });
     }
 
     private function isActiveSalesRep(?User $user): bool

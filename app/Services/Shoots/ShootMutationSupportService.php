@@ -148,12 +148,75 @@ class ShootMutationSupportService
 
     public function getClientRep(int $clientId): ?int
     {
+        $client = User::query()->find($clientId);
+        if (! $client) {
+            return null;
+        }
+
+        $metadataRepId = $this->extractMetadataSalesRepId($client);
+        if ($this->salesRepIdOrNull($metadataRepId) !== null) {
+            return $metadataRepId;
+        }
+
         $mostRecentShoot = Shoot::where('client_id', $clientId)
             ->whereNotNull('rep_id')
             ->orderBy('created_at', 'desc')
             ->first();
+        if ($this->salesRepIdOrNull($mostRecentShoot?->rep_id) !== null) {
+            return (int) $mostRecentShoot->rep_id;
+        }
 
-        return $mostRecentShoot?->rep_id;
+        return $this->salesRepIdOrNull($client->created_by_id);
+    }
+
+    private function extractMetadataSalesRepId(User $client): ?int
+    {
+        $metadata = is_array($client->metadata) ? $client->metadata : [];
+        $rawRepId = $metadata['accountRepId']
+            ?? $metadata['account_rep_id']
+            ?? $metadata['repId']
+            ?? $metadata['rep_id']
+            ?? null;
+
+        if ($rawRepId === null || $rawRepId === '' || ! is_numeric($rawRepId)) {
+            return null;
+        }
+
+        return (int) $rawRepId;
+    }
+
+    private function salesRepIdOrNull(mixed $userId): ?int
+    {
+        if ($userId === null || $userId === '' || ! is_numeric($userId)) {
+            return null;
+        }
+
+        $user = User::query()->find((int) $userId);
+        if (! $this->isSalesRepUser($user)) {
+            return null;
+        }
+
+        return (int) $user->id;
+    }
+
+    private function isSalesRepUser(?User $user): bool
+    {
+        if (! $user) {
+            return false;
+        }
+
+        $normalizedRoles = ['salesrep', 'sales_rep'];
+        $primaryRole = strtolower((string) $user->role);
+        if (in_array($primaryRole, $normalizedRoles, true)) {
+            return true;
+        }
+
+        $secondaryRoles = is_array($user->secondary_roles) ? $user->secondary_roles : [];
+
+        return collect($secondaryRoles)
+            ->map(fn ($role) => strtolower((string) $role))
+            ->intersect($normalizedRoles)
+            ->isNotEmpty();
     }
 
     public function checkPhotographerAvailability(
