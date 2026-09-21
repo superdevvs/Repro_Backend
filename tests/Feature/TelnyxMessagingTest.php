@@ -397,6 +397,46 @@ class TelnyxMessagingTest extends TestCase
         $response->assertStatus(403);
     }
 
+    public function test_schema_guard_restores_missing_delivery_columns_so_inbound_sms_saves(): void
+    {
+        $this->skipIfNoSodium();
+        $this->createDefaultSmsNumber();
+
+        Schema::table('messages', function (Blueprint $table) {
+            $table->dropColumn(['delivered_at', 'error_message']);
+        });
+        $this->assertFalse(Schema::hasColumn('messages', 'delivered_at'));
+        $this->assertFalse(Schema::hasColumn('messages', 'error_message'));
+
+        $migration = require database_path('migrations/2026_09_20_160000_ensure_delivered_at_and_error_message_on_messages.php');
+        $this->assertInstanceOf(\Illuminate\Database\Migrations\Migration::class, $migration);
+        $migration->up();
+
+        $this->assertTrue(Schema::hasColumn('messages', 'delivered_at'));
+        $this->assertTrue(Schema::hasColumn('messages', 'error_message'));
+
+        $payload = [
+            'data' => [
+                'id' => 'evt_inbound_guard',
+                'event_type' => 'message.received',
+                'payload' => [
+                    'id' => 'msg_inbound_guard',
+                    'from' => ['phone_number' => '+12025550177'],
+                    'to' => [['phone_number' => '+18883426998']],
+                    'text' => 'Reply after schema repair',
+                ],
+            ],
+        ];
+
+        $response = $this->postSignedTelnyx('/api/webhooks/telnyx/messaging', $payload);
+        $response->assertOk();
+
+        $message = Message::where('provider_message_id', 'msg_inbound_guard')->first();
+        $this->assertNotNull($message);
+        $this->assertSame('INBOUND', $message->direction);
+        $this->assertNotNull($message->delivered_at);
+    }
+
     private function bindThrowingTelnyxProviderMock(\Throwable $error): void
     {
         $mock = Mockery::mock(TelnyxSmsProvider::class);
