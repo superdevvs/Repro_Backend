@@ -418,7 +418,7 @@ class ShootAuthorizationSupport
             return false;
         }
         $user = $user ?? auth()->user();
-        if (! $this->canAccessShootMedia($shoot, $user)) {
+        if (! $this->canDownloadShootMedia($shoot, $user)) {
             return false;
         }
 
@@ -443,6 +443,18 @@ class ShootAuthorizationSupport
         }
 
         return true;
+    }
+
+    /** Sales visibility across shoots does not grant download rights without assignment. */
+    public function canDownloadShootMedia(Shoot $shoot, ?User $user = null): bool
+    {
+        $user = $user ?? auth()->user();
+        if (! $this->canAccessShootMedia($shoot, $user)) {
+            return false;
+        }
+
+        return ! $this->hasRole($user, ['salesRep'])
+            || ($shoot->rep_id !== null && (string) $shoot->rep_id === (string) $user->id);
     }
 
     public function canEditorDownloadRawFile(Shoot $shoot, ShootFile $file, User $editor): bool

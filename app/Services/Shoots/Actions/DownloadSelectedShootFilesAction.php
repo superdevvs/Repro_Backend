@@ -26,7 +26,7 @@ class DownloadSelectedShootFilesAction
 
     public function execute(Request $request, Shoot $shoot, ?User $user)
     {
-        if (! $this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+        if (! $this->shootAuthorizationSupport->canDownloadShootMedia($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 

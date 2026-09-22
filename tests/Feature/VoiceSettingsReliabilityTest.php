@@ -47,9 +47,16 @@ class VoiceSettingsReliabilityTest extends TestCase
 
     public function test_timezone_alias_from_application_defaults_can_be_saved_and_read_back(): void
     {
-        config(['app.timezone' => 'Asia/Calcutta']);
         $this->actingAs(User::factory()->create(['role' => 'admin']), 'sanctum');
-        $defaults = app(VoiceSettingsService::class)->all();
+        $runtimeTimezone = config('app.timezone');
+        try {
+            config(['app.timezone' => 'Asia/Calcutta']);
+            $defaults = app(VoiceSettingsService::class)->all();
+        } finally {
+            // Exercise the legacy voice default without leaving Laravel's request
+            // lifecycle on an OS timezone alias that this host may not install.
+            config(['app.timezone' => $runtimeTimezone]);
+        }
         $this->assertSame('Asia/Kolkata', $defaults['business_hours']['timezone']);
         $this->assertSame('Asia/Kolkata', $defaults['quiet_hours']['timezone']);
         $this->patchJson('/api/voice/settings', [

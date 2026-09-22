@@ -25,7 +25,7 @@ class DownloadShootMediaZipAction
     {
         $user = $request->user();
 
-        if (!$this->shootAuthorizationSupport->canAccessShootMedia($shoot, $user)) {
+        if (!$this->shootAuthorizationSupport->canDownloadShootMedia($shoot, $user)) {
             return response()->json(['message' => 'Forbidden'], 403);
         }
 
