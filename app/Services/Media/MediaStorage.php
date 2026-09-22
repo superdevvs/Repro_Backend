@@ -6,6 +6,7 @@ use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
+use League\Flysystem\UnableToRetrieveMetadata;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -613,7 +614,7 @@ class MediaStorage
             abort(404);
         }
 
-        $mime = $mimeType ?: ($disk->mimeType($key) ?: 'application/octet-stream');
+        $mime = $mimeType ?: ($headers['Content-Type'] ?? $this->responseMimeType($disk, $key));
 
         return response()->stream(function () use ($disk, $key) {
             $stream = $disk->readStream($key);
@@ -639,9 +640,21 @@ class MediaStorage
             abort(404);
         }
 
+        $headers['Content-Type'] ??= $this->responseMimeType($disk, $key);
+
         return $disk->download($key, $filename, array_merge([
             'Cache-Control' => 'private, no-store',
             'X-Content-Type-Options' => 'nosniff',
         ], $headers));
+    }
+
+    /** MIME detection is optional; strict storage read/write errors must still propagate. */
+    private function responseMimeType(Filesystem $disk, string $key): string
+    {
+        try {
+            return $disk->mimeType($key) ?: 'application/octet-stream';
+        } catch (UnableToRetrieveMetadata) {
+            return 'application/octet-stream';
+        }
     }
 }
