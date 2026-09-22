@@ -14,6 +14,7 @@ use App\Services\InvoiceService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Schedule\ScheduleDateScopeService;
+use App\Services\Schedule\ShootScheduleUpdateInput;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ReturnVisitBookingService;
 use App\Services\Shoots\ShootAuthorizationSupport;
@@ -242,6 +243,10 @@ class UpdateShootAction
             ]
         ));
 
+        // Overview submits local date/time even when only a client/address changes.
+        // Resolve those fields once using the shoot's zone, then share the instant.
+        $validated = app(ShootScheduleUpdateInput::class)->normalize($shoot, $validated);
+
         $complimentaryServiceOptions = $validated['complimentary_service_options'] ?? null;
         if (is_array($complimentaryServiceOptions)
             && ! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)) {
@@ -348,6 +353,20 @@ class UpdateShootAction
                 ? new \DateTime((string) $availabilityPayload['scheduled_at'])
                 : ($shoot->scheduled_at ? new \DateTime($shoot->scheduled_at->format('Y-m-d H:i:s')) : null);
             $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $availabilityPayload, $user);
+
+            // Availability windows are local clocks, while zoned bookings persist UTC instants.
+            $scheduleTimezone = trim((string) (array_key_exists('timezone', $validated) ? $validated['timezone'] : $shoot->timezone));
+            if ($scheduleTimezone !== '') {
+                $zone = new \DateTimeZone($scheduleTimezone);
+                $targetScheduledAt?->setTimezone($zone);
+                $targetServices = array_map(function (array $service) use ($zone) {
+                    if (! empty($service['scheduled_at'])) {
+                        $service['scheduled_at'] = Carbon::parse($service['scheduled_at'])->setTimezone($zone)->toIso8601String();
+                    }
+
+                    return $service;
+                }, $targetServices);
+            }
 
             if ($targetPhotographerId && $targetScheduledAt) {
                 $this->support->assertWithinAvailabilityBounds(

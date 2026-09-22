@@ -99,7 +99,7 @@ class TestShootService
             'client_id'          => $this->resolveSystemClientId(),
             'address'            => $this->placeholderAddress($area),
             'city'               => '',
-            'state'              => $area['kind'] === 'state' ? $area['value'] : '',
+            'state'              => $this->placeholderState($area),
             'zip'                => '',
             'base_quote'         => 0,
             'tax_amount'         => 0,
@@ -164,5 +164,18 @@ class TestShootService
     private function placeholderAddress(array $area): string
     {
         return 'Test_Shoot ('.$area['kind'].': '.$area['value'].')';
+    }
+
+    /**
+     * Keep the editable property state within its two-letter contract. The
+     * service-area value may be a full name and remains unchanged for matching.
+     *
+     * @param  array{kind: string, value: string}  $area
+     */
+    private function placeholderState(array $area): string
+    {
+        $state = $area['kind'] === 'state' ? strtoupper(trim($area['value'])) : '';
+
+        return preg_match('/^[A-Z]{2}$/D', $state) === 1 ? $state : '';
     }
 }

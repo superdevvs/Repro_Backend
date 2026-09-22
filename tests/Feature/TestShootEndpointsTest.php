@@ -6,6 +6,7 @@ use App\Models\ServiceArea;
 use App\Models\Shoot;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -67,6 +68,36 @@ class TestShootEndpointsTest extends TestCase
             'service_area_kind'  => 'state',
             'service_area_value' => 'NY',
         ]);
+    }
+
+    public function test_named_state_scope_can_be_edited_with_blank_property_location_without_changing_eligibility(): void
+    {
+        Queue::fake();
+        $matching = $this->photographer([['kind' => 'state', 'value' => 'Maryland']]);
+        $this->photographer([['kind' => 'state', 'value' => 'MD']]);
+        Sanctum::actingAs($this->admin());
+
+        $created = $this->postJson('/api/admin/test-shoots', [
+            'kind' => 'state', 'value' => 'Maryland',
+            'scheduled_at' => '2026-09-23T10:00:00', 'timezone' => 'America/New_York',
+        ])->assertCreated()->assertJsonPath('shoot.service_area_value', 'Maryland');
+        $shoot = Shoot::findOrFail($created->json('shoot.id'));
+        $this->assertSame('', $shoot->state);
+
+        $this->patchJson('/api/shoots/'.$shoot->id, [
+            'address' => $shoot->address, 'city' => $shoot->city,
+            'state' => $shoot->state, 'zip' => $shoot->zip, 'notify_client' => false,
+        ])->assertOk();
+        $this->assertDatabaseHas('shoots', [
+            'id' => $shoot->id, 'city' => '', 'state' => '', 'zip' => '',
+            'service_area_kind' => 'state', 'service_area_value' => 'Maryland',
+            'shoot_type' => Shoot::SHOOT_TYPE_INTERNAL_TEST,
+        ]);
+
+        $this->getJson('/api/admin/test-shoots/'.$shoot->id.'/eligible-photographers')
+            ->assertOk()->assertJsonPath('service_area.value', 'Maryland')
+            ->assertJsonCount(1, 'photographers')
+            ->assertJsonPath('photographers.0.id', $matching->id);
     }
 
     public function test_local_simulator_time_round_trips_across_summer_winter_and_dst_boundaries(): void

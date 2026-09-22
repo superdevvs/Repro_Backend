@@ -89,6 +89,32 @@ class TestShootServiceTest extends TestCase
     }
 
     #[Test]
+    public function property_state_placeholder_accepts_only_two_letters_without_changing_the_scope(): void
+    {
+        foreach ([
+            ['state', 'NY', 'NY'],
+            ['state', ' md ', 'MD'],
+            ['state', 'Maryland', ''],
+            ['state', 'M1', ''],
+            ['state', 'M', ''],
+            ['state', 'Mé', ''],
+            ['region', 'MD', ''],
+            ['area', 'NY', ''],
+        ] as [$kind, $value, $expectedState]) {
+            $shoot = $this->makeService()->create(
+                ['kind' => $kind, 'value' => $value],
+                CarbonImmutable::parse('2026-09-23T14:00:00Z'),
+                'America/New_York',
+            )->refresh();
+
+            $this->assertSame($expectedState, $shoot->state);
+            $this->assertSame($kind, $shoot->service_area_kind);
+            $this->assertSame($value, $shoot->service_area_value);
+            $this->assertSame('Test_Shoot ('.$kind.': '.$value.')', $shoot->address);
+        }
+    }
+
+    #[Test]
     public function eligible_photographers_delegates_to_service_area_matcher(): void
     {
         $matching = $this->photographerWithAreas(1, [['kind' => 'state', 'value' => 'NY']]);
