@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -41,6 +44,11 @@ jobs:
 
       - name: Audit locked dependencies
         run: composer audit --locked
+
+      - name: Install PDF rendering dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y poppler-utils
 
       - name: Wait for ClamAV
         shell: bash
