@@ -43,7 +43,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
     public function handle(ShootActivityLogger $activityLogger): void
     {
         $shoot = Shoot::find($this->shootId);
-        if (!$shoot) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
         if (empty($this->floorplans)) {

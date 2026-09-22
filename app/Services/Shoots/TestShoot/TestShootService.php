@@ -57,6 +57,8 @@ class TestShootService
      */
     public function create(array $area, CarbonImmutable $when, string $timezone): Shoot
     {
+        $when = $when->setTimezone('UTC');
+
         // The local calendar day is computed in the region timezone, but
         // `scheduled_at` is persisted as the absolute instant — letting
         // Eloquent's datetime cast round-trip through UTC without shifting

@@ -102,8 +102,20 @@ class DeleteShootAction
         }
 
         $shootId = $shoot->id;
+        if ($shoot->isInternalTestShoot()) {
+            // Foreign keys are nulled on delete. Cancel old outbound work while
+            // its test-shoot ownership can still be identified.
+            \App\Models\Message::query()->where('related_shoot_id', $shootId)
+                ->where('status', 'SCHEDULED')
+                ->update(['status' => 'CANCELLED', 'error_message' => 'Internal test: external message suppressed']);
+            \App\Models\SystemEmailDispatch::query()->where('related_shoot_id', $shootId)
+                ->whereIn('status', ['pending', 'failed'])
+                ->update(['status' => 'suppressed', 'error_code' => 'internal_test_shoot']);
+        }
         $shoot->delete();
-        $this->googleCalendarSyncDispatcher->dispatchShootRemoval($shootId);
+        if (! $shoot->isInternalTestShoot()) {
+            $this->googleCalendarSyncDispatcher->dispatchShootRemoval($shootId);
+        }
 
         return [
             'shoot_id' => $shootId,

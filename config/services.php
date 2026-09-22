@@ -28,6 +28,8 @@ return [
         'secret_key' => env('STRIPE_SECRET_KEY'),
         'publishable_key' => env('STRIPE_PUBLISHABLE_KEY'),
         'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+        // Keep this stable across deploys; distinct applications sharing Stripe need distinct values.
+        'app_instance' => env('STRIPE_APP_INSTANCE', 'reprodashboard-'.env('APP_ENV', 'production')),
         'currency' => env('STRIPE_CURRENCY', 'USD'),
     ],
 

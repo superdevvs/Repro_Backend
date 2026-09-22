@@ -53,7 +53,7 @@ class SyncShootIguideJob implements ShouldQueue, ShouldBeUnique
     public function handle(IguideService $iguideService): void
     {
         $shoot = Shoot::with('services.category')->find($this->shootId);
-        if (!$shoot) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 

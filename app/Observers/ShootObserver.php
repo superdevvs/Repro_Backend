@@ -78,6 +78,10 @@ class ShootObserver
      */
     private function ensureCubiCasaOrder(Shoot $shoot): void
     {
+        if ($shoot->isInternalTestShoot()) {
+            return;
+        }
+
         // Only react to a transition, and order the cheap checks before the
         // relationship query that hasCubiCasaEligibleService() performs.
         if (!$shoot->wasChanged('scheduled_at')
@@ -151,6 +155,10 @@ class ShootObserver
      */
     private function ensureIguideDiscovery(Shoot $shoot): void
     {
+        if ($shoot->isInternalTestShoot()) {
+            return;
+        }
+
         if (!$shoot->wasChanged('scheduled_at')
             && !$shoot->wasChanged('workflow_status')
             && !$shoot->wasChanged('status')

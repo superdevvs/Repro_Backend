@@ -417,6 +417,10 @@ class MailService
         ?bool $shouldNotifyPhotographer = true
     ): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -462,12 +466,20 @@ class MailService
 
     public function sendAssignedPhotographerShootScheduledEmails(Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         return $this->sendAssignedPhotographerShootScheduledEmailsWithRecipients($shoot) !== [];
     }
 
     /** @return array<int, string> Email addresses accepted by the delivery pipeline. */
     public function sendAssignedPhotographerShootScheduledEmailsWithRecipients(Shoot $shoot): array
     {
+        if ($shoot->isInternalTestShoot()) {
+            return [];
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -601,6 +613,10 @@ class MailService
         ?bool $notifyPhotographer = null
     ): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'service', 'services']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -730,6 +746,10 @@ class MailService
 
     public function sendShootRequestModifiedEmail(User $client, Shoot $shoot, ?string $changesSummary): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'payments.refunds', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -865,6 +885,10 @@ class MailService
         array $serviceItemIds = []
     ): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $clientCcEmails = $this->resolveShootCcEmailsForRecipient($shoot, $user);
@@ -953,6 +977,10 @@ class MailService
      */
     public function sendShootRemovedEmail(User $user, Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -1020,6 +1048,10 @@ class MailService
 
     public function sendShootRequestDeclinedEmail(User $user, Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -1066,6 +1098,10 @@ class MailService
 
     public function sendShootRequestedEmail(User $user, Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -1109,6 +1145,10 @@ class MailService
 
     public function sendShootRequestedAdminNotificationEmails(Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -1168,6 +1208,10 @@ class MailService
      */
     public function sendShootCancellationRequestedEmail(User $user, Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -1221,6 +1265,10 @@ class MailService
         bool $isFullOrderDelivery = true
     ): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category', 'payments']) ?? $shoot;
             $shootData = $this->formatShootData($shoot, $user, 'client', $serviceItemIds);
@@ -1283,6 +1331,10 @@ class MailService
      */
     public function sendPaymentConfirmationEmail(User $user, Shoot $shoot, Payment $payment): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shootData = $this->formatShootData($shoot);
             $paymentData = $this->formatPaymentData($payment);
@@ -1325,6 +1377,10 @@ class MailService
 
     public function sendPaymentCompletedEmail(User $user, Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'payments.refunds', 'services.category']) ?? $shoot;
             $summary = app(\App\Services\Payments\ShootPaymentEligibilityService::class)->summarize($shoot);
@@ -1914,6 +1970,7 @@ class MailService
 
         return (object) [
             'id' => $shoot->id,
+            'shoot_type' => $shoot->shoot_type,
             'location' => $fullAddress ?: 'TBD',
             'date' => $dateStr,
             'time' => $formattedTime ?? 'TBD',
@@ -2813,6 +2870,10 @@ class MailService
      */
     public function sendShootPaidEmail(User $user, Shoot $shoot, float $amount): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $payment = $shoot->payments()
                 ->where('status', Payment::STATUS_COMPLETED)
@@ -2848,6 +2909,10 @@ class MailService
      */
     public function sendShootCancelledEmail(User $user, Shoot $shoot): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $recipientType = (int) $user->id === (int) $shoot->client_id ? 'client' : 'photographer';
@@ -2923,6 +2988,10 @@ class MailService
         ?User $previousPhotographer = null,
         ?string $changesSummary = null
     ): bool {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $isAssignedAfterChange = $this->resolveAssignedPhotographers($shoot)
@@ -3902,6 +3971,10 @@ HTML;
      */
     public function sendOfflinePaymentIntentSubmittedEmail(Shoot $shoot, Payment $payment, ?User $submittedBy = null): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             $shootData = $this->formatShootData($shoot);
@@ -3987,6 +4060,10 @@ HTML;
      */
     public function sendOfflinePaymentIntentDeclinedEmail(Shoot $shoot, Payment $payment, ?string $reason = null): bool
     {
+        if ($shoot->isInternalTestShoot()) {
+            return false;
+        }
+
         try {
             $shoot = $shoot->fresh(['client', 'photographer', 'rep', 'services.category']) ?? $shoot;
             if (!$shoot->client || !filter_var($shoot->client->email, FILTER_VALIDATE_EMAIL)) {

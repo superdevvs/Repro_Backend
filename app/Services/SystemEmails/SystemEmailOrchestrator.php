@@ -4,6 +4,7 @@ namespace App\Services\SystemEmails;
 
 use App\Jobs\SendSystemEmailDispatchJob;
 use App\Models\SystemEmailDispatch;
+use App\Models\Shoot;
 use App\Services\Users\EmailHealthService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -27,6 +28,10 @@ class SystemEmailOrchestrator
      */
     public function send(string $emailAlias, array $payload, array $transport, array $options = []): array
     {
+        if ($this->isInternalTestShoot($payload, $transport)) {
+            return ['sent' => false, 'queued' => false, 'duplicate' => false, 'dispatch' => null, 'message_id' => null];
+        }
+
         $definition = $this->registry->definition($emailAlias);
         $this->guardRecipientType($definition, (string) ($transport['contact_type'] ?? ($payload['meta']['recipient_type'] ?? 'other')));
         $this->guardEmailHealth($emailAlias, $transport, $options);
@@ -100,6 +105,10 @@ class SystemEmailOrchestrator
      */
     public function queue(string $emailAlias, array $payload, array $transport, array $options = []): array
     {
+        if ($this->isInternalTestShoot($payload, $transport)) {
+            return ['sent' => false, 'queued' => false, 'duplicate' => false, 'dispatch' => null, 'message_id' => null];
+        }
+
         $definition = $this->registry->definition($emailAlias);
         $this->guardRecipientType($definition, (string) ($transport['contact_type'] ?? ($payload['meta']['recipient_type'] ?? 'other')));
         $this->guardEmailHealth($emailAlias, $transport, $options);
@@ -147,6 +156,15 @@ class SystemEmailOrchestrator
             }
 
             if (! in_array(strtolower((string) $locked->status), ['pending', 'failed'], true)) {
+                return null;
+            }
+
+            if ($this->isInternalTestShoot((array) $locked->payload_snapshot, (array) $locked->transport_snapshot)) {
+                $locked->forceFill([
+                    'status' => 'suppressed',
+                    'error_code' => 'internal_test_shoot',
+                    'error_message' => 'Internal test shoots do not send external email.',
+                ])->save();
                 return null;
             }
 
@@ -216,6 +234,15 @@ class SystemEmailOrchestrator
                 'exception' => $exception::class,
             ]);
         }
+    }
+
+    private function isInternalTestShoot(array $payload, array $transport): bool
+    {
+        if (data_get($payload, 'shoot.shoot_type') === Shoot::SHOOT_TYPE_INTERNAL_TEST) {
+            return true;
+        }
+        $shootId = $transport['related_shoot_id'] ?? data_get($payload, 'shoot.id');
+        return $shootId && Shoot::find($shootId)?->isInternalTestShoot();
     }
 
     private function guardRecipientType(EmailTypeDefinition $definition, string $recipientType): void

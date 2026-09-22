@@ -89,6 +89,12 @@ class MessagingService
      */
     public function sendEmail(array $payload): Message
     {
+        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->isInternalTestShoot()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'shoot' => ['Internal test shoots do not send external messages.'],
+            ]);
+        }
+
         $channel = $this->resolveEmailChannel($payload);
         $cc = $this->normalizeEmailAddresses($payload['cc'] ?? []);
         $bcc = $this->normalizeEmailAddresses($payload['bcc'] ?? []);
@@ -180,6 +186,12 @@ class MessagingService
      */
     public function sendSms(array $payload): Message
     {
+        if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->isInternalTestShoot()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'shoot' => ['Internal test shoots do not send external messages.'],
+            ]);
+        }
+
         $number = $this->resolveSmsNumber($payload);
 
         // App-level opt-out suppression. Honors bypass_opt_out flag for the single
@@ -906,6 +918,11 @@ class MessagingService
 
     public function dispatchStoredEmailMessage(Message $message): Message
     {
+        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->isInternalTestShoot()) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Internal test: external message suppressed'])->save();
+            return $message->refresh();
+        }
+
         if ($message->channel !== 'EMAIL') {
             return $message;
         }
@@ -958,6 +975,11 @@ class MessagingService
 
     public function dispatchStoredSmsMessage(Message $message): Message
     {
+        if ($message->related_shoot_id && Shoot::find($message->related_shoot_id)?->isInternalTestShoot()) {
+            $message->forceFill(['status' => 'CANCELLED', 'error_message' => 'Internal test: external message suppressed'])->save();
+            return $message->refresh();
+        }
+
         if ($message->channel !== 'SMS') {
             return $message;
         }

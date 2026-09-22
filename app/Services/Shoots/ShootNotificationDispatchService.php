@@ -23,7 +23,7 @@ class ShootNotificationDispatchService
     public function processCreatedShoot(int $shootId, bool $treatAsClientRequest, bool $isImmediatelyScheduled): void
     {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (!$shoot) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 
@@ -137,7 +137,7 @@ class ShootNotificationDispatchService
         bool $photographerNewlyAssigned
     ): void {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (!$shoot) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 
@@ -330,7 +330,7 @@ class ShootNotificationDispatchService
     public function processExternalShootRequested(int $shootId): void
     {
         $shoot = Shoot::with(['client', 'photographer', 'rep', 'service', 'services'])->find($shootId);
-        if (!$shoot) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 

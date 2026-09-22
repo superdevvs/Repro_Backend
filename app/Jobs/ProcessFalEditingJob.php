@@ -34,6 +34,14 @@ class ProcessFalEditingJob implements ShouldQueue
         ShootFileAccessService $fileAccessService,
         RawThumbnailService $rawThumbnailService
     ): void {
+        if ($this->editingJob->shoot()->first()?->isInternalTestShoot()) {
+            $this->editingJob->forceFill([
+                'status' => AiEditingJob::STATUS_CANCELLED,
+                'error_message' => 'Internal test: external editing provider suppressed',
+            ])->save();
+            return;
+        }
+
         try {
             if (!$this->editingJob->provider_job_id) {
                 $this->submitJob($falService, $fileAccessService, $rawThumbnailService);

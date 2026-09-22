@@ -100,7 +100,9 @@ class FinalizeShootJob implements ShouldQueue
             // notification and must fire on every full-order delivered
             // transition (see below).
             $this->dispatchLocalCacheJobs($processedFileIds, $progress);
-            if (!empty($processedFileIds)) {
+            if ($shoot->isInternalTestShoot()) {
+                $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_MLS_PUBLISH, 'Internal test: external publishing suppressed');
+            } elseif (!empty($processedFileIds)) {
                 $this->dispatchMlsPublish($isFullOrderDelivery, $progress);
             } else {
                 $progress->stageSkipped(
@@ -115,7 +117,9 @@ class FinalizeShootJob implements ShouldQueue
             // fire on every full-order delivery — including no-media
             // (fast-forward) deliveries that have no processed files — so it
             // is intentionally NOT gated on $processedFileIds.
-            if ($isFullOrderDelivery) {
+            if ($shoot->isInternalTestShoot()) {
+                $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Internal test: customer notifications suppressed');
+            } elseif ($isFullOrderDelivery) {
                 $this->dispatchReadyEmail($isFullOrderDelivery, $progress);
             } else {
                 $progress->stageSkipped(
@@ -378,7 +382,7 @@ class FinalizeShootJob implements ShouldQueue
             if ($isFullOrderDelivery) {
                 $shoot->updateWorkflowStatus(Shoot::STATUS_DELIVERED, $this->userId);
 
-                if ($shoot->client_id) {
+                if ($shoot->client_id && ! $shoot->isInternalTestShoot()) {
                     ClientDeliveryNotification::query()->firstOrCreate(
                         [
                             'user_id' => $shoot->client_id,

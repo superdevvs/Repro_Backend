@@ -69,6 +69,36 @@ class TestShootEndpointsTest extends TestCase
         ]);
     }
 
+    public function test_local_simulator_time_round_trips_across_summer_winter_and_dst_boundaries(): void
+    {
+        Sanctum::actingAs($this->admin());
+        foreach ([
+            ['2026-09-23T10:00:00', '2026-09-23T14:00:00+00:00'],
+            ['2026-09-23T10:00:00.000', '2026-09-23T14:00:00+00:00'],
+            ['2026-01-23T10:00:00', '2026-01-23T15:00:00+00:00'],
+            ['2026-03-08T01:30:00', '2026-03-08T06:30:00+00:00'],
+            ['2026-03-08T03:30:00', '2026-03-08T07:30:00+00:00'],
+            ['2026-11-01T01:30:00-04:00', '2026-11-01T05:30:00+00:00'],
+            ['2026-11-01T01:30:00-05:00', '2026-11-01T06:30:00+00:00'],
+        ] as [$local, $utc]) {
+            $this->postJson('/api/admin/test-shoots', [
+                'kind' => 'area', 'value' => 'QA', 'scheduled_at' => $local, 'timezone' => 'America/New_York',
+            ])->assertCreated()->assertJsonPath('shoot.scheduled_at', $utc)
+                ->assertJsonPath('shoot.scheduled_date', substr($local, 0, 10));
+        }
+    }
+
+    public function test_simulator_rejects_nonexistent_or_ambiguous_local_dst_times(): void
+    {
+        Sanctum::actingAs($this->admin());
+        foreach (['2026-03-08T02:30:00', '2026-11-01T01:30:00', '2026-03-08T02:30:00.000', '2026-11-01T01:30:00.123'] as $local) {
+            $this->postJson('/api/admin/test-shoots', [
+                'kind' => 'area', 'value' => 'QA', 'scheduled_at' => $local, 'timezone' => 'America/New_York',
+            ])->assertUnprocessable();
+        }
+        $this->assertDatabaseCount('shoots', 0);
+    }
+
     public function test_create_test_shoot_validates_kind_value_scheduled_at_and_timezone(): void
     {
         Sanctum::actingAs($this->admin());

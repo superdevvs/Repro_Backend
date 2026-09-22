@@ -65,6 +65,10 @@ class IguideService
 
     public function syncShoot(Shoot $shoot): ?array
     {
+        if ($shoot->isInternalTestShoot()) {
+            return null;
+        }
+
         $this->lastFailureReason = null;
         $iguideData = null;
 

@@ -82,7 +82,8 @@ function Invoke-Scp {
 function Invoke-RemoteBash {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$SharedWebGroup
     )
     foreach ($argument in $Arguments) {
         if ($argument -notmatch '^[A-Za-z0-9_./-]+$') {
@@ -91,6 +92,11 @@ function Invoke-RemoteBash {
     }
     $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Source))
     $remoteCommand = "printf '%s' '$encoded' | base64 -d | bash -s -- " + ($Arguments -join ' ')
+    if ($SharedWebGroup) {
+        # CLI SQLite reads can recreate WAL/SHM files. Keep them writable by
+        # PHP-FPM without changing the deployment user's ownership of code.
+        $remoteCommand = 'sg www-data -c "' + $remoteCommand + '"'
+    }
     Invoke-Ssh -Command $remoteCommand
 }
 
@@ -131,6 +137,9 @@ function Deploy-Backend {
     )
     $remoteScript = @'
 set -Eeuo pipefail
+[ "$(id -gn)" = "www-data" ] || { echo 'Backend deployment requires the shared www-data group.' >&2; exit 93; }
+# Code must stay non-writable by PHP-FPM; SQLite inherits database file modes.
+umask 0022
 archive="$1"
 commit="$2"
 run_migrations="$3"
@@ -244,14 +253,7 @@ tar -czf "$backup/source.tar.gz" -C "$app" \
   --exclude='./storage' --exclude='./database/*.sqlite' --exclude='./database/*.sqlite-*' \
   --exclude='./public/storage' .
 if [ -f "$app/database/database.sqlite" ]; then
-  if command -v sqlite3 >/dev/null; then
-    sqlite3 "$app/database/database.sqlite" ".backup '$backup/database.sqlite'"
-  else
-    cp -p "$app/database/database.sqlite" "$backup/database.sqlite"
-    for suffix in -wal -shm; do
-      test ! -f "$app/database/database.sqlite$suffix" || cp -p "$app/database/database.sqlite$suffix" "$backup/database.sqlite$suffix"
-    done
-  fi
+  php "$stage/scripts/deploy/backup-sqlite.php" "$app/database/database.sqlite" "$backup/database.sqlite"
 fi
 echo "Rollback backups: $backup"
 
@@ -372,7 +374,7 @@ curl --fail --silent --show-error --output /dev/null https://api.reprodashboard.
 printf '{"commit":"%s","deployed_at":"%s"}\n' "$commit" "$(date -u +%FT%TZ)" > "$app/storage/app/deploy-meta.json"
 echo "backend_deploy_complete:$commit"
 '@
-    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, $(if ($RunMigrations) { '1' } else { '0' }), $(if ($ConfigureStripeWebhook) { '1' } else { '0' }))
+    Invoke-RemoteBash -Source $remoteScript -Arguments @($RemoteArchive, $Commit, $(if ($RunMigrations) { '1' } else { '0' }), $(if ($ConfigureStripeWebhook) { '1' } else { '0' })) -SharedWebGroup
 }
 
 function Deploy-Frontend {

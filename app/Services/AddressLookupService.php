@@ -751,12 +751,20 @@ class AddressLookupService
             return null;
         }
 
-        // Cache distance calculations to avoid repeated API calls
-        $cacheKey = 'distance_' . md5(json_encode($origin) . json_encode($destination));
-        
-        return Cache::remember($cacheKey, 3600, function () use ($origin, $destination) {
-            return $this->calculateDistance($origin, $destination);
-        });
+        // Cache successful calculations; retry failed lookups on the next request.
+        // Version the key because coordinate/locality fallback behavior has changed.
+        $cacheKey = 'distance_v2_' . md5(json_encode($origin) . json_encode($destination));
+        $cached = Cache::get($cacheKey);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $result = $this->calculateDistance($origin, $destination);
+        if (is_array($result)) {
+            Cache::put($cacheKey, $result, 3600);
+        }
+
+        return $result;
     }
 
     /**
@@ -764,8 +772,11 @@ class AddressLookupService
      */
     private function calculateDistance(array $origin, array $destination): ?array
     {
+        $approximate = fn () => $this->approxDistanceFromAddresses($origin, $destination)
+            ?? $this->approxDistanceByCoordinates($origin, $destination);
+
         if (empty($this->googleApiKey)) {
-            return $this->approxDistanceFromAddresses($origin, $destination);
+            return $approximate();
         }
 
         try {
@@ -782,25 +793,27 @@ class AddressLookupService
             $response = Http::get($this->googleBaseUrl . '/distancematrix/json', $params);
 
             if (!$response->successful()) {
-                return null;
+                return $approximate();
             }
 
             $data = $response->json();
 
-            if ($data['status'] !== 'OK' || empty($data['rows'][0]['elements'][0])) {
-                return null;
+            if (($data['status'] ?? null) !== 'OK' || empty($data['rows'][0]['elements'][0])) {
+                return $approximate();
             }
 
             $element = $data['rows'][0]['elements'][0];
 
-            if ($element['status'] !== 'OK') {
-                return null;
+            if (($element['status'] ?? null) !== 'OK'
+                || ! is_numeric($element['distance']['value'] ?? null)
+                || ! is_numeric($element['duration']['value'] ?? null)) {
+                return $approximate();
             }
 
             return [
-                'distance' => $element['distance']['text'],
+                'distance' => $element['distance']['text'] ?? round($element['distance']['value'] / 1609.34, 2).' mi',
                 'distance_value' => $element['distance']['value'], // in meters
-                'duration' => $element['duration']['text'],
+                'duration' => $element['duration']['text'] ?? '',
                 'duration_value' => $element['duration']['value'] // in seconds
             ];
 
@@ -810,9 +823,7 @@ class AddressLookupService
                 'destination' => $destination,
                 'error' => $e->getMessage()
             ]);
-            // Fallback: approximate great-circle distance (no routing)
-            return $this->approxDistanceFromAddresses($origin, $destination)
-                ?? $this->approxDistanceByCoordinates($origin, $destination);
+            return $approximate();
         }
     }
 
@@ -828,10 +839,42 @@ class AddressLookupService
         });
     }
 
+    private function coordinatesForDistance(array $address): ?array
+    {
+        $latitude = $address['latitude'] ?? $address['lat'] ?? null;
+        $longitude = $address['longitude'] ?? $address['lng'] ?? null;
+        if ($this->validDistanceCoordinates($latitude, $longitude)) {
+            return [
+                'latitude' => (float) $latitude,
+                'longitude' => (float) $longitude,
+            ];
+        }
+
+        $coordinates = $this->geocodeWithCache($address);
+        if ($coordinates) {
+            return $coordinates;
+        }
+
+        $locality = $address;
+        unset($locality['address']);
+
+        return $this->formatAddressForApi($locality)
+            ? $this->geocodeWithCache($locality)
+            : null;
+    }
+
+    private function validDistanceCoordinates(mixed $latitude, mixed $longitude): bool
+    {
+        return is_numeric($latitude) && is_numeric($longitude)
+            && is_finite((float) $latitude) && is_finite((float) $longitude)
+            && (float) $latitude >= -90 && (float) $latitude <= 90
+            && (float) $longitude >= -180 && (float) $longitude <= 180;
+    }
+
     private function approxDistanceFromAddresses(array $origin, array $destination): ?array
     {
-        $originCoords = $this->geocodeWithCache($origin);
-        $destinationCoords = $this->geocodeWithCache($destination);
+        $originCoords = $this->coordinatesForDistance($origin);
+        $destinationCoords = $this->coordinatesForDistance($destination);
         if (!$originCoords || !$destinationCoords) {
             return null;
         }
@@ -1386,7 +1429,7 @@ class AddressLookupService
         $olon = $origin['longitude'] ?? null;
         $dlat = $destination['latitude'] ?? null;
         $dlon = $destination['longitude'] ?? null;
-        if ($olat === null || $olon === null || $dlat === null || $dlon === null) {
+        if (! $this->validDistanceCoordinates($olat, $olon) || ! $this->validDistanceCoordinates($dlat, $dlon)) {
             return null;
         }
         $earth = 6371000; // meters
@@ -1396,6 +1439,7 @@ class AddressLookupService
         $phi1 = $toRad($olat);
         $phi2 = $toRad($dlat);
         $a = sin($dPhi/2)**2 + cos($phi1)*cos($phi2)*sin($dLam/2)**2;
+        $a = max(0.0, min(1.0, $a));
         $c = 2 * atan2(sqrt($a), sqrt(1-$a));
         $meters = $earth * $c;
         // Rough driving time assuming 35 mph average (~15.6 m/s)

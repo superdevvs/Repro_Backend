@@ -241,6 +241,13 @@ class ShootEditablePayloadService
             ]);
         }
 
+        if ($shoot->isInternalTestShoot() && array_key_exists('shoot_type', $validated)
+            && $validated['shoot_type'] !== Shoot::SHOOT_TYPE_INTERNAL_TEST) {
+            throw ValidationException::withMessages([
+                'shoot_type' => ['Internal test shoots cannot be converted into customer bookings.'],
+            ]);
+        }
+
         $this->assertComplimentaryReshootMutationAllowed($shoot, $validated);
 
         $noteFields = ['shoot_notes', 'company_notes', 'photographer_notes', 'editor_notes'];
@@ -322,16 +329,16 @@ class ShootEditablePayloadService
         }
 
         if (array_key_exists('address', $validated)) {
-            $shoot->address = $validated['address'];
+            $shoot->address = $validated['address'] ?? '';
         }
         if (array_key_exists('city', $validated)) {
-            $shoot->city = $validated['city'];
+            $shoot->city = $validated['city'] ?? '';
         }
         if (array_key_exists('state', $validated)) {
-            $shoot->state = $validated['state'];
+            $shoot->state = $validated['state'] ?? '';
         }
         if (array_key_exists('zip', $validated)) {
-            $shoot->zip = $validated['zip'];
+            $shoot->zip = $validated['zip'] ?? '';
         }
         if (array_key_exists('client_id', $validated)) {
             $shoot->client_id = $validated['client_id'];

@@ -73,7 +73,7 @@ class AutomationService
     {
         // Stop-on-paid (Req 12.14): a paid shoot gets no new reminders and any pending ones are
         // cancelled. Re-running the scheduler after payment therefore self-heals the schedule.
-        if ($this->isShootPaid($shoot)) {
+        if ($shoot->isInternalTestShoot() || $this->isShootPaid($shoot)) {
             $this->cancelPaymentReminders($shoot);
 
             return [];
@@ -195,6 +195,11 @@ class AutomationService
      */
     public function sendPaymentReminder(Shoot $shoot): ?Message
     {
+        if ($shoot->isInternalTestShoot()) {
+            $this->cancelPaymentReminders($shoot);
+            return null;
+        }
+
         $client = $shoot->client;
 
         if ($client === null) {

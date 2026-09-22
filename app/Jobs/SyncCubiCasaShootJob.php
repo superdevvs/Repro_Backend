@@ -35,7 +35,7 @@ class SyncCubiCasaShootJob implements ShouldQueue, ShouldBeUnique
             ->with('services.category')
             ->find($this->shootId);
 
-        if (!$shoot) {
+        if (!$shoot || $shoot->isInternalTestShoot()) {
             return;
         }
 

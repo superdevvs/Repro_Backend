@@ -762,6 +762,9 @@ class IntegrationController extends Controller
 
         try {
             $shoot = Shoot::with('files')->findOrFail($shootId);
+            if ($shoot->isInternalTestShoot()) {
+                return response()->json(['success' => false, 'message' => 'Internal test shoots cannot publish to Bright MLS.'], 422);
+            }
 
             $resolvedPhotos = $this->resolveBrightMlsPhotos($shoot, $request->photos ?? []);
             $resolvedDocuments = $this->resolveBrightMlsDocuments($shoot, $request->documents ?? []);

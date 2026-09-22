@@ -75,6 +75,7 @@ class StripeCheckoutFlowTest extends TestCase
                         && data_get($params, 'payment_intent_data.description') === '2 Topwood Court, Parkville, MD 21234'
                         && data_get($params, 'payment_intent_data.receipt_email') === 'listings@example.test'
                         && ! array_key_exists('metadata', $params['payment_intent_data'] ?? [])
+                        && data_get($params, 'metadata.app_instance') === config('services.stripe.app_instance')
                         && data_get($params, 'metadata.return_to') === '/shoot-history?source=receipt#paid';
                 }),
                 Mockery::on(fn (array $options): bool => str_starts_with(
@@ -281,6 +282,7 @@ class StripeCheckoutFlowTest extends TestCase
                         'currency' => 'usd',
                         'metadata' => (object) [
                             'type' => 'single',
+                            'app_instance' => config('services.stripe.app_instance'),
                             'shoot_id' => (string) $shoot->id,
                         ],
                     ],
@@ -397,6 +399,7 @@ class StripeCheckoutFlowTest extends TestCase
                         'currency' => 'usd',
                         'metadata' => (object) [
                             'type' => 'single',
+                            'app_instance' => config('services.stripe.app_instance'),
                             'shoot_id' => (string) $shoot->id,
                             'checkout_attempt_id' => (string) $attempt->id,
                         ],
@@ -479,6 +482,7 @@ class StripeCheckoutFlowTest extends TestCase
             'currency' => 'usd',
             'metadata' => (object) [
                 'type' => 'single',
+                'app_instance' => config('services.stripe.app_instance'),
                 'shoot_id' => (string) $shoot->id,
                 'client_id' => (string) $client->id,
             ],
@@ -561,6 +565,7 @@ class StripeCheckoutFlowTest extends TestCase
                 'amount_total' => 12500,
                 'metadata' => (object) [
                     'type' => 'single',
+                    'app_instance' => config('services.stripe.app_instance'),
                     'shoot_id' => (string) $shoot->id,
                 ],
             ]);
@@ -620,6 +625,7 @@ class StripeCheckoutFlowTest extends TestCase
                 'currency' => 'usd',
                 'metadata' => (object) [
                     'type' => 'single',
+                    'app_instance' => config('services.stripe.app_instance'),
                     'shoot_id' => (string) $shoot->id,
                 ],
             ]);

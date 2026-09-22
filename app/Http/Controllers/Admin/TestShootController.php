@@ -47,7 +47,7 @@ class TestShootController extends Controller
      * Request body:
      *   - kind:         one of ServiceArea::KINDS (region|state|area)
      *   - value:        the area's value (e.g. "MD", "Northeast")
-     *   - scheduled_at: ISO-8601 datetime — the absolute instant the Test_Shoot is scheduled for
+     *   - scheduled_at: ISO-8601 instant, or local datetime interpreted in timezone
      *   - timezone:     IANA timezone (e.g. "America/New_York") — the region's local timezone
      */
     public function createTestShoot(Request $request): JsonResponse
@@ -59,14 +59,13 @@ class TestShootController extends Controller
             'timezone'     => ['required', 'string', 'timezone'],
         ]);
 
-        // Parse the scheduled instant as an absolute moment. Carbon accepts ISO-8601 and
-        // common datetime forms; we normalize to UTC so the absolute instant is unambiguous
-        // before TestShootService converts to the region timezone for the local calendar day.
+        // Offsetless datetime-local input belongs to the selected region. Explicit
+        // ISO offsets already describe an instant and must be preserved.
         try {
-            $when = CarbonImmutable::parse($validated['scheduled_at'])->setTimezone('UTC');
+            $when = $this->parseScheduledInstant($validated['scheduled_at'], $validated['timezone']);
         } catch (\Throwable $e) {
             throw ValidationException::withMessages([
-                'scheduled_at' => ['The scheduled_at field must be a valid datetime.'],
+                'scheduled_at' => ['Use a valid local datetime in the selected timezone. Repeated daylight-saving times require an explicit UTC offset.'],
             ]);
         }
 
@@ -157,6 +156,37 @@ class TestShootController extends Controller
             'assigned' => true,
             'shoot'    => $this->serializeTestShoot($shoot),
         ]);
+    }
+
+    private function parseScheduledInstant(string $value, string $timezone): CarbonImmutable
+    {
+        if (preg_match('/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?$/', $value, $parts)) {
+            $wall = $parts[1].' '.$parts[2].':'.($parts[3] ?? '00').'.'.str_pad($parts[4] ?? '', 6, '0');
+            $nominal = CarbonImmutable::parse($wall, 'UTC');
+            $zone = new \DateTimeZone($timezone);
+            $offsets = array_unique(array_column($zone->getTransitions(
+                $nominal->getTimestamp() - 172800,
+                $nominal->getTimestamp() + 172800
+            ) ?: [], 'offset'));
+            $matches = [];
+            foreach ($offsets as $offset) {
+                $candidate = $nominal->subSeconds($offset);
+                if ($candidate->setTimezone($timezone)->format('Y-m-d H:i:s.u') === $wall) {
+                    $matches[] = $candidate;
+                }
+            }
+            // Spring gaps do not exist; repeated fall hours need an explicit offset.
+            if (count($matches) !== 1) {
+                throw new \InvalidArgumentException('Nonexistent or ambiguous local time.');
+            }
+            return $matches[0];
+        }
+
+        if (! preg_match('/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})$/i', $value)) {
+            throw new \InvalidArgumentException('Use a local ISO datetime or include an explicit UTC offset.');
+        }
+
+        return CarbonImmutable::parse($value, $timezone)->setTimezone('UTC');
     }
 
     /**

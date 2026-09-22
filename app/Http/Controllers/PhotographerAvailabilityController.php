@@ -823,8 +823,8 @@ class PhotographerAvailabilityController extends Controller
             'shoot_city' => 'required|string',
             'shoot_state' => 'required|string',
             'shoot_zip' => 'sometimes|string',
-            'shoot_latitude' => 'sometimes|numeric',
-            'shoot_longitude' => 'sometimes|numeric',
+            'shoot_latitude' => 'sometimes|numeric|between:-90,90',
+            'shoot_longitude' => 'sometimes|numeric|between:-180,180',
             'photographer_ids' => 'sometimes|array',
             'service_ids' => 'sometimes|array', // Filter by service capabilities
             'require_all_services' => 'sometimes|boolean', // If true, photographer must have ALL services
@@ -918,6 +918,8 @@ class PhotographerAvailabilityController extends Controller
             $originCity = $homeCity;
             $originState = $homeState;
             $originZip = $homeZip;
+            $originLatitude = $metadata['latitude'] ?? $metadata['lat'] ?? null;
+            $originLongitude = $metadata['longitude'] ?? $metadata['lng'] ?? null;
             $distanceFrom = 'home';
             $previousShootId = null;
 
@@ -925,13 +927,8 @@ class PhotographerAvailabilityController extends Controller
             if ($requestedTime && $shootsOnDate->isNotEmpty()) {
                 $requestedDateTime = $date->copy();
                 $timeParts = [];
-                if (preg_match('/(\d{1,2}):(\d{2})\s*(AM|PM)/i', $requestedTime, $timeParts)) {
-                    $hours = (int)$timeParts[1];
-                    $minutes = (int)$timeParts[2];
-                    $period = strtoupper($timeParts[3]);
-                    if ($period === 'PM' && $hours !== 12) $hours += 12;
-                    if ($period === 'AM' && $hours === 12) $hours = 0;
-                    $requestedDateTime->setTime($hours, $minutes);
+                if (preg_match('/^(\d{2}):(\d{2})$/', $this->convertTo24Hour($requestedTime), $timeParts)) {
+                    $requestedDateTime->setTime((int) $timeParts[1], (int) $timeParts[2]);
                 }
 
                 $shootsBefore = $shootsOnDate->filter(function ($shoot) use ($requestedDateTime) {
@@ -947,6 +944,8 @@ class PhotographerAvailabilityController extends Controller
                     $originCity = $lastShoot->city ?? $homeCity;
                     $originState = $lastShoot->state ?? $homeState;
                     $originZip = $lastShoot->zip ?? $homeZip;
+                    $originLatitude = $lastShoot->latitude;
+                    $originLongitude = $lastShoot->longitude;
                     $distanceFrom = 'previous_shoot';
                     $previousShootId = $lastShoot->id;
                 }
@@ -963,12 +962,20 @@ class PhotographerAvailabilityController extends Controller
                             'city' => $originCity,
                             'state' => $originState,
                             'zip' => $originZip,
+                            'latitude' => is_numeric($originLatitude) ? (float) $originLatitude : null,
+                            'longitude' => is_numeric($originLongitude) ? (float) $originLongitude : null,
                         ],
                         [
                             'address' => $shootAddress,
                             'city' => $shootCity,
                             'state' => $shootState,
                             'zip' => $shootZip,
+                            'latitude' => isset($validated['shoot_latitude']) && is_numeric($validated['shoot_latitude'])
+                                ? (float) $validated['shoot_latitude']
+                                : null,
+                            'longitude' => isset($validated['shoot_longitude']) && is_numeric($validated['shoot_longitude'])
+                                ? (float) $validated['shoot_longitude']
+                                : null,
                         ]
                     );
 
@@ -1005,20 +1012,12 @@ class PhotographerAvailabilityController extends Controller
             }
 
             if ($distanceMiles === null) {
-                $originLatitude = $metadata['latitude'] ?? $metadata['lat'] ?? null;
-                $originLongitude = $metadata['longitude'] ?? $metadata['lng'] ?? null;
                 $shootLatitude = $validated['shoot_latitude'] ?? null;
                 $shootLongitude = $validated['shoot_longitude'] ?? null;
 
-                if (!$shootLatitude && !$shootLongitude) {
-                    $shootTokens = strtolower(trim("{$shootAddress} {$shootCity} {$shootState} {$shootZip}"));
-                    if (str_contains($shootTokens, '6424') && str_contains($shootTokens, 'vale')) {
-                        $shootLatitude = 38.8213;
-                        $shootLongitude = -77.1589;
-                    }
-                }
-
-                if (is_numeric($originLatitude) && is_numeric($originLongitude) && is_numeric($shootLatitude) && is_numeric($shootLongitude)) {
+                if (is_numeric($originLatitude) && abs((float) $originLatitude) <= 90
+                    && is_numeric($originLongitude) && abs((float) $originLongitude) <= 180
+                    && is_numeric($shootLatitude) && is_numeric($shootLongitude)) {
                     $distanceMiles = round($this->calculateMilesBetweenCoordinates(
                         (float) $originLatitude,
                         (float) $originLongitude,
@@ -1176,19 +1175,14 @@ class PhotographerAvailabilityController extends Controller
                 }
             }
 
-            // Service-area labels are explicitly administrator-authored, coarse public
-            // descriptions (for example, "Northern Virginia"). A client's fallback is
-            // city/state only; anonymous callers never receive home-profile fallback.
+            // Service-area labels are administrator-authored public descriptions.
+            // Authenticated clients only receive distance; home city/state and area
+            // labels stay off their booking payload. Anonymous callers still receive
+            // an authored label when one exists, and never a home-profile fallback.
             $serviceAreaLabel = $photographer->serviceAreas
                 ->map(fn ($area) => trim((string) ($area->label ?? '')))
                 ->first(fn ($label) => $label !== '');
-            if (! $serviceAreaLabel && $isAuthenticatedClient) {
-                $serviceAreaLabel = collect([$homeCity, $homeState])
-                    ->map(fn ($part) => trim((string) $part))
-                    ->filter()
-                    ->implode(', ');
-            }
-            $serviceAreaLabel = $serviceAreaLabel ?: null;
+            $serviceAreaLabel = $isAuthenticatedClient ? null : ($serviceAreaLabel ?: null);
 
             $photographerResult = [
                 'id' => $photographerId,

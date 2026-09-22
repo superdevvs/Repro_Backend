@@ -50,7 +50,22 @@ class PrivacyLogProcessor
             ], true)) {
             $safe['scope'] = $record->context['scope'];
         }
-        $message = in_array($record->message, ['API request failed.', 'API operation failed.', 'Square payment failed', 'Authentication rate limit exceeded.'], true)
+        if ($record->message === 'Stripe webhook ownership decision.') {
+            if (in_array($record->context['reason'] ?? null, [
+                'foreign', 'ambiguous', 'conflict', 'reconciliation_failed',
+                'attempt_reference_mismatch', 'unmapped_refund',
+            ], true)) $safe['reason'] = $record->context['reason'];
+            if (in_array($record->context['event_type'] ?? null, [
+                'checkout.session.completed', 'checkout.session.async_payment_succeeded',
+                'checkout.session.async_payment_failed', 'checkout.session.expired',
+                'refund.created', 'refund.updated', 'refund.failed',
+            ], true)) $safe['event_type'] = $record->context['event_type'];
+            foreach (['event_hash', 'object_hash', 'intent_hash'] as $key) {
+                $value = $record->context[$key] ?? null;
+                if (is_string($value) && preg_match('/\A[a-f0-9]{64}\z/', $value)) $safe[$key] = $value;
+            }
+        }
+        $message = in_array($record->message, ['API request failed.', 'API operation failed.', 'Square payment failed', 'Authentication rate limit exceeded.', 'Stripe webhook ownership decision.'], true)
             ? $record->message : 'Application '.strtolower($record->level->getName()).' event.';
 
         return $record->with(message: $message, context: $safe, extra: []);

@@ -847,6 +847,10 @@ class BrightMlsService
      */
     public function autoPublishForShoot(\App\Models\Shoot $shoot): ?array
     {
+        if ($shoot->isInternalTestShoot()) {
+            return null;
+        }
+
         try {
             if (!$this->enabled) {
                 Log::info('Bright MLS auto-publish skipped: integration disabled', ['shoot_id' => $shoot->id]);

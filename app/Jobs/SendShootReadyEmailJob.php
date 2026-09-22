@@ -55,6 +55,11 @@ class SendShootReadyEmailJob implements ShouldQueue
             return;
         }
 
+        if ($shoot->isInternalTestShoot()) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL, 'Internal test: external side effects suppressed');
+            return;
+        }
+
         $progress->stageRunning($this->shootId, FinalizeProgressTracker::STAGE_DELIVERY_EMAIL);
 
         $shoot->loadMissing(['client', 'photographer', 'rep', 'service']);

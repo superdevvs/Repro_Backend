@@ -91,6 +91,17 @@ return [
             'permission' => 0660,
         ],
 
+        // Ownership decisions must be diagnosable even with LOG_LEVEL=error.
+        'stripe-webhooks' => [
+            'driver' => 'daily',
+            'tap' => [\App\Logging\PrivacyLogTap::class],
+            'path' => storage_path('logs/stripe-webhooks.log'),
+            'level' => 'notice',
+            'days' => 30,
+            'replace_placeholders' => true,
+            'permission' => 0660,
+        ],
+
         // Media intake diagnostics. Production runs LOG_LEVEL=error, which is why
         // a night of 69 failed RAW uploads left nothing at all in laravel.log:
         // the per-file failure was a warning. Every accepted file, every failed

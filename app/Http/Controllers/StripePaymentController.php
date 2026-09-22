@@ -12,6 +12,7 @@ use App\Services\Invoices\InvoiceAuthorizationService;
 use App\Services\MailService;
 use App\Services\Messaging\AutomationService;
 use App\Services\Payments\PublicPaymentAccessTokenService;
+use App\Services\Payments\StripeCheckoutOwnership;
 use App\Services\Payments\StripePaymentMetadataService;
 use App\Services\ShootActivityLogger;
 use App\Services\Shoots\ShootAuthorizationSupport;
@@ -48,6 +49,8 @@ class StripePaymentController extends Controller
     private const CHECKOUT_OUTCOME_FAILED = 'failed';
 
     private const CHECKOUT_OUTCOME_REFUNDED_STALE = 'refunded_stale';
+
+    private const CHECKOUT_OUTCOME_FOREIGN = 'ignored_foreign_checkout';
 
     private const CHECKOUT_LIFECYCLE_LOCK = 'stripe_checkout_attempt_creation';
 
@@ -528,6 +531,24 @@ class StripePaymentController extends Controller
 
         Log::info('Stripe webhook received', ['type' => $event->type, 'id' => $event->id]);
 
+        if (in_array($event->type, [
+            'checkout.session.completed', 'checkout.session.async_payment_succeeded',
+            'checkout.session.async_payment_failed', 'checkout.session.expired',
+        ], true)) {
+            $ownership = app(StripeCheckoutOwnership::class);
+            $classification = $ownership->classify($event->data->object);
+            if ($classification !== StripeCheckoutOwnership::OWNED) {
+                $ownership->diagnostic($classification, $event->data->object, $event->type, $event->id);
+
+                return response()->json([
+                    'status' => $classification === StripeCheckoutOwnership::FOREIGN ? 'success' : 'retry',
+                    'handled' => false,
+                    'outcome' => $classification === StripeCheckoutOwnership::FOREIGN
+                        ? self::CHECKOUT_OUTCOME_FOREIGN : self::CHECKOUT_OUTCOME_FAILED,
+                ], $classification === StripeCheckoutOwnership::FOREIGN ? 200 : 500);
+            }
+        }
+
         $handled = false;
         $outcome = null;
 
@@ -542,6 +563,9 @@ class StripePaymentController extends Controller
                 ], true);
 
                 if (in_array($outcome, [self::CHECKOUT_OUTCOME_BUSY, self::CHECKOUT_OUTCOME_FAILED], true)) {
+                    app(StripeCheckoutOwnership::class)->diagnostic(
+                        'reconciliation_failed', $event->data->object, $event->type, $event->id
+                    );
                     return response()->json([
                         'status' => 'retry',
                         'handled' => false,
@@ -555,17 +579,12 @@ class StripePaymentController extends Controller
                 Log::warning('Stripe asynchronous checkout payment failed.', [
                     'session_id' => $event->data->object->id ?? null,
                 ]);
-                $attemptId = (int) data_get($event->data->object, 'metadata.checkout_attempt_id', 0);
-                if ($attemptId > 0) {
-                    StripeCheckoutAttempt::whereKey($attemptId)
-                        ->whereNotIn('status', [
-                            StripeCheckoutAttempt::STATUS_PAID,
-                            StripeCheckoutAttempt::STATUS_REFUNDED,
-                        ])
-                        ->update([
-                            'status' => StripeCheckoutAttempt::STATUS_FAILED,
-                            'failure_message' => 'Stripe reported an asynchronous payment failure.',
-                        ]);
+                if (! $this->updateCheckoutAttemptFromEvent($event->data->object, StripeCheckoutAttempt::STATUS_FAILED)) {
+                    app(StripeCheckoutOwnership::class)->diagnostic(
+                        'attempt_reference_mismatch', $event->data->object, $event->type, $event->id
+                    );
+
+                    return response()->json(['status' => 'retry', 'handled' => false, 'outcome' => self::CHECKOUT_OUTCOME_FAILED], 500);
                 }
                 break;
 
@@ -592,11 +611,16 @@ class StripePaymentController extends Controller
                     $staleSession = $staleSessionId !== ''
                         ? $this->retrieveCheckoutSession($staleSessionId)
                         : null;
-                    $handled = $staleSession && $this->reconcileStaleCheckoutRefund($staleSession) === true;
+                    $handled = $staleSession
+                        && app(StripeCheckoutOwnership::class)->classify($staleSession) === StripeCheckoutOwnership::OWNED
+                        && $this->reconcileStaleCheckoutRefund($staleSession) === true;
                     $outcome = $handled ? 'stale_checkout_refund_retried' : self::CHECKOUT_OUTCOME_FAILED;
                 }
 
                 if (! $handled) {
+                    app(StripeCheckoutOwnership::class)->diagnostic(
+                        'unmapped_refund', $event->data->object, $event->type, $event->id
+                    );
                     return response()->json([
                         'status' => 'retry',
                         'handled' => false,
@@ -608,16 +632,12 @@ class StripePaymentController extends Controller
             case 'checkout.session.expired':
                 $outcome = 'expired';
                 Log::info('Stripe checkout session expired', ['session_id' => $event->data->object->id]);
-                $attemptId = (int) data_get($event->data->object, 'metadata.checkout_attempt_id', 0);
-                if ($attemptId > 0) {
-                    StripeCheckoutAttempt::whereKey($attemptId)
-                        ->whereNotIn('status', [
-                            StripeCheckoutAttempt::STATUS_PAID,
-                            StripeCheckoutAttempt::STATUS_REFUNDED,
-                        ])
-                        ->update([
-                            'status' => StripeCheckoutAttempt::STATUS_EXPIRED,
-                        ]);
+                if (! $this->updateCheckoutAttemptFromEvent($event->data->object, StripeCheckoutAttempt::STATUS_EXPIRED)) {
+                    app(StripeCheckoutOwnership::class)->diagnostic(
+                        'attempt_reference_mismatch', $event->data->object, $event->type, $event->id
+                    );
+
+                    return response()->json(['status' => 'retry', 'handled' => false, 'outcome' => self::CHECKOUT_OUTCOME_FAILED], 500);
                 }
                 break;
 
@@ -655,6 +675,35 @@ class StripePaymentController extends Controller
                 'error' => 'Could not confirm Stripe payment session.',
             ], 500);
         }
+    }
+
+    protected function updateCheckoutAttemptFromEvent(mixed $session, string $status): bool
+    {
+        $attemptId = (int) data_get($session, 'metadata.checkout_attempt_id', 0);
+        $sessionId = (string) data_get($session, 'id', '');
+        if ($sessionId === '') {
+            return false;
+        }
+        $attempt = StripeCheckoutAttempt::where('stripe_session_id', $sessionId)->first();
+        if (! $attempt) {
+            // A legacy checkout has no attempt. A managed event arriving before
+            // its session is persisted must retry, never claim a numeric ID.
+            return $attemptId <= 0;
+        }
+        if ($attemptId > 0 && $attemptId !== (int) $attempt->id) {
+            return false;
+        }
+
+        StripeCheckoutAttempt::whereKey($attempt->id)
+            ->where('stripe_session_id', $sessionId)
+            ->whereNotIn('status', [StripeCheckoutAttempt::STATUS_PAID, StripeCheckoutAttempt::STATUS_REFUNDED])
+            ->update(array_filter([
+                'status' => $status,
+                'failure_message' => $status === StripeCheckoutAttempt::STATUS_FAILED
+                    ? 'Stripe reported an asynchronous payment failure.' : null,
+            ], fn ($value) => $value !== null));
+
+        return true;
     }
 
     /**
@@ -743,6 +792,14 @@ class StripePaymentController extends Controller
     {
         $shoot = $shoot->fresh(['payments', 'client']) ?? $shoot->loadMissing(['payments', 'client']);
         $session = $resolvedSession ?: ($sessionId ? $this->retrieveCheckoutSession($sessionId) : null);
+        if ($session) {
+            $ownership = app(StripeCheckoutOwnership::class);
+            $classification = $ownership->classify($session);
+            if ($classification !== StripeCheckoutOwnership::OWNED) {
+                $ownership->diagnostic($classification, $session);
+                throw new \RuntimeException('Stripe Checkout ownership could not be established.');
+            }
+        }
         $resolvedReturnTo = $this->resolveReturnToFromSession($session);
         $lastPaymentAmount = $this->resolveLastPaymentAmountFromSession($session);
         $summary = $shoot->syncPaymentStatusFromRecords($shoot->payment_type ?: 'stripe');
@@ -913,9 +970,24 @@ class StripePaymentController extends Controller
      */
     protected function handleCheckoutCompleted($session, bool $checkoutLifecycleLockHeld = false): string
     {
+        // Also protect browser returns and background reconciliation, not just webhooks.
+        $ownership = app(StripeCheckoutOwnership::class);
+        $classification = $ownership->classify($session);
+        if ($classification !== StripeCheckoutOwnership::OWNED) {
+            $ownership->diagnostic($classification, $session);
+
+            return $classification === StripeCheckoutOwnership::FOREIGN
+                ? self::CHECKOUT_OUTCOME_FOREIGN : self::CHECKOUT_OUTCOME_FAILED;
+        }
+
         $sessionId = (string) ($session->id ?? '');
         $paymentIntentId = $session->payment_intent ?? null;
         $metadata = $session->metadata;
+
+        if (Shoot::query()->whereIn('id', $this->extractShootIdsFromSession($session))
+            ->where('shoot_type', Shoot::SHOOT_TYPE_INTERNAL_TEST)->exists()) {
+            return self::CHECKOUT_OUTCOME_FAILED;
+        }
 
         if ($sessionId === ''
             || ! is_string($paymentIntentId)
@@ -1549,6 +1621,10 @@ class StripePaymentController extends Controller
      */
     protected function handleStripeRefundEvent(mixed $refund, bool $refundLifecycleLockHeld = false): bool
     {
+        $marker = trim((string) data_get($refund, 'metadata.app_instance', ''));
+        if ($marker !== '' && ! hash_equals(app(StripeCheckoutOwnership::class)->instance(), $marker)) {
+            return false;
+        }
         $refundId = trim((string) data_get($refund, 'id', ''));
         $paymentIntentId = trim((string) data_get($refund, 'payment_intent', ''));
         $status = strtolower(trim((string) data_get($refund, 'status', 'pending')));
@@ -1903,6 +1979,12 @@ class StripePaymentController extends Controller
 
     protected function assertMandatoryStripeDetails(Shoot $shoot, ?User $client): void
     {
+        if ($shoot->shoot_type === Shoot::SHOOT_TYPE_INTERNAL_TEST) {
+            throw ValidationException::withMessages([
+                'payment' => ['Internal test shoots cannot create Stripe payments.'],
+            ]);
+        }
+
         $errors = [];
         $ownerName = $this->resolveStripeOwnerName($client);
 
@@ -1975,6 +2057,7 @@ class StripePaymentController extends Controller
         array $allocationPayload = []
     ): array {
         return array_merge([
+            'app_instance' => app(StripeCheckoutOwnership::class)->instance(),
             'shoot_id' => (string) $shoot->id,
             'type' => 'single',
             'client_id' => (string) $client->id,
@@ -1994,6 +2077,7 @@ class StripePaymentController extends Controller
         }
 
         return [
+            'app_instance' => app(StripeCheckoutOwnership::class)->instance(),
             'shoot_ids' => $joinedShootIds,
             'shoot_count' => (string) $shootIds->count(),
             'type' => 'multiple',
@@ -2994,7 +3078,10 @@ class StripePaymentController extends Controller
                 continue;
             }
 
-            return $this->retrieveCheckoutSession($session->id);
+            $resolvedSession = $this->retrieveCheckoutSession($session->id);
+            if ($resolvedSession && app(StripeCheckoutOwnership::class)->classify($resolvedSession) === StripeCheckoutOwnership::OWNED) {
+                return $resolvedSession;
+            }
         }
 
         return null;

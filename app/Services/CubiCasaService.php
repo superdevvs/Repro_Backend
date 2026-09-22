@@ -223,6 +223,10 @@ class CubiCasaService
      */
     public function syncShoot(Shoot $shoot): ?array
     {
+        if ($shoot->isInternalTestShoot()) {
+            return null;
+        }
+
         $this->lastFailureReason = null;
         $this->markSyncRunning($shoot);
 
@@ -272,6 +276,10 @@ class CubiCasaService
      */
     public function createOrder(Shoot $shoot, ?User $actor = null, string $source = 'manual'): ?array
     {
+        if ($shoot->isInternalTestShoot()) {
+            return null;
+        }
+
         $this->lastFailureReason = null;
 
         $createEvent = $source === 'auto' ? 'cubicasa.auto_create' : 'cubicasa.manual_create';

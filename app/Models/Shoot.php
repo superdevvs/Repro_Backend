@@ -743,6 +743,10 @@ class Shoot extends Model
      */
     public function hasIguideEligibleService(): bool
     {
+        if ($this->isInternalTestShoot()) {
+            return false;
+        }
+
         $needles = ['iguide', 'floorplan', 'floor plan'];
 
         $matches = static function (?string $value) use ($needles): bool {
@@ -792,6 +796,10 @@ class Shoot extends Model
      */
     public function hasCubiCasaEligibleService(): bool
     {
+        if ($this->isInternalTestShoot()) {
+            return false;
+        }
+
         $needles = ['cubicasa', 'cubi casa', 'cubi-casa', 'scan', 'floorplan', 'floor plan', 'gla', '2d floor', '3d floor'];
 
         $matches = static function (?string $value) use ($needles): bool {

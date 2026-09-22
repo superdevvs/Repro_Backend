@@ -72,8 +72,14 @@ class BookingAvailabilityPrivacyTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function authenticated_client_gets_only_city_state_fallback(): void
+    public function authenticated_client_receives_distance_without_location(): void
     {
+        $area = ServiceArea::create([
+            'kind' => ServiceArea::KIND_AREA,
+            'value' => 'nova',
+            'label' => 'Northern Virginia',
+        ]);
+        $this->photographer->serviceAreas()->attach($area->id);
         $this->createPreviousShoot();
         Sanctum::actingAs(User::factory()->create(['role' => 'client']));
 
@@ -81,10 +87,14 @@ class BookingAvailabilityPrivacyTest extends TestCase
             ->assertOk()
             ->json('data.0');
 
-        $this->assertSame('Arlington, VA', $data['service_area_label']);
+        $encoded = json_encode($data);
+        $this->assertNull($data['service_area_label']);
+        $this->assertEquals(1.0, $data['distance']);
         $this->assertArrayNotHasKey('previous_shoot_id', $data);
-        $this->assertStringNotContainsString('Private Home', (string) $data['service_area_label']);
-        $this->assertStringNotContainsString('22201', (string) $data['service_area_label']);
+        $this->assertStringNotContainsString('Private Home', (string) $encoded);
+        $this->assertStringNotContainsString('Arlington', (string) $encoded);
+        $this->assertStringNotContainsString('22201', (string) $encoded);
+        $this->assertStringNotContainsString('Northern Virginia', (string) $encoded);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
@@ -110,6 +120,69 @@ class BookingAvailabilityPrivacyTest extends TestCase
         $this->assertSame($previousShoot->id, $data['previous_shoot_id']);
         $this->assertSame($previousShoot->id, $data['booked_slots'][0]['shoot_id']);
         $this->assertSame('12 Previous Client Street', $data['booked_slots'][0]['address']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function home_origin_coordinates_are_forwarded_for_distance_without_being_exposed(): void
+    {
+        $this->photographer->update(['metadata' => ['latitude' => 38.88, 'longitude' => -77.10]]);
+        Sanctum::actingAs(User::factory()->create(['role' => 'client']));
+        $distance = Mockery::mock(AddressLookupService::class);
+        $distance->shouldReceive('getDistance')->once()->withArgs(function ($origin, $destination) {
+            return $origin['address'] === '99 Private Home Lane'
+                && $origin['latitude'] === 38.88 && $origin['longitude'] === -77.10
+                && $destination['latitude'] === 38.85 && $destination['longitude'] === -77.30;
+        })->andReturn(['distance_value' => 1609.34]);
+        $this->app->instance(AddressLookupService::class, $distance);
+
+        $data = $this->postJson('/api/photographer/availability/for-booking', [
+            ...$this->payload(), 'shoot_latitude' => 38.85, 'shoot_longitude' => -77.30,
+        ])->assertOk()->json('data.0');
+
+        $this->assertSame('home', $data['distance_from']);
+        $this->assertEquals(1.0, $data['distance']);
+        $this->assertStringNotContainsString('latitude', json_encode($data));
+        $this->assertStringNotContainsString('Private Home', json_encode($data));
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function previous_shoot_distance_uses_its_coordinates_instead_of_home_coordinates(): void
+    {
+        $this->photographer->update(['metadata' => ['latitude' => 10.0, 'longitude' => 10.0]]);
+        $this->createPreviousShoot()->update(['latitude' => 38.81, 'longitude' => -77.06]);
+        $distance = Mockery::mock(AddressLookupService::class);
+        $distance->shouldReceive('getDistance')->once()->withArgs(function ($origin, $destination) {
+            return $origin['address'] === '12 Previous Client Street'
+                && $origin['latitude'] === 38.81 && $origin['longitude'] === -77.06
+                && $destination['latitude'] === 38.81 && $destination['longitude'] === -77.06;
+        })->andReturnNull();
+        $this->app->instance(AddressLookupService::class, $distance);
+
+        $data = $this->postJson('/api/photographer/availability/for-booking', [
+            ...$this->payload(), 'time' => '13:00', 'shoot_latitude' => 38.81, 'shoot_longitude' => -77.06,
+        ])->assertOk()->json('data.0');
+
+        $this->assertSame('previous_shoot', $data['distance_from']);
+        $this->assertEquals(0.0, $data['distance']);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function previous_shoot_without_coordinates_never_falls_back_to_home_coordinates(): void
+    {
+        $this->photographer->update(['metadata' => ['latitude' => 38.85, 'longitude' => -77.30]]);
+        $this->createPreviousShoot()->update(['latitude' => null, 'longitude' => null]);
+        $distance = Mockery::mock(AddressLookupService::class);
+        $distance->shouldReceive('getDistance')->once()->withArgs(function ($origin) {
+            return $origin['latitude'] === null && $origin['longitude'] === null;
+        })->andReturnNull();
+        $this->app->instance(AddressLookupService::class, $distance);
+
+        $data = $this->postJson('/api/photographer/availability/for-booking', [
+            ...$this->payload(), 'shoot_latitude' => 38.85, 'shoot_longitude' => -77.30,
+        ])->assertOk()->json('data.0');
+
+        $this->assertSame('previous_shoot', $data['distance_from']);
+        $this->assertNull($data['distance']);
     }
 
     private function createPreviousShoot(): Shoot

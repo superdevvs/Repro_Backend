@@ -47,6 +47,11 @@ class PublishShootToBrightMlsJob implements ShouldQueue
             return;
         }
 
+        if ($shoot->isInternalTestShoot()) {
+            $progress->stageSkipped($this->shootId, FinalizeProgressTracker::STAGE_MLS_PUBLISH, 'Internal test: external side effects suppressed');
+            return;
+        }
+
         if (!$brightMls->isAutoPublishAvailable()) {
             $progress->stageSkipped(
                 $this->shootId,

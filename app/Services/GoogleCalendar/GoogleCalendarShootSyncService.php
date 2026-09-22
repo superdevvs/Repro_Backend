@@ -21,6 +21,10 @@ class GoogleCalendarShootSyncService
     public function syncShoot(int $shootId): void
     {
         $shoot = Shoot::with(['services', 'serviceItems.service', 'serviceItems.photographer'])->find($shootId);
+        if ($shoot?->isInternalTestShoot()) {
+            return;
+        }
+
         $mappings = GoogleCalendarEventMapping::query()
             ->where('shoot_id', $shootId)
             ->get();
@@ -142,6 +146,10 @@ class GoogleCalendarShootSyncService
 
     public function removeShoot(int $shootId): void
     {
+        if (Shoot::find($shootId)?->isInternalTestShoot()) {
+            return;
+        }
+
         $this->removeMappings(
             GoogleCalendarEventMapping::query()
                 ->where('shoot_id', $shootId)
