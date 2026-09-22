@@ -133,17 +133,19 @@ class PublicStorageDeploymentTest extends TestCase
             $command[] = $router;
         }
         $this->server = new Process($command);
+        $this->server->setTimeout(5);
         $this->server->start();
-        for ($attempt = 0; $attempt < 50; $attempt++) {
-            $connection = @stream_socket_client('tcp://'.$address, $errorCode, $errorMessage, 0.1);
-            if ($connection !== false) {
-                fclose($connection);
+        $output = '';
+        $ready = $this->server->waitUntil(static function (string $type, string $buffer) use (&$output, $address): bool {
+            $output .= $buffer;
 
-                return 'http://'.$address;
-            }
-            usleep(20000);
+            return str_contains($output, 'Development Server (http://'.$address.') started');
+        });
+        if (! $ready) {
+            $this->fail('Public storage HTTP fixture did not start: '.$this->server->getErrorOutput());
         }
-        $this->fail('Public storage HTTP fixture did not start: '.$this->server->getErrorOutput());
+
+        return 'http://'.$address;
     }
 
     private function removeFixture(string $path): void
