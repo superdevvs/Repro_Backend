@@ -22,7 +22,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->bind(
+            \Illuminate\Routing\Middleware\ThrottleRequests::class,
+            \App\Http\Middleware\RetryDatabaseThrottleRequests::class,
+        );
     }
 
     /**

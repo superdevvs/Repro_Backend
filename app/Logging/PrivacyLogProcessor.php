@@ -43,6 +43,16 @@ class PrivacyLogProcessor
         if (app()->bound('request') && request() instanceof Request && request()->is('api/*')) {
             $safe['request_id'] = RequestCorrelation::id(request());
         }
+        if (in_array($record->message, ['API request failed.', 'API operation failed.', 'Rate limiter database operation failed.'], true)) {
+            $state = $record->context['sqlstate'] ?? null;
+            $driverCode = $record->context['database_driver_code'] ?? null;
+            if (is_string($state) && preg_match('/\A[A-Z0-9]{5}\z/', $state)) $safe['sqlstate'] = $state;
+            if (is_int($driverCode) && $driverCode >= 0 && $driverCode <= 65535) $safe['database_driver_code'] = $driverCode;
+            if ($record->message === 'Rate limiter database operation failed.'
+                && in_array($record->context['limiter_operation'] ?? null, ['check', 'hit', 'hit_after', 'remaining', 'retry_after'], true)) {
+                $safe['limiter_operation'] = $record->context['limiter_operation'];
+            }
+        }
         if ($record->message === 'Authentication rate limit exceeded.'
             && in_array($record->context['scope'] ?? null, [
                 'login-ip', 'login-account', 'forgot-ip', 'forgot-account',
@@ -65,7 +75,7 @@ class PrivacyLogProcessor
                 if (is_string($value) && preg_match('/\A[a-f0-9]{64}\z/', $value)) $safe[$key] = $value;
             }
         }
-        $message = in_array($record->message, ['API request failed.', 'API operation failed.', 'Square payment failed', 'Authentication rate limit exceeded.', 'Stripe webhook ownership decision.'], true)
+        $message = in_array($record->message, ['API request failed.', 'API operation failed.', 'Square payment failed', 'Authentication rate limit exceeded.', 'Stripe webhook ownership decision.', 'Rate limiter database operation failed.'], true)
             ? $record->message : 'Application '.strtolower($record->level->getName()).' event.';
 
         return $record->with(message: $message, context: $safe, extra: []);

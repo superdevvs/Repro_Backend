@@ -144,11 +144,28 @@ class ApiErrorResponder
         $file = str_replace('\\', '/', $exception->getFile());
         $root = rtrim(str_replace('\\', '/', base_path()), '/').'/';
 
-        return [
+        $context = [
             'exception' => $exception::class,
             'file' => str_starts_with($file, $root) ? substr($file, strlen($root)) : basename($file),
             'line' => $exception->getLine(),
         ];
+
+        // Codes classify database failures without SQL, bindings, messages, or stack arguments.
+        for ($cause = $exception; $cause !== null; $cause = $cause->getPrevious()) {
+            if ($cause instanceof \Illuminate\Database\QueryException || $cause instanceof \PDOException) {
+                $state = $cause->errorInfo[0] ?? null;
+                $code = $cause->errorInfo[1] ?? null;
+                if (is_string($state) && preg_match('/\A[A-Z0-9]{5}\z/', $state)) {
+                    $context['sqlstate'] = $state;
+                }
+                if (is_int($code) && $code >= 0 && $code <= 65535) {
+                    $context['database_driver_code'] = $code;
+                }
+                break;
+            }
+        }
+
+        return $context;
     }
 
     public static function log(\Throwable $exception, string $level = 'error'): void

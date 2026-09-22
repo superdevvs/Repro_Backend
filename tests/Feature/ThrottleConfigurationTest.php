@@ -6,7 +6,6 @@ use App\Services\IpLocationLookupService;
 use App\Services\WeatherLookupService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Routing\Route;
-use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
 
 /**
@@ -76,22 +75,14 @@ class ThrottleConfigurationTest extends TestCase
         for ($i = 0; $i < self::REQUEST_COUNT; $i++) {
             $response = $this->getJson('/api/weather?location=Test City, TS');
 
-            $this->assertNotSame(
-                Response::HTTP_TOO_MANY_REQUESTS,
-                $response->getStatusCode(),
-                sprintf('Weather request #%d returned HTTP 429 within the throttle limit.', $i + 1)
-            );
+            $response->assertOk();
         }
 
         // /ip-location is also unauthenticated; the spy supplies a fast payload.
         for ($i = 0; $i < self::REQUEST_COUNT; $i++) {
             $response = $this->getJson('/api/ip-location');
 
-            $this->assertNotSame(
-                Response::HTTP_TOO_MANY_REQUESTS,
-                $response->getStatusCode(),
-                sprintf('IP-location request #%d returned HTTP 429 within the throttle limit.', $i + 1)
-            );
+            $response->assertOk();
         }
     }
 
