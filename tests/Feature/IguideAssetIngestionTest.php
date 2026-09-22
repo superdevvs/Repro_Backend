@@ -21,6 +21,7 @@ class IguideAssetIngestionTest extends TestCase
     {
         parent::setUp();
         Storage::fake('public');
+        Storage::fake('local');
     }
 
     private function floorplans(): array
@@ -77,9 +78,10 @@ class IguideAssetIngestionTest extends TestCase
         $this->assertSame('Main Floor', $jpgFile->metadata['floor_name']);
         $this->assertSame('application/pdf', $pdfFile->mime_type);
 
-        // Stored as public files under shoots/{id}/floorplans/.
+        // Imported masters use private media storage under shoots/{id}/floorplans/.
         $relPdf = ltrim(str_replace('storage/', '', (string) $pdfFile->storage_path), '/');
-        Storage::disk('public')->assertExists($relPdf);
+        Storage::disk('local')->assertExists($relPdf);
+        Storage::disk('public')->assertMissing($relPdf);
 
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
     }

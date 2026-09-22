@@ -262,6 +262,7 @@ rsync -rltD --omit-dir-times --delete --no-owner --no-group --no-perms \
   --exclude='public/storage' --exclude='fix-db-perms.sh' "$stage/" "$app/"
 
 cd "$app"
+bash "$app/scripts/deploy/provision-public-storage.sh" ensure "$app"
 if [ -f "$app/scripts/deploy/provision-tax-document-storage.sh" ]; then
   bash "$app/scripts/deploy/provision-tax-document-storage.sh"
 fi
@@ -269,7 +270,6 @@ composer install --no-dev --optimize-autoloader --no-interaction
 if [ "$run_migrations" = "1" ]; then
   php artisan migrate --force --no-interaction
 fi
-php artisan storage:link || true
 
 if [ "$configure_stripe" = "1" ]; then
 cat > "$webhook_setup" <<'PHP'
@@ -361,6 +361,8 @@ fi
 printf '%s\n' '<?php opcache_reset(); echo "opcache_cleared";' > "$app/public/opcache_reset_temp.php"
 curl --fail --silent --show-error https://api.reprodashboard.com/opcache_reset_temp.php
 rm -f "$app/public/opcache_reset_temp.php"
+bash "$app/scripts/deploy/provision-public-storage.sh" verify "$app" https://reprodashboard.com
+php artisan media:storage-health
 php artisan up
 maintenance=0
 

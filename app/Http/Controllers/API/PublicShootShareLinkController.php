@@ -5,7 +5,6 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\ShootShareLink;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Storage;
 
 class PublicShootShareLinkController extends Controller
 {
@@ -48,12 +47,10 @@ class PublicShootShareLinkController extends Controller
             ], 404);
         }
 
-        $disk = $this->zipDisk($link);
-
         $link->incrementDownloadCount();
 
-        return response()->download(
-            Storage::disk($disk)->path($link->dropbox_path),
+        return app(\App\Services\Media\MediaStorage::class)->downloadResponse(
+            $link->dropbox_path,
             $this->buildDownloadFilename($link),
             ['Content-Type' => 'application/zip', 'Cache-Control' => 'private, no-store']
         );
@@ -89,22 +86,11 @@ class PublicShootShareLinkController extends Controller
 
     private function isLocalPublicZip(ShootShareLink $link): bool
     {
-        return $this->zipDisk($link) !== null;
-    }
-
-    private function zipDisk(ShootShareLink $link): ?string
-    {
         if (! is_string($link->dropbox_path) || ! str_starts_with($link->dropbox_path, 'share-links/')) {
-            return null;
+            return false;
         }
 
-        foreach (['local', 'public'] as $disk) {
-            if (Storage::disk($disk)->exists($link->dropbox_path)) {
-                return $disk;
-            }
-        }
-
-        return null;
+        return app(\App\Services\Media\MediaStorage::class)->exists($link->dropbox_path);
     }
 
     private function buildDownloadFilename(ShootShareLink $link): string

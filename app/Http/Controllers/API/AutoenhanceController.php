@@ -829,8 +829,15 @@ class AutoenhanceController extends Controller
                 : ('ai-editing-uploads/' . $job->user_id . '/edited');
             $filename = Str::slug($provider . '-' . $job->id) . '.' . $extension;
             $path = $baseName . '/' . $filename;
-            Storage::disk('public')->put($path, $binary, 'public');
-            $publicPath = 'storage/' . $path;
+            if ($job->shoot_id) {
+                if (!app(\App\Services\Media\MediaStorage::class)->put($path, $binary)) {
+                    throw new \RuntimeException('The edited image could not be stored.');
+                }
+                $publicPath = $path;
+            } else {
+                Storage::disk('public')->put($path, $binary, 'public');
+                $publicPath = 'storage/' . $path;
+            }
 
             // Tie back as a ShootFile only when the job belongs to a shoot.
             if ($job->shoot_id) {

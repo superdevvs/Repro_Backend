@@ -13,7 +13,6 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -64,7 +63,7 @@ class IngestIguideAssetsJob implements ShouldQueue
         $uploadedByUserId = $this->resolveSystemUploaderId($shoot);
 
         $ingestedFileIds = [];
-        $disk = Storage::disk('public');
+        $mediaStorage = app(\App\Services\Media\MediaStorage::class);
 
         foreach ($this->floorplans as $item) {
             $url = $item['url'] ?? null;
@@ -115,8 +114,10 @@ class IngestIguideAssetsJob implements ShouldQueue
 
                 $mimeType = $response->header('Content-Type') ?: $this->guessMimeType($extension);
 
-                $disk->put($relativePath, $binary);
-                $publicPath = 'storage/' . $relativePath;
+                if (!$mediaStorage->put($relativePath, $binary)) {
+                    throw new \RuntimeException('The imported floorplan could not be stored.');
+                }
+                $publicPath = $relativePath;
 
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,

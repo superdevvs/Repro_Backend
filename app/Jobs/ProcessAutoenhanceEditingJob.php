@@ -13,7 +13,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class ProcessAutoenhanceEditingJob implements ShouldQueue
@@ -339,8 +338,10 @@ class ProcessAutoenhanceEditingJob implements ShouldQueue
             $baseName = pathinfo($sourceFile?->filename ?: 'autoenhance-image', PATHINFO_FILENAME);
             $filename = Str::slug($baseName) . '-autoenhance-' . $this->editingJob->id . '.' . $extension;
             $path = 'shoots/' . $shoot->id . '/autoenhance/' . $filename;
-            Storage::disk('public')->put($path, $binary);
-            $publicPath = 'storage/' . $path;
+            if (!app(\App\Services\Media\MediaStorage::class)->put($path, $binary)) {
+                throw new \RuntimeException('The edited image could not be stored.');
+            }
+            $publicPath = $path;
 
             ShootFile::create([
                 'shoot_id' => $shoot->id,

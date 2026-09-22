@@ -181,9 +181,9 @@ class RawPreviewService
      */
     protected function convertWithDcraw(string $inputPath, string $outputPath): bool
     {
+        $tempPpm = null;
         try {
             // Extract embedded JPEG with dcraw
-            $tempPpm = $inputPath . '.ppm';
             
             $process = new Process(['dcraw', '-e', '-c', $inputPath]);
             $process->setTimeout(60);
@@ -191,8 +191,9 @@ class RawPreviewService
 
             if ($process->isSuccessful()) {
                 $output = $process->getOutput();
-                if (strlen($output) > 1000) {
-                    // dcraw -e outputs JPEG directly
+                $imageInfo = strlen($output) > 1000 ? @getimagesizefromstring($output) : false;
+                if (strlen($output) > 1000 && ($imageInfo['mime'] ?? null) === 'image/jpeg') {
+                    // Some cameras embed a PPM; only publish verified JPEG bytes here.
                     file_put_contents($outputPath, $output);
                     $this->resizeIfNeeded($outputPath);
                     Log::info("RawPreviewService: dcraw extraction successful");
@@ -209,16 +210,18 @@ class RawPreviewService
                 // dcraw outputs PPM, need to convert to JPEG
                 $ppmData = $process->getOutput();
                 if (strlen($ppmData) > 1000) {
+                    $tempPpm = tempnam(sys_get_temp_dir(), 'raw-preview-');
+                    if ($tempPpm === false) {
+                        return false;
+                    }
                     file_put_contents($tempPpm, $ppmData);
                     
                     // Convert PPM to JPEG using ImageMagick
-                    $convertProcess = new Process(['magick', $tempPpm, '-quality', (string)$this->quality, $outputPath]);
-                    $convertProcess->run();
+                    $converted = $this->convertWithImageMagick($tempPpm, $outputPath);
                     
                     @unlink($tempPpm);
                     
-                    if (file_exists($outputPath)) {
-                        $this->resizeIfNeeded($outputPath);
+                    if ($converted) {
                         Log::info("RawPreviewService: dcraw full conversion successful");
                         return true;
                     }
@@ -226,6 +229,10 @@ class RawPreviewService
             }
         } catch (\Exception $e) {
             Log::debug("RawPreviewService: dcraw failed", ['error' => $e->getMessage()]);
+        } finally {
+            if (is_string($tempPpm) && is_file($tempPpm)) {
+                @unlink($tempPpm);
+            }
         }
 
         return false;
@@ -244,14 +251,7 @@ class RawPreviewService
             $height = $imageInfo[1];
 
             if ($width > $this->maxWidth || $height > $this->maxHeight) {
-                $process = new Process([
-                    'magick', $imagePath,
-                    '-resize', "{$this->maxWidth}x{$this->maxHeight}>",
-                    '-quality', (string)$this->quality,
-                    $imagePath
-                ]);
-                $process->setTimeout(30);
-                $process->run();
+                $this->convertWithImageMagick($imagePath, $imagePath);
             }
         } catch (\Exception $e) {
             Log::debug("RawPreviewService: Resize failed", ['error' => $e->getMessage()]);

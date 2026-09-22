@@ -435,12 +435,12 @@ class ShootMediaStorageService
             ShootFile::MEDIA_TYPE_IGUIDE => "secure/iguide-packages/{$shoot->id}",
             default => "shoots/{$shoot->id}/".($stage === ShootFile::STAGE_COMPLETED ? 'completed' : 'todo'),
         };
+        $serverPath = $dir.'/'.$filename;
         $storageDisk = $isOpaqueIguidePackage
             ? 'local'
             : (config('media.r2_only')
                 ? (string) config('media.remote_disk', 'media')
-                : (string) config('media.local_disk', 'local'));
-        $serverPath = $dir.'/'.$filename;
+                : app(\App\Services\Media\MediaStorage::class)->writeDiskName($serverPath));
         $defaultMediaType = $storageMediaType
             ?? ($stage === ShootFile::STAGE_COMPLETED ? 'edited' : 'raw');
         $mediaType = $mediaTypeOverride ?? $this->resolveMediaType($file->getClientOriginalName(), $file->getMimeType(), $defaultMediaType);
@@ -818,16 +818,11 @@ class ShootMediaStorageService
                 return;
             }
 
-            if (! $media->r2Only()) {
-                $media->localDisk()->writeStream($serverPath, $stream);
-                if (is_resource($stream)) {
-                    fclose($stream);
+            try {
+                if (!$media->put($serverPath, $stream)) {
+                    throw new \RuntimeException('The final original could not be stored.');
                 }
-                if ($media->dualWriteEnabled()) {
-                    $media->copyLocalToR2($serverPath);
-                }
-            } else {
-                $media->remoteDisk()->writeStream($serverPath, $stream);
+            } finally {
                 if (is_resource($stream)) {
                     fclose($stream);
                 }

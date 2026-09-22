@@ -23,6 +23,7 @@ class CubiCasaAssetIngestionTest extends TestCase
     {
         parent::setUp();
         Storage::fake('public');
+        Storage::fake('local');
     }
 
     private function floorplans(): array
@@ -89,7 +90,8 @@ class CubiCasaAssetIngestionTest extends TestCase
         $this->assertSame('image/jpeg', $jpg->mime_type);
 
         $relPdf = ltrim(str_replace('storage/', '', (string) $pdf->storage_path), '/');
-        Storage::disk('public')->assertExists($relPdf);
+        Storage::disk('local')->assertExists($relPdf);
+        Storage::disk('public')->assertMissing($relPdf);
 
         Queue::assertNotPushed(SyncShootFileToDropboxJob::class);
     }

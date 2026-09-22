@@ -354,33 +354,26 @@ class RawThumbnailService
             return false;
         }
 
-        $sourceDir = dirname($source);
-        $sourceBase = pathinfo($source, PATHINFO_FILENAME);
-        $ppmPath = $sourceDir . '/' . $sourceBase . '.ppm';
-        
-        // First try: Extract embedded thumbnail (fast)
+        // Send dcraw output to NVMe instead of creating sidecars beside an
+        // original, which can now live on the HDD or a read-only source.
         $thumbCmd = sprintf(
-            'dcraw -e %s',
-            escapeshellarg($source)
+            'dcraw -e -c %s > %s',
+            escapeshellarg($source),
+            escapeshellarg($output)
         );
         exec($thumbCmd, $out, $code);
-        
-        // dcraw creates file with .thumb.jpg extension
-        $thumbPath = $sourceDir . '/' . $sourceBase . '.thumb.jpg';
-        
-        if (file_exists($thumbPath) && filesize($thumbPath) >= self::MIN_THUMBNAIL_SIZE) {
-            rename($thumbPath, $output);
-            if ($this->isValidThumbnail($output)) {
-                Log::info('RawThumbnailService: Extracted using dcraw -e', [
-                    'source' => basename($source),
-                ]);
-                return true;
-            }
+        if ($code === 0 && $this->isValidThumbnail($output)) {
+            Log::info('RawThumbnailService: Extracted using dcraw -e', [
+                'source' => basename($source),
+            ]);
+            return true;
         }
-        
-        // Clean up if that didn't work
-        if (file_exists($thumbPath)) {
-            unlink($thumbPath);
+        if (is_file($output)) {
+            unlink($output);
+        }
+        $ppmPath = tempnam(sys_get_temp_dir(), 'raw-demosaic-');
+        if ($ppmPath === false) {
+            return false;
         }
 
         // Second try: Full demosaic (slower, but guaranteed to work)
@@ -388,24 +381,22 @@ class RawThumbnailService
         // -h = half-size (faster, good enough for thumbnails)
         // -q 0 = fast interpolation
         $demosaicCmd = sprintf(
-            'dcraw -w -h -q 0 %s',
-            escapeshellarg($source)
+            'dcraw -w -h -q 0 -c %s > %s',
+            escapeshellarg($source),
+            escapeshellarg($ppmPath)
         );
-        exec($demosaicCmd, $out, $code);
-
-        if ($code !== 0 || !file_exists($ppmPath)) {
-            return false;
+        try {
+            exec($demosaicCmd, $out, $code);
+            if ($code !== 0 || !is_file($ppmPath) || filesize($ppmPath) === 0) {
+                return false;
+            }
+            $converted = $this->convertPpmToJpeg($ppmPath, $output);
+            return $converted && $this->isValidThumbnail($output);
+        } finally {
+            if (is_file($ppmPath)) {
+                unlink($ppmPath);
+            }
         }
-
-        // Convert PPM to JPEG using ImageMagick or PHP GD
-        $converted = $this->convertPpmToJpeg($ppmPath, $output);
-        
-        // Clean up PPM
-        if (file_exists($ppmPath)) {
-            unlink($ppmPath);
-        }
-
-        return $converted && $this->isValidThumbnail($output);
     }
 
     /**

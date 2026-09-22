@@ -625,6 +625,11 @@ class HiggsFieldController extends Controller
             return null;
         }
 
+        $mediaUrl = app(\App\Services\Media\MediaStorage::class)->servingUrl($path);
+        if ($mediaUrl) {
+            return $mediaUrl;
+        }
+
         // If it's already a full URL (e.g., CDN, Dropbox shared link), use directly
         if (filter_var($path, FILTER_VALIDATE_URL)) {
             return $path;
@@ -656,6 +661,13 @@ class HiggsFieldController extends Controller
         $filename = $shootFile->filename;
         $storedFilename = $shootFile->stored_filename;
         $shootId = $shootFile->shoot_id;
+
+        $mediaStorage = app(\App\Services\Media\MediaStorage::class);
+        foreach ([$shootFile->web_path, $shootFile->storage_path, $shootFile->path, $shootFile->thumbnail_path] as $candidate) {
+            if ($candidate && ($resolved = $mediaStorage->absolutePath($candidate))) {
+                $pathsToTry[] = $resolved;
+            }
+        }
 
         // Try web_path first (optimized/smaller for faster API calls)
         if ($shootFile->web_path) {

@@ -54,6 +54,7 @@ class ProcessImageJobGridBackfillTest extends TestCase
         $imageService = $this->createMock(ImageProcessingService::class);
         $dropbox = $this->createMock(ShootMediaStorageService::class);
         $media = $this->createMock(MediaStorage::class);
+        $media->method('absolutePath')->willReturn(Storage::disk('local')->path('originals/listing-photo.jpg'));
 
         $imageService->method('needsPreviewRegeneration')->willReturn(false);
         // The gate must NOT short-circuit: the missing grid rendition has to be

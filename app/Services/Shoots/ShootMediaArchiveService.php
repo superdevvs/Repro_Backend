@@ -12,7 +12,6 @@ use App\Services\ShortLinks\ShortLinkService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
 
@@ -120,6 +119,7 @@ class ShootMediaArchiveService
             'entries' => [],
             'source_signature' => null,
         ];
+        $zipAbsolutePath = null;
 
         try {
             $plan = $this->buildArchivePlan($shoot, $type, $size, $shootServiceId);
@@ -148,20 +148,11 @@ class ShootMediaArchiveService
             }
 
             $archivePath = $this->getArchivePath($shoot, $type, $size, $shootServiceId);
-            $this->archiveWriteDisk()->makeDirectory(dirname($archivePath));
-
-            $zipAbsolutePath = $this->archiveWriteDisk()->path($archivePath);
-
-            // ZipArchive writes through the native filesystem, not the Storage
-            // abstraction, and fails outright if the parent directory is missing.
-            // The makeDirectory() above covers the disk's own view, but that is
-            // not always the same thing (custom roots, a disk that reports an
-            // ancestor as present, or a directory removed between the two calls).
-            // mkdir(recursive) is idempotent, so asserting the real path here is
-            // free insurance against an archive build failing on a missing folder.
-            $zipDirectory = dirname($zipAbsolutePath);
-            if (!is_dir($zipDirectory)) {
-                @mkdir($zipDirectory, 0775, true);
+            // Compression and intermediate writes stay on NVMe. Only the
+            // finished archive is published to its configured media tier.
+            $zipAbsolutePath = tempnam(sys_get_temp_dir(), 'shoot-archive-');
+            if ($zipAbsolutePath === false) {
+                throw new \RuntimeException('Failed to create temporary ZIP file');
             }
 
             $zip = new \ZipArchive();
@@ -195,8 +186,21 @@ class ShootMediaArchiveService
             }
 
             if ($addedFiles === 0) {
-                $this->mediaStorage()->delete($archivePath);
                 throw new \RuntimeException('No downloadable files available');
+            }
+
+            $archiveStream = fopen($zipAbsolutePath, 'rb');
+            if ($archiveStream === false) {
+                throw new \RuntimeException('Failed to open generated ZIP file');
+            }
+            try {
+                if (!$this->mediaStorage()->put($archivePath, $archiveStream)) {
+                    throw new \RuntimeException('Failed to publish generated ZIP file');
+                }
+            } finally {
+                if (is_resource($archiveStream)) {
+                    fclose($archiveStream);
+                }
             }
 
             $manifest = [
@@ -237,6 +241,9 @@ class ShootMediaArchiveService
 
             throw $exception;
         } finally {
+            if (is_string($zipAbsolutePath) && is_file($zipAbsolutePath)) {
+                @unlink($zipAbsolutePath);
+            }
             if ($lockAlreadyHeld || $lockAcquiredHere) {
                 $this->releaseGenerationLock($shoot, $type, $size, $shootServiceId);
             }
@@ -759,10 +766,5 @@ class ShootMediaArchiveService
     protected function mediaStorage(): MediaStorage
     {
         return app(MediaStorage::class);
-    }
-
-    protected function archiveWriteDisk(): \Illuminate\Contracts\Filesystem\Filesystem
-    {
-        return Storage::disk((string) config('media.local_disk', 'local'));
     }
 }

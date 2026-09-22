@@ -14,7 +14,6 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -259,8 +258,10 @@ class ProcessFalEditingJob implements ShouldQueue
         $baseName = pathinfo($sourceFile?->filename ?: 'fal-image', PATHINFO_FILENAME);
         $filename = Str::slug($baseName) . '-fal-' . $this->editingJob->id . '.' . $extension;
         $path = 'shoots/' . $shoot->id . '/fal-ai/' . $filename;
-        Storage::disk('public')->put($path, $binary, 'public');
-        $publicPath = 'storage/' . $path;
+        if (!app(\App\Services\Media\MediaStorage::class)->put($path, $binary)) {
+            throw new \RuntimeException('The edited image could not be stored.');
+        }
+        $publicPath = $path;
 
         ShootFile::create([
             'shoot_id' => $shoot->id,

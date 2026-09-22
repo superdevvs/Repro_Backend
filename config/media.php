@@ -21,6 +21,16 @@ return [
 
     'legacy_public_disk' => env('MEDIA_LEGACY_PUBLIC_DISK', 'public'),
 
+    // Enable only after provisioning and verifying a non-destructive originals copy.
+    // Local/NVMe remains the default for processing, previews, and unknown paths.
+    'tiered_storage_enabled' => (bool) env('MEDIA_TIERED_STORAGE_ENABLED', false),
+
+    'originals_disk' => 'media_originals',
+
+    'originals_mount' => env('MEDIA_ORIGINALS_MOUNT', ''),
+
+    'originals_uuid' => env('MEDIA_ORIGINALS_UUID', ''),
+
     /*
     |--------------------------------------------------------------------------
     | Migration feature flags (Dropbox/local -> R2 cutover)

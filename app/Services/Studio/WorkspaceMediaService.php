@@ -135,10 +135,11 @@ class WorkspaceMediaService
             return $cache->get($path);
         }
         $bytes = null;
+        $mediaStorage = app(\App\Services\Media\MediaStorage::class);
         foreach ([$file->web_path, $file->thumbnail_path] as $preview) {
-            if ($preview && Storage::disk('public')->exists($preview)) {
-                $candidate = Storage::disk('public')->get($preview);
-                if (@getimagesizefromstring($candidate)) {
+            if ($preview && $mediaStorage->exists($preview)) {
+                $candidate = $mediaStorage->get($preview);
+                if ($candidate && @getimagesizefromstring($candidate)) {
                     $bytes = $candidate;
                     break;
                 }

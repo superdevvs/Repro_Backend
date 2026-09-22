@@ -5,7 +5,6 @@ namespace App\Jobs;
 use App\Models\ShootFile;
 use App\Services\ImageProcessingService;
 use App\Services\ShootMediaStorageService;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -80,13 +79,12 @@ class ProcessImageJob implements ShouldQueue
             $tempPath = null;
             $sourcePath = null;
 
-            if ($this->shootFile->path && Storage::disk('local')->exists($this->shootFile->path)) {
-                $sourcePath = Storage::disk('local')->path($this->shootFile->path);
-            } elseif ($this->shootFile->path && Storage::disk('public')->exists($this->shootFile->path)) {
-                $sourcePath = Storage::disk('public')->path($this->shootFile->path);
-            } elseif ($this->shootFile->storage_path && Storage::disk('public')->exists($this->shootFile->storage_path)) {
-                $sourcePath = Storage::disk('public')->path($this->shootFile->storage_path);
-            } elseif (($media->readFromR2Enabled() || $media->r2Only())
+            foreach ([$this->shootFile->path, $this->shootFile->storage_path] as $candidate) {
+                if ($candidate && ($sourcePath = $media->absolutePath($candidate))) {
+                    break;
+                }
+            }
+            if (!$sourcePath && ($media->readFromR2Enabled() || $media->r2Only())
                 && ($r2Key = $media->normalizeKey($this->shootFile->path ?: $this->shootFile->storage_path))
                 && ($tempPath = $media->downloadToTemp($r2Key))) {
                 // Source the original from R2 when the local copy is gone (post-prune).

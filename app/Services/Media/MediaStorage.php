@@ -22,6 +22,11 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class MediaStorage
 {
+    public function __construct(private ?OriginalsStorageGuard $originalsGuard = null)
+    {
+        $this->originalsGuard ??= new OriginalsStorageGuard();
+    }
+
     /**
      * Normalize a stored path into a canonical relative object key.
      *
@@ -50,9 +55,9 @@ class MediaStorage
     }
 
     /** The private local disk used for new writes. */
-    public function localDisk(): Filesystem
+    public function localDisk(?string $key = null): Filesystem
     {
-        return Storage::disk($this->localDiskName());
+        return Storage::disk($this->writeDiskName($key));
     }
 
     /** Historical public disk; reads fall back here until those objects are migrated. */
@@ -61,9 +66,80 @@ class MediaStorage
         return Storage::disk($this->legacyPublicDiskName());
     }
 
-    public function localDiskName(): string
+    public function localDiskName(?string $key = null): string
     {
+        if ($this->usesOriginalsDisk($key)) {
+            return (string) config('media.originals_disk', 'media_originals');
+        }
+
         return (string) config('media.local_disk', 'local');
+    }
+
+    /** Guard before Laravel constructs the adapter, whose constructor may create its root. */
+    public function writeDiskName(?string $key = null): string
+    {
+        if ($this->usesOriginalsDisk($key)) {
+            $this->originalsGuard->assertAvailable();
+        }
+
+        return $this->localDiskName($key);
+    }
+
+    /** Only known master/original layouts move to HDD; previews and unknown keys stay on NVMe. */
+    public function usesOriginalsDisk(?string $key): bool
+    {
+        if (! (bool) config('media.tiered_storage_enabled', false)) {
+            return false;
+        }
+        $key = $this->normalizeKey($key);
+
+        return $key !== null && OriginalsStoragePolicy::isOriginalKey($key);
+    }
+
+    /** HDD, then old private NVMe, then public: retained copies allow a non-destructive cutover. */
+    public function localReadDisks(string $key): array
+    {
+        return $this->availableLocalDisks($this->usesOriginalsDisk($key));
+    }
+
+    /** Maintenance scans must not silently skip an unavailable configured drive. */
+    public function localScanDisks(): array
+    {
+        $tiered = (bool) config('media.tiered_storage_enabled', false);
+        if ($tiered) {
+            $this->originalsGuard->assertAvailable(false);
+        }
+
+        return $this->availableLocalDisks($tiered);
+    }
+
+    private function availableLocalDisks(bool $includeOriginals): array
+    {
+        $names = [];
+        if ($includeOriginals && $this->originalsGuard->isAvailable()) {
+            $names[] = (string) config('media.originals_disk', 'media_originals');
+        }
+        $names[] = $this->localDiskName();
+        if ($this->usesPrivateLocalDisk()) {
+            $names[] = $this->legacyPublicDiskName();
+        }
+        $disks = [];
+        foreach (array_unique($names) as $name) {
+            $disks[$name] = Storage::disk($name);
+        }
+
+        return $disks;
+    }
+
+    private function localDiskFor(string $key): ?Filesystem
+    {
+        foreach ($this->localReadDisks($key) as $disk) {
+            if ($disk->exists($key)) {
+                return $disk;
+            }
+        }
+
+        return null;
     }
 
     public function legacyPublicDiskName(): string
@@ -107,12 +183,33 @@ class MediaStorage
         $ok = true;
 
         if (! $this->r2Only()) {
-            $ok = $this->localDisk()->put($key, $contents, $options) && $ok;
+            $disk = $this->localDisk($key);
+            if ($this->usesOriginalsDisk($key)) {
+                // Publish large originals atomically; readers keep the old copy until the new write completes.
+                $temporaryKey = dirname($key).'/.'.basename($key).'.upload-'.bin2hex(random_bytes(12));
+                try {
+                    $ok = $disk->put($temporaryKey, $contents, $options);
+                    if ($ok) {
+                        $this->originalsGuard->assertAvailable();
+                        $ok = $disk->move($temporaryKey, $key);
+                    }
+                } finally {
+                    if ($this->originalsGuard->isAvailable() && $disk->exists($temporaryKey)) {
+                        $disk->delete($temporaryKey);
+                    }
+                }
+            } else {
+                $ok = $disk->put($key, $contents, $options);
+            }
         }
 
         if ($this->dualWriteEnabled() || $this->r2Only()) {
             try {
-                $ok = $this->remoteDisk()->put($key, $contents, $options) && $ok;
+                // Local writes may consume a non-seekable stream. Re-open the persisted copy for mirroring.
+                $remoteOk = is_resource($contents) && ! $this->r2Only()
+                    ? ($ok && $this->copyLocalToR2($key))
+                    : $this->remoteDisk()->put($key, $contents, $options);
+                $ok = $remoteOk && $ok;
             } catch (\Throwable $e) {
                 Log::warning('MediaStorage R2 put failed', ['key' => $key, 'error' => $e->getMessage()]);
                 $ok = false;
@@ -135,31 +232,27 @@ class MediaStorage
             return false;
         }
 
-        $local = $this->localDisk();
-        if (! $local->exists($key) && $this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
-            $local = $this->legacyPublicDisk();
-        }
-        if (! $local->exists($key)) {
+        $local = $this->localDiskFor($key);
+        if ($local === null) {
             return false;
         }
 
+        $stream = null;
         try {
             $stream = $local->readStream($key);
             if ($stream === null) {
                 return false;
             }
 
-            $this->remoteDisk()->writeStream($key, $stream);
-
-            if (is_resource($stream)) {
-                fclose($stream);
-            }
-
-            return true;
+            return $this->remoteDisk()->writeStream($key, $stream);
         } catch (\Throwable $e) {
             Log::warning('MediaStorage copyLocalToR2 failed', ['key' => $key, 'error' => $e->getMessage()]);
 
             return false;
+        } finally {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
         }
     }
 
@@ -170,15 +263,7 @@ class MediaStorage
             return null;
         }
 
-        if ($this->localDisk()->exists($key)) {
-            return $this->localDisk()->size($key);
-        }
-
-        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
-            return $this->legacyPublicDisk()->size($key);
-        }
-
-        return null;
+        return $this->localDiskFor($key)?->size($key);
     }
 
     public function remoteSize(string $key): ?int
@@ -247,8 +332,8 @@ class MediaStorage
             }
         }
 
-        if (! $this->r2Only() && $this->localDisk()->exists($key)) {
-            return $this->localDisk()->get($key);
+        if (! $this->r2Only()) {
+            return $this->localDiskFor($key)?->get($key);
         }
 
         if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
@@ -321,10 +406,7 @@ class MediaStorage
             }
         }
 
-        return ! $this->r2Only() && (
-            $this->localDisk()->exists($key)
-            || ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key))
-        );
+        return ! $this->r2Only() && $this->localDiskFor($key) !== null;
     }
 
     public function existsOnR2(string $key): bool
@@ -353,11 +435,17 @@ class MediaStorage
 
         $ok = true;
 
-        if (! $this->r2Only() && $this->localDisk()->exists($key)) {
-            $ok = $this->localDisk()->delete($key) && $ok;
-        }
-
-        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
+        if (! $this->r2Only()) {
+            // A missing HDD must fail the deletion so its retained copy cannot reappear on remount.
+            if ($this->usesOriginalsDisk($key)) {
+                $this->originalsGuard->assertAvailable();
+            }
+            foreach ($this->localReadDisks($key) as $disk) {
+                if ($disk->exists($key)) {
+                    $ok = $disk->delete($key) && $ok;
+                }
+            }
+        } elseif ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
             $ok = $this->legacyPublicDisk()->delete($key) && $ok;
         }
 
@@ -397,15 +485,7 @@ class MediaStorage
             }
         }
 
-        if ($this->localDisk()->exists($key)) {
-            return $this->localDisk();
-        }
-
-        if ($this->usesPrivateLocalDisk() && $this->legacyPublicDisk()->exists($key)) {
-            return $this->legacyPublicDisk();
-        }
-
-        return null;
+        return $this->localDiskFor($key);
     }
 
     /** Absolute path when the serving disk is local-filesystem backed. */
@@ -416,8 +496,8 @@ class MediaStorage
             return null;
         }
 
-        foreach ([$this->localDisk(), $this->usesPrivateLocalDisk() ? $this->legacyPublicDisk() : null] as $disk) {
-            if ($disk === null || ! $disk->exists($key)) {
+        foreach ($this->localReadDisks($key) as $disk) {
+            if (! $disk->exists($key)) {
                 continue;
             }
 

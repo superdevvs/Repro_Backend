@@ -16,8 +16,8 @@ use Symfony\Component\Process\Process;
  *  - PDF floorplans: each page is rendered to a JPG via `pdftoppm` (poppler, already
  *    installed on the server). Page 1 becomes thumbnail_path/web_path; every page path
  *    is recorded in metadata.preview_images.
- *  - Image floorplans (jpg/png/webp): if no preview exists, thumbnail_path/web_path are
- *    pointed at the original image so it renders directly.
+ *  - Image floorplans (jpg/png/webp): optimized renditions are stored separately
+ *    so galleries stay on NVMe when masters live on the originals drive.
  *
  * The ORIGINAL file (path/storage_path) is never modified or deleted. Generation is
  * idempotent: deterministic output filenames + a skip when a preview already exists.
@@ -55,7 +55,12 @@ class FloorplanPreviewService
         }
 
         // Idempotency: already has a usable preview and not forced.
-        if (!$force && !empty($file->web_path) && $this->diskHas($file->web_path)) {
+        $previewKey = $this->normalizeDiskPath($file->web_path);
+        $linkedToOriginal = $previewKey !== null && in_array($previewKey, [
+            $this->normalizeDiskPath($file->path),
+            $this->normalizeDiskPath($file->storage_path),
+        ], true);
+        if (!$force && !$linkedToOriginal && !empty($file->web_path) && $this->diskHas($file->web_path)) {
             $result['status'] = 'already_present';
             return $result;
         }
@@ -88,14 +93,39 @@ class FloorplanPreviewService
         }
 
         if ($isImage) {
-            // Point preview fields at the original image so the grid renders it.
-            $file->thumbnail_path = $relativeSource;
-            $file->web_path = $relativeSource;
+            $sourcePath = $media->absolutePath($relativeSource);
+            $temporaryPath = null;
+            if (!$sourcePath && ($media->readFromR2Enabled() || $media->r2Only())) {
+                $sourcePath = $temporaryPath = $media->downloadToTemp($relativeSource);
+            }
+            if (!$sourcePath) {
+                $result['status'] = 'source_missing';
+                return $result;
+            }
+            try {
+                $generated = app(\App\Services\ImageProcessingService::class)->processImageFromPath(
+                    $file->shoot_id,
+                    $file->stored_filename ?: $file->filename,
+                    $sourcePath
+                );
+            } finally {
+                if ($temporaryPath && is_file($temporaryPath)) {
+                    @unlink($temporaryPath);
+                }
+            }
+            if (empty($generated['thumbnail']) || empty($generated['web'])) {
+                $result['status'] = 'preview_failed';
+                return $result;
+            }
+            $file->thumbnail_path = $generated['thumbnail'];
+            $file->web_path = $generated['web'];
+            $file->grid_path = $generated['grid'] ?? $file->grid_path;
+            $file->placeholder_path = $generated['placeholder'] ?? $file->placeholder_path;
             $file->save();
 
-            $result['status'] = 'image_linked';
-            $result['thumbnail_path'] = $relativeSource;
-            $result['web_path'] = $relativeSource;
+            $result['status'] = 'generated';
+            $result['thumbnail_path'] = $file->thumbnail_path;
+            $result['web_path'] = $file->web_path;
             return $result;
         }
 
@@ -109,8 +139,9 @@ class FloorplanPreviewService
      */
     private function generatePdfPreviews(ShootFile $file, string $relativeSource, array $result): array
     {
-        $absoluteSource = app(\App\Services\Media\MediaStorage::class)->absolutePath($relativeSource);
-        if (!$absoluteSource) {
+        $media = app(\App\Services\Media\MediaStorage::class);
+        $absoluteSource = $media->absolutePath($relativeSource);
+        if (!$absoluteSource && !$media->readFromR2Enabled() && !$media->r2Only()) {
             $result['status'] = 'source_missing';
             return $result;
         }
@@ -126,7 +157,15 @@ class FloorplanPreviewService
             return $result;
         }
 
+        $temporarySource = null;
         try {
+            if (!$absoluteSource) {
+                $absoluteSource = $temporarySource = $media->downloadToTemp($relativeSource, '.pdf');
+                if (!$absoluteSource) {
+                    $result['status'] = 'source_missing';
+                    return $result;
+                }
+            }
             $tmpPrefix = $tmpDir . '/page';
             // pdftoppm -jpeg -r 150 <src> <tmpPrefix>  =>  <tmpPrefix>-1.jpg, -2.jpg, ...
             $process = new Process([
@@ -190,6 +229,9 @@ class FloorplanPreviewService
             return $result;
         } finally {
             $this->cleanupTmpDir($tmpDir);
+            if ($temporarySource && is_file($temporarySource)) {
+                @unlink($temporarySource);
+            }
         }
     }
 

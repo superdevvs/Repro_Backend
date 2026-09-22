@@ -30,6 +30,36 @@ return [
 
     'disks' => [
 
+        // Opt-in shared NVMe media adapter; ordinary local storage keeps its restrictive defaults.
+        'media_local' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private'),
+            'visibility' => 'private',
+            'directory_visibility' => 'private',
+            'permissions' => [
+                'file' => ['public' => 0660, 'private' => 0660],
+                'dir' => ['public' => 02770, 'private' => 02770],
+            ],
+            'serve' => false,
+            'throw' => true,
+            'report' => false,
+        ],
+
+        // Access through MediaStorage only: its mount/UUID guard runs before adapter construction.
+        'media_originals' => [
+            'driver' => 'local',
+            'root' => env('MEDIA_ORIGINALS_ROOT', ''),
+            'visibility' => 'private',
+            'directory_visibility' => 'private',
+            'permissions' => [
+                'file' => ['public' => 0660, 'private' => 0660],
+                'dir' => ['public' => 02770, 'private' => 02770],
+            ],
+            'serve' => false,
+            'throw' => true,
+            'report' => false,
+        ],
+
         // Tax forms are served only by the authenticated document controller.
         'tax_documents' => [
             'driver' => 'local',

@@ -11,8 +11,6 @@ use App\Observers\ShootCompensationObserver;
 use App\Observers\ShootFileObserver;
 use App\Observers\ShootObserver;
 use App\Observers\ShootServiceObserver;
-use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Sanctum\Sanctum;
@@ -46,40 +44,7 @@ class AppServiceProvider extends ServiceProvider
         ShootCompensation::observe(ShootCompensationObserver::class);
         ShootFile::observe(ShootFileObserver::class);
 
-        if (! app()->environment('production') || app()->runningInConsole()) {
-            return;
-        }
-
-        $publicStorage = public_path('storage');
-        $storageTarget = storage_path('app/public');
-
-        if (! file_exists($publicStorage)) {
-            try {
-                Artisan::call('storage:link');
-
-                if (! file_exists($publicStorage)) {
-                    Log::error('public/storage symlink missing after storage:link', [
-                        'public_path' => $publicStorage,
-                        'target_path' => $storageTarget,
-                    ]);
-                } else {
-                    Log::info('public/storage symlink created automatically', [
-                        'public_path' => $publicStorage,
-                        'target_path' => $storageTarget,
-                    ]);
-                }
-            } catch (\Throwable $e) {
-                Log::error('Failed to create public/storage symlink', [
-                    'error' => $e->getMessage(),
-                    'public_path' => $publicStorage,
-                    'target_path' => $storageTarget,
-                ]);
-            }
-        } elseif (! is_link($publicStorage)) {
-            Log::warning('public/storage exists but is not a symlink', [
-                'public_path' => $publicStorage,
-                'target_path' => $storageTarget,
-            ]);
-        }
+        // Deployment provisions and verifies public/storage as the deploy user.
+        // PHP-FPM must never mutate the application public directory on boot.
     }
 }

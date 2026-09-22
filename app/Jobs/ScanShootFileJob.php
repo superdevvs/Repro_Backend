@@ -13,7 +13,6 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Throwable;
 use ZipArchive;
 
@@ -239,34 +238,23 @@ class ScanShootFileJob implements ShouldQueue
      * Resolve a {@see ShootFile} to an absolute filesystem path that
      * {@see ClamAvClient::scan()} can stream from.
      *
-     * Mirrors the resolution chain used by {@see \App\Jobs\ProcessImageJob} so
-     * the scan job sees the same source the rest of the pipeline does:
-     *   1. `path` on the local disk
-     *   2. `path` on the public disk
-     *   3. `storage_path` on the public disk
-     *   4. `storage_path` on the local disk
-     *   5. download `dropbox_path` to a temp file
-     *
-     * Returns `null` when no local copy could be obtained. Temp files
-     * downloaded from Dropbox are tagged with a `dbx-scan-` prefix so
-     * {@see cleanupTempSource()} can safely remove them after scanning.
+     * Shares the HDD/NVMe/legacy resolution used by image processing. R2-only
+     * uploads are staged into the NVMe temporary directory for scanning.
      */
     private function resolveLocalSourcePath(ShootFile $file): ?string
     {
-        if ($file->path && Storage::disk('local')->exists($file->path)) {
-            return Storage::disk('local')->path($file->path);
+        $media = app(\App\Services\Media\MediaStorage::class);
+        foreach ([$file->path, $file->storage_path] as $candidate) {
+            if ($candidate && ($path = $media->absolutePath($candidate))) {
+                return $path;
+            }
         }
-
-        if ($file->path && Storage::disk('public')->exists($file->path)) {
-            return Storage::disk('public')->path($file->path);
-        }
-
-        if ($file->storage_path && Storage::disk('public')->exists($file->storage_path)) {
-            return Storage::disk('public')->path($file->storage_path);
-        }
-
-        if ($file->storage_path && Storage::disk('local')->exists($file->storage_path)) {
-            return Storage::disk('local')->path($file->storage_path);
+        if ($media->readFromR2Enabled() || $media->r2Only()) {
+            foreach ([$file->path, $file->storage_path] as $candidate) {
+                if ($candidate && ($path = $media->downloadToTemp($candidate))) {
+                    return $path;
+                }
+            }
         }
 
         return null;
@@ -329,11 +317,11 @@ class ScanShootFileJob implements ShouldQueue
     {
         $tempDir = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR);
 
-        if (! str_starts_with($path, $tempDir)) {
+        if (dirname($path) !== $tempDir) {
             return;
         }
 
-        if (! str_contains(basename($path), 'dbx-scan-') && ! str_contains(basename($path), 'dbx-')) {
+        if (! str_starts_with(basename($path), 'r2src_') && ! str_starts_with(basename($path), 'dbx-scan-') && ! str_starts_with(basename($path), 'dbx-')) {
             return;
         }
 

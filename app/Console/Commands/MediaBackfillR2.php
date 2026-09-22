@@ -4,29 +4,28 @@ namespace App\Console\Commands;
 
 use App\Services\Media\MediaStorage;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Storage;
 
 /**
- * Backfill existing local public media to Cloudflare R2 under identical keys.
+ * Backfill existing HDD/private/public media to Cloudflare R2 under identical keys.
  *
  * Idempotent (skips objects already on R2 with a matching size), resumable
  * (just re-run; completed objects are skipped), and supports --dry-run. Walks
- * the local public disk under the given prefix (default "shoots"), which covers
+ * all configured local media disks under the given prefix (default "shoots"), which covers
  * originals plus all derived/watermark subdirectories.
  */
 class MediaBackfillR2 extends Command
 {
     protected $signature = 'media:backfill-r2
-        {--prefix=shoots : Local public-disk prefix to walk}
+        {--prefix=shoots : Local media prefix to walk}
         {--shoot= : Limit to a single shoot id (shoots/{id})}
         {--dry-run : Report what would be copied without writing to R2}
         {--report= : Write a JSON summary report to this path}';
 
-    protected $description = 'Backfill local public media to Cloudflare R2 under identical keys (idempotent, resumable).';
+    protected $description = 'Backfill local media to Cloudflare R2 under identical keys (idempotent, resumable).';
 
     public function handle(MediaStorage $media): int
     {
-        $local = Storage::disk(config('media.local_disk', 'public'));
+        $locals = $media->localScanDisks();
         $dryRun = (bool) $this->option('dry-run');
         $prefix = trim((string) $this->option('prefix'), '/');
 
@@ -34,7 +33,11 @@ class MediaBackfillR2 extends Command
             $dirs = ["{$prefix}/{$shoot}"];
         } else {
             // Iterate per-shoot directory to bound memory on large datasets.
-            $dirs = $local->directories($prefix);
+            $dirs = [];
+            foreach ($locals as $local) {
+                $dirs = array_merge($dirs, $local->directories($prefix));
+            }
+            $dirs = array_values(array_unique($dirs));
             if (empty($dirs)) {
                 $dirs = [$prefix];
             }
@@ -46,12 +49,19 @@ class MediaBackfillR2 extends Command
         $this->info(($dryRun ? '[DRY RUN] ' : '') . 'Backfilling media to R2 from prefix: ' . $prefix);
 
         foreach ($dirs as $dir) {
-            $files = $local->allFiles($dir);
+            $files = [];
+            foreach ($locals as $local) {
+                $files = array_merge($files, $local->allFiles($dir));
+            }
+            $files = array_values(array_unique($files));
             if (empty($files)) {
                 continue;
             }
 
             foreach ($files as $key) {
+                if (preg_match('/^\..+\.upload-[a-f0-9]{24}$/D', basename($key))) {
+                    continue;
+                }
                 if ($dryRun) {
                     $localSize = $media->localSize($key);
                     $remoteSize = $media->remoteSize($key);
