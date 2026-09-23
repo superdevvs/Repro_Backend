@@ -1106,6 +1106,7 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager,salesR
 
 // CubiCasa scanning routes - accessible to photographers and admins
 Route::middleware(['auth:sanctum', 'role:photographer,admin,superadmin,editing_manager'])->prefix('cubicasa')->group(function () {
+    Route::get('/shoots', [\App\Http\Controllers\API\CubiCasaShootTrackerController::class, 'index']);
     Route::post('/orders', [CubiCasaController::class, 'createOrder']);
     Route::get('/orders', [CubiCasaController::class, 'listOrders']);
     Route::get('/orders/{id}', [CubiCasaController::class, 'getOrder']);

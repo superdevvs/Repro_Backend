@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Cache;
@@ -789,6 +790,38 @@ class Shoot extends Model
     }
 
     /**
+     * Service name fragments that mean a shoot should get a CubiCasa order.
+     * Shared by the model check and the Property Scan query.
+     */
+    public const CUBICASA_ELIGIBLE_NEEDLES = [
+        'cubicasa',
+        'cubi casa',
+        'cubi-casa',
+        'scan',
+        'floorplan',
+        'floor plan',
+        'gla',
+        '2d floor',
+        '3d floor',
+    ];
+
+    public static function textMatchesCubicasaService(?string $value): bool
+    {
+        if (!is_string($value) || $value === '') {
+            return false;
+        }
+
+        $haystack = strtolower($value);
+        foreach (self::CUBICASA_ELIGIBLE_NEEDLES as $needle) {
+            if (str_contains($haystack, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Whether this shoot has at least one booked service that produces CubiCasa
      * deliverables (CubiCasa scans, GLA, 2D/3D floor plans). Used to gate auto
      * sync & ingestion so we don't pull CubiCasa data for shoots that didn't
@@ -800,25 +833,10 @@ class Shoot extends Model
             return false;
         }
 
-        $needles = ['cubicasa', 'cubi casa', 'cubi-casa', 'scan', 'floorplan', 'floor plan', 'gla', '2d floor', '3d floor'];
-
-        $matches = static function (?string $value) use ($needles): bool {
-            if (!is_string($value) || $value === '') {
-                return false;
-            }
-            $haystack = strtolower($value);
-            foreach ($needles as $needle) {
-                if (str_contains($haystack, $needle)) {
-                    return true;
-                }
-            }
-            return false;
-        };
-
-        if ($matches($this->service_category)) {
+        if (self::textMatchesCubicasaService($this->service_category)) {
             return true;
         }
-        if ($this->service && $matches($this->service->name)) {
+        if ($this->service && self::textMatchesCubicasaService($this->service->name)) {
             return true;
         }
 
@@ -827,15 +845,46 @@ class Shoot extends Model
             : $this->services()->with('category')->get();
 
         foreach ($services as $service) {
-            if ($matches($service->name)) {
+            if (self::textMatchesCubicasaService($service->name)) {
                 return true;
             }
-            if ($matches($service->category?->name)) {
+            if (self::textMatchesCubicasaService($service->category?->name)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * SQL form of {@see hasCubiCasaEligibleService()} service matching.
+     * Internal-test and lifecycle exclusions stay with the caller.
+     */
+    public function scopeCubicasaEligible(Builder $query): Builder
+    {
+        $needles = self::CUBICASA_ELIGIBLE_NEEDLES;
+        $matchColumn = function ($inner, string $column) use ($needles): void {
+            $inner->where(function ($match) use ($needles, $column) {
+                foreach ($needles as $needle) {
+                    $match->orWhereRaw('LOWER('.$column.') LIKE ?', ['%'.$needle.'%']);
+                }
+            });
+        };
+
+        return $query->where(function ($outer) use ($matchColumn) {
+            $outer->where(function ($category) use ($matchColumn) {
+                $matchColumn($category, 'shoots.service_category');
+            })->orWhereHas('service', function ($service) use ($matchColumn) {
+                $matchColumn($service, 'name');
+            })->orWhereHas('services', function ($services) use ($matchColumn) {
+                $services->where(function ($named) use ($matchColumn) {
+                    $matchColumn($named, 'name');
+                    $named->orWhereHas('category', function ($category) use ($matchColumn) {
+                        $matchColumn($category, 'name');
+                    });
+                });
+            });
+        });
     }
 
     public function services()
