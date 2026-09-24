@@ -40,6 +40,7 @@ use App\Http\Controllers\API\ListingVideoController;
 use App\Http\Controllers\API\MediaUploadController;
 use App\Http\Controllers\API\Messaging\AutomationController;
 use App\Http\Controllers\API\Messaging\ClientConfirmationRecoveryController;
+use App\Http\Controllers\API\Messaging\EmailComposeAssistantController;
 use App\Http\Controllers\API\Messaging\EmailMessagingController;
 use App\Http\Controllers\API\Messaging\EmailOpsSummaryController;
 use App\Http\Controllers\API\Messaging\MessageTemplateController;
@@ -1143,6 +1144,7 @@ Route::middleware(['auth:sanctum'])->prefix('messaging')->group(function () {
     Route::get('/email/threads', [EmailMessagingController::class, 'threads']);
     Route::post('/email/threads/{thread}/mark-read', [EmailMessagingController::class, 'markThreadRead']);
     Route::post('/email/compose', [EmailMessagingController::class, 'compose']);
+    Route::post('/email/assist', EmailComposeAssistantController::class);
     Route::post('/email/schedule', [EmailMessagingController::class, 'schedule']);
     Route::post('/email/messages/{message}/retry', [EmailMessagingController::class, 'retry']);
     Route::post('/email/messages/{message}/cancel', [EmailMessagingController::class, 'cancel']);
