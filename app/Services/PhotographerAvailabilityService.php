@@ -49,10 +49,10 @@ class PhotographerAvailabilityService
         // Get specific date overrides first
         $specific = PhotographerAvailability::where('photographer_id', $photographerId)
             ->whereDate('date', $date->toDateString())
-            ->where('status', 'available')
             ->get();
 
-        // If no specific overrides, use recurring rules
+        // A fully unavailable date is still an override. Only fall back to
+        // recurring rules when the date has no entries at all.
         if ($specific->isEmpty()) {
             $specific = PhotographerAvailability::where('photographer_id', $photographerId)
                 ->whereNull('date')
@@ -62,7 +62,7 @@ class PhotographerAvailabilityService
         }
 
         $slots = [];
-        foreach ($specific as $availability) {
+        foreach ($specific->where('status', 'available') as $availability) {
             $start = Carbon::parse($availability->start_time);
             $end = Carbon::parse($availability->end_time);
             

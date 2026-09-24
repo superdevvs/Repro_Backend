@@ -54,25 +54,13 @@ class PhotographerAvailabilityController extends Controller
             
             $allSlots = $specificSlots->concat($recurringSlots);
         } else {
-            // For recurring: check against other recurring slots on same day
-            // and also check against specific date slots that fall on that day
-            $recurringSlots = (clone $query)
+            // Dated entries override the weekly schedule on their own dates.
+            // They must not prevent adding/editing the weekly rule for every
+            // other week (including when those dated entries are in the past).
+            $allSlots = (clone $query)
                 ->whereNull('date')
                 ->where('day_of_week', $dayOfWeek)
                 ->get();
-            
-            // Get all specific date slots and filter in PHP to avoid DB-specific DAYNAME()
-            $specificSlots = (clone $query)
-                ->whereNotNull('date')
-                ->get()
-                ->filter(function ($slot) use ($dayOfWeek) {
-                    if (!$slot->date) {
-                        return false;
-                    }
-                    return strtolower(date('l', strtotime($slot->date))) === $dayOfWeek;
-                });
-            
-            $allSlots = $recurringSlots->concat($specificSlots);
         }
 
         // Check for time overlap
