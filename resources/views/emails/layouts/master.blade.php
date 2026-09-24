@@ -36,7 +36,7 @@
                         <td style="vertical-align:middle;">
                             <img class="email-logo-universal" src="{{ $emailLogoUrl }}" alt="{{ $productName }}" width="126" height="38" style="display:block;width:126px;height:38px;border:0;">
                         </td>
-                        <td align="right" class="brand-tagline dark-muted" style="vertical-align:middle;color:{{ $colors['muted'] }};font-size:11px;line-height:16px;font-weight:600;letter-spacing:1.4px;">PROPERTY<br>MEDIA, REFINED.</td>
+                        <td align="right" class="brand-tagline dark-muted" style="vertical-align:middle;color:{{ $colors['muted'] }};font-size:12px;line-height:16px;font-weight:600;letter-spacing:0;">Elevating your status quo!</td>
                     </tr></table>
                 </td></tr>
                 @if(($artwork['kind'] ?? '') === 'illustration' && !empty($artwork['src']))
