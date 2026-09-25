@@ -32,20 +32,21 @@ class WorkspaceImageOperationsTest extends TestCase
         Storage::fake('public');
         Storage::fake('local');
         Http::preventStrayRequests();
-        config(['studio_uploads.disk' => 'public', 'services.fal.key' => 'fal-fixture', 'services.openai.api_key' => 'openai-fixture',
+        config(['services.autoenhance.api_key' => 'auto-fixture', 'studio_uploads.disk' => 'public', 'services.fal.key' => 'fal-fixture', 'services.openai.api_key' => 'openai-fixture',
             'services.fal.image_model' => 'fal-ai/flux-kontext/dev', 'services.fal.outpaint_model' => 'fal-ai/flux-2-pro/outpaint',
             'services.fal.video_poll_timeout' => 0]);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->andReturnUsing(fn ($w, $op, $item, $bytes, $service) => $bytes)->byDefault();
         Sanctum::actingAs(User::factory()->create(['role' => 'admin', 'metadata' => ['team_id' => 100]]));
     }
 
     public function test_enqueued_fal_route_is_frozen_despite_later_provider_settings_changes(): void
     {
         $settings = app(StudioProviderSettings::class);
-        $settings->save(['services' => [['id' => 'listing-ready', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
+        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
         $workspace = $this->draft();
         $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
         $workspace->refresh();
-        $settings->save(['services' => [['id' => 'listing-ready', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
+        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
         $fal = $this->mock(FalService::class);
         $fal->shouldReceive('submitModel')->with('fal-ai/nano-banana-pro/edit', \Mockery::type('array'))->once()->andReturn('saved-fal');
         $fal->shouldReceive('modelStatus')->with('fal-ai/nano-banana-pro/edit', 'saved-fal')->once()->andReturn('COMPLETED');
@@ -53,7 +54,7 @@ class WorkspaceImageOperationsTest extends TestCase
         $this->mock(OpenAiImageProvider::class)->shouldNotReceive('edit');
         $result = app(WorkspaceImageOperations::class)->edit($workspace, $workspace->operation['id'], ['id' => 'm1'], $this->image(), 'Correct colors');
         $this->assertNotFalse(getimagesizefromstring($result));
-        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->fresh()->operation['routing']['listing-ready']['model']);
+        $this->assertSame('fal-ai/nano-banana-pro/edit', $workspace->fresh()->operation['routing']['twilight']['model']);
         $this->assertSame('saved-fal', $workspace->fresh()->operation['requests']['m1']);
         $body = $this->getJson('/api/studio/workspaces/'.$workspace->id)->assertOk()->getContent();
         $this->assertStringNotContainsString('saved-fal', $body);
@@ -63,11 +64,11 @@ class WorkspaceImageOperationsTest extends TestCase
     public function test_openai_route_snapshot_forwards_references_and_reuses_the_saved_bytes_once(): void
     {
         $settings = app(StudioProviderSettings::class);
-        $settings->save(['services' => [['id' => 'listing-ready', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
+        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'openai', 'model' => 'gpt-image-2']]]);
         $workspace = $this->draft();
         $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
         $workspace->refresh();
-        $settings->save(['services' => [['id' => 'listing-ready', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
+        $settings->save(['services' => [['id' => 'twilight', 'provider' => 'fal', 'model' => 'fal-ai/nano-banana-pro/edit']]]);
         $source = $this->image();
         $references = [$this->image(320, 240, [0, 0, 200])];
         $expected = $this->image(480, 320, [0, 200, 0]);
@@ -219,7 +220,7 @@ class WorkspaceImageOperationsTest extends TestCase
     public function test_ambiguous_openai_attempt_is_not_submitted_twice_but_terminal_failure_clears_marker(): void
     {
         $route = ['provider' => 'openai', 'model' => 'gpt-image-2', 'fallback' => null];
-        $workspace = $this->active(['listing-ready' => $route]);
+        $workspace = $this->active(['twilight' => $route]);
         $openai = $this->mock(OpenAiImageProvider::class);
         $openai->shouldReceive('edit')->once()->andThrow(new OpenAiImageException(ambiguous: true, reason: 'transport'));
         $operations = app(WorkspaceImageOperations::class);
@@ -235,7 +236,7 @@ class WorkspaceImageOperationsTest extends TestCase
         } catch (StudioProviderException $exception) {
             $this->assertTrue($exception->ambiguous);
         }
-        $other = $this->active(['listing-ready' => $route]);
+        $other = $this->active(['twilight' => $route]);
         $openai->shouldReceive('edit')->once()->andThrow(new OpenAiImageException(400, reason: 'moderation_blocked'));
         try {
             $operations->edit($other, 'operation-one', ['id' => 'm1'], $this->image(), 'Edit');
@@ -277,7 +278,7 @@ class WorkspaceImageOperationsTest extends TestCase
         app(WorkspaceImageOperations::class)->edit($workspace, 'operation-one', ['id' => 'm1'], $this->image(), 'Match it', [$this->image()]);
     }
 
-    public function test_upscale_reads_the_explicit_older_output_and_sends_factor_two(): void
+    public function test_upscale_reads_the_explicit_older_output_and_uses_autoenhance(): void
     {
         $workspace = $this->draft();
         $old = $this->image(480, 320, [200, 0, 0]);
@@ -291,17 +292,7 @@ class WorkspaceImageOperationsTest extends TestCase
         $workspace->update(['outputs' => $outputs, 'status' => 'completed']);
         $this->postJson('/api/studio/workspaces/'.$workspace->id.'/upscale', ['mediaId' => 'm1', 'outputId' => 'v1'])->assertAccepted();
         $workspace->refresh();
-        $fal = $this->mock(FalService::class);
-        $fal->shouldReceive('submitModel')->once()->with('fal-ai/clarity-upscaler', \Mockery::on(function (array $payload) use ($old): bool {
-            $this->assertSame($old, base64_decode(explode(',', $payload['image_url'], 2)[1]));
-            $this->assertSame(2, $payload['upscale_factor']);
-            $this->assertSame(0, $payload['creativity']);
-            $this->assertSame(1, $payload['resemblance']);
-
-            return true;
-        }))->andReturn('upscale-one');
-        $fal->shouldReceive('modelStatus')->once()->andReturn('COMPLETED');
-        $fal->shouldReceive('modelImageResult')->once()->andReturn($this->dataImage(960, 640));
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()->with(\Mockery::type(StudioWorkspace::class), $workspace->operation['id'], ['id' => 'm1'], $old, 'upscale')->andReturn($this->image(960, 640));
         app(WorkspaceProcessor::class)->process($workspace, $workspace->operation['id']);
         $workspace->refresh();
         $this->assertSame('completed', $workspace->status);
@@ -326,7 +317,7 @@ class WorkspaceImageOperationsTest extends TestCase
     {
         $ref = 'studio/uploads/100/'.auth()->id().'/'.\Illuminate\Support\Str::uuid().'.jpg';
         Storage::disk('public')->put($ref, $this->image());
-        $response = $this->postJson('/api/studio/workspaces', ['name' => 'Provider fixture', 'presetId' => 'listing-ready', 'media' => [['id' => 'm1', 'mediaRef' => $ref]]])->assertCreated();
+        $response = $this->postJson('/api/studio/workspaces', ['name' => 'Provider fixture', 'presetId' => 'twilight', 'media' => [['id' => 'm1', 'mediaRef' => $ref]]])->assertCreated();
 
         return StudioWorkspace::findOrFail($response->json('data.id'));
     }

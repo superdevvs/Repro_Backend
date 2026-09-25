@@ -24,7 +24,31 @@ class WorkspaceImageOperations
         if (($route['provider'] ?? '') === 'virtualstagingai') {
             throw new StudioProviderException('Virtual staging runs through its own staging service.');
         }
+        $referenceRoute = in_array($route['provider'], ['autoenhance', 'fotello'], true) ? $state->route('revision') : $route;
+        if ($references && $referenceRoute['provider'] !== 'openai' && $referenceRoute['model'] !== 'fal-ai/nano-banana-pro/edit') {
+            throw new StudioProviderException('Reference photos are not supported by the selected editing service. Ask an administrator to choose a compatible service.');
+        }
+        if ($route['provider'] === 'autoenhance') {
+            $enhanced = app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $source, $service);
+            $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];
+            $adjustments = \Illuminate\Support\Arr::except($workspace->config['adjustments'] ?? [], ['sceneType', 'lensCorrection', 'verticalCorrection', 'skyReplacement']);
+            $adjustments = array_filter($adjustments, fn ($value, $key) => $value !== null && $value !== '' && (! array_key_exists($key, $defaults) || $value !== $defaults[$key]), ARRAY_FILTER_USE_BOTH);
+            if (trim((string) ($workspace->config['prompt'] ?? '')) !== '' || $adjustments || $references) {
+                $item['id'] .= '-refine';
+
+                return $this->edit($workspace, $operationId, $item, $enhanced, $prompt, $references, $state->route('revision'));
+            }
+
+            return $enhanced;
+        }
+        // Free-text and twilight effects retain their specialist editor after photo enhancement.
+        if ($routeOverride === null && $route['provider'] !== 'fotello' && ! $workspace->isVideo()) {
+            $source = app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $source, 'listing-ready');
+        }
         if ($route['provider'] === 'fotello') {
+            if ($service !== 'full-shoot') {
+                throw new StudioProviderException('Start a new photo edit to use the configured photo enhancement service.');
+            }
             $enhanced = app(WorkspacePhotoEnhancement::class)->run($workspace, $operationId, $item, $source, $route);
             $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'lensCorrection' => true, 'verticalCorrection' => true, 'skyReplacement' => false, 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];
             $adjustments = \Illuminate\Support\Arr::except($workspace->config['adjustments'] ?? [], ['sceneType']);
@@ -89,6 +113,9 @@ class WorkspaceImageOperations
     {
         $state = new WorkspaceProviderState($workspace, $operationId);
         $route = $state->route('upscale');
+        if ($route['provider'] === 'autoenhance') {
+            return app(WorkspaceAutoenhance::class)->run($workspace, $operationId, ['id' => $mediaId], $source, 'upscale');
+        }
         if ($route['provider'] !== 'fal') {
             throw new StudioProviderException('Upscaling needs a compatible result-retrieval integration before this service can be enabled.');
         }

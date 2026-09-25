@@ -26,6 +26,7 @@ class StudioWorkspaceTest extends TestCase
         Storage::fake('public');
         Storage::fake('local');
         config(['studio_uploads.disk' => 'public']);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->andReturnUsing(fn ($w, $op, $item, $bytes, $service) => $bytes)->byDefault();
     }
 
     public function test_upload_sources_are_canonical_and_create_is_idempotent(): void
@@ -220,9 +221,9 @@ class StudioWorkspaceTest extends TestCase
         $record = $this->create($user, 2);
         $this->patchJson('/api/studio/workspaces/'.$record->id, ['config' => ['frames' => [['mediaId' => 'm2', 'method' => 'fit']]]])->assertOk();
         $fal = $this->mock(FalService::class);
-        $fal->shouldReceive('submitImageEditFromBuffer')->twice()->andReturn(['request_id' => 'provider-1']);
-        $fal->shouldReceive('imageEditStatus')->twice()->andReturn(['status' => 'completed']);
-        $fal->shouldReceive('imageEditResult')->twice()->andReturn(['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($this->image(0, 0, 255))]);
+        $fal->shouldReceive('submitImageEditFromBuffer')->once()->andReturn(['request_id' => 'provider-1']);
+        $fal->shouldReceive('imageEditStatus')->once()->andReturn(['status' => 'completed']);
+        $fal->shouldReceive('imageEditResult')->once()->andReturn(['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($this->image(0, 0, 255))]);
         $this->postJson('/api/studio/workspaces/'.$record->id.'/generate')->assertAccepted();
         $record->refresh();
         (new ProcessStudioWorkspace($record->id, $record->operation['id']))->handle(app(WorkspaceProcessor::class));
@@ -282,7 +283,7 @@ class StudioWorkspaceTest extends TestCase
     public function test_terminal_provider_failure_is_replaced_without_repeating_completed_subset_outputs(): void
     {
         $user = $this->actor();
-        $record = $this->create($user, 12);
+        $record = $this->create($user, 12, 'twilight');
         $this->patchJson('/api/studio/workspaces/'.$record->id, ['config' => ['frames' => [['mediaId' => 'm2', 'method' => 'fit'], ['mediaId' => 'm3', 'method' => 'fit']]]])->assertOk();
         $fal = $this->mock(FalService::class);
         $fal->shouldReceive('submitImageEditFromBuffer')->times(3)->andReturn(['request_id' => 'done'], ['request_id' => 'failed'], ['request_id' => 'replacement']);

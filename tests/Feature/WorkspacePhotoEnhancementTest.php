@@ -344,11 +344,11 @@ class WorkspacePhotoEnhancementTest extends TestCase
         Storage::disk('public')->put($ref, $this->source);
 
         return StudioWorkspace::create([
-            'team_id' => $user->id, 'created_by' => $user->id, 'name' => 'Test workspace', 'preset_id' => 'listing-ready',
+            'team_id' => $user->id, 'created_by' => $user->id, 'name' => 'Test workspace', 'preset_id' => 'full-shoot',
             'media' => [['id' => 'm1', 'mediaRef' => $ref, 'name' => 'source.jpg', 'kind' => 'image']],
             'config' => ['prompt' => '', 'ratio' => '4:5', 'adjustments' => ['sceneType' => 'interior'], 'frames' => [['mediaId' => 'm1', 'method' => 'fit']]],
             'outputs' => [], 'prepared_frames' => [], 'status' => 'generating',
-            'operation' => ['id' => 'operation-1', 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [], 'routing' => ['listing-ready' => self::ROUTE]],
+            'operation' => ['id' => 'operation-1', 'type' => 'generate', 'payload' => [], 'completed' => [], 'requests' => [], 'routing' => ['full-shoot' => self::ROUTE]],
         ]);
     }
 

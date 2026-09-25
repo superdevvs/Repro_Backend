@@ -27,6 +27,7 @@ class StudioProviderSettingsTest extends TestCase
         config([
             'studio.client_access_enabled' => false,
             'services.fal.key' => 'fal-fixture-secret',
+            'services.autoenhance.api_key' => 'autoenhance-fixture-secret',
             'services.openai.api_key' => 'openai-fixture-secret',
             'studio_providers.fotello.api_key' => null,
             'studio_providers.fotello.team_id' => null,
@@ -79,12 +80,12 @@ class StudioProviderSettingsTest extends TestCase
     public function test_credentials_only_and_blank_secret_save_preserve_existing_routes_and_key(): void
     {
         $this->actor('superadmin');
-        $route = ['id' => 'listing-ready', 'provider' => 'openai', 'model' => 'gpt-image-2'];
+        $route = ['id' => 'revision', 'provider' => 'openai', 'model' => 'gpt-image-2'];
         $this->putJson('/api/studio/provider-settings', ['services' => [$route]])->assertOk();
-        $before = app(StudioProviderSettings::class)->route('listing-ready');
+        $before = app(StudioProviderSettings::class)->route('revision');
         $this->putJson('/api/studio/provider-settings', ['credentials' => ['fotello' => ['apiKey' => 'saved-fixture', 'teamId' => 'team-fixture']]])->assertOk();
         $this->putJson('/api/studio/provider-settings', ['credentials' => ['fotello' => ['apiKey' => '', 'teamId' => null]]])->assertOk();
-        $this->assertSame($before, app(StudioProviderSettings::class)->route('listing-ready'));
+        $this->assertSame($before, app(StudioProviderSettings::class)->route('revision'));
         $this->assertSame('saved-fixture', app(StudioProviderSettings::class)->credentials('fotello')['api_key']);
         $this->assertSame('team-fixture', app(StudioProviderSettings::class)->credentials('fotello')['team_id']);
     }
@@ -133,7 +134,7 @@ class StudioProviderSettingsTest extends TestCase
         foreach ([['twilight', 'twilight'], ['virtual-staging', 'virtual_staging'], ['revision', 'pro'], ['upscale', 'upscale']] as [$id, $model]) {
             $this->putJson('/api/studio/provider-settings', ['services' => [['id' => $id, 'provider' => 'fotello', 'model' => $model]]])->assertUnprocessable();
         }
-        $this->putJson('/api/studio/provider-settings', ['services' => [['id' => 'listing-ready', 'provider' => 'fotello', 'model' => 'enhance']]])->assertOk();
+        $this->putJson('/api/studio/provider-settings', ['services' => [['id' => 'full-shoot', 'provider' => 'fotello', 'model' => 'enhance']]])->assertOk();
         Http::assertNothingSent();
     }
 
@@ -165,7 +166,7 @@ class StudioProviderSettingsTest extends TestCase
 
     public function test_outpaint_is_ready_with_a_configured_fallback_when_the_primary_key_is_missing(): void
     {
-        config(['services.fal.key' => null, 'services.openai.api_key' => 'openai-fixture-secret']);
+        config(['services.fal.key' => null, 'services.autoenhance.api_key' => null, 'services.openai.api_key' => 'openai-fixture-secret']);
         $this->actor('admin');
         $this->getJson('/api/studio/workspaces/capabilities')->assertOk()
             ->assertJsonPath('data.outpaint.ready', true)

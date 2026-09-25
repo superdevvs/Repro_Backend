@@ -98,7 +98,7 @@ class AutoenhanceController extends Controller
         }
 
         try {
-            $provider = $this->providerFromRequest($request);
+            $provider = $this->editingProvider($request);
             $shoot = Shoot::findOrFail($request->shoot_id);
             $user = $request->user();
             if (!$this->canEditShoot($user, $shoot)) {
@@ -516,7 +516,7 @@ class AutoenhanceController extends Controller
             ], 401);
         }
 
-        $provider = $this->providerFromRequest($request);
+        $provider = $this->editingProvider($request);
         $editingType = $request->input('editing_type', 'enhance');
         $rawParams = $request->input('params');
         if (is_string($rawParams)) {
@@ -1099,7 +1099,7 @@ class AutoenhanceController extends Controller
 
     public function handleWebhook(Request $request)
     {
-        $configuredToken = trim((string) config('services.autoenhance.webhook_secret'));
+        $configuredToken = trim((string) (app(\App\Services\Studio\StudioProviderSettings::class)->credentials('autoenhance')['webhook_secret'] ?? ''));
         if ($unconfigured = \App\Support\InboundWebhookGuard::requireConfiguredSecret($configuredToken)) {
             return $unconfigured;
         }
@@ -1134,6 +1134,10 @@ class AutoenhanceController extends Controller
             ]);
         }
 
+        if (! is_string($imageId) || strlen($imageId) > 200) {
+            return response()->json(['success' => false, 'message' => 'Invalid image ID'], 422);
+        }
+
         $job = AiEditingJob::where('provider', 'autoenhance')
             ->where(function ($query) use ($imageId) {
                 $query->where('autoenhance_image_id', $imageId)
@@ -1142,6 +1146,26 @@ class AutoenhanceController extends Controller
             ->first();
 
         if (!$job) {
+            // Workspace workers poll the authenticated API; webhooks are durable hints, never final output.
+            $workspaces = \App\Models\StudioWorkspace::query()->whereIn('status', ['generating', 'failed'])
+                ->where('operation', 'like', '%'.$imageId.'%')->get();
+            foreach ($workspaces as $workspace) {
+                foreach ($workspace->operation['providerState'] ?? [] as $key => $state) {
+                    if (str_starts_with($key, 'autoenhance-') && is_array($state) && ($state['imageId'] ?? null) === $imageId) {
+                        \Illuminate\Support\Facades\DB::transaction(function () use ($workspace, $key, $imageId, $event, $payload): void {
+                            $record = \App\Models\StudioWorkspace::lockForUpdate()->find($workspace->id);
+                            $operation = $record?->operation ?? [];
+                            if (($operation['providerState'][$key]['imageId'] ?? null) !== $imageId) {
+                                return;
+                            }
+                            $operation['providerState'][$key]['webhook'] = ['event' => $event, 'error' => filter_var($payload['error'] ?? false, FILTER_VALIDATE_BOOLEAN), 'receivedAt' => now()->toIso8601String()];
+                            $record->update(['operation' => $operation]);
+                        });
+
+                        return response()->json(['success' => true, 'message' => 'Workspace webhook received']);
+                    }
+                }
+            }
             return response()->json([
                 'success' => true,
                 'message' => 'No matching local job',
@@ -1188,9 +1212,15 @@ class AutoenhanceController extends Controller
 
     private function defaultProvider(): string
     {
-        $provider = strtolower((string) config('services.ai_editing.provider', 'fal'));
+        return 'autoenhance';
+    }
 
-        return in_array($provider, ['autoenhance', 'fal'], true) ? $provider : 'fal';
+    private function editingProvider(Request $request): string
+    {
+        // Older clients may still send their previous provider for native enhancement.
+        return in_array($request->input('editing_type', 'enhance'), ['enhance', 'sky_replace', 'vertical_correction', 'window_pull', 'hdr_merge'], true)
+            ? 'autoenhance'
+            : $this->providerFromRequest($request);
     }
 
     private function getImageUrl(ShootFile $shootFile): ?string

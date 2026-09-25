@@ -11,6 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 class StudioProviderSettings
 {
+    public const AUTOENHANCE_SERVICES = ['listing-ready', 'color-correction', 'sky-replacement', 'perspective-correction', 'green-grass', 'upscale'];
     public const PHOTO_SERVICES = ['listing-ready', 'color-correction', 'full-shoot', 'sky-replacement', 'perspective-correction', 'twilight', 'virtual-staging', 'green-grass'];
 
     private const LABELS = [
@@ -35,6 +36,7 @@ class StudioProviderSettings
         $virtualStaging = $stored['credentials']['virtualStagingAi'] ?? [];
 
         return match ($provider) {
+            'autoenhance' => ['api_key' => $saved['apiKey'] ?? config('services.autoenhance.api_key'), 'webhook_secret' => $saved['webhookSecret'] ?? config('services.autoenhance.webhook_secret')],
             'fotello' => ['api_key' => $saved['apiKey'] ?? config('studio_providers.fotello.api_key'), 'team_id' => $saved['teamId'] ?? config('studio_providers.fotello.team_id')],
             'virtualstagingai' => ['api_key' => $virtualStaging['apiKey'] ?? config('studio_providers.virtualstagingai.api_key')],
             'openai' => ['api_key' => config('services.openai.api_key')],
@@ -45,12 +47,18 @@ class StudioProviderSettings
 
     public function route(string $service, ?array $stored = null): array
     {
+        if (in_array($service, self::AUTOENHANCE_SERVICES, true)) {
+            return ['provider' => 'autoenhance', 'model' => 'enhance', 'fallback' => null];
+        }
+        if ($service === 'full-shoot') {
+            return ['provider' => 'fotello', 'model' => 'enhance', 'fallback' => null];
+        }
         // Virtual staging always uses Virtual Staging AI, including jobs saved against an older route.
         if ($service === 'virtual-staging') {
             return ['provider' => 'virtualstagingai', 'model' => 'staging', 'fallback' => null];
         }
         $stored ??= $this->stored();
-        if (isset($stored['routes'][$service])) {
+        if (isset($stored['routes'][$service]) && ($stored['routes'][$service]['provider'] ?? '') !== 'fotello') {
             return $stored['routes'][$service];
         }
         $model = match ($service) {
@@ -66,6 +74,12 @@ class StudioProviderSettings
 
     public function providers(string $service): array
     {
+        if (in_array($service, self::AUTOENHANCE_SERVICES, true)) {
+            return [['id' => 'autoenhance', 'label' => 'Autoenhance', 'models' => [['id' => 'enhance', 'label' => 'Photo enhancement']]]];
+        }
+        if ($service === 'full-shoot') {
+            return [['id' => 'fotello', 'label' => 'Fotello', 'models' => [['id' => 'enhance', 'label' => 'Full shoot enhancement']]]];
+        }
         if ($service === 'virtual-staging') {
             return [['id' => 'virtualstagingai', 'label' => 'Virtual Staging AI', 'models' => [['id' => 'staging', 'label' => 'Virtual staging']]]];
         }
@@ -81,18 +95,25 @@ class StudioProviderSettings
             }],
         };
         $names = ['fal' => 'fal.ai', 'openai' => 'OpenAI', 'fotello' => 'Fotello'];
+        unset($models['fotello']);
 
         return collect($models)->map(fn ($choices, $id) => ['id' => $id, 'label' => $names[$id], 'models' => collect($choices)->map(fn ($label, $model) => ['id' => $model, 'label' => $label])->values()->all()])->values()->all();
     }
 
     public function readiness(string $service, array $route, ?array $stored = null): array
     {
+        if ($route['provider'] === 'fotello' && $service !== 'full-shoot') {
+            return ['ready' => false, 'reason' => 'This service is available only for full shoot editing.'];
+        }
         if (($route['provider'] ?? null) === 'virtualstagingai') {
             return filled($this->credentials('virtualstagingai', $stored)['api_key'] ?? null)
                 ? ['ready' => true]
                 : ['ready' => false, 'reason' => 'An administrator needs to finish configuring this service.'];
         }
         $credentials = $this->credentials($route['provider'], $stored);
+        if (in_array($service, ['revision', 'twilight'], true) && ! filled($this->credentials('autoenhance', $stored)['api_key'] ?? null)) {
+            return ['ready' => false, 'reason' => 'An administrator needs to finish configuring photo enhancement.'];
+        }
         if ($service === 'outpaint' && $route['provider'] === 'fal' && ! filled($credentials['api_key'] ?? null)
             && ($route['fallback']['provider'] ?? null) === 'openai' && filled($route['fallback']['model'] ?? null)
             && filled($this->credentials('openai', $stored)['api_key'] ?? null)) {
@@ -130,6 +151,10 @@ class StudioProviderSettings
         }
 
         return ['services' => $services, 'credentials' => [
+            'autoenhance' => [
+                'keyConfigured' => filled($this->credentials('autoenhance', $stored)['api_key']),
+                'webhookConfigured' => filled($this->credentials('autoenhance', $stored)['webhook_secret']),
+            ],
             'fotello' => ['keyConfigured' => filled($credentials['api_key']), 'teamIdConfigured' => $this->hasTeamId($credentials['team_id'])],
             'virtualStagingAi' => [
                 'keyConfigured' => filled($virtualStaging['api_key']),
@@ -160,6 +185,11 @@ class StudioProviderSettings
             $record = StudioProviderSetting::query()->firstOrCreate(['id' => 1], ['payload' => []]);
             $record = StudioProviderSetting::lockForUpdate()->findOrFail($record->id);
             $stored = $record->payload ?? [];
+            foreach ($input['credentials']['autoenhance'] ?? [] as $key => $value) {
+                if (in_array($key, ['apiKey', 'webhookSecret'], true) && is_string($value) && trim($value) !== '') {
+                    $stored['credentials']['autoenhance'][$key] = trim($value);
+                }
+            }
             foreach ($input['credentials']['fotello'] ?? [] as $key => $value) {
                 if (in_array($key, ['apiKey', 'teamId'], true) && is_string($value) && trim($value) !== '') {
                     $stored['credentials']['fotello'][$key] = trim($value);

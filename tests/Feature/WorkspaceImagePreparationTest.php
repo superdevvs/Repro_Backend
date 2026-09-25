@@ -26,6 +26,7 @@ class WorkspaceImagePreparationTest extends TestCase
         Storage::fake('public');
         Storage::fake('local');
         config(['studio_uploads.disk' => 'public']);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->andReturnUsing(fn ($w, $op, $item, $bytes, $service) => $bytes)->byDefault();
         Sanctum::actingAs(User::factory()->create(['role' => 'admin', 'metadata' => ['team_id' => 100]]));
     }
 
@@ -181,7 +182,7 @@ class WorkspaceImagePreparationTest extends TestCase
             $media[] = ['id' => 'm'.$i, 'mediaRef' => $path];
             $frames[] = ['mediaId' => 'm'.$i, 'method' => 'extend'];
         }
-        $response = $this->postJson('/api/studio/workspaces', ['name' => 'Image preparation test', 'presetId' => 'listing-ready', 'media' => $media, 'config' => ['ratio' => $ratio, 'frames' => $frames]])->assertCreated();
+        $response = $this->postJson('/api/studio/workspaces', ['name' => 'Image preparation test', 'presetId' => 'twilight', 'media' => $media, 'config' => ['ratio' => $ratio, 'frames' => $frames]])->assertCreated();
 
         return StudioWorkspace::findOrFail($response->json('data.id'));
     }

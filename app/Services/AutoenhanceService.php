@@ -20,7 +20,7 @@ class AutoenhanceService
     {
         try {
             $settings = $this->loadSettings('integrations.autoenhance');
-            $this->apiKey = $settings['apiKey'] ?? config('services.autoenhance.api_key') ?? env('AUTOENHANCE_API_KEY') ?? '';
+            $this->apiKey = app(\App\Services\Studio\StudioProviderSettings::class)->credentials('autoenhance')['api_key'] ?: ($settings['apiKey'] ?? '');
             $this->baseUrl = rtrim($settings['baseUrl'] ?? config('services.autoenhance.base_url', 'https://api.autoenhance.ai') ?? 'https://api.autoenhance.ai', '/');
             $this->timeout = (int) ($settings['timeout'] ?? config('services.autoenhance.timeout', 120) ?? 120);
             $this->enabled = (bool) ($settings['enabled'] ?? env('AUTOENHANCE_ENABLED', true));
@@ -100,9 +100,10 @@ class AutoenhanceService
             $imageId = $data['image_id'] ?? $data['id'] ?? null;
             $uploadUrl = $data['upload_url'] ?? $data['s3PutObjectUrl'] ?? null;
             $usesLegacyUpload = !isset($data['upload_url']) && isset($data['s3PutObjectUrl']);
+            $apiUpload = $uploadUrl && $this->isApiUploadUrl($uploadUrl);
 
             if ($uploadUrl) {
-                $uploaded = $this->uploadSourceImage($imageUrl, $uploadUrl, $usesLegacyUpload ? $contentType : 'application/octet-stream', !$usesLegacyUpload);
+                $uploaded = $this->uploadSourceImage($imageUrl, $uploadUrl, $usesLegacyUpload ? $contentType : 'application/octet-stream', $apiUpload);
                 if (!($uploaded['success'] ?? false)) {
                     return $uploaded;
                 }
@@ -187,22 +188,23 @@ class AutoenhanceService
             $imageId = $data['image_id'] ?? $data['id'] ?? null;
             $uploadUrl = $data['upload_url'] ?? $data['s3PutObjectUrl'] ?? null;
             $usesLegacyUpload = !isset($data['upload_url']) && isset($data['s3PutObjectUrl']);
+            $apiUpload = $uploadUrl && $this->isApiUploadUrl($uploadUrl);
 
             if ($uploadUrl) {
                 // For the legacy s3PutObjectUrl path, the signed URL embeds the
                 // exact Content-Type S3 will validate against. Use it verbatim,
                 // otherwise RAW formats (NEF/CR3) get rejected with HTTP 403
                 // SignatureDoesNotMatch.
-                $effectiveContentType = $usesLegacyUpload
-                    ? $this->contentTypeFromSignedUrl($uploadUrl, $resolvedContentType)
-                    : 'application/octet-stream';
+                $effectiveContentType = $apiUpload ? 'application/octet-stream'
+                    : $this->contentTypeFromSignedUrl($uploadUrl, $usesLegacyUpload ? $resolvedContentType : 'application/octet-stream');
 
                 $uploadHeaders = ['Content-Type' => $effectiveContentType];
-                if (!$usesLegacyUpload) {
+                if ($apiUpload) {
                     $uploadHeaders['x-api-key'] = $this->apiKey;
                 }
 
                 $uploadResponse = Http::timeout($this->timeout)
+                    ->withOptions(['allow_redirects' => false])
                     ->withHeaders($uploadHeaders)
                     ->withBody($contents, $effectiveContentType)
                     ->put($uploadUrl);
@@ -307,6 +309,7 @@ class AutoenhanceService
                 ->get($this->baseUrl . '/v3/images/' . $autoenhanceImageId . '/enhanced', [
                     'format' => 'jpeg',
                     'quality' => 90,
+                    'preview' => 'false',
                 ]);
 
             if (!$response->successful()) {
@@ -530,6 +533,7 @@ class AutoenhanceService
         }
 
         $uploadResponse = Http::timeout($this->timeout)
+            ->withOptions(['allow_redirects' => false])
             ->withHeaders($headers)
             ->withBody($sourceResponse->body(), $effectiveContentType)
             ->put($uploadUrl);
@@ -546,6 +550,18 @@ class AutoenhanceService
         }
 
         return ['success' => true];
+    }
+
+    private function isApiUploadUrl(string $url): bool
+    {
+        $host = (string) parse_url($url, PHP_URL_HOST);
+        $apiUpload = $host === parse_url($this->baseUrl, PHP_URL_HOST);
+        $signedUpload = (bool) preg_match('/^[a-z0-9.-]+\.s3(?:-accelerate|[.-][a-z0-9-]+)?\.amazonaws\.com$/i', $host);
+        if (parse_url($url, PHP_URL_SCHEME) !== 'https' || (! $apiUpload && ! $signedUpload) || parse_url($url, PHP_URL_USER) || parse_url($url, PHP_URL_PORT)) {
+            throw new \RuntimeException('The photo service returned an unsupported upload location.');
+        }
+
+        return $apiUpload;
     }
 
     /**

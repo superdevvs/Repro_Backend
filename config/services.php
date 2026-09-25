@@ -240,14 +240,16 @@ return [
 
     // AI Photo Editing provider selector
     'ai_editing' => [
-        'provider' => env('AI_EDITING_PROVIDER', 'fal'),
+        'provider' => env('AI_EDITING_PROVIDER', 'autoenhance'),
     ],
 
     // Autoenhance AI Photo Editing Integration
     'autoenhance' => [
         'api_key' => env('AUTOENHANCE_API_KEY'),
         'base_url' => env('AUTOENHANCE_BASE_URL', 'https://api.autoenhance.ai'),
-        'api_version' => env('AUTOENHANCE_API_VERSION', '2025-05-05'),
+        'api_version' => env('AUTOENHANCE_API_VERSION', '2026-09-02'),
+        'poll_timeout' => env('AUTOENHANCE_POLL_TIMEOUT', 900),
+        'poll_interval' => env('AUTOENHANCE_POLL_INTERVAL', 5),
         'timeout' => env('AUTOENHANCE_TIMEOUT', 120),
         'retry_attempts' => env('AUTOENHANCE_RETRY_ATTEMPTS', 3),
         'dev_mode' => env('AUTOENHANCE_DEV_MODE', false),
