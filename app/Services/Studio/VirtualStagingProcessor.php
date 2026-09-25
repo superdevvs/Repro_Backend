@@ -253,7 +253,7 @@ class VirtualStagingProcessor
         return $stored;
     }
 
-    /** Copy finished staging results onto the shoot's Edited photos. Intermediate removals stay in the project. */
+    /** Copy finished staging results into the shoot's Edited → Virtual Staging tab. Intermediate removals stay in the project. */
     private function publishEdited(StudioWorkspace $workspace, array $item, array $stored): void
     {
         $shootId = (int) ($item['shootId'] ?? 0);
@@ -291,20 +291,19 @@ class VirtualStagingProcessor
             $base = Str::slug(pathinfo($source?->filename ?: ($item['name'] ?? 'staged'), PATHINFO_FILENAME)) ?: 'staged';
             $suffix = substr(preg_replace('/[^A-Za-z0-9]/', '', $variationId) ?: 'photo', 0, 12);
             $filename = $base.'-staged-'.$suffix.($resultIndex > 0 ? '-'.$resultIndex : '').'.jpg';
-            $path = "shoots/{$shoot->id}/completed/{$filename}";
+            $path = "shoots/{$shoot->id}/virtual_staging/{$filename}";
             if (! app(MediaStorage::class)->put($path, $bytes)) {
                 throw new StudioProviderException('The staged photo could not be saved to the shoot.');
             }
             $attributes = [
                 'shoot_id' => $shoot->id,
-                'shoot_service_id' => $source?->shoot_service_id,
                 'filename' => $filename,
                 'stored_filename' => $filename,
                 'path' => $path,
                 'storage_path' => $path,
                 'file_type' => 'image/jpeg',
                 'mime_type' => 'image/jpeg',
-                'media_type' => 'edited',
+                'media_type' => ShootFile::TREATMENT_VIRTUAL_STAGING,
                 'file_size' => strlen($bytes),
                 'uploaded_by' => $workspace->created_by,
                 'uploaded_at' => now(),

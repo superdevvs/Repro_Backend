@@ -115,8 +115,9 @@ class VirtualStagingAiTest extends TestCase
 
         app(VirtualStagingProcessor::class)->run($workspace->fresh(), 'operation-1', $workspace->fresh()->media);
 
-        $edited = ShootFile::query()->where('shoot_id', $shoot->id)->where('media_type', 'edited')->get();
+        $edited = ShootFile::query()->where('shoot_id', $shoot->id)->where('media_type', ShootFile::TREATMENT_VIRTUAL_STAGING)->get();
         $this->assertCount(1, $edited);
+        $this->assertSame(0, ShootFile::query()->where('shoot_id', $shoot->id)->where('media_type', 'edited')->count());
         $file = $edited->first();
         $this->assertSame(ShootFile::STAGE_COMPLETED, $file->workflow_stage);
         $this->assertSame(ShootFile::SCAN_STATUS_CLEAN, $file->scan_status);
