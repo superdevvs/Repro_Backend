@@ -86,6 +86,7 @@ class WorkspaceAutoenhance
             if (in_array($status, ['processed', 'completed', 'ready', 'downloaded', 'finished', 'done', 'success'], true)) {
                 try {
                     $result = $this->api($credentials)->get($path.'/enhanced', ['format' => 'jpeg', 'quality' => 90, 'preview' => 'false']);
+                    $result = app(\App\Services\AutoenhanceDownload::class)->resolve($result, (int) config('services.autoenhance.timeout', 120));
                 } catch (\Throwable) {
                     throw new RuntimeException('The enhanced photo could not be downloaded. Retry to retrieve the saved result.');
                 }

@@ -306,11 +306,13 @@ class AutoenhanceService
 
             $response = Http::timeout($this->timeout)
                 ->withHeaders($headers)
+                ->withOptions(['allow_redirects' => false])
                 ->get($this->baseUrl . '/v3/images/' . $autoenhanceImageId . '/enhanced', [
                     'format' => 'jpeg',
                     'quality' => 90,
                     'preview' => 'false',
                 ]);
+            $response = app(AutoenhanceDownload::class)->resolve($response, $this->timeout);
 
             if (!$response->successful()) {
                 Log::warning('Autoenhance: Failed to download enhanced image', [

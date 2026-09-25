@@ -83,6 +83,37 @@ class WorkspaceAutoenhanceTest extends TestCase
         Http::assertSentCount(5);
     }
 
+    public function test_completed_results_follow_signed_s3_redirects_without_forwarding_credentials(): void
+    {
+        $url = 'https://autoenhanceapi-prod.s3-accelerate.amazonaws.com/result.jpg?signature=test';
+        Http::fake([
+            '*/v3/images/' => Http::response(['image_id' => 'image-1', 'upload_url' => 'https://api.autoenhance.ai/upload/1']),
+            '*/upload/1' => Http::response('', 200),
+            '*/v3/images/image-1' => Http::response(['status' => 'processed']),
+            '*/enhanced*' => Http::response('', 302, ['Location' => $url]),
+            $url => Http::response($this->image, 200, ['Content-Type' => 'image/jpeg']),
+        ]);
+        $this->assertSame($this->image, $this->runEnhance($this->workspace()));
+        $this->assertSame('data:image/jpeg;base64,'.base64_encode($this->image), app(\App\Services\AutoenhanceService::class)->downloadEditedImage('image-1'));
+        Http::assertSentCount(7);
+        Http::assertSent(fn ($r) => $r->url() === $url && ! $r->hasHeader('x-api-key') && ! $r->hasHeader('x-dev-mode'));
+        Http::assertNotSent(fn ($r) => str_contains($r->url(), 'amazonaws.com') && $r->hasHeader('x-api-key'));
+    }
+
+    public function test_result_redirects_reject_untrusted_destinations(): void
+    {
+        Http::fake(['*' => Http::response($this->image)]);
+        foreach (['https://untrusted.test/result.jpg', 'http://bucket.s3.amazonaws.com/result.jpg', 'https://bucket.s3.amazonaws.com:8443/result.jpg'] as $url) {
+            try {
+                app(\App\Services\AutoenhanceDownload::class)->resolve(new \Illuminate\Http\Client\Response(Http::response('', 302, ['Location' => $url])->wait()));
+                $this->fail('Untrusted redirect accepted.');
+            } catch (RuntimeException $exception) {
+                $this->assertStringContainsString('unsupported download location', $exception->getMessage());
+            }
+        }
+        Http::assertNothingSent();
+    }
+
     public function test_ambiguous_create_is_not_resubmitted(): void
     {
         Http::fake(['*' => Http::response('', 503)]);
