@@ -380,12 +380,22 @@ class SystemOverviewTelemetryService
             })
             ->all();
 
+        // Count repeated events separately from their operational issue types.
+        $issueGroups = SystemOverviewErrorEvent::query()
+            ->where('occurred_at', '>=', $cutoff)
+            ->select(['source', 'severity', 'route_path', 'component_name', 'blocker_type', 'error_class'])
+            ->selectRaw('COUNT(*) AS event_count')
+            ->groupBy('source', 'severity', 'route_path', 'component_name', 'blocker_type', 'error_class')
+            ->get();
+
         return [
             'generatedAt' => now()->toIso8601String(),
             'stats' => [
                 'activeSessions' => count($liveUsers),
                 'requestsPerMinute' => SystemOverviewRequestTrace::query()->where('occurred_at', '>=', now()->subMinute())->count(),
-                'errorCount24h' => SystemOverviewErrorEvent::query()->where('occurred_at', '>=', $cutoff)->count(),
+                'errorCount24h' => (int) $issueGroups->sum('event_count'),
+                'warningCount24h' => (int) $issueGroups->where('severity', 'warning')->sum('event_count'),
+                'uniqueIssueCount24h' => $issueGroups->count(),
                 'slowRouteCount' => SystemOverviewRequestTrace::query()->where('occurred_at', '>=', $cutoff)->where('duration_ms', '>=', 1500)->count(),
                 'integrationFailures24h' => SystemOverviewRequestTrace::query()->where('occurred_at', '>=', $cutoff)->where('domain', 'Integrations')->whereNotNull('blocker_type')->count(),
             ],
@@ -463,7 +473,7 @@ class SystemOverviewTelemetryService
                     'currentAction' => $session->current_action,
                     'componentStack' => $session->component_stack ?? [],
                     'blockerState' => $session->blocker_state,
-                    'blockerMessage' => $session->blocker_message ? 'An operation needs attention. Use its request ID for support.' : null,
+                    'blockerMessage' => $session->blocker_state && $session->blocker_message ? 'A recent operation needs attention.' : null,
                     'lastApiPath' => $session->last_api_path,
                     'lastTraceId' => $session->last_trace_id,
                     'lastActivityAt' => optional($session->last_activity_at)->toIso8601String(),
@@ -633,9 +643,8 @@ class SystemOverviewTelemetryService
         }
 
         foreach ($attributes as $key => $value) {
-            if ($value !== null) {
-                $session->{$key} = $value;
-            }
+            // Null is meaningful: a successful request clears the previous blocker.
+            $session->{$key} = $value;
         }
         $session->last_activity_at = now();
         $session->save();
@@ -803,6 +812,14 @@ class SystemOverviewTelemetryService
             ];
         }
 
+        if ($statusCode >= 400) {
+            return [
+                'type' => 'error',
+                'state' => 'warning',
+                'message' => ApiErrorResponder::defaultMessage($statusCode),
+            ];
+        }
+
         if ($durationMs >= 2000) {
             return [
                 'type' => 'slow_request',
@@ -934,6 +951,8 @@ class SystemOverviewTelemetryService
                 'activeSessions' => 0,
                 'requestsPerMinute' => 0,
                 'errorCount24h' => 0,
+                'warningCount24h' => 0,
+                'uniqueIssueCount24h' => 0,
                 'slowRouteCount' => 0,
                 'integrationFailures24h' => 0,
             ],
