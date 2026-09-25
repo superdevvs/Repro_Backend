@@ -22,7 +22,7 @@ class StudioWorkspaceController extends StudioController
 {
     protected const STUDIO_ROLES = ['admin', 'superadmin', 'editing_manager', 'editor', 'client'];
 
-    private const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging', 'full-shoot', 'sky-replacement', 'perspective-correction', 'walkthrough', 'property-reel', 'social-teaser'];
+    private const PRESETS = ['listing-ready', 'color-correction', 'twilight', 'green-grass', 'virtual-staging', 'full-shoot', 'sky-replacement', 'perspective-correction', 'upscale', 'walkthrough', 'property-reel', 'social-teaser'];
 
     public function __construct(private WorkspaceMediaService $mediaService) {}
 
@@ -30,7 +30,13 @@ class StudioWorkspaceController extends StudioController
     {
         $this->authorizeStudioAction($request->user(), 'view');
 
-        return response()->json(['success' => true, 'data' => $this->scopeStudioQuery(StudioWorkspace::query(), $request->user())->latest('updated_at')->limit(100)->get()->map->present()]);
+        $query = StudioWorkspace::query();
+        if (in_array($request->user()->role, self::STUDIO_PRIVILEGED_ROLES, true)) {
+            $query->where(fn ($query) => $query->where('team_id', $this->scopeTeamId($request->user()))->orWhereNotNull('shoot_id'));
+        } else {
+            $this->scopeStudioQuery($query, $request->user());
+        }
+        return response()->json(['success' => true, 'data' => $query->latest('updated_at')->limit(100)->get()->map->present()]);
     }
 
     public function store(Request $request): JsonResponse
@@ -90,6 +96,10 @@ class StudioWorkspaceController extends StudioController
         $record = $this->find($request, $workspace);
         $data = $this->validated($request, true);
         $media = isset($data['media']) ? $this->mediaService->authorize($data['media'], $request->user(), $record->team_id) : $record->media;
+        if ($record->shoot_id) {
+            abort_if(isset($data['presetId']) && $data['presetId'] !== $record->preset_id, 422, 'Create a new project to change the booked editing service.');
+            abort_unless(collect($media)->every(fn ($item) => (int) ($item['shootId'] ?? 0) === $record->shoot_id), 422, 'This project belongs to one shoot. Choose photos from that shoot.');
+        }
 
         return DB::transaction(function () use ($record, $data, $media): JsonResponse {
             $record = StudioWorkspace::lockForUpdate()->findOrFail($record->id);
@@ -106,7 +116,7 @@ class StudioWorkspaceController extends StudioController
             $preparationChanged = $record->media !== $media || ($record->config['ratio'] ?? null) !== $config['ratio']
                 || collect($record->config['frames'] ?? [])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all() !== collect($config['frames'])->mapWithKeys(fn ($f) => [$f['mediaId'] => $f['method']])->sortKeys()->all();
             $reviewFields = ['reviewedOutputIds', 'reviewedFrameIds'];
-            $changed = $record->media !== $media || \Illuminate\Support\Arr::except($record->config, $reviewFields) !== \Illuminate\Support\Arr::except($config, $reviewFields) || (isset($data['presetId']) && $record->preset_id !== $data['presetId']);
+            $changed = $record->media !== $media || StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($record->config, $reviewFields)) !== StudioWorkspace::canonicalConfig(\Illuminate\Support\Arr::except($config, $reviewFields)) || (isset($data['presetId']) && $record->preset_id !== $data['presetId']);
             $record->fill(['name' => $data['name'] ?? $record->name, 'preset_id' => $data['presetId'] ?? $record->preset_id, 'media' => $media, 'config' => $config, 'version' => $record->version + 1]);
             if ($changed) {
                 $record->fill(['status' => $preparationChanged || ! $record->prepared_frames ? 'draft' : 'ready', 'prepared_frames' => $preparationChanged ? [] : $record->prepared_frames, 'operation' => null, 'error' => null, 'progress' => null]);
@@ -195,6 +205,11 @@ class StudioWorkspaceController extends StudioController
     {
         $record = $this->find($request, $workspace);
         $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
+        if ($type === 'generate') {
+            $check = clone $record;
+            $check->operation = ['type' => 'generate'];
+            app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($check);
+        }
         $payload = $request->validate([
             'requestId' => ['sometimes', 'string', 'max:64'], 'mediaId' => [in_array($type, ['revision', 'upscale'], true) ? 'required' : 'sometimes', 'string'],
             'outputId' => [$type === 'upscale' ? 'required' : 'sometimes', 'string', 'max:200'],
@@ -222,6 +237,9 @@ class StudioWorkspaceController extends StudioController
         $key = $request->header('Idempotency-Key', $payload['requestId'] ?? null);
         if ($key && strlen($key) > 64) {
             throw ValidationException::withMessages(['requestId' => 'Use an idempotency key of at most 64 characters.']);
+        }
+        if (! $key && $record->shoot_dispatch_key && $record->status === 'failed' && $type === 'generate' && $payload === [] && ($record->operation['type'] ?? '') === 'generate') {
+            $key = $record->operation['key'];
         }
         $key ??= hash('sha256', json_encode([$type, \Illuminate\Support\Arr::except($record->config, ['reviewedOutputIds', 'reviewedFrameIds']), $record->media, $payload]));
         $dispatch = false;
@@ -280,7 +298,11 @@ class StudioWorkspaceController extends StudioController
     private function find(Request $request, string $id): StudioWorkspace
     {
         $record = StudioWorkspace::findOrFail($id);
-        $this->authorizeStudioAction($request->user(), 'view', $record);
+        if ($record->shoot_id && in_array($request->user()->role, self::STUDIO_PRIVILEGED_ROLES, true)) {
+            app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess(\App\Models\Shoot::findOrFail($record->shoot_id), $request->user());
+        } else {
+            $this->authorizeStudioAction($request->user(), 'view', $record);
+        }
 
         return $record;
     }

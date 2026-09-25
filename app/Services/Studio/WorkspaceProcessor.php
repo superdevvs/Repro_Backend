@@ -35,6 +35,7 @@ class WorkspaceProcessor
     {
         // Queue time can outlive assignments/payment state. Recheck the persisted references before spending.
         $this->media->authorize($workspace->media, \App\Models\User::findOrFail($workspace->created_by), $workspace->team_id);
+        app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($workspace);
         $type = $workspace->operation['type'];
         $items = $workspace->media;
         if (in_array($type, ['revision', 'upscale'], true)) {
@@ -73,6 +74,9 @@ class WorkspaceProcessor
                 $result = $this->prepareImage($workspace, $operationId, $item, $bytes, $frame);
             } elseif ($type === 'upscale') {
                 $result = (string) $this->images->read(app(WorkspaceImageOperations::class)->upscale($workspace, $operationId, $item['id'], $bytes))->toJpeg(96);
+            } elseif ($workspace->preset_id === 'upscale') {
+                // Selected originals must reach upscaling at their original resolution.
+                $result = (string) $this->images->read(app(WorkspaceAutoenhance::class)->run($workspace, $operationId, $item, $bytes, 'upscale'))->toJpeg(96);
             } else {
                 $result = $this->editImage($workspace, $operationId, $item, $bytes, $type);
             }
@@ -80,6 +84,9 @@ class WorkspaceProcessor
                 return;
             }
             $stored = $this->media->store($workspace, $result, $operationId.'-'.substr(hash('sha256', $item['id']), 0, 16));
+            if ($type !== 'prepare' && ! $workspace->isVideo()) {
+                app(WorkspaceShootPublisher::class)->publish($workspace, $item, $stored, $operationId.'-'.$item['id']);
+            }
             $this->mutate($workspace, $operationId, function (StudioWorkspace $w) use ($type, $item, $stored, $frame, $index, $items, $operationId): void {
                 $field = $type === 'prepare' ? 'prepared_frames' : 'outputs';
                 $records = $w->{$field} ?? [];
@@ -392,6 +399,7 @@ class WorkspaceProcessor
             $w->progress = 100;
             $w->error = null;
         });
+        app(WorkspaceShootPublisher::class)->completeServices($w);
     }
 
     private function download(string $url): string

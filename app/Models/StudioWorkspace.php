@@ -12,6 +12,7 @@ class StudioWorkspace extends Model
     protected $guarded = [];
 
     protected $casts = [
+        'shoot_id' => 'integer', 'shoot_service_ids' => 'array',
         'media' => 'array', 'config' => 'array', 'outputs' => 'array',
         'prepared_frames' => 'array', 'operation' => 'array', 'history' => 'array',
         'version' => 'integer', 'progress' => 'integer', 'team_id' => 'integer', 'created_by' => 'integer',
@@ -47,6 +48,7 @@ class StudioWorkspace extends Model
         $generation = $this->generationProgress();
 
         return [
+            'shootId' => $this->shoot_id, 'parentWorkspaceId' => $this->parent_workspace_id,
             'id' => $this->id, 'name' => $this->name, 'presetId' => $this->preset_id,
             'media' => array_map([\App\Services\Studio\WorkspaceMediaService::class, 'withUploadPreview'], $this->media ?? []), 'config' => self::normalizeConfigStrings($this->config ?? []), 'status' => $this->status,
             'progress' => $generation['progress'] ?? $this->progress, 'generation' => $generation ? \Illuminate\Support\Arr::except($generation, ['progress']) : null,
@@ -61,6 +63,20 @@ class StudioWorkspace extends Model
                 'startEndFrameConditioning' => filled(config('services.fal.walkthrough_model')),
                 'textStyles' => ['none', 'minimal', 'editorial', 'lower-third', 'graphic']],
         ];
+    }
+
+    /** Object key ordering must not discard paid checkpoints; frame list ordering remains meaningful. */
+    public static function canonicalConfig(array $value): array
+    {
+        if (! array_is_list($value)) {
+            ksort($value);
+        }
+        foreach ($value as $key => $item) {
+            if (is_array($item)) {
+                $value[$key] = self::canonicalConfig($item);
+            }
+        }
+        return $value;
     }
 
     private function generationProgress(): ?array

@@ -17,6 +17,13 @@ class WorkspacePhotoEnhancement
 
     public function run(StudioWorkspace $workspace, string $operationId, array $item, string $source, array $route): string
     {
+        if ($workspace->preset_id !== 'full-shoot') {
+            throw new StudioProviderException('Fotello is reserved for Full Shoot editing.');
+        }
+        app(\App\Services\Shoots\ShootPhotoSet::class)->assertFullWorkspace($workspace);
+        if (! collect($workspace->media)->contains('id', $item['id'])) {
+            throw new StudioProviderException('This photo is outside the Full Shoot project.');
+        }
         $ready = $this->settings->readiness($workspace->preset_id, $route);
         if (! $ready['ready']) {
             throw new StudioProviderException($ready['reason']);
@@ -32,7 +39,8 @@ class WorkspacePhotoEnhancement
         $client = app()->makeWith(FotelloClient::class, ['configuration' => $credentials]);
         // Keep shoots distinct even when an administrator edits multiple shoots in one workspace.
         $listingKey = 'photo-listing-'.($item['shootId'] ?? 'uploads');
-        $listing = $this->once($state, $listingKey, fn () => $client->createListing(['name' => mb_substr($workspace->name, 0, 200), 'num_total_brackets' => 1]));
+        $shootMedia = collect($workspace->media)->filter(fn ($media) => ($media['shootId'] ?? 'uploads') === ($item['shootId'] ?? 'uploads'));
+        $listing = $this->once($state, $listingKey, fn () => $client->createListing(['name' => mb_substr($workspace->name, 0, 200), 'num_total_brackets' => $shootMedia->count()]));
         $key = 'photo-'.hash('sha256', $item['id']);
         $savedUpload = $state->get($key.'-upload');
         if (! $state->get($key.'-uploaded') && ! $state->get($key.'-enhance') && isset($savedUpload['expires'])) {

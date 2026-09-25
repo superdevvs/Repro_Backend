@@ -12,7 +12,7 @@ use Illuminate\Validation\ValidationException;
 class StudioProviderSettings
 {
     public const AUTOENHANCE_SERVICES = ['listing-ready', 'color-correction', 'sky-replacement', 'perspective-correction', 'green-grass', 'upscale'];
-    public const PHOTO_SERVICES = ['listing-ready', 'color-correction', 'full-shoot', 'sky-replacement', 'perspective-correction', 'twilight', 'virtual-staging', 'green-grass'];
+    public const PHOTO_SERVICES = ['listing-ready', 'color-correction', 'full-shoot', 'sky-replacement', 'perspective-correction', 'twilight', 'virtual-staging', 'green-grass', 'upscale'];
 
     private const LABELS = [
         'listing-ready' => 'Listing ready', 'color-correction' => 'Color correction', 'full-shoot' => 'Full shoot',

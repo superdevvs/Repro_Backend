@@ -165,6 +165,13 @@ class ShootEditingAssignmentService
                 return (string) $serviceItem->editor_id === (string) $editor->id;
             }
 
+            // In a mixed AI-photo / human-video shoot the legacy editor is the video editor.
+            // Do not let that fallback grant the AI photo services to the video account.
+            if (\App\Models\StudioWorkspace::where('shoot_id', $shoot->id)->where('shoot_dispatch_key', 'intake')
+                ->whereJsonContains('shoot_service_ids', (int) $serviceItem->service_id)->exists()) {
+                return false;
+            }
+
             return (string) $shoot->editor_id === (string) $editor->id;
         }
 
@@ -230,9 +237,12 @@ class ShootEditingAssignmentService
         })->values();
     }
 
-    public function autoAssignEditorsForShoot(Shoot $shoot): array
+    public function autoAssignEditorsForShoot(Shoot $shoot, ?array $lanes = null): array
     {
         $trackedAssignments = $this->getTrackedServiceAssignments($shoot);
+        if ($lanes !== null) {
+            $trackedAssignments = $trackedAssignments->whereIn('lane', $lanes);
+        }
         if ($trackedAssignments->isEmpty()) {
             return [];
         }

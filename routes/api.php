@@ -655,6 +655,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/shoots/{shoot}/assign-editor', [ShootWorkflowController::class, 'assignEditor'])
         ->middleware('role:admin,superadmin,editing_manager');
     Route::post('/shoots/{shoot}/start-editing', [ShootWorkflowController::class, 'startEditing']);
+    Route::get('/shoots/{shoot}/editing-plan', [\App\Http\Controllers\API\ShootEditingDispatchController::class, 'plan']);
+    Route::post('/shoots/{shoot}/editing-dispatch', [\App\Http\Controllers\API\ShootEditingDispatchController::class, 'store']);
     Route::post('/shoots/{shoot}/ready-for-review', [ShootWorkflowController::class, 'readyForReview']);
     Route::post('/shoots/{shoot}/complete', [ShootWorkflowController::class, 'complete']);
     Route::post('/shoots/{shoot}/put-on-hold', [ShootWorkflowController::class, 'putOnHold']);

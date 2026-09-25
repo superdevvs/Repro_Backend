@@ -110,6 +110,10 @@ class VirtualStagingAiTest extends TestCase
         $media = $workspace->media;
         $media[0]['shootId'] = $shoot->id;
         $media[0]['name'] = 'living-room.jpg';
+        $source = ShootFile::create(['shoot_id' => $shoot->id, 'filename' => 'living-room.jpg', 'stored_filename' => 'living-room.jpg',
+            'uploaded_by' => $workspace->created_by, 'path' => 'source.jpg', 'file_type' => 'image/jpeg', 'file_size' => 100, 'scan_status' => 'clean', 'workflow_stage' => ShootFile::STAGE_TODO]);
+        app(\App\Services\Media\MediaStorage::class)->put('source.jpg', $this->jpeg);
+        $media[0]['fileId'] = $source->id;
         $workspace->update(['media' => $media]);
         $this->fakeApi();
 
@@ -119,7 +123,7 @@ class VirtualStagingAiTest extends TestCase
         $this->assertCount(1, $edited);
         $this->assertSame(0, ShootFile::query()->where('shoot_id', $shoot->id)->where('media_type', 'edited')->count());
         $file = $edited->first();
-        $this->assertSame(ShootFile::STAGE_COMPLETED, $file->workflow_stage);
+        $this->assertSame(ShootFile::STAGE_VERIFIED, $file->workflow_stage);
         $this->assertSame(ShootFile::SCAN_STATUS_CLEAN, $file->scan_status);
         $this->assertTrue($file->is_ai_edited);
         $this->assertSame('virtualstagingai', $file->ai_editing_metadata['provider']);

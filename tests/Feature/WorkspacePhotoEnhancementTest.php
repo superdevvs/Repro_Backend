@@ -198,7 +198,18 @@ class WorkspacePhotoEnhancementTest extends TestCase
     {
         $workspace = $this->workspace();
         $items = [['id' => 'a', 'shootId' => 10], ['id' => 'b', 'shootId' => 20], ['id' => 'c', 'shootId' => 10]];
-        $this->client->shouldReceive('createListing')->twice()->with(Mockery::on(fn ($body) => $body['num_total_brackets'] === 1))->andReturn(['id' => 'listing-10'], ['id' => 'listing-20']);
+        foreach ([10, 20] as $shootId) {
+            \App\Models\Shoot::factory()->create(['id' => $shootId]);
+        }
+        foreach ($items as &$item) {
+            $file = \App\Models\ShootFile::create(['shoot_id' => $item['shootId'], 'filename' => $item['id'].'.jpg', 'stored_filename' => $item['id'].'.jpg',
+                'uploaded_by' => $workspace->created_by, 'path' => 'source.jpg', 'file_type' => 'image/jpeg', 'file_size' => 100, 'workflow_stage' => 'todo']);
+            $item['fileId'] = $file->id;
+        }
+        unset($item);
+        $workspace->update(['media' => $items, 'config' => array_replace($workspace->config, ['frames' => []])]);
+        $this->client->shouldReceive('createListing')->once()->with(Mockery::on(fn ($body) => $body['num_total_brackets'] === 2))->andReturn(['id' => 'listing-10']);
+        $this->client->shouldReceive('createListing')->once()->with(Mockery::on(fn ($body) => $body['num_total_brackets'] === 1))->andReturn(['id' => 'listing-20']);
         foreach ([['a', 'listing-10'], ['b', 'listing-20'], ['c', 'listing-10']] as [$id, $listing]) {
             $this->client->shouldReceive('createUpload')->once()->with(Mockery::on(fn ($body) => $body['listingId'] === $listing && $body['filename'] === $this->key($id).'.jpg'))->andReturn($this->upload($id));
             $this->client->shouldReceive('uploadBytes')->once()->with($this->upload($id), $this->source);
@@ -240,6 +251,18 @@ class WorkspacePhotoEnhancementTest extends TestCase
         $workspace->update(['media' => $media]);
         $this->expectException(AuthorizationException::class);
         app(WorkspaceProcessor::class)->process($workspace, 'operation-1');
+    }
+
+    public function test_selected_original_upscale_preserves_source_resolution_before_submission(): void
+    {
+        $workspace = $this->workspace();
+        $workspace->update(['preset_id' => 'upscale']);
+        $this->mock(\App\Services\Studio\WorkspaceAutoenhance::class)->shouldReceive('run')->once()
+            ->withArgs(fn ($project, $operationId, $item, $bytes, $service) => $service === 'upscale'
+                && array_slice(getimagesizefromstring($bytes), 0, 2) === [64, 48])->andReturn($this->source);
+        app(WorkspaceProcessor::class)->process($workspace, 'operation-1');
+        $this->assertSame('completed', $workspace->fresh()->status);
+        $this->assertCount(1, $workspace->fresh()->outputs);
     }
 
     public function test_processor_stores_a_real_completed_image_and_presents_no_provider_credentials_or_checkpoints(): void

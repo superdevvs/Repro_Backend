@@ -38,7 +38,15 @@ class ProcessStudioWorkspace implements ShouldQueue
     public function handle(WorkspaceProcessor $processor): void
     {
         $workspace = StudioWorkspace::find($this->workspaceId);
-        if (! $workspace || data_get($workspace->operation, 'id') !== $this->operationId || ! $workspace->isBusy()) {
+        if (! $workspace || data_get($workspace->operation, 'id') !== $this->operationId) {
+            return;
+        }
+        if ($workspace->status === 'completed') {
+            // A database contention after saving outputs must still be able to finish the shoot lanes.
+            app(\App\Services\Studio\WorkspaceShootPublisher::class)->completeServices($workspace);
+            return;
+        }
+        if (! $workspace->isBusy()) {
             return;
         }
         try {
