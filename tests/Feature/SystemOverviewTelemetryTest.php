@@ -82,6 +82,62 @@ class SystemOverviewTelemetryTest extends IsolatedSecurityTestCase
         ]);
     }
 
+    public function test_snapshot_groups_repeated_warnings_without_hiding_event_totals(): void
+    {
+        $this->freezeTime();
+        $warning = [
+            'source' => 'frontend', 'severity' => 'warning', 'route_path' => '/dashboard',
+            'blocker_type' => 'fetch-error', 'error_class' => 'ClientOperationError',
+            'message' => 'A browser operation could not be completed.', 'occurred_at' => now(),
+        ];
+        // More than the recent-events limit of 60; stats must cover the full day.
+        SystemOverviewErrorEvent::query()->insert(array_fill(0, 75, $warning));
+        SystemOverviewErrorEvent::query()->create(array_merge($warning, ['severity' => 'critical']));
+        SystemOverviewErrorEvent::query()->create(array_merge($warning, ['route_path' => '/accounts']));
+        SystemOverviewErrorEvent::query()->create(array_merge($warning, ['source' => 'backend', 'occurred_at' => now()->subHours(25)]));
+
+        $stats = app(SystemOverviewTelemetryService::class)->buildSnapshot()['stats'];
+        $this->assertSame(77, $stats['errorCount24h']);
+        $this->assertSame(76, $stats['warningCount24h']);
+        $this->assertSame(3, $stats['uniqueIssueCount24h']);
+    }
+
+    public function test_successful_request_clears_a_saved_warning_but_normal_browser_activity_does_not(): void
+    {
+        Event::fake([SystemOverviewActivityUpdated::class]);
+        $request = Request::create('/api/user');
+        $user = User::factory()->create();
+        $request->setUserResolver(fn () => $user);
+        $request->headers->set('X-System-Session-Id', 'warning-recovery');
+        $service = app(SystemOverviewTelemetryService::class);
+        $service->recordClientEvent($request, [
+            'type' => 'blocker', 'routePath' => '/dashboard', 'blockerState' => 'warning',
+            'blockerType' => 'fetch-error',
+        ]);
+        $service->recordClientEvent($request, ['type' => 'heartbeat', 'routePath' => '/dashboard']);
+        $this->assertNotNull($service->buildLiveUsers()[0]['blockerMessage']);
+
+        $service->recordRequestTrace($request, response()->json(['id' => $user->id]));
+        $session = SystemOverviewSession::query()->firstOrFail();
+        $this->assertNull($session->blocker_state);
+        $this->assertNull($session->blocker_message);
+        $this->assertNull($service->buildLiveUsers()[0]['blockerMessage']);
+        $this->assertSame(1, SystemOverviewErrorEvent::query()->count());
+    }
+
+    public function test_rejected_requests_keep_the_session_warning(): void
+    {
+        Event::fake([SystemOverviewActivityUpdated::class]);
+        $request = Request::create('/api/user');
+        $user = User::factory()->create();
+        $request->setUserResolver(fn () => $user);
+        $request->headers->set('X-System-Session-Id', 'rejected-request');
+        app(SystemOverviewTelemetryService::class)->recordRequestTrace($request, response()->json([], 403));
+        $session = SystemOverviewSession::query()->firstOrFail();
+        $this->assertSame('warning', $session->blocker_state);
+        $this->assertNotNull($session->blocker_message);
+    }
+
     public function test_non_superadmin_cannot_fetch_system_overview_snapshot(): void
     {
         $admin = User::factory()->admin()->create();
