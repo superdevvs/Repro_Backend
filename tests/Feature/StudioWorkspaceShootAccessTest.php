@@ -9,7 +9,7 @@ use App\Models\Shoot;
 use App\Models\ShootFile;
 use App\Models\StudioWorkspace;
 use App\Models\User;
-use App\Services\FalService;
+use App\Services\Studio\WorkspaceAutoenhance;
 use App\Services\Studio\WorkspaceProcessor;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -55,12 +55,8 @@ class StudioWorkspaceShootAccessTest extends TestCase
         $client = User::factory()->create(['role' => 'client', 'metadata' => ['team_id' => 999]]);
         $shoot = Shoot::factory()->create(['client_id' => $client->id, 'address' => '583 Cross Team Avenue']);
         $file = $this->file($shoot, $client);
-        $fal = $this->mock(FalService::class);
-        $fal->shouldReceive('submitImageEditFromBuffer')->times(3)->andReturn(['request_id' => 'edit']);
-        $fal->shouldReceive('imageEditStatus')->with('edit')->times(3)->andReturn(['status' => 'completed']);
-        $fal->shouldReceive('imageEditResult')->with('edit')->times(3)->andReturn([
-            'edited_image_url' => 'data:image/jpeg;base64,'.base64_encode(Storage::disk('public')->get($file->path)),
-        ]);
+        $this->mock(WorkspaceAutoenhance::class)->shouldReceive('run')->times(3)
+            ->andReturn(Storage::disk('public')->get($file->path));
 
         foreach (['admin', 'superadmin', 'editing_manager'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role, 'metadata' => null]));
@@ -155,7 +151,7 @@ class StudioWorkspaceShootAccessTest extends TestCase
         $workspace = StudioWorkspace::findOrFail($created->json('data.id'));
         $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
         $shoot->update(['editor_id' => null]);
-        $this->mock(FalService::class)->shouldNotReceive('submitImageEditFromBuffer');
+        $this->mock(WorkspaceAutoenhance::class)->shouldNotReceive('run');
         $workspace->refresh();
 
         $this->expectException(AuthorizationException::class);
@@ -232,11 +228,10 @@ class StudioWorkspaceShootAccessTest extends TestCase
         $this->get($media['url'])->assertOk()->assertHeader('Content-Type', 'image/jpeg');
         $created = $this->postJson('/api/studio/workspaces', ['name' => 'HDR', 'presetId' => 'listing-ready', 'media' => [$media]])->assertCreated();
         $workspace = StudioWorkspace::findOrFail($created->json('data.id'));
-        $fal = $this->mock(FalService::class);
         $this->assertSame($merged, app(\App\Services\Studio\WorkspaceMediaService::class)->bytes($workspace->media[0]));
-        $fal->shouldReceive('submitImageEditFromBuffer')->once()->withArgs(fn ($bytes, ...$rest) => getimagesizefromstring($bytes)[0] === 640)->andReturn(['request_id' => 'hdr-edit']);
-        $fal->shouldReceive('imageEditStatus')->with('hdr-edit')->andReturn(['status' => 'completed']);
-        $fal->shouldReceive('imageEditResult')->with('hdr-edit')->andReturn(['edited_image_url' => 'data:image/jpeg;base64,'.base64_encode($merged)]);
+        $this->mock(WorkspaceAutoenhance::class)->shouldReceive('run')->once()
+            ->withArgs(fn ($workspace, $operationId, $item, $bytes, $service) => getimagesizefromstring($bytes)[0] === 640 && $service === 'listing-ready')
+            ->andReturn($merged);
         $this->postJson('/api/studio/workspaces/'.$workspace->id.'/generate')->assertAccepted();
         $workspace->refresh();
         (new ProcessStudioWorkspace($workspace->id, $workspace->operation['id']))->handle(app(WorkspaceProcessor::class));
