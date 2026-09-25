@@ -113,7 +113,8 @@ class FinalizeEditedUploadAction
                 $previousStatus = $currentStatus;
 
                 $userRole = strtolower((string) ($user->role ?? ''));
-                $canSkipReview = in_array($userRole, self::READY_SUBMIT_ROLES, true);
+                $canSkipReview = in_array($userRole, self::READY_SUBMIT_ROLES, true)
+                    && ! app(\App\Services\Studio\WorkspaceShootReview::class)->isPending($shoot);
 
                 $allowedFromStatuses = $canSkipReview
                     ? array_map('strtolower', self::READY_ALLOWED_FROM_STATUSES)

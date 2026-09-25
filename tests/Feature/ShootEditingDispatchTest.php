@@ -146,6 +146,66 @@ class ShootEditingDispatchTest extends TestCase
         }
     }
 
+    public function test_full_shoot_requires_manager_approval_then_can_be_finalized_with_verified_ai_files(): void
+    {
+        [$shoot] = $this->shoot();
+        $shoot->update(['shoot_type' => Shoot::SHOOT_TYPE_INTERNAL_TEST]);
+        $response = $this->send($shoot)->assertAccepted();
+        $workspace = StudioWorkspace::findOrFail($response->json('data.workspaces.0.id'));
+        $this->publishFullShoot($workspace);
+        $workspace->update(['status' => 'completed']);
+        $publisher = app(WorkspaceShootPublisher::class);
+        $publisher->completeServices($workspace);
+        $this->assertSame('review', $shoot->fresh()->status);
+        $this->assertNotNull($shoot->fresh()->submitted_for_review_at);
+        $outputs = $shoot->files()->where('is_ai_edited', true)->get();
+        $this->assertCount(2, $outputs);
+        $this->assertTrue($outputs->every(fn ($file) => $file->workflow_stage === 'completed' && $file->verified_at === null));
+        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertConflict();
+        // A previously queued delivery also rechecks the review requirement.
+        (new \App\Jobs\FinalizeShootJob($shoot->id, $this->admin->id))->handle(app(\App\Services\ShootActivityLogger::class));
+        $this->assertSame('review', $shoot->fresh()->status);
+
+        Sanctum::actingAs(User::factory()->create(['role' => 'editor']));
+        $this->postJson("/api/shoots/{$shoot->id}/approve-editing-review")->assertForbidden();
+        $manager = User::factory()->create(['role' => 'editing_manager']);
+        Sanctum::actingAs($manager);
+        $this->postJson("/api/shoots/{$shoot->id}/approve-editing-review")->assertOk()->assertJsonPath('shoot_status', 'ready');
+        $this->assertTrue($outputs->every(fn ($file) => $file->fresh()->workflow_stage === 'verified' && (int) $file->fresh()->verified_by === $manager->id));
+        $this->assertCount(2, $workspace->fresh()->config['reviewedOutputIds']);
+        $this->postJson("/api/shoots/{$shoot->id}/approve-editing-review")->assertOk()->assertJsonPath('workflow_status_changed', false);
+        $publisher->completeServices($workspace->fresh());
+        $this->assertSame('ready', $shoot->fresh()->status);
+
+        Sanctum::actingAs($this->admin);
+        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertAccepted();
+        (new \App\Jobs\FinalizeShootJob($shoot->id, $this->admin->id))->handle(app(\App\Services\ShootActivityLogger::class));
+        $this->assertSame('delivered', $shoot->fresh()->status);
+        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertStatus(400);
+    }
+
+    public function test_selecting_all_on_a_ready_shoot_returns_it_to_review_and_pending_children_block_approval(): void
+    {
+        [$shoot, $files] = $this->shoot(['Photos', 'Green Grass']);
+        $shoot->update(['status' => 'ready', 'workflow_status' => 'ready']);
+        $response = $this->send($shoot, ['file_ids' => array_column($files, 'id'), 'targets' => ['green-grass' => [$files[0]->id]]])->assertAccepted();
+        $workspace = StudioWorkspace::findOrFail($response->json('data.workspaces.0.id'));
+        $child = StudioWorkspace::findOrFail($response->json('data.workspaces.1.id'));
+        $this->publishFullShoot($workspace);
+        $workspace->update(['status' => 'completed']);
+        app(WorkspaceShootPublisher::class)->completeServices($workspace);
+        $this->assertSame('ready', $shoot->fresh()->status);
+        $this->postJson("/api/shoots/{$shoot->id}/finalize")->assertConflict();
+        $shoot->update(['status' => 'review', 'workflow_status' => 'review']);
+        $this->postJson("/api/shoots/{$shoot->id}/approve-editing-review")->assertConflict();
+        $shoot->update(['status' => 'ready', 'workflow_status' => 'ready']);
+        $child->update(['status' => 'completed']);
+        app(WorkspaceShootPublisher::class)->completeServices($child);
+        $this->assertSame('review', $shoot->fresh()->status);
+        $this->postJson("/api/shoots/{$shoot->id}/upload/finalize-edited")->assertOk();
+        $this->assertSame('review', $shoot->fresh()->status);
+    }
+
     public function test_failed_project_resume_retains_paid_provider_checkpoints(): void
     {
         [$shoot] = $this->shoot();
@@ -176,14 +236,17 @@ class ShootEditingDispatchTest extends TestCase
         $this->assertFalse($assignments->canEditorAccessFile($shoot->fresh(), $files[0], $videoEditor));
         $this->assertSame([$shoot->id], $assignments->scopeAssignedToEditor(Shoot::query(), $videoEditor->id)->pluck('id')->all());
         $project = StudioWorkspace::where('shoot_id', $shoot->id)->first();
+        $this->publishFullShoot($project);
         $project->update(['status' => 'completed']);
         app(WorkspaceShootPublisher::class)->completeServices($project);
         $this->assertSame('editing', $shoot->fresh()->status);
         $this->assertFalse($assignments->allTrackedLanesReady($shoot->fresh()));
         $assignments->markAssignedServicesReadyForUser($shoot->fresh(), $videoEditor);
         $this->assertTrue($assignments->allTrackedLanesReady($shoot->fresh()));
+        app(\App\Services\Shoots\Actions\SubmitForReviewAction::class)->execute(new \Illuminate\Http\Request(), $shoot->fresh(), $videoEditor);
+        $this->assertSame('review', $shoot->fresh()->status);
         app(WorkspaceShootPublisher::class)->completeServices($project);
-        $this->assertSame('ready', $shoot->fresh()->status);
+        $this->assertSame('review', $shoot->fresh()->status);
 
         [$manual] = $this->shoot(['HDR Photos & Video']);
         $manual->services()->first()->update(['upload_intake_type' => 'photo_video']);
@@ -201,28 +264,38 @@ class ShootEditingDispatchTest extends TestCase
         $this->assertDatabaseHas('editor_payouts', ['shoot_id' => $manual->id, 'editor_id' => $videoEditor->id, 'payout_amount' => 45]);
     }
 
-    public function test_ai_only_shoot_becomes_ready_after_every_child_finishes_but_video_keeps_human_review(): void
+    public function test_ai_only_shoot_enters_review_after_every_child_finishes_but_video_keeps_human_review(): void
     {
         [$shoot, $files] = $this->shoot(['Photos', 'Green Grass']);
         $this->send($shoot, ['targets' => ['green-grass' => [$files[0]->id]]])->assertAccepted();
         $projects = StudioWorkspace::where('shoot_id', $shoot->id)->orderBy('created_at')->get();
         $publisher = app(WorkspaceShootPublisher::class);
+        $this->publishFullShoot($projects[0]);
         $projects[0]->update(['status' => 'completed']);
         $publisher->completeServices($projects[0]);
         $this->assertSame('editing', $shoot->fresh()->status);
         $projects[1]->update(['status' => 'completed']);
         $publisher->completeServices($projects[1]);
-        $this->assertSame('ready', $shoot->fresh()->status);
+        $this->assertSame('review', $shoot->fresh()->status);
         User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['video']]]);
         [$mixed] = $this->shoot(['Photos', 'Video']);
         $this->send($mixed)->assertAccepted();
         $project = StudioWorkspace::where('shoot_id', $mixed->id)->first();
+        $this->publishFullShoot($project);
         $project->update(['status' => 'completed']);
         $publisher->completeServices($project);
         $this->assertSame('editing', $mixed->fresh()->status);
         \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id', $mixed->id)->whereNotNull('editor_id')->update(['editing_completed_at' => now()]);
         $publisher->completeServices($project);
-        $this->assertSame('ready', $mixed->fresh()->status);
+        $this->assertSame('review', $mixed->fresh()->status);
+    }
+
+    private function publishFullShoot(StudioWorkspace $workspace): void
+    {
+        Storage::disk('public')->put('result.jpg', 'generated image bytes');
+        foreach ($workspace->media as $item) {
+            app(WorkspaceShootPublisher::class)->publish($workspace, $item, ['path' => 'result.jpg'], 'output-'.$item['id']);
+        }
     }
 
     private function send(Shoot $shoot, array $data = [])

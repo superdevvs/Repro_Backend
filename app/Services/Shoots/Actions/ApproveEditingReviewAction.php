@@ -144,6 +144,13 @@ class ApproveEditingReviewAction
                     ];
                 }
 
+                $aiReview = app(\App\Services\Studio\WorkspaceShootReview::class);
+                if ($aiReview->isProcessing($shoot)) {
+                    DB::rollBack();
+                    return ['status' => 409, 'payload' => ['error_type' => 'editing_in_progress',
+                        'message' => 'Wait for the shoot AI edits to finish before approving.', 'workflow_status_changed' => false]];
+                }
+                $aiReview->approve($shoot, $user);
                 $shoot->updateWorkflowStatus(Shoot::STATUS_READY, $user->id);
                 $workflowStatusChanged = true;
 

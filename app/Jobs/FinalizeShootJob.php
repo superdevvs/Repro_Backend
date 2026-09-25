@@ -230,6 +230,12 @@ class FinalizeShootJob implements ShouldQueue
 
             $previousStatus = $shoot->workflow_status;
 
+            $review = app(\App\Services\Studio\WorkspaceShootReview::class);
+            if ($review->isPending($shoot) || $review->isProcessing($shoot)) {
+                $progress->fail($this->shootId, 'Full-shoot AI edits must finish review and approval before finalization.', FinalizeProgressTracker::STAGE_COMMIT);
+                return null;
+            }
+
             // Resolve optional service-item scope.
             if ($this->shootServiceId) {
                 $serviceExists = $shoot->serviceItems()->whereKey($this->shootServiceId)->exists();
@@ -256,7 +262,8 @@ class FinalizeShootJob implements ShouldQueue
             // contents (no N+1, no byte copy).
             $fileQuery = ShootFile::query()
                 ->where('shoot_id', $shoot->id)
-                ->where('workflow_stage', ShootFile::STAGE_COMPLETED);
+                ->where(fn ($query) => $query->where('workflow_stage', ShootFile::STAGE_COMPLETED)
+                    ->orWhere(fn ($query) => $query->where('workflow_stage', ShootFile::STAGE_VERIFIED)->where('is_ai_edited', true)));
             if ($this->shootServiceId) {
                 $fileQuery->where('shoot_service_id', $this->shootServiceId);
             }
@@ -267,7 +274,7 @@ class FinalizeShootJob implements ShouldQueue
                 ->where('workflow_stage', ShootFile::STAGE_TODO)
                 ->when($this->shootServiceId, fn ($q) => $q->where('shoot_service_id', $this->shootServiceId))
                 ->count();
-            $hasEditedWithoutRaw = !empty($completedIds) && $rawCount === 0;
+            $hasEditedWithoutRaw = (clone $fileQuery)->where('workflow_stage', ShootFile::STAGE_COMPLETED)->exists() && $rawCount === 0;
             // Revalidate every mutable eligibility input while the shoot row is
             // locked. A queued request must fail if its actor, status, media,
             // video link or qualifying service changed before execution.

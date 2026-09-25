@@ -65,15 +65,20 @@ class ShootPaymentsController extends Controller
             return response()->json(['message' => 'Selected service item does not belong to this shoot'], 422);
         }
 
+        $review = app(\App\Services\Studio\WorkspaceShootReview::class);
+        if ($review->isPending($shoot) || $review->isProcessing($shoot)) {
+            return response()->json(['message' => 'Full-shoot AI edits must finish review and approval before finalization.'], 409);
+        }
         $completedFiles = $shoot->files()
-            ->where('workflow_stage', ShootFile::STAGE_COMPLETED)
+            ->where(fn ($query) => $query->where('workflow_stage', ShootFile::STAGE_COMPLETED)
+                ->orWhere(fn ($query) => $query->where('workflow_stage', ShootFile::STAGE_VERIFIED)->where('is_ai_edited', true)))
             ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
             ->get();
         $rawFiles = $shoot->files()
             ->where('workflow_stage', ShootFile::STAGE_TODO)
             ->when($shootServiceId, fn ($query) => $query->where('shoot_service_id', $shootServiceId))
             ->get();
-        $hasEditedWithoutRaw = $completedFiles->isNotEmpty() && $rawFiles->isEmpty();
+        $hasEditedWithoutRaw = $completedFiles->contains('workflow_stage', ShootFile::STAGE_COMPLETED) && $rawFiles->isEmpty();
         // The request flag is only an explicit opt-in. Eligibility is computed
         // from current server-owned role, status, media, link and service data.
         $allowNoMediaDelivery = $request->boolean('allow_no_media_delivery')

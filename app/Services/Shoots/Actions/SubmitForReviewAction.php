@@ -23,9 +23,14 @@ class SubmitForReviewAction
         $allTrackedLanesReady = $this->shootEditingAssignmentService->allTrackedLanesReady($shoot->fresh(['services.category']));
 
         if ($allTrackedLanesReady) {
-            $shoot->status = Shoot::STATUS_READY;
-            $shoot->workflow_status = Shoot::STATUS_READY;
-            $shoot->editing_completed_at = now();
+            $pendingAiReview = app(\App\Services\Studio\WorkspaceShootReview::class)->isPending($shoot);
+            $shoot->status = $pendingAiReview ? Shoot::STATUS_REVIEW : Shoot::STATUS_READY;
+            $shoot->workflow_status = $shoot->status;
+            if ($pendingAiReview) {
+                $shoot->submitted_for_review_at = now();
+            } else {
+                $shoot->editing_completed_at = now();
+            }
         } else {
             $shoot->status = Shoot::STATUS_EDITING;
             $shoot->workflow_status = Shoot::STATUS_EDITING;
