@@ -5,6 +5,9 @@ namespace App\Http\Controllers\API;
 use App\Jobs\ProcessStudioWorkspace;
 use App\Models\AiReelJob;
 use App\Models\StudioWorkspace;
+use App\Exceptions\StudioProviderException;
+use App\Services\Studio\VirtualStagingOptions;
+use App\Services\Studio\VirtualStagingProcessor;
 use App\Services\Studio\WorkspaceMediaService;
 use App\Services\Studio\WorkspaceProcessor;
 use Illuminate\Http\JsonResponse;
@@ -168,6 +171,26 @@ class StudioWorkspaceController extends StudioController
         }
     }
 
+    public function furnitureAnalysis(Request $request, string $workspace, VirtualStagingProcessor $processor): JsonResponse
+    {
+        $record = $this->find($request, $workspace);
+        abort_if($record->isBusy(), 409, 'Wait for the current staging job to finish.');
+        abort_unless($record->preset_id === 'virtual-staging', 422, 'Furniture detection is part of virtual staging.');
+        $this->mediaService->authorize($record->media, $request->user(), $record->team_id);
+        $data = $request->validate(['mediaId' => ['required', 'string']]);
+        $item = collect($record->media)->firstWhere('id', $data['mediaId']);
+        abort_unless(is_array($item), 422, 'Select a workspace image.');
+        try {
+            return response()->json(['success' => true, 'data' => $processor->analyze($record, $item)]);
+        } catch (StudioProviderException $exception) {
+            return response()->json(['success' => false, 'message' => $exception->getMessage()], 422);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json(['success' => false, 'message' => 'Furniture in this photo could not be detected. Please retry.'], 503);
+        }
+    }
+
     private function start(Request $request, string $workspace, string $type): JsonResponse
     {
         $record = $this->find($request, $workspace);
@@ -211,6 +234,12 @@ class StudioWorkspaceController extends StudioController
             }
             abort_if($record->isBusy(), 409, 'This workspace already has an operation in progress.');
             abort_if(count($record->media) === 0, 422, 'Add source photos before continuing.');
+            if ($record->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true)) {
+                $settings = app(\App\Services\Studio\StudioProviderSettings::class);
+                $availability = $settings->readiness('virtual-staging', $settings->route('virtual-staging'));
+                abort_unless($availability['ready'], 422, $availability['reason'] ?? 'An administrator needs to finish configuring this service.');
+                VirtualStagingOptions::assert($record->config['adjustments'] ?? []);
+            }
             if ($record->isVideo() && $type === 'generate') {
                 abort_if($record->preset_id === 'walkthrough' && ! filled(config('services.fal.walkthrough_model')), 503, 'The start/end-frame walkthrough model is not configured.');
                 $frameIds = array_column($record->config['frames'] ?? [], 'mediaId');

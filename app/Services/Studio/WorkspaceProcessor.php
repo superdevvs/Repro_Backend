@@ -48,6 +48,16 @@ class WorkspaceProcessor
 
             return;
         }
+        if ($workspace->preset_id === 'virtual-staging' && in_array($type, ['generate', 'revision'], true)) {
+            if ($items === []) {
+                throw new \App\Exceptions\StudioProviderException('Choose a photo to stage.');
+            }
+            if (app(VirtualStagingProcessor::class)->run($workspace, $operationId, $items, $type === 'revision')) {
+                $this->finish($workspace, $operationId, 'completed');
+            }
+
+            return;
+        }
         foreach ($items as $index => $item) {
             if (! $this->active($workspace, $operationId)) {
                 return;

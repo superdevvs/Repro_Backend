@@ -889,6 +889,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/{workspace}/revisions', [$controller, 'revisions']);
         Route::post('/{workspace}/upscale', [$controller, 'upscale']);
         Route::post('/{workspace}/segments', [$controller, 'segments']);
+        Route::post('/{workspace}/furniture-analysis', [$controller, 'furnitureAnalysis'])->middleware('throttle:30,1');
         Route::post('/{workspace}/cancel', [$controller, 'cancel']);
     });
 

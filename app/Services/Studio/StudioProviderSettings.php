@@ -3,6 +3,8 @@
 namespace App\Services\Studio;
 
 use App\Models\StudioProviderSetting;
+use App\Services\Studio\Providers\VirtualStagingAiClient;
+use App\Services\Studio\Providers\VirtualStagingAiException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
@@ -30,8 +32,11 @@ class StudioProviderSettings
         $stored ??= $this->stored();
         $saved = $stored['credentials'][$provider] ?? [];
 
+        $virtualStaging = $stored['credentials']['virtualStagingAi'] ?? [];
+
         return match ($provider) {
             'fotello' => ['api_key' => $saved['apiKey'] ?? config('studio_providers.fotello.api_key'), 'team_id' => $saved['teamId'] ?? config('studio_providers.fotello.team_id')],
+            'virtualstagingai' => ['api_key' => $virtualStaging['apiKey'] ?? config('studio_providers.virtualstagingai.api_key')],
             'openai' => ['api_key' => config('services.openai.api_key')],
             'fal' => ['api_key' => config('services.fal.key')],
             default => [],
@@ -40,6 +45,10 @@ class StudioProviderSettings
 
     public function route(string $service, ?array $stored = null): array
     {
+        // Virtual staging always uses Virtual Staging AI, including jobs saved against an older route.
+        if ($service === 'virtual-staging') {
+            return ['provider' => 'virtualstagingai', 'model' => 'staging', 'fallback' => null];
+        }
         $stored ??= $this->stored();
         if (isset($stored['routes'][$service])) {
             return $stored['routes'][$service];
@@ -57,6 +66,9 @@ class StudioProviderSettings
 
     public function providers(string $service): array
     {
+        if ($service === 'virtual-staging') {
+            return [['id' => 'virtualstagingai', 'label' => 'Virtual Staging AI', 'models' => [['id' => 'staging', 'label' => 'Virtual staging']]]];
+        }
         $photoModels = ['fal-ai/flux-kontext/dev' => 'Standard image editing', 'fal-ai/nano-banana-pro/edit' => 'Nano Banana Pro'];
         $models = match ($service) {
             'outpaint' => ['fal' => ['fal-ai/flux-2-pro/outpaint' => 'FLUX.2 Pro Outpaint'], 'openai' => ['gpt-image-2' => 'GPT Image 2']],
@@ -64,7 +76,7 @@ class StudioProviderSettings
             'property-reel', 'social-teaser' => ['fal' => [(string) config('services.fal.model', 'fal-ai/wan-pro/image-to-video') => 'Image to video']],
             'upscale' => ['fal' => ['fal-ai/clarity-upscaler' => 'Clarity Upscaler'], 'fotello' => ['upscale' => 'Upscale']],
             default => ['fal' => $photoModels, 'openai' => ['gpt-image-2' => 'GPT Image 2'], 'fotello' => match ($service) {
-                'twilight' => ['twilight' => 'Twilight'], 'virtual-staging' => ['virtual_staging' => 'Virtual staging'],
+                'twilight' => ['twilight' => 'Twilight'],
                 'revision', 'green-grass' => ['standard' => 'Standard revision', 'pro' => 'Pro revision'], default => ['enhance' => 'Photo enhancement'],
             }],
         };
@@ -75,6 +87,11 @@ class StudioProviderSettings
 
     public function readiness(string $service, array $route, ?array $stored = null): array
     {
+        if (($route['provider'] ?? null) === 'virtualstagingai') {
+            return filled($this->credentials('virtualstagingai', $stored)['api_key'] ?? null)
+                ? ['ready' => true]
+                : ['ready' => false, 'reason' => 'An administrator needs to finish configuring this service.'];
+        }
         $credentials = $this->credentials($route['provider'], $stored);
         if ($service === 'outpaint' && $route['provider'] === 'fal' && ! filled($credentials['api_key'] ?? null)
             && ($route['fallback']['provider'] ?? null) === 'openai' && filled($route['fallback']['model'] ?? null)
@@ -97,6 +114,7 @@ class StudioProviderSettings
     {
         $stored = $this->stored();
         $credentials = $this->credentials('fotello', $stored);
+        $virtualStaging = $this->credentials('virtualstagingai', $stored);
         $services = [];
         foreach (self::LABELS as $id => $label) {
             $route = $this->route($id, $stored);
@@ -111,7 +129,13 @@ class StudioProviderSettings
             $services[] = array_merge(['id' => $id, 'label' => $label, 'providers' => $providers], $route, $this->readiness($id, $route, $stored));
         }
 
-        return ['services' => $services, 'credentials' => ['fotello' => ['keyConfigured' => filled($credentials['api_key']), 'teamIdConfigured' => $this->hasTeamId($credentials['team_id'])]]];
+        return ['services' => $services, 'credentials' => [
+            'fotello' => ['keyConfigured' => filled($credentials['api_key']), 'teamIdConfigured' => $this->hasTeamId($credentials['team_id'])],
+            'virtualStagingAi' => [
+                'keyConfigured' => filled($virtualStaging['api_key']),
+                'usage' => $stored['credentials']['virtualStagingAi']['usage'] ?? null,
+            ],
+        ]];
     }
 
     /** Staff response deliberately contains no provider identifiers or credentials. */
@@ -140,6 +164,25 @@ class StudioProviderSettings
                 if (in_array($key, ['apiKey', 'teamId'], true) && is_string($value) && trim($value) !== '') {
                     $stored['credentials']['fotello'][$key] = trim($value);
                 }
+            }
+            $virtualStaging = $input['credentials']['virtualStagingAi'] ?? [];
+            $apiKey = isset($virtualStaging['apiKey']) && is_string($virtualStaging['apiKey']) ? trim($virtualStaging['apiKey']) : '';
+            if ($apiKey !== '' || ! empty($virtualStaging['refresh'])) {
+                $key = $apiKey !== '' ? $apiKey : (string) ($stored['credentials']['virtualStagingAi']['apiKey'] ?? config('studio_providers.virtualstagingai.api_key'));
+                if (! filled($key)) {
+                    throw ValidationException::withMessages(['credentials.virtualStagingAi.apiKey' => 'Enter the Virtual Staging AI API key first.']);
+                }
+                try {
+                    $usage = app()->makeWith(VirtualStagingAiClient::class, ['configuration' => ['api_key' => $key]])->account();
+                } catch (VirtualStagingAiException $exception) {
+                    throw ValidationException::withMessages(['credentials.virtualStagingAi.apiKey' => $exception->getMessage()]);
+                } catch (\Throwable) {
+                    throw ValidationException::withMessages(['credentials.virtualStagingAi.apiKey' => 'Virtual Staging AI could not be reached. The key was not saved.']);
+                }
+                if ($apiKey !== '') {
+                    $stored['credentials']['virtualStagingAi']['apiKey'] = $apiKey;
+                }
+                $stored['credentials']['virtualStagingAi']['usage'] = $usage;
             }
             foreach ($input['services'] ?? [] as $index => $route) {
                 $id = $route['id'];

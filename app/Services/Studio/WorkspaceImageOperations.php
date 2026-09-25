@@ -21,6 +21,9 @@ class WorkspaceImageOperations
         $state = new WorkspaceProviderState($workspace, $operationId);
         $service = $workspace->operation['type'] === 'revision' ? 'revision' : $workspace->preset_id;
         $route = $routeOverride ?? $state->route($service);
+        if (($route['provider'] ?? '') === 'virtualstagingai') {
+            throw new StudioProviderException('Virtual staging runs through its own staging service.');
+        }
         if ($route['provider'] === 'fotello') {
             $enhanced = app(WorkspacePhotoEnhancement::class)->run($workspace, $operationId, $item, $source, $route);
             $defaults = ['brightness' => 0, 'warmth' => 0, 'windows' => 50, 'look' => 'Natural', 'lensCorrection' => true, 'verticalCorrection' => true, 'skyReplacement' => false, 'preserveStructure' => true, 'strength' => 50, 'roomType' => 'living-room', 'furnitureStyle' => 'modern'];

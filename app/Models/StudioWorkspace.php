@@ -51,7 +51,7 @@ class StudioWorkspace extends Model
             'media' => array_map([\App\Services\Studio\WorkspaceMediaService::class, 'withUploadPreview'], $this->media ?? []), 'config' => self::normalizeConfigStrings($this->config ?? []), 'status' => $this->status,
             'progress' => $generation['progress'] ?? $this->progress, 'generation' => $generation ? \Illuminate\Support\Arr::except($generation, ['progress']) : null,
             'error' => $this->error, 'version' => $this->version,
-            'outputs' => array_map(fn ($output) => \Illuminate\Support\Arr::except($output, ['reelJobId']), $this->outputs ?? []), 'preparedFrames' => $this->prepared_frames ?? [],
+            'outputs' => array_map(fn ($output) => \Illuminate\Support\Arr::except($output, ['reelJobId', 'vsai']), $this->outputs ?? []), 'preparedFrames' => $this->prepared_frames ?? [],
             'history' => array_map(fn ($event) => \Illuminate\Support\Arr::except($event, ['reelJobId']), $this->history ?? []),
             'createdAt' => $this->created_at?->toIso8601String(),
             'updatedAt' => $this->updated_at?->toIso8601String(),
