@@ -62,7 +62,9 @@ class ApproveShootAction
                     : ($shoot->scheduled_at ? new \DateTime((string) $shoot->scheduled_at) : new \DateTime)
             );
 
-        $skipAvailabilityCheck = $validated['skip_availability_check'] ?? in_array($user->role, ['admin', 'superadmin']);
+        $skipAvailabilityCheck = $validated['skip_availability_check'] ?? (in_array($user->role, ['admin', 'superadmin'])
+            || (app(\App\Services\Shoots\ShootAuthorizationSupport::class)->hasRole($user, ['salesRep'])
+                && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $user)));
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
         if (! $skipAvailabilityCheck) {

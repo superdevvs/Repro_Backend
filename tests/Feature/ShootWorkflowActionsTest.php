@@ -928,8 +928,12 @@ class ShootWorkflowActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function admin_can_decline_requested_shoot_after_refactor(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function admin_can_decline_requested_shoot_after_refactor(string $role): void
     {
+        $this->admin->role = $role;
+        $this->admin->save();
         Event::fake([ShootActivityBroadcast::class]);
         Sanctum::actingAs($this->admin);
 

@@ -34,7 +34,9 @@ class ShootServiceChangeGuard
     public function canRemoveAllServices(Shoot $shoot, ?User $actor): bool
     {
         return $actor !== null
-            && in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
+            && (in_array($this->normalizeRole($actor->role), self::ZERO_SERVICE_ROLES, true)
+                || (app(ShootAuthorizationSupport::class)->hasRole($actor, ['salesRep'])
+                    && app(ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor)))
             && in_array($this->normalizeStatus($shoot), self::PRE_DELIVERY_STATUSES, true);
     }
 

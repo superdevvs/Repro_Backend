@@ -85,7 +85,7 @@ class ShootListingService
                 'date_range', 'scheduled_start', 'scheduled_end',
                 'completed_start', 'completed_end', 'custom_start', 'custom_end',
                 'date_from', 'date_to', 'private_listing', 'listing_scope', 'include_hidden',
-                'bracket', 'missing', 'limit',
+                'bracket', 'missing', 'limit', 'scheduled_status',
             ]);
             $filterParams = array_filter($filterParams, function ($value) {
                 return $value !== null && $value !== '';
@@ -160,6 +160,13 @@ class ShootListingService
             $query = $authorization->scopeAccessibleShootMedia(Shoot::with($eagerLoads), $user);
 
             $this->applyTabScope($query, $tab);
+            if ($tab === 'scheduled' && in_array($request->query('scheduled_status'), ['requested', 'scheduled'], true)) {
+                // Apply before pagination so a requested tab cannot be an empty
+                // slice of a page occupied by scheduled shoots.
+                $query->whereRaw("LOWER(COALESCE(NULLIF(workflow_status, ''), status)) = ?", [
+                    $request->query('scheduled_status'),
+                ]);
+            }
             $this->applyOperationalFilters($query, $request, $tab, $user);
 
             $maxLimit = 1000;

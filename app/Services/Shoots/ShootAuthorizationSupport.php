@@ -47,6 +47,12 @@ class ShootAuthorizationSupport
         }
     }
 
+    public function canManageRequestedShoot(Shoot $shoot, ?User $user): bool
+    {
+        return strtolower((string) ($shoot->workflow_status ?: $shoot->status)) === Shoot::STATUS_REQUESTED
+            && $this->hasRole($user, ['admin', 'superadmin', 'editing_manager', 'salesRep']);
+    }
+
     public function isClientUser(?User $user): bool
     {
         return $this->normalizeRole($user?->role ?? '') === 'client';

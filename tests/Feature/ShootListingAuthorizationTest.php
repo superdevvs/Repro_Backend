@@ -54,6 +54,23 @@ class ShootListingAuthorizationTest extends TestCase
         }
     }
 
+    public function test_requested_filter_runs_before_pagination_and_has_a_separate_admin_cache_entry(): void
+    {
+        $requested = $this->shoot(['rep_id' => null, 'status' => Shoot::STATUS_REQUESTED, 'workflow_status' => Shoot::STATUS_REQUESTED]);
+        $scheduled = $this->shoot();
+        for ($index = 0; $index < 12; $index++) {
+            $scheduled->replicate()->save();
+        }
+        foreach (['salesRep', 'admin'] as $role) {
+            $user = User::factory()->create(['role' => $role]);
+            $this->assertSame(14, $this->listing($user, ['per_page' => 12])['meta']['count']);
+            $payload = $this->listing($user, ['per_page' => 12, 'scheduled_status' => 'requested']);
+            $this->assertSame([$requested->id], array_column($payload['data'], 'id'));
+            $this->assertSame(1, $payload['meta']['count']);
+            $this->assertSame(13, $this->listing($user, ['per_page' => 12, 'scheduled_status' => 'scheduled'])['meta']['count']);
+        }
+    }
+
     public function test_sales_visibility_survives_assignment_removal(): void
     {
         $sales = User::factory()->create(['role' => 'salesRep']);

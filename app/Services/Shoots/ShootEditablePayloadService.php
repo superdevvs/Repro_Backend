@@ -411,7 +411,9 @@ class ShootEditablePayloadService
 
             if ($hasAdjustedTotal) {
                 $normalizedRole = strtolower((string) ($actor?->role ?? ''));
-                if (! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)) {
+                if (! in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true)
+                    && ! (app(ShootAuthorizationSupport::class)->hasRole($actor, ['salesRep'])
+                    && app(ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor))) {
                     throw ValidationException::withMessages([
                         'admin_adjusted_total_quote' => ['Only Admin and Super Admin can set an adjusted total.'],
                     ]);
@@ -718,7 +720,8 @@ class ShootEditablePayloadService
             strtolower(trim((string) ($actor?->role ?? ''))),
             ['admin', 'superadmin', 'super_admin'],
             true
-        );
+        ) || (app(ShootAuthorizationSupport::class)->hasRole($actor, ['salesRep'])
+                    && app(ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $actor));
         $currentItems = $shoot->serviceItems->keyBy(fn ($item) => (int) $item->service_id);
         $serviceModels = \App\Models\Service::query()
             ->whereIn('id', collect($merged)->pluck('id')->filter()->unique()->all())

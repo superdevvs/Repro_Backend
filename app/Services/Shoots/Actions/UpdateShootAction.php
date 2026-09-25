@@ -64,13 +64,13 @@ class UpdateShootAction
         $originalBaseQuote = (float) $shoot->base_quote;
         $originalTotalQuote = (float) $shoot->total_quote;
         $normalizedRole = strtolower((string) $user->role);
-        // Reps are NOT admins: they are assignment-scoped editors handled by the $assignedRep
-        // branch below (rep_id === user->id with $repEditableKeys). Including them here would
-        // let any rep bypass authorization and edit any shoot, so they must fall through.
+        // Requested shoots are a shared staff queue. Sales access outside that
+        // queue remains assignment-scoped and limited to the existing fields.
         $isAdmin = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin', 'editing_manager'], true);
         $canApproveFeaturedShoot = in_array($normalizedRole, ['admin', 'superadmin', 'super_admin'], true);
         $isClient = $user->role === 'client';
-        $isRep = in_array($normalizedRole, ['salesrep', 'sales_rep'], true);
+        $isRep = $this->authorizationSupport->hasRole($user, ['salesRep']);
+        $canManageRequested = $this->authorizationSupport->canManageRequestedShoot($shoot, $user);
         $isPhotographer = $user->role === 'photographer';
         $requestKeys = array_keys($request->all());
         $onlyPrivateListing = count($requestKeys) > 0 && count(array_diff($requestKeys, ['is_private_listing'])) === 0;
@@ -123,7 +123,11 @@ class UpdateShootAction
             'realtor_client_id',
         ];
 
-        if (! $isAdmin) {
+        if ($isRep && $canManageRequested && $request->hasAny(['status', 'workflow_status'])) {
+            $this->abortJson('Use the approval or decline action to change a requested shoot status.', 403);
+        }
+
+        if (! $isAdmin && ! $canManageRequested) {
             $ownsShoot = $isClient && (string) $shoot->client_id === (string) $user->id;
             $assignedRep = $isRep && (string) $shoot->rep_id === (string) $user->id;
             $assignedPhotographer = $isPhotographer
@@ -346,7 +350,7 @@ class UpdateShootAction
         // skip_availability_check (or admin) may suppress booking-CONFLICT checks only.
         // The configured-hours availability bound is always enforced, identically to the
         // create path, so a shoot can never be rescheduled outside the photographer's hours.
-        $skipConflictCheck = $validated['skip_availability_check'] ?? $isAdmin;
+        $skipConflictCheck = $validated['skip_availability_check'] ?? ($isAdmin || $canManageRequested);
         if ($needsAvailabilityCheck) {
             $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
             $targetScheduledAt = isset($availabilityPayload['scheduled_at'])

@@ -443,8 +443,35 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function admin_can_approve_a_requested_shoot_after_refactor(): void
+    public function sales_can_modify_another_reps_request_but_not_scheduled_shoot_details(): void
     {
+        Sanctum::actingAs($this->salesRep);
+        $shoot = Shoot::factory()->create([
+            'client_id' => $this->client->id, 'service_id' => $this->service->id,
+            'rep_id' => User::factory()->create(['role' => 'salesRep'])->id,
+            'status' => Shoot::STATUS_REQUESTED, 'workflow_status' => Shoot::STATUS_REQUESTED,
+        ]);
+        $this->attachPrimaryService($shoot);
+        $this->patchJson("/api/shoots/{$shoot->id}", [
+            'address' => '700 Shared Request Lane', 'photographer_id' => $this->photographer->id,
+            'shoot_notes' => 'Client approved access', 'company_notes' => 'Updated by sales',
+        ])->assertOk();
+        $this->assertSame('700 Shared Request Lane', $shoot->fresh()->address);
+        $this->assertSame(Shoot::STATUS_REQUESTED, $shoot->fresh()->status);
+        $this->assertSame($this->photographer->id, $shoot->fresh()->photographer_id);
+        $this->patchJson("/api/shoots/{$shoot->id}", ['status' => 'delivered'])->assertForbidden();
+        $shoot->update(['status' => Shoot::STATUS_SCHEDULED, 'workflow_status' => Shoot::STATUS_SCHEDULED]);
+        $this->patchJson("/api/shoots/{$shoot->id}", ['address' => 'Not allowed'])->assertForbidden();
+        $this->assertSame('700 Shared Request Lane', $shoot->fresh()->address);
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function admin_can_approve_a_requested_shoot_after_refactor(string $role): void
+    {
+        $this->admin->role = $role;
+        $this->admin->save();
         Sanctum::actingAs($this->admin);
 
         $shoot = Shoot::factory()->create([
@@ -490,8 +517,12 @@ class ShootMutationActionsTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function admin_can_approve_a_requested_shoot_with_inline_edits_after_refactor(): void
+    #[\PHPUnit\Framework\Attributes\TestWith(['admin'])]
+    #[\PHPUnit\Framework\Attributes\TestWith(['salesRep'])]
+    public function admin_can_approve_a_requested_shoot_with_inline_edits_after_refactor(string $role): void
     {
+        $this->admin->role = $role;
+        $this->admin->save();
         Sanctum::actingAs($this->admin);
 
         $servicePhotographer = User::factory()->create([

@@ -97,19 +97,31 @@ class ShootAdjacentAccessSecurityTest extends TestCase
         }
     }
 
-    public function test_unassigned_reps_cannot_approve_even_when_client_relation_is_missing(): void
+    public function test_unassigned_sales_aliases_can_approve_requests_even_when_client_relation_is_missing(): void
     {
         $shoot = $this->shoot(['status' => Shoot::STATUS_REQUESTED, 'workflow_status' => Shoot::STATUS_REQUESTED]);
         DB::table('users')->where('id', $shoot->client_id)->update(['deleted_at' => now()]);
-        $before = $shoot->fresh()->getAttributes();
-        $this->mock(ApproveShootAction::class, fn (MockInterface $mock) => $mock->shouldNotReceive('execute'));
+        $this->mock(ApproveShootAction::class, function (MockInterface $mock) {
+            $mock->shouldReceive('execute')->times(4)
+                ->andReturnUsing(fn ($request, Shoot $shoot) => $shoot);
+        });
         foreach (['salesRep', 'sales_rep', 'rep', 'representative'] as $role) {
+            Sanctum::actingAs(User::factory()->create(['role' => $role]));
+            $this->postJson("/api/shoots/{$shoot->id}/approve")->assertOk();
+        }
+    }
+
+    public function test_clients_and_contractors_cannot_approve_requests_and_sales_cannot_reapprove_scheduled_shoots(): void
+    {
+        $shoot = $this->shoot(['status' => Shoot::STATUS_REQUESTED, 'workflow_status' => Shoot::STATUS_REQUESTED]);
+        $this->mock(ApproveShootAction::class, fn (MockInterface $mock) => $mock->shouldNotReceive('execute'));
+        foreach (['client', 'photographer', 'editor'] as $role) {
             Sanctum::actingAs(User::factory()->create(['role' => $role]));
             $this->postJson("/api/shoots/{$shoot->id}/approve")->assertForbidden();
         }
-        $this->assertSame($before, $shoot->fresh()->getAttributes());
-        Queue::assertNothingPushed();
-        Http::assertNothingSent();
+        $shoot->update(['status' => Shoot::STATUS_SCHEDULED, 'workflow_status' => Shoot::STATUS_SCHEDULED]);
+        Sanctum::actingAs(User::factory()->create(['role' => 'salesRep']));
+        $this->postJson("/api/shoots/{$shoot->id}/approve")->assertUnprocessable();
     }
 
     public function test_approval_uses_shoot_assignment_for_every_sales_alias(): void
