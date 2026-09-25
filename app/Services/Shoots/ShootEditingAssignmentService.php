@@ -41,7 +41,7 @@ class ShootEditingAssignmentService
         return $query->where(function (Builder $scope) use ($editorId) {
             $scope->where('editor_id', $editorId)
                 ->orWhereHas('services', function (Builder $serviceQuery) use ($editorId) {
-                    $serviceQuery->where('shoot_service.editor_id', $editorId);
+                    $serviceQuery->where(fn ($query) => $query->where('shoot_service.editor_id', $editorId)->orWhere('shoot_service.video_editor_id', $editorId));
                 });
         });
     }
@@ -74,13 +74,14 @@ class ShootEditingAssignmentService
                     return false;
                 }
 
-                return (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id;
+                return (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id
+                    || (string) ($service->pivot?->video_editor_id ?? '') === (string) $editor->id;
             });
         }
 
         return DB::table('shoot_service')
             ->where('shoot_id', $shoot->id)
-            ->where('editor_id', $editor->id)
+            ->where(fn ($query) => $query->where('editor_id', $editor->id)->orWhere('video_editor_id', $editor->id))
             ->exists();
     }
 
@@ -121,7 +122,8 @@ class ShootEditingAssignmentService
                 return false;
             }
 
-            return (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id;
+            return (string) ($service->pivot?->editor_id ?? '') === (string) $editor->id
+                || (string) ($service->pivot?->video_editor_id ?? '') === (string) $editor->id;
         })->values();
     }
 
@@ -159,6 +161,11 @@ class ShootEditingAssignmentService
 
             if (!$serviceItem) {
                 return false;
+            }
+
+            if ($serviceItem->service?->uploadIntakeType() === \App\Models\Service::INTAKE_PHOTO_VIDEO) {
+                $assigned = $this->getFileLane($file) === self::LANE_VIDEO ? $serviceItem->video_editor_id : $serviceItem->editor_id;
+                return $assigned && (string) $assigned === (string) $editor->id;
             }
 
             if ($serviceItem->editor_id) {
@@ -263,14 +270,10 @@ class ShootEditingAssignmentService
             }
 
             if ($editor && $servicesMissingEditor->isNotEmpty()) {
-                DB::table('shoot_service')
-                    ->where('shoot_id', $shoot->id)
-                    ->whereIn('service_id', $servicesMissingEditor->pluck('service_id')->all())
-                    ->update([
-                        'editor_id' => $editor->id,
-                        'editing_completed_at' => null,
-                        'updated_at' => now(),
-                    ]);
+                foreach ($servicesMissingEditor->groupBy('editor_column') as $column => $group) {
+                    DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('service_id', $group->pluck('service_id')->all())
+                        ->update([$column => $editor->id, $group->first()['completed_column'] => null, 'updated_at' => now()]);
+                }
             }
 
             $laneAssignments[$lane] = [
@@ -318,26 +321,18 @@ class ShootEditingAssignmentService
             return [];
         }
 
-        if (in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
-            $serviceIds = $trackedAssignments->pluck('service_id')->all();
-        } else {
-            $serviceIds = $trackedAssignments
-                ->where('editor_id', (int) $user->id)
-                ->pluck('service_id')
-                ->all();
+        if (! in_array($user->role, ['admin', 'superadmin', 'editing_manager'], true)) {
+            $trackedAssignments = $trackedAssignments->where('editor_id', (int) $user->id);
         }
 
-        if (empty($serviceIds)) {
+        if ($trackedAssignments->isEmpty()) {
             throw new \App\Exceptions\PublicBusinessRuleException('No editing lanes are assigned to this user for the shoot.');
         }
 
-        DB::table('shoot_service')
-            ->where('shoot_id', $shoot->id)
-            ->whereIn('service_id', $serviceIds)
-            ->update([
-                'editing_completed_at' => now(),
-                'updated_at' => now(),
-            ]);
+        foreach ($trackedAssignments->groupBy('completed_column') as $column => $assignments) {
+            DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('service_id', $assignments->pluck('service_id')->all())
+                ->update([$column => now(), 'updated_at' => now()]);
+        }
 
         return $this->buildEditorAssignmentsPayload($shoot->fresh(['services.category']));
     }
@@ -412,35 +407,27 @@ class ShootEditingAssignmentService
             ? collect($shoot->services)
             : $shoot->services()->with('category')->get();
 
-        return $services
-            ->map(function ($service) {
-                if (!is_object($service)) {
-                    return null;
-                }
-
-                $categoryName = $service->category?->name
-                    ?? ($service->category_name ?? null)
-                    ?? $service->name
-                    ?? null;
-                $lane = $this->normalizeLane($categoryName);
-                if ($lane === null) {
-                    return null;
-                }
-
-                $completedAt = $service->pivot?->editing_completed_at ?? null;
-
+        return $services->flatMap(function ($service) {
+            if (! is_object($service) || ! $this->serviceRequiresEditing($service)) {
+                return [];
+            }
+            $categoryName = $service->category?->name ?? $service->category_name ?? $service->name ?? null;
+            $legacyLane = $this->normalizeLane($categoryName);
+            $lanes = $service->supportsPhotoIntake() && $service->supportsVideoIntake() ? [self::LANE_PHOTO, self::LANE_VIDEO]
+                : array_filter([$legacyLane ?? ($service->supportsVideoIntake() ? self::LANE_VIDEO : ($service->supportsPhotoIntake() ? self::LANE_PHOTO : null))]);
+            $bundled = count($lanes) === 2;
+            return collect($lanes)->map(function ($lane) use ($service, $bundled) {
+                $editorColumn = $bundled && $lane === self::LANE_VIDEO ? 'video_editor_id' : 'editor_id';
+                $completedColumn = $bundled && $lane === self::LANE_VIDEO ? 'video_editing_completed_at' : 'editing_completed_at';
+                $completedAt = $service->pivot?->{$completedColumn};
                 return [
-                    'service_id' => (int) $service->id,
-                    'service_name' => (string) ($service->name ?? ''),
-                    'lane' => $lane,
-                    'editor_id' => $service->pivot?->editor_id ? (int) $service->pivot->editor_id : null,
-                    'editing_completed_at' => $completedAt instanceof \DateTimeInterface
-                        ? $completedAt->format(\DateTimeInterface::ATOM)
-                        : ($completedAt ? (string) $completedAt : null),
+                    'service_id' => (int) $service->id, 'service_name' => (string) $service->name, 'lane' => $lane,
+                    'editor_column' => $editorColumn, 'completed_column' => $completedColumn,
+                    'editor_id' => $service->pivot?->{$editorColumn} ? (int) $service->pivot->{$editorColumn} : null,
+                    'editing_completed_at' => $completedAt instanceof \DateTimeInterface ? $completedAt->format(\DateTimeInterface::ATOM) : ($completedAt ? (string) $completedAt : null),
                 ];
-            })
-            ->filter()
-            ->values();
+            })->all();
+        })->values();
     }
 
     public function getFileLane(ShootFile $file): ?string

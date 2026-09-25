@@ -78,7 +78,8 @@ class WorkspaceShootPublisher
         if ($workspace->shoot_dispatch_key === 'intake'
             && ! StudioWorkspace::where('shoot_id', $workspace->shoot_id)->where('shoot_dispatch_key', 'intake')->where('status', '!=', 'completed')->exists()) {
             $shoot = \App\Models\Shoot::find($workspace->shoot_id);
-            $hasHumanWork = DB::table('shoot_service')->where('shoot_id', $workspace->shoot_id)->whereNotNull('editor_id')->exists();
+            $hasHumanWork = DB::table('shoot_service')->where('shoot_id', $workspace->shoot_id)
+                ->where(fn ($query) => $query->whereNotNull('editor_id')->orWhereNotNull('video_editor_id'))->exists();
             if ($shoot?->status === \App\Models\Shoot::STATUS_EDITING
                 && (! $hasHumanWork || app(\App\Services\Shoots\ShootEditingAssignmentService::class)->allTrackedLanesReady($shoot))) {
                 $shoot->update(['status' => \App\Models\Shoot::STATUS_READY, 'workflow_status' => \App\Models\Shoot::STATUS_READY, 'editing_completed_at' => now()]);

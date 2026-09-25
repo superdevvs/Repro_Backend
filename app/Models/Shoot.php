@@ -899,6 +899,8 @@ class Shoot extends Model
                 'photographer_id',
                 'editor_id',
                 'editing_completed_at',
+                'video_editor_id',
+                'video_editing_completed_at',
                 'scheduled_at',
                 'workflow_status',
                 'delivery_status',

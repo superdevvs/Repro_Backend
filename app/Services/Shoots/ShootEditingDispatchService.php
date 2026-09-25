@@ -49,7 +49,7 @@ class ShootEditingDispatchService
             'photos' => $files->map(fn ($file) => ['id' => $file->id, 'name' => $file->filename, 'available' => $file->isClearedForProcessing(),
                 'url' => url("/api/studio/workspaces/sources/files/{$file->id}/preview")])->all(),
             'services' => $shoot->services->pluck('name')->values()->all(), 'addons' => $addons,
-            'hasVideo' => $shoot->services->contains(fn ($service) => $service->supportsVideoIntake()),
+            'hasVideo' => app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)->contains('lane', 'video'),
         ];
     }
 

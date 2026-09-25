@@ -39,7 +39,8 @@ class AssignEditorAction
             }
 
             foreach ($trackedAssignments as $assignment) {
-                $shoot->assignEditorToService((int) $assignment['service_id'], $selectedEditor->id, null);
+                \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('service_id', $assignment['service_id'])
+                    ->update([$assignment['editor_column'] => $selectedEditor->id, $assignment['completed_column'] => null, 'updated_at' => now()]);
             }
 
             $this->editingAssignmentService->syncLegacyShootEditor($shoot->fresh(['services.category']));

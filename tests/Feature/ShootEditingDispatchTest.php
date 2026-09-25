@@ -159,6 +159,48 @@ class ShootEditingDispatchTest extends TestCase
         $this->assertSame($operation, $workspace->fresh()->operation);
     }
 
+    public function test_bundled_photo_video_service_routes_and_completes_the_two_lanes_independently(): void
+    {
+        $photoEditor = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['photo'], 'photo_edit_rate' => 2]]);
+        $videoEditor = User::factory()->create(['role' => 'editor', 'metadata' => ['editing_capabilities' => ['video'], 'video_edit_rate' => 45]]);
+        [$shoot, $files] = $this->shoot(['HDR Photos & Video']);
+        $shoot->services()->first()->update(['upload_intake_type' => 'photo_video']);
+        $video = $files[0]->replicate();
+        $video->fill(['filename' => 'clip.mp4', 'stored_filename' => 'clip.mp4', 'file_type' => 'video/mp4', 'mime_type' => 'video/mp4', 'media_type' => 'video'])->save();
+        $this->send($shoot)->assertAccepted();
+        $service = $shoot->fresh('services')->services->first();
+        $this->assertNull($service->pivot->editor_id);
+        $this->assertSame($videoEditor->id, (int) $service->pivot->video_editor_id);
+        $assignments = app(\App\Services\Shoots\ShootEditingAssignmentService::class);
+        $this->assertTrue($assignments->canEditorAccessFile($shoot->fresh(), $video, $videoEditor));
+        $this->assertFalse($assignments->canEditorAccessFile($shoot->fresh(), $files[0], $videoEditor));
+        $this->assertSame([$shoot->id], $assignments->scopeAssignedToEditor(Shoot::query(), $videoEditor->id)->pluck('id')->all());
+        $project = StudioWorkspace::where('shoot_id', $shoot->id)->first();
+        $project->update(['status' => 'completed']);
+        app(WorkspaceShootPublisher::class)->completeServices($project);
+        $this->assertSame('editing', $shoot->fresh()->status);
+        $this->assertFalse($assignments->allTrackedLanesReady($shoot->fresh()));
+        $assignments->markAssignedServicesReadyForUser($shoot->fresh(), $videoEditor);
+        $this->assertTrue($assignments->allTrackedLanesReady($shoot->fresh()));
+        app(WorkspaceShootPublisher::class)->completeServices($project);
+        $this->assertSame('ready', $shoot->fresh()->status);
+
+        [$manual] = $this->shoot(['HDR Photos & Video']);
+        $manual->services()->first()->update(['upload_intake_type' => 'photo_video']);
+        $this->send($manual, ['mode' => 'editor'])->assertAccepted();
+        $service = $manual->fresh('services')->services->first();
+        $this->assertSame($photoEditor->id, (int) $service->pivot->editor_id);
+        $this->assertSame($videoEditor->id, (int) $service->pivot->video_editor_id);
+        $assignments->markAssignedServicesReadyForUser($manual->fresh(), $videoEditor);
+        $this->assertFalse($assignments->allTrackedLanesReady($manual->fresh()));
+        $this->assertNull($manual->fresh('services')->services->first()->pivot->editing_completed_at);
+        $manual->services()->first()->update(['photo_count' => 25]);
+        $assignments->markAssignedServicesReadyForUser($manual->fresh(), $photoEditor);
+        app(\App\Services\EditorPayoutService::class)->syncPayouts();
+        $this->assertDatabaseHas('editor_payouts', ['shoot_id' => $manual->id, 'editor_id' => $photoEditor->id, 'payout_amount' => 50]);
+        $this->assertDatabaseHas('editor_payouts', ['shoot_id' => $manual->id, 'editor_id' => $videoEditor->id, 'payout_amount' => 45]);
+    }
+
     public function test_ai_only_shoot_becomes_ready_after_every_child_finishes_but_video_keeps_human_review(): void
     {
         [$shoot, $files] = $this->shoot(['Photos', 'Green Grass']);

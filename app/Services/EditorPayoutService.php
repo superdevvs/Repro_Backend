@@ -18,12 +18,13 @@ class EditorPayoutService
         $rows = DB::table('shoot_service')
             ->join('shoots', 'shoots.id', '=', 'shoot_service.shoot_id')
             ->leftJoin('services', 'services.id', '=', 'shoot_service.service_id')
-            ->whereNotNull('shoot_service.editor_id')
-            ->when($editorId, fn ($query) => $query->where('shoot_service.editor_id', $editorId))
+            ->where(fn ($query) => $query->whereNotNull('shoot_service.editor_id')->orWhereNotNull('shoot_service.video_editor_id'))
+            ->when($editorId, fn ($query) => $query->where(fn ($query) => $query->where('shoot_service.editor_id', $editorId)->orWhere('shoot_service.video_editor_id', $editorId)))
             ->when($start || $end, function ($query) use ($start, $end) {
                 $query->where(function ($dateQuery) use ($start, $end) {
                     foreach ([
                         'shoot_service.editing_completed_at',
+                        'shoot_service.video_editing_completed_at',
                         'shoots.editing_completed_at',
                         'shoots.completed_at',
                         'shoots.admin_verified_at',
@@ -44,6 +45,8 @@ class EditorPayoutService
             })
             ->select([
                 'shoot_service.editor_id',
+                'shoot_service.video_editor_id',
+                'shoot_service.video_editing_completed_at',
                 'shoot_service.shoot_id',
                 'shoot_service.service_id',
                 'shoot_service.quantity',
@@ -53,9 +56,26 @@ class EditorPayoutService
                 'shoots.admin_verified_at',
                 'services.name as service_name',
                 'services.photo_count as service_photo_count',
+                'services.upload_intake_type',
             ])
             ->orderBy('shoot_service.editor_id')
-            ->get();
+            ->get()->flatMap(function ($row) use ($editorId) {
+                $assignments = [];
+                if ($row->editor_id && (! $editorId || (int) $row->editor_id === $editorId)) {
+                    $primary = clone $row;
+                    $primary->editing_lane = $row->upload_intake_type === 'photo_video' && $row->video_editor_id != $row->editor_id ? 'photo' : null;
+                    $assignments[] = $primary;
+                }
+                // A single editor keeps the existing bundled payout identity.
+                if ($row->video_editor_id && $row->video_editing_completed_at && $row->video_editor_id != $row->editor_id && (! $editorId || (int) $row->video_editor_id === $editorId)) {
+                    $video = clone $row;
+                    $video->editor_id = $row->video_editor_id;
+                    $video->service_editing_completed_at = $row->video_editing_completed_at;
+                    $video->editing_lane = 'video';
+                    $assignments[] = $video;
+                }
+                return $assignments;
+            });
 
         if ($rows->isEmpty()) {
             return;
@@ -78,8 +98,9 @@ class EditorPayoutService
             }
 
             $serviceName = trim((string) ($row->service_name ?? 'Editing Service'));
-            $rate = $this->resolveRateForService($editor, $serviceName, $row->service_id);
-            $quantity = $this->resolveQuantityForService(
+            $rateName = $row->editing_lane === 'photo' ? preg_replace('/video/i', '', $serviceName) : $serviceName;
+            $rate = $this->resolveRateForService($editor, $rateName, $row->service_id);
+            $quantity = $row->editing_lane === 'video' ? max(1, (int) $row->quantity) : $this->resolveQuantityForService(
                 $serviceName,
                 (int) ($row->service_photo_count ?? 0),
                 (int) ($row->quantity ?? 1)

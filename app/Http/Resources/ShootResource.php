@@ -248,7 +248,7 @@ class ShootResource extends JsonResource
                     ? \App\Models\User::whereIn('id', $servicePhotographerIds)->get()->keyBy('id')
                     : collect();
                 $serviceEditorIds = $serviceCollection
-                    ->pluck('pivot.editor_id')
+                    ->flatMap(fn ($service) => [$service->pivot->editor_id, $service->pivot->video_editor_id])
                     ->filter()
                     ->unique()
                     ->values();
@@ -282,7 +282,8 @@ class ShootResource extends JsonResource
                             ];
                         }
                     }
-                    $pivotEditorId = $service->pivot->editor_id ?? null;
+                    $pivotEditorId = $isEditor && (string) $service->pivot->video_editor_id === (string) auth()->id()
+                        ? $service->pivot->video_editor_id : ($service->pivot->editor_id ?? null);
                     $resolvedEditor = null;
                     if ($pivotEditorId) {
                         $editor = $serviceEditors->get($pivotEditorId);
@@ -325,6 +326,8 @@ class ShootResource extends JsonResource
                         // Resolved photographer details (never null if shoot has photographer)
                         'photographer' => $isEditor ? null : $resolvedPhotographer,
                         'editor_id' => $pivotEditorId ? (string) $pivotEditorId : null,
+                        'video_editor_id' => $service->pivot->video_editor_id ? (string) $service->pivot->video_editor_id : null,
+                        'video_editing_completed_at' => $service->pivot->video_editing_completed_at,
                         'editor' => $resolvedEditor,
                         'scheduled_at' => $serviceItemSummary['scheduled_at'] ?? null,
                         'scheduledAt' => $serviceItemSummary['scheduledAt'] ?? null,

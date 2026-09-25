@@ -272,7 +272,7 @@ class StudioSourceController extends StudioController
                 ->orWhereIn('rep_id', $userIds)
                 ->orWhereIn('created_by', $userIds)
                 ->orWhereHas('services', fn (Builder $service) => $service
-                    ->whereIn('shoot_service.editor_id', $userIds));
+                    ->where(fn ($assignment) => $assignment->whereIn('shoot_service.editor_id', $userIds)->orWhereIn('shoot_service.video_editor_id', $userIds)));
         });
     }
 
