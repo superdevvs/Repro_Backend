@@ -688,6 +688,11 @@ class ShootWorkflowActionsTest extends TestCase
 
         Sanctum::actingAs($this->admin);
 
+        $this->getJson('/api/shoots/pending-holds')->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.id', (string) $shoot->id)
+            ->assertJsonPath('data.0.holdReason', 'Waiting for staging');
+
         $approveResponse = $this->postJson("/api/shoots/{$shoot->id}/approve-hold");
 
         $approveResponse->assertOk()
@@ -699,6 +704,8 @@ class ShootWorkflowActionsTest extends TestCase
         $this->assertSame(Shoot::STATUS_ON_HOLD, $shoot->workflow_status);
         $this->assertNull($shoot->hold_requested_at);
         $this->assertNull($shoot->hold_requested_by);
+
+        $this->getJson('/api/shoots/pending-holds')->assertOk()->assertJsonCount(0, 'data');
 
         Event::assertDispatched(ShootActivityBroadcast::class, function (ShootActivityBroadcast $event) use ($shoot) {
             return $event->shoot->id === $shoot->id
@@ -733,6 +740,38 @@ class ShootWorkflowActionsTest extends TestCase
             return $event->shoot->id === $shoot->id
                 && $event->activityType === 'hold_requested';
         });
+    }
+
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function pending_holds_are_visible_to_reviewers_but_not_clients_or_contractors(): void
+    {
+        $shoot = $this->makeShoot([
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::STATUS_SCHEDULED,
+            'hold_requested_at' => now()->subHour(),
+            'hold_requested_by' => $this->client->id,
+            'hold_reason' => 'Waiting for staging',
+        ]);
+        $this->makeShoot([
+            'status' => Shoot::STATUS_CANCELLED,
+            'workflow_status' => Shoot::STATUS_CANCELLED,
+            'hold_requested_at' => now(),
+        ]);
+
+        foreach (['admin', 'superadmin', 'editing_manager', 'salesRep'] as $role) {
+            Sanctum::actingAs(User::factory()->create(['role' => $role]));
+            $this->getJson('/api/shoots/pending-holds')->assertOk()
+                ->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', (string) $shoot->id);
+        }
+        foreach ([$this->client, $this->photographer, $this->editor] as $viewer) {
+            Sanctum::actingAs($viewer);
+            $this->getJson('/api/shoots/pending-holds')->assertForbidden();
+        }
+
+        Sanctum::actingAs($this->admin);
+        $this->postJson("/api/shoots/{$shoot->id}/reject-hold")->assertOk();
+        $this->getJson('/api/shoots/pending-holds')->assertOk()->assertJsonCount(0, 'data');
+        $this->assertSame(Shoot::STATUS_SCHEDULED, $shoot->fresh()->status);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

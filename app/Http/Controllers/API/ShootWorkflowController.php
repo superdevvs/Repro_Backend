@@ -182,6 +182,22 @@ class ShootWorkflowController extends Controller
         ]);
     }
 
+    public function pendingHolds(Request $request)
+    {
+        $access = app(\App\Services\Shoots\ShootAuthorizationSupport::class);
+        $user = $request->user();
+        $access->ensureRole(['admin', 'superadmin', 'editing_manager', 'salesRep', 'rep', 'representative'], $user);
+
+        $shoots = $access->scopeAccessibleShootMedia(Shoot::query(), $user)
+            ->whereNotNull('hold_requested_at')
+            ->whereNotIn('status', [Shoot::STATUS_CANCELLED, Shoot::STATUS_DECLINED, Shoot::STATUS_ON_HOLD])
+            ->with(['client', 'photographer', 'services'])
+            ->orderBy('hold_requested_at')
+            ->get();
+
+        return response()->json(['data' => ShootResource::collection($shoots)]);
+    }
+
     public function startEditing(Request $request, Shoot $shoot)
     {
         app(\App\Services\Shoots\ShootAuthorizationSupport::class)->ensureShootAccess($shoot, $request->user());
