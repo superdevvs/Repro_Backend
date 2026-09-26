@@ -157,6 +157,48 @@ class CakemailProviderTest extends TestCase
         ];
     }
 
+    #[DataProvider('clickTrackingCases')]
+    public function test_password_reset_links_skip_provider_click_rewriting(?string $sendSource, bool $expectedTracking): void
+    {
+        config([
+            'services.cakemail.username' => 'mailer@example.com',
+            'services.cakemail.password' => 'synthetic-password',
+            'services.cakemail.sender_id' => 'sender-default',
+            'services.cakemail.base_url' => 'https://cakemail.example/api',
+        ]);
+        Http::preventStrayRequests();
+        Http::fake([
+            'https://cakemail.example/api/token' => Http::response(['access_token' => 'test-token', 'expires_in' => 3600]),
+            'https://cakemail.example/api/v2/emails' => Http::response(['data' => ['id' => 'msg-security-link']]),
+        ]);
+        $provider = new CakemailProvider;
+        $provider->clearCache();
+        $channel = new MessageChannel(['type' => 'EMAIL', 'provider' => 'CAKEMAIL', 'display_name' => 'Default Mailer']);
+        $url = 'https://reprodashboard.com/reset-password?token=synthetic-token&email=reader%2Breset%40example.com';
+        $html = '<a href="'.e($url).'">Reset Password</a>';
+
+        $provider->send($channel, [
+            'to' => 'recipient@example.com', 'subject' => 'A security link',
+            'html' => $html, 'text' => $url, 'send_source' => $sendSource,
+        ]);
+
+        Http::assertSent(function (Request $request) use ($expectedTracking, $html, $url): bool {
+            return $request->url() === 'https://cakemail.example/api/v2/emails'
+                && $request['tracking'] === ['opens' => true, 'clicks_html' => $expectedTracking, 'clicks_text' => $expectedTracking]
+                && $request['content']['html'] === $html
+                && $request['content']['text'] === $url;
+        });
+    }
+
+    public static function clickTrackingCases(): array
+    {
+        return [
+            'password reset uses direct links' => ['PASSWORD_RESET', false],
+            'booking retains click tracking' => ['SHOOT_SCHEDULED', true],
+            'unspecified source retains click tracking' => [null, true],
+        ];
+    }
+
     public function test_send_requires_an_explicit_cakemail_base_url(): void
     {
         config([

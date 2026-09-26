@@ -686,6 +686,9 @@ class CakemailProvider implements EmailProviderInterface
         $html = $this->stripLegacyClientAddressTagFromHtml($this->resolveHtmlBody($payload));
         $text = $this->stripLegacyClientAddressTagFromText($this->resolveTextBody($payload, $html));
         $html = $this->integrateProviderFooter($html);
+        // Keep password-reset URLs direct: click rewriting can preserve the HTML
+        // entity in &amp;email= and turn the destination into an invalid reset link.
+        $trackClicks = ($payload['send_source'] ?? null) !== 'PASSWORD_RESET';
 
         $emailPayload = [
             'sender' => [
@@ -702,8 +705,8 @@ class CakemailProvider implements EmailProviderInterface
             'email' => $recipientEmail,
             'tracking' => [
                 'opens' => true,
-                'clicks_html' => true,
-                'clicks_text' => true,
+                'clicks_html' => $trackClicks,
+                'clicks_text' => $trackClicks,
             ],
         ];
 

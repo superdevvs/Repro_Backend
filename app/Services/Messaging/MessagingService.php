@@ -120,6 +120,7 @@ class MessagingService
                 'text' => $payload['body_text'] ?? $message->body_text,
                 'reply_to' => $payload['reply_to'] ?? null,
                 'attachments' => $payload['attachments'] ?? [],
+                'send_source' => $message->send_source,
             ]);
 
             $message->update([
@@ -945,6 +946,7 @@ class MessagingService
                 'text' => $message->body_text ?? '',
                 'reply_to' => $message->reply_to_email,
                 'attachments' => $this->resolveScheduledAttachments($message),
+                'send_source' => $message->send_source,
             ]);
 
             $message->update([
