@@ -446,7 +446,15 @@ class AuthController extends Controller
             'preferences.notificationSettings.push' => 'nullable|boolean',
             'preferences.notificationSettings.marketing' => 'nullable|boolean',
             'email_warning_override' => 'sometimes|boolean',
-        ], $onboardingRules));
+        ], $onboardingRules, $user->role === 'photographer' ? [
+            // Collected on photographer account creation and editable later from Settings.
+            'license_number' => 'nullable|string|max:100',
+            'insuranceNumber' => 'nullable|string|max:255',
+            'insuranceFile' => 'nullable|string|url|max:2048',
+            'insuranceFileName' => 'nullable|string|max:255',
+            'pilotLicenseFile' => 'nullable|string|url|max:2048',
+            'pilotLicenseFileName' => 'nullable|string|max:255',
+        ] : []));
 
         $incomingEmail = $validated['email'] ?? null;
         $currentEmail = strtolower((string) $user->email);
@@ -517,6 +525,26 @@ class AuthController extends Controller
         if (array_key_exists('about', $validated)) {
             $metadata['about'] = $validated['about'];
             unset($validated['about']);
+        }
+
+        if ($user->role === 'photographer') {
+            foreach ([
+                'insuranceNumber',
+                'insuranceFile',
+                'insuranceFileName',
+                'pilotLicenseFile',
+                'pilotLicenseFileName',
+            ] as $credentialKey) {
+                if (!array_key_exists($credentialKey, $validated)) {
+                    continue;
+                }
+                if ($validated[$credentialKey] === null || $validated[$credentialKey] === '') {
+                    unset($metadata[$credentialKey]);
+                } else {
+                    $metadata[$credentialKey] = $validated[$credentialKey];
+                }
+                unset($validated[$credentialKey]);
+            }
         }
 
         if ($passwordChanged) {

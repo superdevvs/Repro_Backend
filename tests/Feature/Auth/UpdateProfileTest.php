@@ -270,4 +270,84 @@ class UpdateProfileTest extends TestCase
             $user->metadata['about'] ?? null,
         );
     }
+
+    public function test_photographer_can_update_and_clear_account_creation_credentials(): void
+    {
+        $user = User::factory()->photographer()->create([
+            'license_number' => 'OLD-1',
+            'metadata' => [
+                'specialties' => ['category:old'],
+                'insuranceNumber' => 'POLICY-OLD',
+                'insuranceFile' => 'https://files.example/old-insurance.pdf',
+                'insuranceFileName' => 'Old insurance',
+                'pilotLicenseFile' => 'https://files.example/old-pilot.pdf',
+                'pilotLicenseFileName' => 'Old pilot',
+            ],
+        ]);
+
+        $token = $user->createToken('credentials')->plainTextToken;
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/profile', [
+                'license_number' => 'FAA-107',
+                'insuranceNumber' => 'POLICY-123',
+                'insuranceFile' => 'https://files.example/insurance.pdf',
+                'insuranceFileName' => 'Liability policy',
+                'pilotLicenseFile' => 'https://files.example/pilot.pdf',
+                'pilotLicenseFileName' => 'Part 107',
+            ])
+            ->assertOk()
+            ->assertJsonPath('user.license_number', 'FAA-107')
+            ->assertJsonPath('user.metadata.pilotLicenseFileName', 'Part 107');
+
+        $user->refresh();
+        $this->assertSame('FAA-107', $user->license_number);
+        $this->assertSame('POLICY-123', $user->metadata['insuranceNumber']);
+        $this->assertSame('https://files.example/insurance.pdf', $user->metadata['insuranceFile']);
+        $this->assertSame('Liability policy', $user->metadata['insuranceFileName']);
+        $this->assertSame('https://files.example/pilot.pdf', $user->metadata['pilotLicenseFile']);
+        $this->assertSame('Part 107', $user->metadata['pilotLicenseFileName']);
+        $this->assertSame(['category:old'], $user->metadata['specialties']);
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/profile', [
+                'license_number' => null,
+                'insuranceNumber' => null,
+                'insuranceFile' => null,
+                'insuranceFileName' => null,
+                'pilotLicenseFile' => null,
+                'pilotLicenseFileName' => null,
+            ])
+            ->assertOk();
+
+        $user->refresh();
+        $this->assertNull($user->license_number);
+        $this->assertArrayNotHasKey('insuranceNumber', $user->metadata);
+        $this->assertArrayNotHasKey('insuranceFile', $user->metadata);
+        $this->assertArrayNotHasKey('pilotLicenseFile', $user->metadata);
+        $this->assertArrayNotHasKey('pilotLicenseFileName', $user->metadata);
+        $this->assertSame(['category:old'], $user->metadata['specialties']);
+    }
+
+    public function test_non_photographer_cannot_store_pilot_license_metadata_on_profile(): void
+    {
+        $user = User::factory()->create([
+            'role' => 'client',
+            'metadata' => ['keep' => 'yes'],
+        ]);
+
+        $this->withHeader('Authorization', 'Bearer '.$user->createToken('client')->plainTextToken)
+            ->putJson('/api/profile', [
+                'name' => 'Client Name',
+                'pilotLicenseFile' => 'https://files.example/pilot.pdf',
+                'insuranceNumber' => 'POLICY-123',
+                'license_number' => 'SHOULD-NOT-SAVE',
+            ])
+            ->assertOk();
+
+        $user->refresh();
+        $this->assertSame('Client Name', $user->name);
+        $this->assertNull($user->license_number);
+        $this->assertSame(['keep' => 'yes'], $user->metadata);
+    }
 }
