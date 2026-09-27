@@ -1042,6 +1042,10 @@ class AutomationWorkflowExecutor
 
     private function resolveActionRecipients(AutomationRule $automation, array $config, array $context, string $mode): array
     {
+        if ($automation->trigger_type === 'PROPERTY_CONTACT_REMINDER' && $mode === 'email') {
+            return $this->resolveRecipientsByRoles($automation, ['client', 'rep'], $context, $mode);
+        }
+
         $recipientMode = $config['recipientMode'] ?? 'automation_default';
 
         if ($recipientMode === 'context' && ! empty($config['contextKey'])) {

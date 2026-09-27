@@ -760,6 +760,10 @@ class AutomationService
             $hasLockboxDetails = data_get($context, 'has_lockbox_details', false);
             $presenceOption = data_get($context, 'presence_option');
 
+            if ($hasLockboxDetails) {
+                return false;
+            }
+
             // If presence option is not set, or required details are missing, trigger reminder
             if (! $presenceOption) {
                 return true; // No presence option set, trigger reminder
@@ -907,6 +911,7 @@ class AutomationService
             'service_items' => $this->formatServiceItemsContext($shoot),
             'shoot_notes' => $this->formatShootNotes($shoot),
             'client' => $shoot->client,
+            'rep' => $shoot->rep,
             'photographer' => $assignedPhotographers[0] ?? $shoot->photographer,
             'photographers' => $assignedPhotographers,
             'photographer_service_items' => $this->groupServiceItemsByRole($shoot, 'photographer'),
@@ -922,7 +927,7 @@ class AutomationService
             'special_instructions' => $this->formatShootNotes($shoot),
             'presence_option' => $propertyDetails['presenceOption'] ?? null,
             'has_contact_details' => ! empty($propertyDetails['accessContactName']) && ! empty($propertyDetails['accessContactPhone']),
-            'has_lockbox_details' => ! empty($propertyDetails['lockboxCode']) && ! empty($propertyDetails['lockboxLocation']),
+            'has_lockbox_details' => trim((string) ($propertyDetails['lockboxCode'] ?? $propertyDetails['lockbox_code'] ?? '')) !== '',
         ];
     }
 

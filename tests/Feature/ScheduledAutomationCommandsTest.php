@@ -98,6 +98,7 @@ class ScheduledAutomationCommandsTest extends TestCase
         ];
         $missing = Shoot::factory()->create($base);
         Shoot::factory()->create(array_merge($base, ['property_details' => ['presenceOption' => 'self']]));
+        Shoot::factory()->create(array_merge($base, ['property_details' => ['lockboxCode' => '4821']]));
         Shoot::factory()->create(array_merge($base, ['workflow_status' => Shoot::WORKFLOW_COMPLETED]));
         Shoot::factory()->create(array_merge($base, ['status' => 'cancelled']));
         Shoot::factory()->create(array_merge($base, ['scheduled_date' => now()->addDays(2)->toDateString()]));
@@ -106,6 +107,35 @@ class ScheduledAutomationCommandsTest extends TestCase
         Artisan::call('messaging:property-contact-reminders');
         $this->assertSame(1, Message::count());
         $this->assertSame($missing->id, Message::first()->related_shoot_id);
+    }
+
+    public function test_property_reminder_email_goes_to_the_client_and_rep_only(): void
+    {
+        $client = User::factory()->create(['role' => 'client', 'email' => 'client@example.test']);
+        $rep = User::factory()->create(['role' => 'salesRep', 'email' => 'rep@example.test']);
+        $admin = User::factory()->create(['role' => 'admin', 'email' => 'admin@example.test']);
+        $photographer = User::factory()->create(['role' => 'photographer', 'email' => 'photo@example.test']);
+        $this->rule('PROPERTY_CONTACT_REMINDER', ['days_before' => 0, 'time' => '10:00'], 'Saved automation copy', ['client', 'admin', 'photographer']);
+        Shoot::factory()->create([
+            'client_id' => $client->id,
+            'rep_id' => $rep->id,
+            'photographer_id' => $photographer->id,
+            'scheduled_date' => now()->toDateString(),
+            'scheduled_at' => now()->setTime(15, 0),
+            'time' => '15:00',
+            'timezone' => 'UTC',
+            'status' => Shoot::STATUS_SCHEDULED,
+            'workflow_status' => Shoot::WORKFLOW_BOOKED,
+            'property_details' => [],
+        ]);
+
+        Artisan::call('messaging:property-contact-reminders');
+
+        $this->assertEqualsCanonicalizing(
+            ['client@example.test', 'rep@example.test'],
+            Message::query()->pluck('to_address')->all(),
+        );
+        $this->assertNull(Message::query()->where('to_address', $admin->email)->first());
     }
 
     public function test_weekly_reports_execute_saved_actions_skip_empty_reports_and_keep_disabled_rules_disabled(): void

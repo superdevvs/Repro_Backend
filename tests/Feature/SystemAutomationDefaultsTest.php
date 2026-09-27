@@ -28,7 +28,8 @@ class SystemAutomationDefaultsTest extends TestCase
         }
         $this->assertSame('-2h', $rules->firstWhere('trigger_type', 'PHOTOGRAPHER_SHOOT_REMINDER')->schedule_json['offset']);
         $this->assertFalse($rules->firstWhere('name', 'Property Contact Reminder SMS - 2 Days Before')->is_active);
-        $this->assertSame(['client', 'admin', 'photographer'], $rules->firstWhere('name', 'Property Contact Reminder - Shoot Day')->recipients_json);
+        $this->assertSame(['client', 'rep'], $rules->firstWhere('name', 'Property Contact Reminder - Shoot Day')->recipients_json);
+        $this->assertSame(['client', 'rep'], $rules->firstWhere('name', 'Property Contact Reminder - 1 Day Before')->recipients_json);
     }
 
     public function test_repeated_seed_and_ensure_preserve_operator_changes_and_disabled_state(): void

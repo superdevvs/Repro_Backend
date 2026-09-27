@@ -82,6 +82,9 @@ class ProcessPropertyContactReminders extends Command
     private function isPropertyContactMissing(Shoot $shoot): bool
     {
         $propertyDetails = $shoot->property_details ?? [];
+        if (trim((string) ($propertyDetails['lockboxCode'] ?? $propertyDetails['lockbox_code'] ?? '')) !== '') {
+            return false;
+        }
         $presenceOption = trim((string) ($propertyDetails['presenceOption'] ?? ''));
 
         // If no presence option is set, details are missing

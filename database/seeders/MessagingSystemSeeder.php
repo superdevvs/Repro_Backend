@@ -891,8 +891,8 @@ class MessagingSystemSeeder extends Seeder
                 $automation['schedule_json'] = ['days_before' => $days, 'time' => '09:00'];
                 if (str_contains($automation['name'], 'SMS') && $days === 2) {
                     $automation['is_active'] = false;
-                } elseif (! str_contains($automation['name'], 'SMS') && $days <= 1) {
-                    $automation['recipients_json'] = $days === 0 ? ['client', 'admin', 'photographer'] : ['client', 'admin'];
+                } elseif (! str_contains($automation['name'], 'SMS')) {
+                    $automation['recipients_json'] = ['client', 'rep'];
                 }
             } elseif ($automation['trigger_type'] === 'INVOICE_DUE') {
                 $automation['schedule_json'] = ['days_before' => 0, 'time' => '09:30'];
@@ -2277,35 +2277,22 @@ Thank you!';
     private function getPropertyContactReminderTemplate(): string
     {
         return '
-    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-        <h2 style="color: #2c3e50; margin-top: 0;">Action Required: Property Access Details</h2>
-    </div>
-    
     <p>[greeting]!</p>
-    
     <p>We need property access information for your upcoming shoot:</p>
-    
-    <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0;">
-        <p style="margin: 0;"><strong>Location:</strong> [shoot_location]</p>
-        <p style="margin: 5px 0 0 0;"><strong>Date:</strong> [shoot_date]</p>
-        <p style="margin: 5px 0 0 0;"><strong>Time:</strong> [shoot_time]</p>
+    <div class="info-box">
+        <div class="info-row"><span class="info-label">Location</span><span class="info-value">[shoot_location]</span></div>
+        <div class="info-row"><span class="info-label">Date</span><span class="info-value">[shoot_date]</span></div>
+        <div class="info-row"><span class="info-label">Time</span><span class="info-value">[shoot_time]</span></div>
     </div>
-    
     <p><strong>Please provide one of the following:</strong></p>
     <ul>
         <li><strong>Who will be at the property?</strong> (Name and phone number of on-site contact)</li>
         <li><strong>Lockbox details:</strong> (Code and location/instructions)</li>
     </ul>
-    
     <p>You can update this information by visiting your shoot details:</p>
-    <p style="text-align: center; margin: 30px 0;">
-        <a href="[portal_url]" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">Update Property Access Details</a>
-    </p>
-    
+    <p><a class="button" href="[portal_url]">Update Property Access Details</a></p>
     <p>This information is essential for our photographer to access the property on the scheduled date.</p>
-    
-    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-    <p style="color: #666; font-size: 12px;">This is an automated reminder. If you have already provided this information, please disregard this message.</p>';
+    <p class="note">This is an automated reminder. If you have already provided this information, please disregard this message.</p>';
     }
 
     private function getPropertyContactReminderPlainText(): string
