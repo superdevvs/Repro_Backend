@@ -18,11 +18,13 @@ class ShootScheduleUpdateInput
         }
 
         // Normalize explicit service offsets before the service merger stores SQL timestamps.
-        foreach (['services', 'service_items'] as $collection) {
+        foreach (['services', 'service_items', 'service_lines'] as $collection) {
             foreach ($payload[$collection] ?? [] as $index => $service) {
                 if (! empty($service['scheduled_at'])) {
                     $serviceId = $service['service_id'] ?? ($collection === 'services' ? ($service['id'] ?? null) : null);
-                    $original = $serviceId ? $shoot->serviceItems->firstWhere('service_id', $serviceId)?->scheduled_at : null;
+                    $original = $collection === 'service_lines'
+                        ? $shoot->serviceItems->firstWhere('id', $service['shoot_service_id'] ?? null)?->scheduled_at
+                        : ($serviceId ? $shoot->serviceItems->firstWhere('service_id', $serviceId)?->scheduled_at : null);
                     $payload[$collection][$index]['scheduled_at'] = $this->parse(
                         (string) $service['scheduled_at'], $timezone, $original,
                         $collection.'.'.$index.'.scheduled_at'

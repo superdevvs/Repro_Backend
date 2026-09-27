@@ -33,7 +33,7 @@ class CreateCubiCasaOrderJob implements ShouldQueue
         $shoot = Shoot::with('services')->find($this->shootId);
 
         // Req 3.1 — missing shoot: complete silently.
-        if (!$shoot || $shoot->isInternalTestShoot()) {
+        if (!$shoot || $shoot->isInternalTestShoot() || $shoot->units()->exists()) {
             return;
         }
 

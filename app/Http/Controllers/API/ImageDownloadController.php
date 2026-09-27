@@ -261,7 +261,7 @@ class ImageDownloadController extends Controller
 
             foreach ($downloadableFiles as $file) {
                 $entryName = $formatter->deduplicate(
-                    $formatter->formatForFile($file, $position, $total, basename((string) $file->path)),
+                    $formatter->archivePathForFile($file, $position, $total, basename((string) $file->path)),
                     $usedNames
                 );
 

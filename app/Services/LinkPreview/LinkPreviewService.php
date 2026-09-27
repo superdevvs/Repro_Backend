@@ -52,7 +52,7 @@ class LinkPreviewService
     /**
      * Build the preview for a shoot-backed link.
      */
-    public function forShoot(Shoot $shoot, string $type, ?string $provider = null): PreviewPayload
+    public function forShoot(Shoot $shoot, string $type, ?string $provider = null, ?\App\Models\ShootUnit $unit = null): PreviewPayload
     {
         $provider = $this->normalizeProvider($provider);
         // The MLS/generic pages are driven by the same three payload shapes the
@@ -63,7 +63,7 @@ class LinkPreviewService
         $assets = $this->assets->buildTypedPublicAssets(
             $shoot,
             $this->assetTypeFor($type),
-            reconcilePayments: false
+            reconcilePayments: false, unit: $unit
         );
 
         $branded = !in_array($type, (array) config('link_preview.unbranded_types', []), true);
@@ -89,7 +89,7 @@ class LinkPreviewService
         $hero = $this->chooseHero($design, $photos, $videoPoster, $floorplan);
         $gallery = $this->chooseGallery($design, $photos, $hero, $floorplan);
 
-        $addressLine = $this->trimOrNull($shoot->address);
+        $addressLine = $this->trimOrNull($assets['shoot']['address'] ?? $shoot->address);
         $cityLine = $this->buildCityLine($shoot);
 
         $agentName = $branded ? $this->trimOrNull($assets['shoot']['client_name'] ?? null) : null;
@@ -108,7 +108,7 @@ class LinkPreviewService
             branded: $branded,
             title: $this->buildTitle($type, $design, $shoot, $addressLine, $cityLine),
             description: $this->buildDescription($type, $design, $branded, $stats, $price, $shoot, $capabilities, $agentName, $agentCompany, $details),
-            url: $this->canonicalUrl($type, $shoot, $provider),
+            url: $this->canonicalUrl($type, $shoot, $provider, $unit?->id),
             hero: $hero,
             gallery: $gallery,
             floorplan: $floorplan,
@@ -126,7 +126,8 @@ class LinkPreviewService
             subhead: $design === 'd8' ? $this->fallbackSubhead($type, $capabilities) : null,
             videoUrl: $videoVisible ? ($assets['video_link'] ?? null) : null,
             shootId: (int) $shoot->id,
-            fingerprintSeed: $this->fingerprintSeed($shoot),
+            fingerprintSeed: $this->fingerprintSeed($unit ? app(\App\Services\Shoots\ShootUnitTourScope::class)->projectPublic($shoot, $unit) : $shoot).($unit ? '-unit-'.$unit->id.'-'.$unit->updated_at?->format('U.u') : ''),
+            unitId: $unit?->id,
         );
     }
 
@@ -264,7 +265,7 @@ class LinkPreviewService
             return false;
         }
 
-        return $shoot->status === Shoot::STATUS_DELIVERED
+        return ! empty($assets['shoot']['unit_id']) || $shoot->status === Shoot::STATUS_DELIVERED
             || $shoot->workflow_status === Shoot::STATUS_DELIVERED;
     }
 
@@ -469,7 +470,7 @@ class LinkPreviewService
         };
     }
 
-    public function canonicalUrl(string $type, ?Shoot $shoot, ?string $provider = null): string
+    public function canonicalUrl(string $type, ?Shoot $shoot, ?string $provider = null, ?int $unitId = null): string
     {
         $base = rtrim((string) config('link_preview.frontend_url'), '/');
 
@@ -495,6 +496,7 @@ class LinkPreviewService
         if ($shoot !== null) {
             $query['shootId'] = (string) $shoot->id;
         }
+        if ($unitId !== null) $query['unitId'] = (string) $unitId;
         if (in_array($type, ['3d', '3d-branded', '3d-mls'], true)
             && ($provider = $this->normalizeProvider($provider)) !== null) {
             $query['provider'] = $provider;

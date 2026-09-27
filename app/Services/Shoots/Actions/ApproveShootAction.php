@@ -67,8 +67,18 @@ class ApproveShootAction
                 && app(\App\Services\Shoots\ShootAuthorizationSupport::class)->canManageRequestedShoot($shoot, $user)));
         $targetPhotographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
         $targetServices = $this->editablePayloadService->targetServicesFor($shoot, $validated, $user);
+        if ($shoot->units()->exists()) {
+            foreach ($targetServices as $index => $line) {
+                if (($line['photographer_required'] ?? false) && (empty($line['photographer_id']) || empty($line['scheduled_at']))) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(["service_lines.$index" => ['Schedule and assign a photographer to every unit capture line before approval.']]);
+                }
+                if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
+                    $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipAvailabilityCheck);
+                }
+            }
+        }
         if (! $skipAvailabilityCheck) {
-            if (! empty($targetPhotographerId)) {
+            if (! empty($targetPhotographerId) && ! $shoot->units()->exists()) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices($targetServices);
                 $this->support->checkPhotographerAvailability((int) $targetPhotographerId, $scheduledAt, $durationMinutes, $shoot->id);
             }
@@ -82,7 +92,7 @@ class ApproveShootAction
 
         $this->editablePayloadService->apply($shoot, $validated, $user);
 
-        if (! empty($shoot->photographer_id)) {
+        if (! empty($shoot->photographer_id) && ! $shoot->units()->exists()) {
             if (! $skipAvailabilityCheck) {
                 $durationMinutes = $this->support->calculateShootDurationFromServices(
                     $shoot->services->map(fn ($service) => ['id' => $service->id])->toArray()

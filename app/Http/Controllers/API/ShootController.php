@@ -244,7 +244,9 @@ class ShootController extends Controller
         }
 
         $validated = $request->validate([
-            'service_id' => 'required|integer',
+            'service_id' => 'required_without:shoot_service_id|nullable|integer',
+            'shoot_service_id' => 'nullable|integer',
+            'expected_units_revision' => 'nullable|integer|min:0',
             'photographer_id' => [
                 'nullable',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
@@ -270,11 +272,12 @@ class ShootController extends Controller
 
         $validated = $request->validate([
             'scope' => 'nullable|in:main,all_services',
+            'expected_units_revision' => 'nullable|integer|min:0',
         ]);
         $scope = $validated['scope'] ?? 'main';
 
         try {
-            $shoot = $this->applyAlternateDateAction->execute($shoot, $scope, $user);
+            $shoot = $this->applyAlternateDateAction->execute($shoot, $scope, $user, $validated['expected_units_revision'] ?? null);
         } catch (ValidationException $e) {
             return response()->json([
                 'message' => \App\Services\ApiErrorResponder::publicMessage($e),
@@ -311,29 +314,34 @@ class ShootController extends Controller
 
         $request->validate([
             'service_photographers' => 'nullable|array',
-            'service_photographers.*.service_id' => 'required|integer',
+            'service_photographers.*.service_id' => $shoot->units()->exists() ? 'nullable|integer' : 'required|integer',
+            'service_photographers.*.shoot_service_id' => 'nullable|integer',
             'service_photographers.*.photographer_id' => [
                 'nullable',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
             ],
             'assignments' => 'nullable|array',
-            'assignments.*.service_id' => 'required|integer',
+            'assignments.*.service_id' => $shoot->units()->exists() ? 'nullable|integer' : 'required|integer',
+            'assignments.*.shoot_service_id' => 'nullable|integer',
             'assignments.*.photographer_id' => [
                 'nullable',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
             ],
             'services' => 'nullable|array',
-            'services.*.service_id' => 'required|integer',
+            'services.*.service_id' => $shoot->units()->exists() ? 'nullable|integer' : 'required|integer',
+            'services.*.shoot_service_id' => 'nullable|integer',
             'services.*.photographer_id' => [
                 'nullable',
                 Rule::exists('users', 'id')->where(fn ($query) => $query->where('role', 'photographer')),
             ],
+            'expected_units_revision' => 'nullable|integer|min:0',
             'override' => 'nullable|boolean',
             'override_reason' => 'nullable|string|max:500',
         ]);
 
         $shoot = $this->assignServicePhotographerAction->execute($shoot, [
             'service_photographers' => $assignments,
+            'expected_units_revision' => $request->input('expected_units_revision'),
             'override' => $request->input('override'),
             'override_reason' => $request->input('override_reason'),
         ], $user);

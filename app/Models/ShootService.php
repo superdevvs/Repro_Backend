@@ -30,6 +30,10 @@ class ShootService extends Model
     protected $fillable = [
         'shoot_id',
         'service_id',
+        'shoot_unit_id',
+        'client_key',
+        'duration_minutes',
+        'contracted_photo_count',
         'photographer_id',
         'bracket_mode',
         'editor_id',
@@ -56,6 +60,9 @@ class ShootService extends Model
         'price' => 'decimal:2',
         'nominal_value_snapshot' => 'decimal:2',
         'quantity' => 'integer',
+        'shoot_unit_id' => 'integer',
+        'duration_minutes' => 'integer',
+        'contracted_photo_count' => 'integer',
         'bracket_mode' => 'integer',
         'photographer_pay' => 'decimal:2',
         'editing_completed_at' => 'datetime',
@@ -89,6 +96,11 @@ class ShootService extends Model
     public function service()
     {
         return $this->belongsTo(Service::class);
+    }
+
+    public function unit()
+    {
+        return $this->belongsTo(ShootUnit::class, 'shoot_unit_id');
     }
 
     public function photographer()

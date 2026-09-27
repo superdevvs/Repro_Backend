@@ -1,0 +1,55 @@
+<?php
+
+namespace App\Services\Shoots;
+
+use App\Models\Shoot;
+use App\Models\ShootRescheduleRequest;
+use App\Models\User;
+use Carbon\Carbon;
+use Illuminate\Validation\ValidationException;
+
+class MultiUnitRescheduleService
+{
+    public function apply(Shoot $shoot, ShootRescheduleRequest $request, User $actor): void
+    {
+        $lines = $shoot->serviceItems()->get();
+        $anchor = $shoot->scheduled_at ?? $lines->whereNotNull('scheduled_at')->sortBy('scheduled_at')->first()?->scheduled_at;
+        if (! $anchor) {
+            throw ValidationException::withMessages(['service_lines' => ['Assign the initial unit service schedules before moving the booking.']]);
+        }
+        if ($lines->contains(fn ($line) => ! in_array($line->workflow_status, [null, 'pending', 'scheduled', 'cancelled'], true))) {
+            throw ValidationException::withMessages(['service_lines' => ['Some unit work has already started. Edit the remaining unit service schedules individually.']]);
+        }
+        if ($request->units_revision === null) {
+            throw ValidationException::withMessages(['expected_units_revision' => ['This request predates the unit schedule. Submit a new reschedule request.']]);
+        }
+        $hasTimezone = trim((string) $shoot->timezone) !== '';
+        $timezone = $hasTimezone ? $shoot->timezone : config('app.timezone', 'UTC');
+        $local = Carbon::parse($request->requested_date->toDateString().' '.($request->requested_time ?: $shoot->time ?: '10:00'), $timezone);
+        $target = $hasTimezone ? $local->copy()->utc() : $local->copy();
+        $seconds = $target->getTimestamp() - $anchor->getTimestamp();
+        $changes = [
+            'expected_units_revision' => $request->units_revision,
+            'scheduled_at' => $hasTimezone ? $target->toIso8601String() : $target->format('Y-m-d H:i:s'),
+            'scheduled_date' => $local->toDateString(),
+            'time' => $local->format('H:i'),
+            'service_lines' => $lines->map(function ($line) use ($seconds, $hasTimezone, $timezone) {
+                $scheduled = $line->scheduled_at?->copy()->addSeconds($seconds);
+
+                return [
+                    'shoot_service_id' => $line->id, 'client_key' => $line->client_key,
+                    'shoot_unit_id' => $line->shoot_unit_id, 'service_id' => $line->service_id,
+                    'scheduled_at' => $scheduled ? ($hasTimezone ? $scheduled->setTimezone($timezone)->toIso8601String() : $scheduled->format('Y-m-d H:i:s')) : null,
+                ];
+            })->all(),
+        ];
+        $prepared = app(MultiUnitBookingService::class)->prepare($shoot, $changes, $actor);
+        foreach ($prepared['services'] as $line) {
+            if ($line['scheduled_at'] && $line['photographer_id']) {
+                app(ShootMutationSupportService::class)->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id);
+            }
+        }
+        $changes = app(\App\Services\Schedule\ShootScheduleUpdateInput::class)->normalize($shoot, $changes);
+        app(ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
+    }
+}

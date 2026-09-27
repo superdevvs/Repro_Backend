@@ -55,8 +55,14 @@ class ShootPublicAssetsService
             ->first();
     }
 
-    public function buildTypedPublicAssets(Shoot $shoot, string $type, bool $reconcilePayments = true): array
+    public function buildTypedPublicAssets(Shoot $shoot, string $type, bool $reconcilePayments = true, ?\App\Models\ShootUnit $unit = null): array
     {
+        abort_if(! $unit && ! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists(), 404, 'Use the direct link for a unit.');
+        if ($unit) {
+            $shoot = $reconcilePayments ? $this->paymentStatusSupport->reconcileStripePaymentState($shoot, ['files', 'client', 'payments']) : $shoot;
+            $shoot = app(ShootUnitTourScope::class)->projectPublic($shoot, $unit);
+            $reconcilePayments = false;
+        }
         $assets = $this->buildPublicAssets($shoot, $reconcilePayments);
         $tourLinks = $this->normalizeTourLinks($shoot->tour_links ?? []);
         $propertyDetails = $this->buildPublicTourPropertyDetails($shoot, $tourLinks);
@@ -193,6 +199,11 @@ class ShootPublicAssetsService
             }
         }
 
+        if ($unit) {
+            $assets['shoot']['unit_id'] = $unit->id;
+            $assets['shoot']['unit_label'] = $unit->label;
+            $assets['shoot']['address'] = $shoot->address.' · '.$unit->label;
+        }
         $assets['type'] = $type;
         $assets['property_details'] = $propertyDetails;
         $assets['iguide_tour_url'] = $iguideUrl;
@@ -355,7 +366,7 @@ class ShootPublicAssetsService
     public function buildPublicClientProfilePayload(User $client): array
     {
         $portfolioClientIds = $this->resolvePortfolioClientIds($client);
-        $shootsQuery = Shoot::with(['files'])->whereIn('client_id', $portfolioClientIds);
+        $shootsQuery = Shoot::with(['files'])->whereIn('client_id', $portfolioClientIds)->whereDoesntHave('units');
 
         $visibleStatuses = [
             Shoot::STATUS_REQUESTED,
@@ -491,6 +502,7 @@ class ShootPublicAssetsService
     public function resolvePropertyDescriptionImageUrls(Shoot $shoot): array
     {
         $editedFiles = $shoot->files()
+            ->when($shoot->relationLoaded('tourUnit'), fn ($query) => $query->whereIn('shoot_service_id', app(ShootUnitTourScope::class)->fileLineIds($shoot, $shoot->getRelation('tourUnit'))))
             ->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED])
             ->where(function ($q) {
                 $q->where('media_type', '!=', 'floorplan')->orWhereNull('media_type');
@@ -1120,12 +1132,15 @@ class ShootPublicAssetsService
     {
         $files = \App\Models\ShootFile::query()
             ->where('shoot_id', $shoot->id)
+            ->when($shoot->relationLoaded('tourUnit'), fn ($query) => $query->whereIn('shoot_service_id', app(ShootUnitTourScope::class)->fileLineIds($shoot, $shoot->getRelation('tourUnit'))))
             ->where('media_type', 'floorplan')
+            ->when($shoot->relationLoaded('tourUnit'), fn ($query) => $query->whereIn('workflow_stage', [ShootFile::STAGE_COMPLETED, ShootFile::STAGE_VERIFIED]))
             ->orderBy('id')
             ->get();
 
         $out = [];
         foreach ($files as $file) {
+            if ($shoot->relationLoaded('tourUnit') && ($file->is_hidden || $file->isBlockedFromDelivery())) continue;
             $meta = is_array($file->metadata) ? $file->metadata : [];
             $hasPreviewImages = !empty($meta['preview_images']) && is_array($meta['preview_images']);
             if (!$file->web_path && !$file->thumbnail_path && !$hasPreviewImages) {

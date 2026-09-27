@@ -34,19 +34,24 @@ class ShootServiceItemSupport
     public function presentation(Shoot $shoot): array
     {
         return $shoot->serviceItems()
-            ->with('service:id,name')
+            ->with(['service:id,name', 'unit'])
             ->orderByRaw('scheduled_at is null')
             ->orderBy('scheduled_at')
             ->orderBy('id')
             ->get()
-            ->map(fn (ShootService $item) => [
+            ->map(fn (ShootService $item) => array_merge([
                 'shoot_service_id' => $item->id,
                 'shootServiceId' => $item->id,
                 'service_id' => $item->service_id,
                 'serviceId' => $item->service_id,
                 'name' => $item->service?->name,
                 'serviceName' => $item->service?->name,
-            ])
+            ], $item->shoot_unit_id ? [
+                'shoot_unit_id' => $item->shoot_unit_id,
+                'unit_client_key' => $item->unit?->client_key,
+                'unit_label' => $item->unit?->label,
+                'unit_kind' => $item->unit?->kind,
+            ] : []))
             ->values()
             ->all();
     }
@@ -55,7 +60,7 @@ class ShootServiceItemSupport
     {
         $shoot->loadMissing('photographer');
         $items = $shoot->serviceItems()
-            ->with(['service', 'photographer', 'editor', 'unlockedBy'])
+            ->with(['service.category', 'unit', 'photographer', 'editor', 'unlockedBy'])
             ->orderByRaw('scheduled_at is null')
             ->orderBy('scheduled_at')
             ->orderBy('id')
@@ -91,11 +96,22 @@ class ShootServiceItemSupport
             $unlockState = $this->unlockState($shoot, $item, $paymentStatus);
             $photographerPay = $item->photographer_pay;
             if ($photographerPay === null || $photographerPay === '') {
-                $photographerPay = $item->service?->getPhotographerPayForSqft($shoot->propertySqft());
+                $photographerPay = $item->service?->getPhotographerPayForSqft($item->unit?->sqft ?? $shoot->propertySqft());
             }
 
             return [
                 'id' => $item->id,
+                'client_key' => $item->client_key,
+                'shoot_unit_id' => $item->shoot_unit_id,
+                'shootUnitId' => $item->shoot_unit_id,
+                'unit_client_key' => $item->unit?->client_key,
+                'unit_label' => $item->unit?->label,
+                'unitLabel' => $item->unit?->label,
+                'unit_kind' => $item->unit?->kind,
+                'unit_sqft' => $item->unit?->sqft,
+                'duration_minutes' => $item->duration_minutes,
+                'photographer_required' => $item->service?->requiresPhotographer() ?? false,
+                'requires_editing' => $item->service?->requiresEditing() ?? false,
                 'shoot_service_id' => $item->id,
                 'shootServiceId' => $item->id,
                 'service_id' => $item->service_id,

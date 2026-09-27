@@ -12,7 +12,7 @@ class StudioWorkspace extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'shoot_id' => 'integer', 'shoot_service_ids' => 'array',
+        'shoot_id' => 'integer', 'shoot_service_ids' => 'array', 'shoot_service_item_ids' => 'array',
         'media' => 'array', 'config' => 'array', 'outputs' => 'array',
         'prepared_frames' => 'array', 'operation' => 'array', 'history' => 'array',
         'version' => 'integer', 'progress' => 'integer', 'team_id' => 'integer', 'created_by' => 'integer',

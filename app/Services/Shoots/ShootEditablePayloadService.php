@@ -27,7 +27,7 @@ class ShootEditablePayloadService
 
     public function validationRules(): array
     {
-        return [
+        return array_merge(MultiUnitBookingService::rules(), [
             'scheduled_date' => 'nullable|date',
             'scheduled_at' => 'nullable|date',
             'time' => 'nullable|string',
@@ -149,7 +149,7 @@ class ShootEditablePayloadService
                     Shoot::PRODUCT_STATUS_ZERO_DOLLAR_PRODUCT,
                 ]),
             ],
-        ];
+        ]);
     }
 
     public function apply(Shoot $shoot, array $validated, ?User $actor = null): void
@@ -160,14 +160,22 @@ class ShootEditablePayloadService
         // refresh cannot silently discard them.
         $pendingAttributes = $shoot->getDirty();
 
-        DB::transaction(function () use ($shoot, $validated, $actor, $pendingAttributes) {
+        $write = fn () => DB::transaction(function () use ($shoot, $validated, $actor, $pendingAttributes) {
+            // SQLite ignores SELECT FOR UPDATE. Reserve the writer before any
+            // snapshot reads so other writers wait instead of invalidating a
+            // large unit edit between validation and its first real update.
+            if (DB::connection()->getDriverName() === 'sqlite') {
+                DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => DB::raw('units_revision')]);
+            }
             $lockedShoot = Shoot::query()
                 ->with(['client', 'serviceItems.service'])
                 ->lockForUpdate()
                 ->findOrFail($shoot->id);
 
+            $multiUnit = app(MultiUnitBookingService::class);
+            $isMultiUnit = $multiUnit->handles($lockedShoot, $validated);
             $serviceChangeRequested = array_key_exists('services', $validated)
-                || array_key_exists('service_items', $validated);
+                || array_key_exists('service_items', $validated) || array_key_exists('service_lines', $validated);
             $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
                 && $validated['admin_adjusted_total_quote'] !== null;
             $serviceDetachImpact = null;
@@ -194,7 +202,7 @@ class ShootEditablePayloadService
                 ]);
             }
 
-            if ($serviceChangeRequested) {
+            if ($serviceChangeRequested && ! $isMultiUnit) {
                 $targetServices = $this->targetServicesFor($lockedShoot, $validated, $actor);
                 $serviceDetachImpact = $this->serviceChangeGuard->assertChangeAllowed(
                     $lockedShoot,
@@ -224,6 +232,13 @@ class ShootEditablePayloadService
                 ], $actor);
             }
         });
+        // A savepoint rollback cannot discard SQLite's outer read snapshot.
+        // Let the owner of an existing transaction retry the entire write.
+        if (DB::transactionLevel() > 0) {
+            $write();
+        } else {
+            \App\Support\LockedWrite::run($write, 'multi-unit-shoot-update');
+        }
 
         // Keep the caller's model instance aligned with the row that was
         // mutated under lock (approval and update actions continue using it).
@@ -259,8 +274,9 @@ class ShootEditablePayloadService
         }
 
         $invoiceNeedsRefresh = false;
+        $isMultiUnit = app(MultiUnitBookingService::class)->handles($shoot, $validated);
         $serviceChangeRequested = array_key_exists('services', $validated)
-            || array_key_exists('service_items', $validated);
+            || array_key_exists('service_items', $validated) || array_key_exists('service_lines', $validated);
         $discountChangeRequested = array_key_exists('discount_type', $validated)
             || array_key_exists('discount_value', $validated);
         $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
@@ -315,11 +331,16 @@ class ShootEditablePayloadService
                 : null;
         }
 
-        if (
+        if ($isMultiUnit && (array_key_exists('units', $validated) || array_key_exists('service_lines', $validated))) {
+            $prepared = app(MultiUnitBookingService::class)->prepare($shoot, $validated, $actor);
+            app(MultiUnitBookingService::class)->persist($shoot, $prepared);
+            $shoot->service_id = $targetServices[0]['id'] ?? null;
+            $invoiceNeedsRefresh = true;
+        } elseif (! $isMultiUnit && (
             array_key_exists('services', $validated)
             || array_key_exists('service_items', $validated)
             || array_key_exists('service_photographers', $validated)
-        ) {
+        )) {
             $this->support->attachServices($shoot, $targetServices);
             $shoot->service_id = collect($targetServices)
                 ->map(fn (array $service) => (int) ($service['id'] ?? $service['service_id'] ?? 0))
@@ -692,6 +713,10 @@ class ShootEditablePayloadService
 
     public function targetServicesFor(Shoot $shoot, array $validated, ?User $actor = null): array
     {
+        $multiUnit = app(MultiUnitBookingService::class);
+        if ($multiUnit->handles($shoot, $validated)) {
+            return $multiUnit->prepare($shoot, $validated, $actor)['services'];
+        }
         $shoot->loadMissing(['services', 'serviceItems']);
 
         $targetServices = array_key_exists('services', $validated)

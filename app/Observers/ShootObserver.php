@@ -122,6 +122,7 @@ class ShootObserver
         // LOG_LEVEL=error, which is how the original 400 stayed invisible.
         $dispatch = static function () use ($shoot): void {
             try {
+                if ($shoot->units()->exists()) return;
                 CreateCubiCasaOrderJob::dispatch($shoot->id, 'lifecycle');
             } catch (\Throwable $e) {
                 Log::error('CubiCasa lifecycle auto-create failed; shoot update completed regardless.', [
@@ -192,6 +193,7 @@ class ShootObserver
         // after this method has already returned.
         $dispatch = static function () use ($shoot): void {
             try {
+                if ($shoot->units()->exists()) return;
                 SyncShootIguideJob::dispatch($shoot->id);
             } catch (\Throwable $e) {
                 Log::error('iGUIDE lifecycle discovery failed; shoot update completed regardless.', [

@@ -49,6 +49,7 @@ class DownloadShootMediaZipAction
             'type' => 'nullable|in:raw,edited',
             'size' => 'nullable|in:original,small',
             'shoot_service_id' => 'nullable|integer|exists:shoot_service,id',
+            'shoot_unit_id' => 'nullable|integer|exists:shoot_units,id',
             'include_extras' => 'nullable|boolean',
             'media_types' => 'nullable|array',
             'media_types.*' => 'string|max:40',
@@ -67,13 +68,26 @@ class DownloadShootMediaZipAction
         $requestedSize = $validated['size'] ?? 'original';
         $resolvedSize = $this->shootMediaArchiveService->normalizeSize($requestedSize);
         $shootServiceId = isset($validated['shoot_service_id']) ? (int) $validated['shoot_service_id'] : null;
+        $shootUnitId = isset($validated['shoot_unit_id']) ? (int) $validated['shoot_unit_id'] : null;
+
+        if ($shootUnitId !== null && ! $shoot->units()->whereKey($shootUnitId)->exists()) {
+            return response()->json(['message' => 'Selected unit does not belong to this shoot'], 422);
+        }
 
         if ($shootServiceId !== null && !$shoot->serviceItems()->whereKey($shootServiceId)->exists()) {
             return response()->json(['message' => 'Selected service item does not belong to this shoot'], 422);
         }
+        if ($shootUnitId !== null && $shootServiceId !== null && ! $shoot->serviceItems()->whereKey($shootServiceId)->where('shoot_unit_id', $shootUnitId)->exists()) {
+            return response()->json(['message' => 'Selected service item does not belong to this unit'], 422);
+        }
 
-        if ($this->shootClientReleaseAccessService->isArchiveReleaseLocked($shoot, $shootServiceId, $request->user())) {
-            return $this->shootClientReleaseAccessService->downloadLockedResponse();
+        $releaseScopes = $shootUnitId !== null && $shootServiceId === null
+            ? $shoot->serviceItems()->where('shoot_unit_id', $shootUnitId)->where('is_deliverable', true)->where('workflow_status', '!=', 'cancelled')->pluck('id')->all()
+            : [$shootServiceId];
+        foreach ($releaseScopes as $releaseScope) {
+            if ($this->shootClientReleaseAccessService->isArchiveReleaseLocked($shoot, $releaseScope, $request->user())) {
+                return $this->shootClientReleaseAccessService->downloadLockedResponse();
+            }
         }
 
         if ($authorizeFiles) {
@@ -83,7 +97,7 @@ class DownloadShootMediaZipAction
 
             // Cached studio archives are shared objects. Check every member before
             // returning their URL so a service assignment cannot unlock other lanes.
-            foreach ($this->shootMediaArchiveService->getFilesForType($shoot, $type, $shootServiceId) as $file) {
+            foreach ($this->shootMediaArchiveService->getFilesForType($shoot, $type, $shootServiceId, $shootUnitId) as $file) {
                 if (! $this->shootAuthorizationSupport->canDownloadShootMediaFile($shoot, $file, $request->user())) {
                     return response()->json([
                         'message' => 'This archive contains files you cannot access. Download an assigned service or select accessible files.',
@@ -101,7 +115,8 @@ class DownloadShootMediaZipAction
                 $type,
                 $resolvedSize,
                 $request->fullUrl(),
-                $shootServiceId
+                $shootServiceId,
+                $shootUnitId
             );
 
         } catch (\RuntimeException $e) {
@@ -123,7 +138,7 @@ class DownloadShootMediaZipAction
         // archive-planning business-message catch above.
         if ($archiveResponse['status'] === 200
             && $request->prefers(['application/json', 'application/zip']) === 'application/zip') {
-            $archivePath = $this->shootMediaArchiveService->getArchivePath($shoot, $type, $resolvedSize, $shootServiceId);
+            $archivePath = $this->shootMediaArchiveService->getArchivePath($shoot, $type, $resolvedSize, $shootServiceId, $shootUnitId);
             $media = app(\App\Services\Media\MediaStorage::class);
 
             return $media->downloadResponse($archivePath, basename($archivePath), [

@@ -844,7 +844,7 @@ class PhotographerAvailabilityService
         $end = Carbon::parse($windowEnd)->format('H:i');
 
         // Fully contained: window starts at/before request and ends at/after request end.
-        if ($start <= $time && $end >= $requestEndTime->format('H:i')) {
+        if ($start <= $time && $time <= $end && $end >= $requestEndTime->format('H:i')) {
             return true;
         }
 

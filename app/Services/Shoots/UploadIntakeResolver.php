@@ -179,6 +179,8 @@ class UploadIntakeResolver
             return null;
         }
 
+        if ($item->shoot_unit_id) return $item->contracted_photo_count;
+
         return $this->serviceFor($item)?->contractedPhotoCount();
     }
 

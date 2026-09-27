@@ -13,6 +13,7 @@ class EditorPayout extends Model
         'editor_id',
         'shoot_id',
         'service_id',
+        'shoot_service_id',
         'service_name',
         'quantity_snapshot',
         'rate_snapshot',

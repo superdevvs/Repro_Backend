@@ -81,7 +81,7 @@ class GoogleCalendarEventPayloadBuilder
 
     public function buildForServiceItem(Shoot $shoot, ShootService $serviceItem, ?User $user = null): array
     {
-        $serviceItem->loadMissing('service');
+        $serviceItem->loadMissing(['service', 'unit']);
         $scheduledAt = $serviceItem->scheduled_at ?: $shoot->scheduled_at;
 
         if (!$scheduledAt) {
@@ -109,6 +109,7 @@ class GoogleCalendarEventPayloadBuilder
                     'repro_shoot_id' => (string) $shoot->id,
                     'repro_shoot_service_id' => (string) $serviceItem->id,
                     'repro_service_id' => (string) $serviceItem->service_id,
+                    'repro_shoot_unit_id' => $serviceItem->shoot_unit_id ? (string) $serviceItem->shoot_unit_id : null,
                     'repro_photographer_id' => $user?->id ? (string) $user->id : null,
                 ]),
             ],
@@ -186,7 +187,7 @@ class GoogleCalendarEventPayloadBuilder
      */
     protected function buildPerServiceTimingBlock(Shoot $shoot, string $timezone): ?string
     {
-        $shoot->loadMissing('serviceItems.service');
+        $shoot->loadMissing(['serviceItems.service', 'serviceItems.unit']);
 
         $items = $shoot->serviceItems;
         if ($items === null || $items->isEmpty()) {
@@ -212,6 +213,7 @@ class GoogleCalendarEventPayloadBuilder
                 }
 
                 $serviceName = $this->formatServiceLabel((string) ($item->service?->name ?? 'Service'));
+                if ($item->unit) $serviceName = $item->unit->label.' · '.$serviceName;
                 if ($serviceName === '') {
                     $serviceName = 'Service';
                 }
@@ -404,6 +406,7 @@ class GoogleCalendarEventPayloadBuilder
     protected function buildServiceItemTitle(Shoot $shoot, ShootService $serviceItem): string
     {
         $serviceName = $this->formatServiceLabel((string) ($serviceItem->service?->name ?? 'Service'));
+        if ($serviceItem->unit) $serviceName = $serviceItem->unit->label.' · '.$serviceName;
 
         return $serviceName !== ''
             ? $serviceName
@@ -415,6 +418,7 @@ class GoogleCalendarEventPayloadBuilder
         $customerFacingNotes = trim((string) ($shoot->shoot_notes ?: $shoot->notes ?: ''));
         $photographerNotes = trim((string) ($shoot->photographer_notes ?: ''));
         $serviceName = $this->formatServiceLabel((string) ($serviceItem->service?->name ?? 'Service'));
+        if ($serviceItem->unit) $serviceName = $serviceItem->unit->label.' · '.$serviceName;
         $sections = [];
 
         if ($serviceName !== '') {
@@ -429,11 +433,16 @@ class GoogleCalendarEventPayloadBuilder
             $sections[] = "Photographer Notes\n" . $this->formatBodyText($photographerNotes);
         }
 
+        if ($serviceItem->unit?->access_notes) {
+            $sections[] = "Unit Access\n".$this->formatBodyText($serviceItem->unit->access_notes);
+        }
+
         return $sections === [] ? null : implode("\n\n", $sections);
     }
 
     protected function calculateServiceItemDuration(ShootService $serviceItem): int
     {
+        if ($serviceItem->duration_minutes) return (int) $serviceItem->duration_minutes;
         $defaultDurationMinutes = config('availability.default_shoot_duration_minutes', 120);
         $service = $serviceItem->relationLoaded('service') ? $serviceItem->service : $serviceItem->service()->first();
 
@@ -441,7 +450,7 @@ class GoogleCalendarEventPayloadBuilder
             return $defaultDurationMinutes;
         }
 
-        return $service->getShootDurationMinutes();
+        return $service->getShootDurationMinutes($serviceItem->unit?->sqft);
     }
 
     protected function formatServiceLabel(string $value): string

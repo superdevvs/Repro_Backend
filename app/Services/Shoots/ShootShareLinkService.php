@@ -64,7 +64,7 @@ class ShootShareLinkService
                 // recipient extracts it. Only the ZIP entry is renamed — the
                 // stored master filename is untouched.
                 $zip->addFile($localPath, $this->deliveryFilenameFormatter->deduplicate(
-                    $this->deliveryFilenameFormatter->formatForFile($file, $position, $total, basename($localPath)),
+                    $this->deliveryFilenameFormatter->archivePathForFile($file, $position, $total, basename($localPath)),
                     $usedNames
                 ));
                 $addedFiles++;

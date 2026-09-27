@@ -62,7 +62,9 @@ class LinkPreviewController extends Controller
 
         // Fingerprinted cards are immutable. If the shoot has changed, continue
         // serving the old object to crawlers that still hold its old URL.
-        $image = $this->images->existing($type, $shootId, $fingerprint);
+        $requiresUnit = $shootId && Shoot::whereKey($shootId)->whereHas('units')->exists();
+        $unitPayload = ($request->has('unitId') || $requiresUnit) ? $this->resolvePayload($request, $type) : null;
+        $image = $unitPayload && ! hash_equals($unitPayload->fingerprint(), $fingerprint) ? null : $this->images->existing($type, $shootId, $fingerprint);
         $exact = $image !== null;
 
         if (! $exact) {
@@ -136,7 +138,8 @@ class LinkPreviewController extends Controller
         $shoot = Shoot::query()->find($shootId);
         abort_unless($shoot !== null, 404);
 
-        return $this->previews->forShoot($shoot, $type, $this->provider($request, $type));
+        $unit = $request->has('unitId') ? app(\App\Services\Shoots\ShootUnitTourScope::class)->requestedUnit($shoot, $request->query('unitId')) : null;
+        return $this->previews->forShoot($shoot, $type, $this->provider($request, $type), $unit);
     }
 
     private function shootId(Request $request, string $type): ?int
@@ -176,6 +179,7 @@ class LinkPreviewController extends Controller
             $parameters['shootId'] = $payload->shootId;
         }
 
+        if ($payload->unitId !== null) $parameters['unitId'] = $payload->unitId;
         $path = route('api.public.link-previews.image', $parameters, false);
         $origin = rtrim((string) config('link_preview.frontend_url', config('app.url')), '/');
 

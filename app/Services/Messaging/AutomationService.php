@@ -1130,7 +1130,9 @@ class AutomationService
         return [
             'shoot_service_id' => $serviceItem->id,
             'service_id' => $serviceItem->service_id,
-            'name' => $serviceItem->service?->name,
+            'name' => ($serviceItem->unit?->label ? $serviceItem->unit->label.' · ' : '').($serviceItem->service?->name ?? 'Service'),
+            'shoot_unit_id' => $serviceItem->shoot_unit_id,
+            'unit_label' => $serviceItem->unit?->label,
             'category' => $serviceItem->service?->category?->name ?? $serviceItem->service?->category,
             'scheduled_at' => app(ScheduleInstantResolver::class)->forServiceItem($shoot, $serviceItem)?->toIso8601String(),
             'workflow_status' => $serviceItem->workflow_status,

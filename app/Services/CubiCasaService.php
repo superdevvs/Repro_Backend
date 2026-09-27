@@ -223,7 +223,7 @@ class CubiCasaService
      */
     public function syncShoot(Shoot $shoot): ?array
     {
-        if ($shoot->isInternalTestShoot()) {
+        if ($shoot->isInternalTestShoot() || (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists())) {
             return null;
         }
 
@@ -276,7 +276,7 @@ class CubiCasaService
      */
     public function createOrder(Shoot $shoot, ?User $actor = null, string $source = 'manual'): ?array
     {
-        if ($shoot->isInternalTestShoot()) {
+        if ($shoot->isInternalTestShoot() || (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists())) {
             return null;
         }
 
@@ -323,7 +323,7 @@ class CubiCasaService
         $idempotencyKey = $shoot->cubicasa_idempotency_key
             ?? tap(Str::uuid()->toString(), function (string $key) use ($shoot): void {
                 $shoot->cubicasa_idempotency_key = $key;
-                $shoot->save();
+                app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot);
             });
 
         try {
@@ -399,7 +399,7 @@ class CubiCasaService
             'city' => $shoot->city,
             'state' => $shoot->state,
             'postalCode' => $shoot->zip,
-            'external_id' => 'shoot-' . $shoot->id, // Req 7.3
+            'external_id' => $shoot->relationLoaded('tourUnit') ? 'shoot-'.$shoot->id.'-unit-'.$shoot->getRelation('tourUnit')->id.'-line-'.$shoot->getRelation('tourServiceLine')?->id : 'shoot-' . $shoot->id, // Req 7.3
             'info' => 'REPRO shoot ' . $shoot->id,
             'owner_email' => config('services.cubicasa.owner_email'),
             'package_type' => $this->resolvePackageType($shoot),
@@ -630,6 +630,7 @@ class CubiCasaService
      */
     public function applyShootData(Shoot $shoot, array $parsed): Shoot
     {
+        if (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists()) return $shoot;
         // Identifiers
         if (!empty($parsed['order_id'])) {
             $shoot->cubicasa_order_id = (string) $parsed['order_id'];
@@ -701,7 +702,7 @@ class CubiCasaService
      */
     private function persist(Shoot $shoot, string $context): Shoot
     {
-        LockedWrite::run(static fn () => $shoot->save(), $context);
+        LockedWrite::run(static fn () => app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot), $context);
 
         return $shoot;
     }

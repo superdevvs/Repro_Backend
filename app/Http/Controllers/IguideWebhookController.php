@@ -137,7 +137,7 @@ class IguideWebhookController extends Controller
             // actually booked a floorplan / iGuide service. Light metadata
             // (tour URL, property id, link slots) is still applied above.
             if (!empty($floorplans) && $shoot->hasIguideEligibleService()) {
-                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans);
+                IngestIguideAssetsJob::dispatch($shoot->id, $floorplans, $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null);
             }
 
             Cache::put($idempotencyKey, true, now()->addMinutes(30));
@@ -175,6 +175,8 @@ class IguideWebhookController extends Controller
      */
     private function matchShoot(?string $workOrderId, ?string $propertyId, ?string $address): ?Shoot
     {
+        $scoped = app(\App\Services\Shoots\ShootUnitTourScope::class)->matchProvider('iguide', ['iguide_work_order_id' => $workOrderId, 'iguide_property_id' => $propertyId]);
+        if ($scoped) return $scoped;
         if (is_string($workOrderId) && trim($workOrderId) !== '') {
             $woId = trim((string) $workOrderId);
             $shoot = Shoot::where('iguide_work_order_id', $woId)->first();

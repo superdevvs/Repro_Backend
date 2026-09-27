@@ -65,7 +65,7 @@ class IguideService
 
     public function syncShoot(Shoot $shoot): ?array
     {
-        if ($shoot->isInternalTestShoot()) {
+        if ($shoot->isInternalTestShoot() || (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists())) {
             return null;
         }
 
@@ -76,7 +76,7 @@ class IguideService
             $iguideData = $this->syncProperty((string) $shoot->iguide_property_id);
         }
 
-        if (!$iguideData) {
+        if (!$iguideData && ! $shoot->relationLoaded('tourUnit')) {
             $fullAddress = $this->buildFullAddress($shoot);
             if ($fullAddress !== null) {
                 $iguideData = $this->searchByAddress($fullAddress);
@@ -165,6 +165,7 @@ class IguideService
 
     public function applyShootData(Shoot $shoot, array $iguideData): Shoot
     {
+        if (! $shoot->relationLoaded('tourUnit') && $shoot->units()->exists()) return $shoot;
         $shoot->iguide_tour_url = $iguideData['tour_url'] ?? $shoot->iguide_tour_url;
         $shoot->iguide_floorplans = $iguideData['floorplans'] ?? $shoot->iguide_floorplans ?? [];
         $shoot->iguide_property_id = $iguideData['property_id'] ?? $shoot->iguide_property_id;
@@ -195,7 +196,7 @@ class IguideService
         );
 
         $shoot->iguide_last_synced_at = now();
-        $shoot->save();
+        app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot);
 
         return $shoot;
     }
@@ -357,7 +358,7 @@ class IguideService
             return null;
         }
 
-        $query = Shoot::query()->whereNotNull('address');
+        $query = Shoot::query()->whereNotNull('address')->whereDoesntHave('units');
 
         // Narrow on ZIP when the provider gave one so the common case does not
         // load every shoot into memory. Falls back to a full scan otherwise.

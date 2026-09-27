@@ -19,6 +19,7 @@ class EditorPayoutService
             ->join('shoots', 'shoots.id', '=', 'shoot_service.shoot_id')
             ->where(fn ($query) => $query->whereNull('shoots.shoot_type')->orWhere('shoots.shoot_type', '!=', \App\Models\Shoot::SHOOT_TYPE_INTERNAL_TEST))
             ->leftJoin('services', 'services.id', '=', 'shoot_service.service_id')
+            ->leftJoin('shoot_units', 'shoot_units.id', '=', 'shoot_service.shoot_unit_id')
             ->where(fn ($query) => $query->whereNotNull('shoot_service.editor_id')->orWhereNotNull('shoot_service.video_editor_id'))
             ->when($editorId, fn ($query) => $query->where(fn ($query) => $query->where('shoot_service.editor_id', $editorId)->orWhere('shoot_service.video_editor_id', $editorId)))
             ->when($start || $end, function ($query) use ($start, $end) {
@@ -45,6 +46,10 @@ class EditorPayoutService
                 });
             })
             ->select([
+                'shoot_service.id as shoot_service_id',
+                'shoot_service.shoot_unit_id',
+                'shoot_service.contracted_photo_count',
+                'shoot_units.label as unit_label',
                 'shoot_service.editor_id',
                 'shoot_service.video_editor_id',
                 'shoot_service.video_editing_completed_at',
@@ -103,20 +108,22 @@ class EditorPayoutService
             $rate = $this->resolveRateForService($editor, $rateName, $row->service_id);
             $quantity = $row->editing_lane === 'video' ? max(1, (int) $row->quantity) : $this->resolveQuantityForService(
                 $serviceName,
-                (int) ($row->service_photo_count ?? 0),
+                (int) (($row->shoot_unit_id ? $row->contracted_photo_count : $row->service_photo_count) ?? 0),
                 (int) ($row->quantity ?? 1)
             );
             $amount = round($rate * $quantity, 2);
+            $displayName = $row->unit_label ? $row->unit_label.' · '.$serviceName : $serviceName;
 
             $payout = EditorPayout::firstOrNew([
                 'editor_id' => (int) $row->editor_id,
                 'shoot_id' => (int) $row->shoot_id,
                 'service_id' => $row->service_id ? (int) $row->service_id : null,
+                'shoot_service_id' => $row->shoot_unit_id ? (int) $row->shoot_service_id : null,
             ]);
 
             if (!$payout->exists) {
                 $payout->fill([
-                    'service_name' => $serviceName,
+                    'service_name' => $displayName,
                     'quantity_snapshot' => max($quantity, 1),
                     'rate_snapshot' => $rate,
                     'payout_amount' => $amount,
@@ -131,7 +138,7 @@ class EditorPayoutService
                 if (!$payout->completed_at || !$payout->service_name) {
                     $payout->fill([
                         'completed_at' => $payout->completed_at ?: $completedAt,
-                        'service_name' => $payout->service_name ?: $serviceName,
+                        'service_name' => $payout->service_name ?: $displayName,
                     ]);
                     $payout->save();
                 }
@@ -147,8 +154,8 @@ class EditorPayoutService
                 $updates['completed_at'] = $completedAt;
             }
 
-            if (!$payout->service_name && $serviceName !== '') {
-                $updates['service_name'] = $serviceName;
+            if ((!$payout->service_name || $row->shoot_unit_id) && $payout->service_name !== $displayName) {
+                $updates['service_name'] = $displayName;
             }
 
             $resolvedQuantity = max($quantity, 1);
@@ -272,6 +279,7 @@ class EditorPayoutService
                     'id' => $payout->id,
                     'shoot_id' => $payout->shoot_id,
                     'service_id' => $payout->service_id,
+                    'shoot_service_id' => $payout->shoot_service_id,
                     'service_name' => $payout->service_name,
                     'quantity_snapshot' => (int) $payout->quantity_snapshot,
                     'rate_snapshot' => round((float) $payout->rate_snapshot, 2),

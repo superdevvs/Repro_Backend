@@ -12,6 +12,17 @@ class Service extends Model
 {
     use HasFactory;
 
+    protected $appends = ['booking_duration_defaults'];
+
+    public function getBookingDurationDefaultsAttribute(): array
+    {
+        return [
+            'default_minutes' => (int) config('availability.default_shoot_duration_minutes', 120),
+            'min_minutes' => (int) config('availability.min_shoot_duration_minutes', 60),
+            'max_minutes' => (int) config('availability.max_shoot_duration_minutes', 240),
+        ];
+    }
+
     protected $fillable = [
         'name',
         'description',

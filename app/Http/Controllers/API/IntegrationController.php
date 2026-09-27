@@ -140,6 +140,10 @@ class IntegrationController extends Controller
             return response()->json(['success' => false, 'message' => 'Forbidden'], 403);
         }
 
+        if ($shoot->units()->exists()) {
+            return response()->json(['success' => false, 'message' => 'Print publishing requires a separate unit listing. Whole-property publishing is unavailable for multi-unit bookings.'], 422);
+        }
+
         if ($configError = $this->mmmService->validateConfig()) {
             return response()->json($configError, 400);
         }
@@ -762,6 +766,9 @@ class IntegrationController extends Controller
 
         try {
             $shoot = Shoot::with('files')->findOrFail($shootId);
+            if ($shoot->units()->exists()) {
+                return response()->json(['success' => false, 'message' => 'Bright MLS publishing requires a separate unit listing. Whole-property publishing is unavailable for multi-unit bookings.'], 422);
+            }
             if ($shoot->isInternalTestShoot()) {
                 return response()->json(['success' => false, 'message' => 'Internal test shoots cannot publish to Bright MLS.'], 422);
             }
@@ -1325,5 +1332,4 @@ class IntegrationController extends Controller
     }
 
 }
-
 

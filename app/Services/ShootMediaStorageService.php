@@ -877,7 +877,7 @@ class ShootMediaStorageService
             $userId,
             ShootFile::STAGE_ARCHIVED,
             ShootFile::MEDIA_TYPE_IGUIDE,
-            null,
+            $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null,
             $metadata
         );
     }

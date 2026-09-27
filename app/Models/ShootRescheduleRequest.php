@@ -26,6 +26,7 @@ class ShootRescheduleRequest extends Model
         'status',
         'reviewed_at',
         'applied_at',
+        'units_revision',
     ];
 
     protected $casts = [
@@ -33,6 +34,7 @@ class ShootRescheduleRequest extends Model
         'requested_date' => 'date',
         'reviewed_at' => 'datetime',
         'applied_at' => 'datetime',
+        'units_revision' => 'integer',
     ];
 
     public function shoot()

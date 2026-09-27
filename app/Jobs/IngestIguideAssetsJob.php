@@ -32,6 +32,7 @@ class IngestIguideAssetsJob implements ShouldQueue
         public int $shootId,
         /** @var array<int, array<string, mixed>> Floorplan items as produced by IguideService::extractFloorplans */
         public array $floorplans,
+        public ?int $shootServiceId = null,
     ) {
         $this->onQueue('default');
     }
@@ -43,6 +44,9 @@ class IngestIguideAssetsJob implements ShouldQueue
             return;
         }
 
+        if ($this->shootServiceId && ! $shoot->serviceItems()->whereKey($this->shootServiceId)->exists()) {
+            return;
+        }
         if (empty($this->floorplans)) {
             return;
         }
@@ -50,6 +54,7 @@ class IngestIguideAssetsJob implements ShouldQueue
         $existingByKey = ShootFile::query()
             ->where('shoot_id', $shoot->id)
             ->where('media_type', 'floorplan')
+            ->where('shoot_service_id', $this->shootServiceId)
             ->get()
             ->keyBy(function (ShootFile $f) {
                 $metadata = is_array($f->metadata) ? $f->metadata : [];
@@ -90,7 +95,9 @@ class IngestIguideAssetsJob implements ShouldQueue
                     substr(md5($assetKey), 0, 8),
                     $extension,
                 );
-                $relativePath = sprintf('shoots/%d/floorplans/%s', $shoot->id, $storedFilename);
+                $relativePath = $this->shootServiceId
+                    ? sprintf('shoots/%d/services/%d/floorplans/%s', $shoot->id, $this->shootServiceId, $storedFilename)
+                    : sprintf('shoots/%d/floorplans/%s', $shoot->id, $storedFilename);
 
                 $response = Http::withOptions([
                     'verify' => config('app.env') === 'production',
@@ -121,6 +128,7 @@ class IngestIguideAssetsJob implements ShouldQueue
 
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,
+                    'shoot_service_id' => $this->shootServiceId,
                     'filename' => $filename,
                     'stored_filename' => $storedFilename,
                     'path' => $publicPath,

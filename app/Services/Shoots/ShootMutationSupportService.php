@@ -285,7 +285,7 @@ class ShootMutationSupportService
                 continue;
             }
 
-            $durationMinutes = $this->calculateServiceItemDuration($serviceModel);
+            $durationMinutes = $service['duration_minutes'] ?? $this->calculateServiceItemDuration($serviceModel);
 
             try {
                 $this->checkPhotographerAvailability(
@@ -362,6 +362,9 @@ class ShootMutationSupportService
 
     public function attachServices(Shoot $shoot, array $services): void
     {
+        if ($shoot->units()->exists()) {
+            throw ValidationException::withMessages(['service_lines' => ['Multi-unit bookings must be updated by service-line identity.']]);
+        }
         $currentItems = $shoot->serviceItems()->get()->keyBy('service_id');
 
         if ($shoot->isComplimentaryReshoot() && $currentItems->isNotEmpty()) {
@@ -598,6 +601,10 @@ class ShootMutationSupportService
     {
         if (!is_array($servicePhotographers) || count($servicePhotographers) === 0) {
             return;
+        }
+
+        if ($shoot->units()->exists()) {
+            throw ValidationException::withMessages(['service_lines' => ['Assign photographers by booked service-line identity for a multi-unit shoot.']]);
         }
 
         DB::transaction(function () use ($shoot, $servicePhotographers, $actor): void {

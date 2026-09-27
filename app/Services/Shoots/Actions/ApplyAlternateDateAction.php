@@ -24,14 +24,16 @@ final class ApplyAlternateDateAction
     public function __construct(
         protected ShootMutationSupportService $support,
         protected ShootActivityLogger $activityLogger,
-    ) {
-    }
+    ) {}
 
     /**
-     * @param 'main'|'all_services' $scope
+     * @param  'main'|'all_services'  $scope
      */
-    public function execute(Shoot $shoot, string $scope, User $actor): Shoot
+    public function execute(Shoot $shoot, string $scope, User $actor, ?int $expectedUnitsRevision = null): Shoot
     {
+        if ($shoot->units()->exists()) {
+            return $this->applyUnitAlternate($shoot, $actor, $expectedUnitsRevision);
+        }
         // Req 5.3 / 9.4 — reject when no stored alternate; make NO schedule changes.
         // Guard runs BEFORE the transaction so nothing is mutated when rejected.
         if (empty($shoot->alternate_scheduled_date)) {
@@ -89,5 +91,34 @@ final class ApplyAlternateDateAction
             return $shoot->fresh(['client', 'rep', 'photographer', 'services'])
                 ?? $shoot->load(['client', 'rep', 'photographer', 'services']);
         });
+    }
+
+    private function applyUnitAlternate(Shoot $shoot, User $actor, ?int $expectedUnitsRevision): Shoot
+    {
+        return \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $actor, $expectedUnitsRevision) {
+            if (DB::connection()->getDriverName() === 'sqlite') {
+                DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => DB::raw('units_revision')]);
+            }
+            $current = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+            if (! $current->alternate_scheduled_date) {
+                throw ValidationException::withMessages(['alternate' => ['This shoot has no alternate date to apply.']]);
+            }
+            // A date-only alternate keeps the visit's local start time. A missing
+            // capture time never becomes a fabricated or flattened unit schedule.
+            $anchor = $current->scheduled_at ?? $current->serviceItems()->whereNotNull('scheduled_at')->orderBy('scheduled_at')->first()?->scheduled_at;
+            $localAnchor = $anchor?->copy()->setTimezone($current->timezone ?: config('app.timezone', 'UTC'));
+            $move = new \App\Models\ShootRescheduleRequest([
+                'requested_date' => $current->alternate_scheduled_date,
+                'requested_time' => $current->alternate_time ?: $localAnchor?->format('H:i'),
+                'units_revision' => $expectedUnitsRevision,
+            ]);
+            app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($current, $move, $actor);
+            $this->activityLogger->log($current, 'apply_alternate_date', [
+                'scope' => 'all_unit_visits', 'by' => $actor->name,
+                'applied_scheduled_at' => $current->scheduled_at?->toIso8601String(),
+            ], $actor);
+
+            return $current->fresh(['client', 'rep', 'photographer', 'services']);
+        }), 'apply-unit-alternate-date');
     }
 }

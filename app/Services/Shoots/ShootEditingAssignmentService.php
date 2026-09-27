@@ -175,7 +175,7 @@ class ShootEditingAssignmentService
             // In a mixed AI-photo / human-video shoot the legacy editor is the video editor.
             // Do not let that fallback grant the AI photo services to the video account.
             if (\App\Models\StudioWorkspace::where('shoot_id', $shoot->id)->where('shoot_dispatch_key', 'intake')
-                ->whereJsonContains('shoot_service_ids', (int) $serviceItem->service_id)->exists()) {
+                ->get()->contains(fn ($workspace) => \App\Services\Studio\WorkspaceServiceScope::contains($workspace, (int) $serviceItem->id))) {
                 return false;
             }
 
@@ -228,7 +228,8 @@ class ShootEditingAssignmentService
             return collect();
         }
 
-        return $files->filter(function (ShootFile $file) use ($assignedLanes) {
+        return $files->filter(function (ShootFile $file) use ($assignedLanes, $shoot, $editor) {
+            if ($file->shoot_service_id) return $this->canEditorAccessFile($shoot, $file, $editor);
             // Withhold non-required extras from the editor view in addition to
             // lane filtering (Req 13.2, 13.4).
             if (!$this->isEditable($file)) {
@@ -271,7 +272,7 @@ class ShootEditingAssignmentService
 
             if ($editor && $servicesMissingEditor->isNotEmpty()) {
                 foreach ($servicesMissingEditor->groupBy('editor_column') as $column => $group) {
-                    DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('service_id', $group->pluck('service_id')->all())
+                    DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('id', $group->pluck('shoot_service_id')->all())
                         ->update([$column => $editor->id, $group->first()['completed_column'] => null, 'updated_at' => now()]);
                 }
             }
@@ -330,7 +331,7 @@ class ShootEditingAssignmentService
         }
 
         foreach ($trackedAssignments->groupBy('completed_column') as $column => $assignments) {
-            DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('service_id', $assignments->pluck('service_id')->all())
+            DB::table('shoot_service')->where('shoot_id', $shoot->id)->whereIn('id', $assignments->pluck('shoot_service_id')->all())
                 ->update([$column => now(), 'updated_at' => now()]);
         }
 
@@ -366,8 +367,9 @@ class ShootEditingAssignmentService
             : User::whereIn('id', $editorIds)->get()->keyBy('id');
 
         $payload = $trackedAssignments
-            ->groupBy('lane')
+            ->groupBy(fn (array $assignment) => $assignment['lane'].':'.($assignment['editor_id'] ?? 'unassigned'))
             ->map(function (Collection $services, string $lane) use ($editors) {
+                $lane = $services->first()['lane'];
                 $editorId = $services->pluck('editor_id')->filter()->first();
                 $editor = $editorId ? $editors->get($editorId) : null;
                 $ready = $services->every(fn (array $service) => !empty($service['editing_completed_at']));
@@ -383,6 +385,7 @@ class ShootEditingAssignmentService
                         'email' => $editor->email,
                     ] : null,
                     'service_ids' => $services->pluck('service_id')->map(fn ($id) => (string) $id)->values()->all(),
+                    'shoot_service_ids' => $services->pluck('shoot_service_id')->map(fn ($id) => (string) $id)->values()->all(),
                     'service_names' => $services->pluck('service_name')->filter()->values()->all(),
                     'ready' => $ready,
                     'ready_at' => $ready
@@ -422,6 +425,7 @@ class ShootEditingAssignmentService
                 $completedAt = $service->pivot?->{$completedColumn};
                 return [
                     'service_id' => (int) $service->id, 'service_name' => (string) $service->name, 'lane' => $lane,
+                    'shoot_service_id' => (int) $service->pivot?->id, 'shoot_unit_id' => $service->pivot?->shoot_unit_id,
                     'editor_column' => $editorColumn, 'completed_column' => $completedColumn,
                     'editor_id' => $service->pivot?->{$editorColumn} ? (int) $service->pivot->{$editorColumn} : null,
                     'editing_completed_at' => $completedAt instanceof \DateTimeInterface ? $completedAt->format(\DateTimeInterface::ATOM) : ($completedAt ? (string) $completedAt : null),

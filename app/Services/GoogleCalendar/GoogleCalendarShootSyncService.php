@@ -20,7 +20,7 @@ class GoogleCalendarShootSyncService
 
     public function syncShoot(int $shootId): void
     {
-        $shoot = Shoot::with(['services', 'serviceItems.service', 'serviceItems.photographer'])->find($shootId);
+        $shoot = Shoot::with(['services', 'serviceItems.service', 'serviceItems.unit', 'serviceItems.photographer'])->find($shootId);
         if ($shoot?->isInternalTestShoot()) {
             return;
         }
@@ -427,6 +427,7 @@ class GoogleCalendarShootSyncService
             'event_end' => $payload['end'] ?? null,
             'photographer' => $connection->user_id,
             'services' => $shoot->services->pluck('name')->sort()->values()->all(),
+            'unit_context' => $shoot->units->map(fn ($unit) => [$unit->id, $unit->label, $unit->access_notes, $unit->sqft])->all(),
             'service_times' => $shoot->serviceItems
                 ->mapWithKeys(fn (ShootService $item) => [
                     $item->id => optional($item->scheduled_at)?->toIso8601String(),

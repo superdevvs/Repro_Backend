@@ -51,7 +51,27 @@ class DeliveryFilenameFormatter
      */
     public function formatForFile(ShootFile $file, int $position, int $total, ?string $fallback = null): string
     {
-        return $this->format($position, $total, $this->baseNameFor($file, $fallback));
+        $name = $this->baseNameFor($file, $fallback);
+        $unit = $file->shoot_service_id ? $file->serviceItem?->unit : null;
+        if ($unit) $name = 'unit-'.$unit->id.'_'.$this->safeSegment($unit->label).'_'.$name;
+
+        return $this->format($position, $total, $name);
+    }
+
+    /** Only archive copies get folders; stored master paths are never moved. */
+    public function archivePathForFile(ShootFile $file, int $position, int $total, ?string $fallback = null): string
+    {
+        $line = $file->shoot_service_id ? $file->serviceItem : null;
+        $unit = $line?->unit;
+        $name = $this->formatForFile($file, $position, $total, $fallback);
+        if (! $unit) return $name;
+
+        return 'unit-'.$unit->id.'-'.$this->safeSegment($unit->label).'/line-'.$line->id.'-'.$this->safeSegment($line->service?->name ?? 'service').'/'.$name;
+    }
+
+    private function safeSegment(string $value): string
+    {
+        return substr(\Illuminate\Support\Str::slug($value), 0, 60) ?: 'unit';
     }
 
     /**

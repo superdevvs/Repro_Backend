@@ -65,9 +65,10 @@ class ShootPublicAssetsController extends Controller
 
     private function buildVisiblePublicAssets(Request $request, Shoot $shoot, string $type): array
     {
-        $assets = $this->shootPublicAssetsService->buildTypedPublicAssets($shoot, $type);
+        $unit = $request->has('unitId') ? app(\App\Services\Shoots\ShootUnitTourScope::class)->requestedUnit($shoot, $request->query('unitId')) : null;
+        $assets = $this->shootPublicAssetsService->buildTypedPublicAssets($shoot, $type, true, $unit);
 
-        if ($this->canViewVideoAssets($request, $shoot)) {
+        if ($unit || $this->canViewVideoAssets($request, $shoot)) {
             return $assets;
         }
 
@@ -166,6 +167,10 @@ class ShootPublicAssetsController extends Controller
             return response()->json(['message' => 'AI service is not configured'], 503);
         }
 
+        if ($request->filled('unitId')) {
+            $unit = $shoot->units()->findOrFail($request->query('unitId'));
+            $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->project($shoot, $unit);
+        }
         $tourLinks = is_array($shoot->tour_links) ? $shoot->tour_links : [];
         $propertyDetails = $this->shootPublicAssetsService->buildPublicTourPropertyDetails($shoot, $tourLinks);
         $imageUrls = $this->shootPublicAssetsService->resolvePropertyDescriptionImageUrls($shoot);

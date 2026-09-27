@@ -41,16 +41,18 @@ class CreateShootAction
     public function execute(StoreShootRequest $request, User $user): CreateShootResult
     {
         $validated = $request->validated();
-        $validated['services'] = $validated['services'] ?? [];
-        $this->support->ensureClientCanBookServices((int) $validated['client_id'], $validated['services']);
+        $multiUnit = app(\App\Services\Shoots\MultiUnitBookingService::class);
+        $unitBooking = $multiUnit->handles(null, $validated) ? $multiUnit->prepare(null, $validated, $user) : null;
+        if (! $unitBooking) $validated['services'] = $validated['services'] ?? [];
+        $this->support->ensureClientCanBookServices((int) $validated['client_id'], $unitBooking['services'] ?? $validated['services']);
         $client = $this->support->ensureClientHasDeliverableEmail((int) $validated['client_id']);
 
-        $result = DB::transaction(function () use ($validated, $user, $request, $client) {
+        $result = DB::transaction(function () use ($validated, $user, $request, $client, $unitBooking, $multiUnit) {
             $userRole = strtolower($user->role ?? '');
             $scheduledAt = !empty($validated['scheduled_at'])
                 ? new \DateTime($validated['scheduled_at'])
                 : null;
-            $servicesPayload = $this->support->mergeServiceItemPayload(
+            $servicesPayload = $unitBooking['services'] ?? $this->support->mergeServiceItemPayload(
                 $validated['services'],
                 $validated['service_items'] ?? null,
                 $request->input('service_photographers'),
@@ -108,7 +110,7 @@ class CreateShootAction
                 $photographerId = $validated['photographer_id'] ?? null;
             }
 
-            if (!$treatAsClientRequest && $photographerId && $scheduledAt) {
+            if (!$unitBooking && !$treatAsClientRequest && $photographerId && $scheduledAt) {
                 $carbonDate = \Carbon\Carbon::parse($scheduledAt);
                 DB::table('shoots')
                     ->where('photographer_id', $photographerId)
@@ -122,6 +124,13 @@ class CreateShootAction
             }
 
             if (!$treatAsClientRequest) {
+                if ($unitBooking) {
+                    foreach ($servicesPayload as $line) {
+                        if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
+                            $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes']);
+                        }
+                    }
+                }
                 $this->support->checkServiceItemPhotographerAvailability(
                     $servicesPayload,
                     $photographerId
@@ -240,7 +249,11 @@ class CreateShootAction
                 'editor_notes' => $validated['editor_notes'] ?? null,
             ]);
 
-            $this->support->attachServices($shoot, $servicesPayload);
+            if ($unitBooking) {
+                $multiUnit->persist($shoot, $unitBooking);
+            } else {
+                $this->support->attachServices($shoot, $servicesPayload);
+            }
 
             if (!empty($pricingCalculation['coupon_code']) && $pricingCalculation['coupon_discount_amount'] > 0) {
                 $coupon = $this->support->resolveCoupon($pricingCalculation['coupon_code']);

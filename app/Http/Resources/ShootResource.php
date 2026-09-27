@@ -73,6 +73,7 @@ class ShootResource extends JsonResource
             $this->services->load('category');
         }
 
+        $this->services->loadMissing('sqftRanges');
         $requestingUser = $request->user();
         $requestingRole = strtolower((string) ($requestingUser?->role ?? ''));
         $canManageReshoots = in_array($requestingRole, ['admin', 'superadmin'], true);
@@ -129,20 +130,20 @@ class ShootResource extends JsonResource
             ->canRemoveAllServices($this->resource, $requestingUser);
         $servicePresentation = app(\App\Services\Shoots\ShootServiceItemSupport::class)->presentation($this->resource);
         if ($isEditor && $requestingUser) {
-            $visibleServiceIds = $serviceCollection->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $visibleServiceIds = $serviceCollection->pluck('pivot.id')->map(fn ($id) => (int) $id)->all();
             $serviceItemSummaries = collect($serviceItemSummaries)
-                ->filter(fn ($item) => in_array((int) ($item['service_id'] ?? 0), $visibleServiceIds, true))
+                ->filter(fn ($item) => in_array((int) ($item['shoot_service_id'] ?? 0), $visibleServiceIds, true))
                 ->values()
                 ->all();
         }
         if ($isPhotographer && $requestingUser) {
-            $visibleServiceIds = $serviceCollection->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $visibleServiceIds = $serviceCollection->pluck('pivot.id')->map(fn ($id) => (int) $id)->all();
             $serviceItemSummaries = collect($serviceItemSummaries)
-                ->filter(fn ($item) => in_array((int) ($item['service_id'] ?? 0), $visibleServiceIds, true))
+                ->filter(fn ($item) => in_array((int) ($item['shoot_service_id'] ?? 0), $visibleServiceIds, true))
                 ->values()
                 ->all();
         }
-        $serviceItemByServiceId = collect($serviceItemSummaries)->keyBy('service_id');
+        $serviceItemByServiceId = collect($serviceItemSummaries)->keyBy('shoot_service_id');
         $invoiceAdjustmentTotal = collect($serviceItemSummaries)
             ->filter(fn ($item) => (bool) ($item['is_invoice_adjustment'] ?? false))
             ->sum(fn ($item) => (float) ($item['total_amount'] ?? $item['subtotal'] ?? 0));
@@ -298,10 +299,17 @@ class ShootResource extends JsonResource
                     }
                     $categoryName = $service->category?->name ?? $service->category_name ?? $service->name;
                     $editingCompletedAt = $service->pivot->editing_completed_at;
-                    $serviceItemSummary = $serviceItemByServiceId->get($service->id, []);
+                    $serviceItemSummary = $serviceItemByServiceId->get($service->pivot->id, []);
 
                     return [
                         'id' => (string) $service->id,
+                        'client_key' => $serviceItemSummary['client_key'] ?? $service->pivot->client_key,
+                        'shoot_unit_id' => $serviceItemSummary['shoot_unit_id'] ?? $service->pivot->shoot_unit_id,
+                        'unit_client_key' => $serviceItemSummary['unit_client_key'] ?? null,
+                        'unit_label' => $serviceItemSummary['unit_label'] ?? null,
+                        'unit_kind' => $serviceItemSummary['unit_kind'] ?? null,
+                        'unit_sqft' => $serviceItemSummary['unit_sqft'] ?? null,
+                        'duration_minutes' => $service->pivot->duration_minutes,
                         'shoot_service_id' => isset($serviceItemSummary['shoot_service_id']) ? (string) $serviceItemSummary['shoot_service_id'] : ($service->pivot->id ? (string) $service->pivot->id : null),
                         'shootServiceId' => isset($serviceItemSummary['shootServiceId']) ? (string) $serviceItemSummary['shootServiceId'] : ($service->pivot->id ? (string) $service->pivot->id : null),
                         'name' => $service->name,
@@ -371,6 +379,9 @@ class ShootResource extends JsonResource
             'services_list' => $servicesList,
             'serviceItems' => $serviceItemSummaries,
             'service_items' => $serviceItemSummaries,
+            'service_lines' => collect($serviceItemSummaries)->filter(fn ($item) => ! ($item['is_invoice_adjustment'] ?? false) && ! empty($item['shoot_service_id']) && ! empty($item['service_id']))->values()->all(),
+            'units_revision' => (int) $this->units_revision,
+            'units' => app(\App\Services\Shoots\ShootUnitPresenter::class)->forUser($this->resource, $serviceItemSummaries, $requestingUser),
             'orderItems' => $serviceItemSummaries,
             'order_items' => $serviceItemSummaries,
             // Names for every booked service, deliberately not role-filtered.

@@ -73,6 +73,7 @@ class InvoiceService
         $serviceRows = collect();
         foreach ($shoots as $shoot) {
             $fallbackId = $shoot->photographer_id;
+            $unitsById = $shoot->units->keyBy('id');
             $services = $shoot->services;
 
             if ($services->isEmpty() && $shoot->service) {
@@ -117,7 +118,7 @@ class InvoiceService
                     $pay = (float) $pivotPay;
                 } else {
                     $resolvedPay = method_exists($service, 'getPhotographerPayForSqft')
-                        ? $service->getPhotographerPayForSqft($this->extractShootSqft($shoot))
+                        ? $service->getPhotographerPayForSqft($unitsById->get($service->pivot->shoot_unit_id)?->sqft ?? $this->extractShootSqft($shoot))
                         : null;
                     $pay = (float) ($resolvedPay ?? $service->photographer_pay ?? 0);
                 }
@@ -127,7 +128,10 @@ class InvoiceService
                     'shoot_id' => $shoot->id,
                     'shoot' => $shoot,
                     'service_id' => $service->id,
-                    'service_name' => $service->name,
+                    'shoot_service_id' => $service->pivot->id,
+                    'shoot_unit_id' => $service->pivot->shoot_unit_id,
+                    'unit_label' => $unitsById->get($service->pivot->shoot_unit_id)?->label,
+                    'service_name' => ($unitsById->get($service->pivot->shoot_unit_id)?->label ? $unitsById->get($service->pivot->shoot_unit_id)->label.' · ' : '').$service->name,
                     'resolved_photographer_id' => $resolvedId,
                     'photographer_pay' => $pay * $qty,
                     'scheduled_date' => $shoot->scheduled_date,
@@ -321,6 +325,8 @@ class InvoiceService
                         ->where('shoot_id', $serviceRow['shoot_id']);
                     if (! empty($serviceRow['shoot_compensation_id'])) {
                         $existingItemQuery->where('shoot_compensation_id', $serviceRow['shoot_compensation_id']);
+                    } elseif (! empty($serviceRow['shoot_service_id'])) {
+                        $existingItemQuery->whereJsonContains('meta->shoot_service_id', $serviceRow['shoot_service_id']);
                     } else {
                         $existingItemQuery->whereJsonContains('meta->service_id', $serviceRow['service_id']);
                     }
@@ -411,6 +417,9 @@ class InvoiceService
             'recorded_at' => $serviceRow['scheduled_date'],
             'meta' => array_filter([
                 'service_id' => $serviceRow['service_id'],
+                'shoot_service_id' => $serviceRow['shoot_service_id'] ?? null,
+                'shoot_unit_id' => $serviceRow['shoot_unit_id'] ?? null,
+                'unit_label' => $serviceRow['unit_label'] ?? null,
                 'service_name' => $serviceRow['service_name'],
                 'payout_kind' => $isCompensation ? 'complimentary_reshoot_compensation' : 'service_pay',
                 'compensation_amount' => $isCompensation ? $amount : null,
@@ -1769,6 +1778,9 @@ class InvoiceService
 
             $meta = [
                 'service_id' => $service->id,
+                'shoot_service_id' => $service->pivot->id,
+                'shoot_unit_id' => $service->pivot->shoot_unit_id,
+                'unit_label' => $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id)?->label,
                 'pricing_snapshot' => $pricingSnapshot,
                 'service_name' => $reshootItem?->service_name_snapshot
                     ?? $service->name
@@ -1837,6 +1849,10 @@ class InvoiceService
     protected function describeShootService(Shoot $shoot, Service $service): string
     {
         $description = $service->name ?? $service->service_name ?? 'Service';
+        if ($service->pivot?->shoot_unit_id) {
+            $unit = $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id);
+            if ($unit) return $unit->label.' · '.$description.($unit->sqft ? ' ('.$unit->sqft.' SQFT)' : '');
+        }
 
         if (stripos($description, 'floor plan') !== false || stripos($description, 'floorplan') !== false) {
             return $description.' (1-2999 SQFT)';

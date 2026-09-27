@@ -298,6 +298,47 @@ class ShootMediaArchiveServiceTest extends TestCase
         );
     }
 
+    public function test_unit_archive_excludes_siblings_and_uses_distinct_cache_identity(): void
+    {
+        Storage::fake('public');
+        Storage::fake('local');
+        $this->mockDropboxDisabled();
+        $shoot = $this->createShoot();
+        $units = [];
+        $lines = [];
+        foreach ([1, 2] as $number) {
+            $unit = $shoot->units()->create(['client_key' => 'unit-'.$number, 'label' => 'Unit '.$number, 'kind' => 'unit']);
+            $line = $shoot->serviceItems()->create(['service_id' => $this->service->id, 'shoot_unit_id' => $unit->id, 'client_key' => 'line-'.$number, 'price' => 100, 'quantity' => 1]);
+            $path = 'shoots/'.$shoot->id.'/completed/unit-'.$number.'.jpg';
+            Storage::disk('public')->put($path, 'bytes-for-unit-'.$number);
+            $this->createShootFile($shoot, ['shoot_service_id' => $line->id, 'path' => $path, 'storage_path' => $path]);
+            $units[] = $unit;
+            $lines[] = $line;
+        }
+        $service = app(ShootMediaArchiveService::class);
+        $this->assertCount(1, $service->getFilesForType($shoot, 'edited', null, $units[0]->id));
+        $manifest = $service->generateArchive($shoot, 'edited', 'original', false, null, $units[0]->id);
+        $path = $service->getArchivePath($shoot, 'edited', 'original', null, $units[0]->id);
+        $this->assertNotSame($path, $service->getArchivePath($shoot, 'edited', 'original', null, $units[1]->id));
+        $this->assertNotSame($path, $service->getArchivePath($shoot, 'edited', 'original'));
+        $zip = new ZipArchive();
+        $this->assertTrue($zip->open(Storage::disk('local')->path($path)) === true);
+        $this->assertSame(1, $zip->numFiles);
+        $this->assertSame('bytes-for-unit-1', $zip->getFromIndex(0));
+        $zip->close();
+        $units[0]->update(['label' => 'Penthouse']);
+        $this->assertFalse($service->hasFreshArchive($shoot, 'edited', 'original', null, $units[0]->id));
+        $this->assertSame($units[0]->id, $manifest['shoot_unit_id']);
+
+        \Laravel\Sanctum\Sanctum::actingAs($this->admin);
+        $endpoint = '/api/shoots/'.$shoot->id.'/media/download-zip?type=edited&shoot_unit_id=';
+        $this->getJson($endpoint.$units[0]->id)->assertAccepted();
+        Queue::assertPushed(GenerateShootMediaArchiveJob::class, fn ($job) => $job->shootUnitId === $units[0]->id);
+        $this->getJson($endpoint.$units[0]->id.'&shoot_service_id='.$lines[1]->id)->assertUnprocessable();
+        $foreign = $this->createShoot()->units()->create(['client_key' => 'foreign', 'label' => 'Foreign', 'kind' => 'unit']);
+        $this->getJson($endpoint.$foreign->id)->assertUnprocessable();
+    }
+
     protected function createShoot(array $overrides = []): Shoot
     {
         return Shoot::factory()->create(array_merge([

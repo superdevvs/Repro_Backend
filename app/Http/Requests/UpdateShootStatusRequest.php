@@ -9,7 +9,7 @@ class UpdateShootStatusRequest extends FormRequest
     public function authorize(): bool
     {
         $user = $this->user();
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -23,7 +23,7 @@ class UpdateShootStatusRequest extends FormRequest
             'scheduled_at' => 'nullable|date',
             'photographer_id' => 'nullable|exists:users,id',
             'reason' => 'nullable|string|max:500',
+            'expected_units_revision' => 'nullable|integer|min:0',
         ];
     }
 }
-

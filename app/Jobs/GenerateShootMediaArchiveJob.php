@@ -23,7 +23,8 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
         public int $shootId,
         public string $type,
         public string $size,
-        public ?int $shootServiceId = null
+        public ?int $shootServiceId = null,
+        public ?int $shootUnitId = null
     ) {
         $this->onQueue('default');
         $this->afterCommit();
@@ -48,7 +49,7 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
         // delivery). Treat "nothing to archive" as a benign no-op instead of a
         // hard failure so the job is not retried and logged as permanently
         // failed for an expected, harmless state.
-        if (!$shootMediaArchiveService->hasDownloadableFiles($shoot, $this->type, $this->size, $this->shootServiceId)) {
+        if (!$shootMediaArchiveService->hasDownloadableFiles($shoot, $this->type, $this->size, $this->shootServiceId, $this->shootUnitId ?? null)) {
             Log::info('Shoot media archive job skipped because no downloadable files are available', [
                 'shoot_id' => $this->shootId,
                 'shoot_service_id' => $this->shootServiceId,
@@ -59,7 +60,7 @@ class GenerateShootMediaArchiveJob implements ShouldQueue
             return;
         }
 
-        $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true, $this->shootServiceId);
+        $shootMediaArchiveService->generateArchive($shoot, $this->type, $this->size, true, $this->shootServiceId, $this->shootUnitId ?? null);
     }
 
     public function failed(\Throwable $exception): void

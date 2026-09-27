@@ -126,7 +126,7 @@ class CubiCasaWebhookController extends Controller
             if (is_string($productType) && $productType !== '') {
                 $shoot->cubicasa_product_type = $productType;
             }
-            $shoot->save();
+            app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot);
 
             // For Ready / Fixing-resolved: pull full delivery_assets and ingest.
             $shouldFetch = $this->shouldFetchDeliverables($currentStatus, $deliveryType);
@@ -140,7 +140,7 @@ class CubiCasaWebhookController extends Controller
 
                     $floorplans = is_array($parsed['floorplans'] ?? null) ? $parsed['floorplans'] : [];
                     if (!empty($floorplans) && $shoot->hasCubiCasaEligibleService()) {
-                        IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans);
+                        IngestCubiCasaAssetsJob::dispatch($shoot->id, $floorplans, $shoot->relationLoaded('tourServiceLine') ? $shoot->getRelation('tourServiceLine')?->id : null);
                         $assetCount = count($floorplans);
                     }
                 } else {
@@ -205,6 +205,8 @@ class CubiCasaWebhookController extends Controller
 
     private function matchShoot(string $orderId, array $data): ?Shoot
     {
+        $scoped = app(\App\Services\Shoots\ShootUnitTourScope::class)->matchProvider('cubicasa', ['cubicasa_order_id' => $orderId, 'cubicasa_external_id' => $data['external_id'] ?? data_get($data, 'info.external_id')]);
+        if ($scoped) return $scoped;
         $byOrderId = Shoot::where('cubicasa_order_id', $orderId)->first();
         if ($byOrderId) {
             return $byOrderId;

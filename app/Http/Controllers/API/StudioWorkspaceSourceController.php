@@ -88,7 +88,7 @@ class StudioWorkspaceSourceController extends StudioSourceController
         $response = parent::shootMedia($request, $shoot);
         $data = $response->getData(true);
         $authorization = app(ShootAuthorizationSupport::class);
-        $files = ShootFile::with(['shoot', 'serviceItem.service', 'serviceItem.shoot', 'serviceItem.photographer'])->whereIn('id', array_column($data['data'], 'id'))->get()->keyBy('id');
+        $files = ShootFile::with(['shoot', 'serviceItem.service', 'serviceItem.shoot', 'serviceItem.photographer', 'serviceItem.unit'])->whereIn('id', array_column($data['data'], 'id'))->get()->keyBy('id');
         $data['data'] = array_values(array_filter($data['data'], function ($item) use ($files, $request, $authorization): bool {
             $file = $files->get($item['id']);
 
@@ -102,6 +102,7 @@ class StudioWorkspaceSourceController extends StudioSourceController
             }
             $mode = $file->serviceItem ? app(\App\Services\Shoots\BracketModeResolver::class)->effectiveBracketMode($file->serviceItem) : ($file->shoot->bracket_mode ?: null);
             return array_merge($item, ['shootServiceId' => $file->shoot_service_id, 'bracketGroup' => $file->bracket_group, 'sequence' => $file->sequence,
+                'shootUnitId' => $file->serviceItem?->shoot_unit_id, 'unitLabel' => $file->serviceItem?->unit?->label,
                 'bracketMode' => $mode, 'stackingEnabled' => $file->serviceItem ? $mode !== null : true, 'isExtra' => $file->isExtra(),
                 'captureType' => $file->media_type, 'capturedAt' => data_get($file->metadata, 'captured_at'), 'createdAt' => $file->created_at?->toIso8601String()]);
         }, $data['data']);

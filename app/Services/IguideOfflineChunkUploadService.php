@@ -56,9 +56,10 @@ class IguideOfflineChunkUploadService
             $sizeBytes,
             $expectedSha256
         ): array {
-            $lockedShoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->getKey());
+            $lockedShoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->refreshProjection($shoot, true);
             $existing = IguideOfflineUploadSession::query()
                 ->where('shoot_id', $lockedShoot->getKey())
+                ->where('shoot_service_id', $lockedShoot->relationLoaded('tourServiceLine') ? $lockedShoot->getRelation('tourServiceLine')?->id : null)
                 ->where('idempotency_key', $idempotencyKey)
                 ->first();
 
@@ -81,6 +82,7 @@ class IguideOfflineChunkUploadService
 
             $active = IguideOfflineUploadSession::query()
                 ->where('shoot_id', $lockedShoot->getKey())
+                ->where('shoot_service_id', $lockedShoot->relationLoaded('tourServiceLine') ? $lockedShoot->getRelation('tourServiceLine')?->id : null)
                 ->whereIn('status', [
                     IguideOfflineUploadSession::STATUS_UPLOADING,
                     IguideOfflineUploadSession::STATUS_ASSEMBLING,
@@ -117,6 +119,7 @@ class IguideOfflineChunkUploadService
             $session = IguideOfflineUploadSession::create([
                 'id' => (string) Str::uuid(),
                 'shoot_id' => $lockedShoot->getKey(),
+                'shoot_service_id' => $lockedShoot->relationLoaded('tourServiceLine') ? $lockedShoot->getRelation('tourServiceLine')?->id : null,
                 'user_id' => $user->getKey(),
                 'idempotency_key' => $idempotencyKey,
                 'original_filename' => $filename,
@@ -444,6 +447,7 @@ class IguideOfflineChunkUploadService
     {
         $session = $session->fresh();
         $shoot = $session->shoot()->first();
+        if ($shoot) $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($shoot, $session->shoot_service_id);
         $receivedChunks = IguideOfflineUploadChunk::query()
             ->where('upload_session_id', $session->getKey())
             ->orderBy('chunk_index')
@@ -527,7 +531,7 @@ class IguideOfflineChunkUploadService
             return;
         }
 
-        $shoot = $session->shoot()->firstOrFail();
+        $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($session->shoot()->firstOrFail(), $session->shoot_service_id);
         $user = $session->user()->firstOrFail();
         $shootFile = ShootFile::query()
             ->where('shoot_id', $shoot->getKey())

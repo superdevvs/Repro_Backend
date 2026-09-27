@@ -279,7 +279,8 @@ class UpdateShootAction
         }
 
         $serviceChangeRequested = array_key_exists('services', $validated)
-            || array_key_exists('service_items', $validated);
+            || array_key_exists('service_items', $validated) || array_key_exists('service_lines', $validated);
+        $isMultiUnit = app(\App\Services\Shoots\MultiUnitBookingService::class)->handles($shoot, $validated);
         $hasAdjustedTotal = array_key_exists('admin_adjusted_total_quote', $validated)
             && $validated['admin_adjusted_total_quote'] !== null;
         $targetServicesForChange = $serviceChangeRequested
@@ -304,7 +305,7 @@ class UpdateShootAction
                 );
             }
 
-            $serviceDetachImpact = $this->serviceChangeGuard->assertChangeAllowed(
+            $serviceDetachImpact = $isMultiUnit ? null : $this->serviceChangeGuard->assertChangeAllowed(
                 $shoot,
                 $targetServicesForChange,
                 $user,
@@ -338,6 +339,7 @@ class UpdateShootAction
         }
 
         $availabilityRelevantKeys = [
+            'service_lines',
             'scheduled_at',
             'scheduled_date',
             'time',
@@ -372,7 +374,7 @@ class UpdateShootAction
                 }, $targetServices);
             }
 
-            if ($targetPhotographerId && $targetScheduledAt) {
+            if ($targetPhotographerId && $targetScheduledAt && ! $isMultiUnit) {
                 $this->support->assertWithinAvailabilityBounds(
                     (int) $targetPhotographerId,
                     $targetScheduledAt,
@@ -382,6 +384,13 @@ class UpdateShootAction
                 );
             }
 
+            if ($isMultiUnit) {
+                foreach ($targetServices as $line) {
+                    if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
+                        $this->support->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id, $skipConflictCheck);
+                    }
+                }
+            }
             if (! $skipConflictCheck) {
                 $this->support->checkServiceItemPhotographerAvailability(
                     $targetServices,
@@ -513,9 +522,11 @@ class UpdateShootAction
         $returnVisitReplayed = false;
         $createdReturnVisitClassification = null;
         $createdReturnVisitInvoiceId = null;
+        $pendingUpdateAttributes = $shoot->getDirty();
         try {
-            DB::transaction(function () use (
+            \App\Support\LockedWrite::run(fn () => DB::transaction(function () use (
                 $shoot,
+                $pendingUpdateAttributes,
                 $validated,
                 $user,
                 $featuredFlagProvided,
@@ -527,6 +538,7 @@ class UpdateShootAction
                 &$createdReturnVisitClassification,
                 &$createdReturnVisitInvoiceId
             ): void {
+                $shoot->forceFill($pendingUpdateAttributes);
                 $this->editablePayloadService->apply($shoot, $validated, $user);
                 if ($featuredFlagProvided) {
                     $this->applyFeaturedRequestState(
@@ -585,7 +597,7 @@ class UpdateShootAction
                         ]
                     );
                 }
-            });
+            }), 'shoot-update');
         } catch (\DomainException $exception) {
                     $this->abortJson(\App\Services\ApiErrorResponder::publicMessage($exception), 409);
         }

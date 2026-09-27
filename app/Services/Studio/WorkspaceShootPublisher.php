@@ -73,11 +73,11 @@ class WorkspaceShootPublisher
 
     private function completeServicesLocked(StudioWorkspace $workspace): void
     {
-        foreach ($workspace->shoot_service_ids ?? [] as $serviceId) {
+        foreach (WorkspaceServiceScope::lineIds($workspace) as $serviceId) {
             $pending = StudioWorkspace::where('shoot_id', $workspace->shoot_id)->where('shoot_dispatch_key', $workspace->shoot_dispatch_key)
-                ->where('status', '!=', 'completed')->get()->contains(fn ($project) => in_array($serviceId, $project->shoot_service_ids ?? []));
+                ->where('status', '!=', 'completed')->get()->contains(fn ($project) => WorkspaceServiceScope::contains($project, $serviceId));
             if (! $pending) {
-                DB::table('shoot_service')->where('shoot_id', $workspace->shoot_id)->where('service_id', $serviceId)->whereNull('editor_id')
+                DB::table('shoot_service')->where('shoot_id', $workspace->shoot_id)->where('id', $serviceId)->whereNull('editor_id')
                     ->update(['editing_completed_at' => now(), 'updated_at' => now()]);
             }
         }

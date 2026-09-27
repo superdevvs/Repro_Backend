@@ -39,8 +39,13 @@ class ScheduleShootAction
             ]);
         }
 
+        $isMultiUnit = $shoot->units()->exists();
+        $wasOnHold = ($shoot->status === 'hold_on' || $shoot->workflow_status === 'on_hold');
+        if ($isMultiUnit) {
+            $this->resumeUnitPlan($shoot, $scheduledAt, $validated, $user);
+        }
         $photographerId = $validated['photographer_id'] ?? $shoot->photographer_id;
-        if ($photographerId) {
+        if (! $isMultiUnit && $photographerId) {
             $carbonDate = \Carbon\Carbon::parse($scheduledAt);
             \Illuminate\Support\Facades\DB::table('shoots')
                 ->where('photographer_id', $photographerId)
@@ -69,7 +74,6 @@ class ScheduleShootAction
             }
         }
 
-        $wasOnHold = ($shoot->status === 'hold_on' || $shoot->workflow_status === 'on_hold');
         if ($wasOnHold) {
             $cancellationFee = 60;
             $currentBase = $shoot->base_quote ?? 0;
@@ -82,14 +86,16 @@ class ScheduleShootAction
             }
         }
 
-        $this->workflowService->schedule($shoot, $scheduledAt, $user);
-        $shoot->serviceItems()
-            ->whereNull('scheduled_at')
-            ->update([
-                'scheduled_at' => \Carbon\Carbon::parse($scheduledAt)->format('Y-m-d H:i:s'),
-                'workflow_status' => 'scheduled',
-                'updated_at' => now(),
-            ]);
+        if (! $isMultiUnit) {
+            $this->workflowService->schedule($shoot, $scheduledAt, $user);
+            $shoot->serviceItems()
+                ->whereNull('scheduled_at')
+                ->update([
+                    'scheduled_at' => \Carbon\Carbon::parse($scheduledAt)->format('Y-m-d H:i:s'),
+                    'workflow_status' => 'scheduled',
+                    'updated_at' => now(),
+                ]);
+        }
 
         if (! $shoot->dropbox_raw_folder) {
             $this->mediaStorageService->createShootFolders($shoot);
@@ -210,6 +216,35 @@ class ScheduleShootAction
         $this->googleCalendarSyncDispatcher->dispatchShootSync($shoot->id);
 
         return $shoot;
+    }
+
+    private function resumeUnitPlan(Shoot $shoot, \DateTime $scheduledAt, array $validated, User $user): void
+    {
+        abort_unless(in_array(strtolower($user->role), ['admin', 'superadmin', 'editing_manager'], true), 403);
+        \App\Support\LockedWrite::run(fn () => \Illuminate\Support\Facades\DB::transaction(function () use ($shoot, $scheduledAt, $validated, $user) {
+            if (\Illuminate\Support\Facades\DB::connection()->getDriverName() === 'sqlite') {
+                \Illuminate\Support\Facades\DB::table('shoots')->where('id', $shoot->id)->update(['units_revision' => \Illuminate\Support\Facades\DB::raw('units_revision')]);
+            }
+            $current = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+            if (! isset($validated['expected_units_revision']) || (int) $validated['expected_units_revision'] !== (int) $current->units_revision) {
+                throw ValidationException::withMessages(['expected_units_revision' => ['The unit visit plan changed. Reload before resuming it.']]);
+            }
+            foreach ($current->serviceItems()->with('service')->get() as $line) {
+                if ($line->workflow_status !== 'cancelled' && $line->service?->requiresPhotographer() && (! $line->scheduled_at || ! $line->photographer_id)) {
+                    throw ValidationException::withMessages(['service_lines' => ['Assign a photographer and time to every unit capture line before resuming.']]);
+                }
+            }
+            if ($current->scheduled_at?->format('Y-m-d H:i:s') !== $scheduledAt->format('Y-m-d H:i:s')) {
+                $local = \Carbon\Carbon::instance($scheduledAt);
+                if ($current->timezone) {
+                    $local->setTimezone($current->timezone);
+                }
+                $move = new \App\Models\ShootRescheduleRequest(['requested_date' => $local->toDateString(), 'requested_time' => $local->format('H:i'), 'units_revision' => $current->units_revision]);
+                app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($current, $move, $user);
+            }
+            $this->workflowService->schedule($current, $current->scheduled_at ?? $scheduledAt, $user);
+        }), 'resume-unit-visit-plan');
+        $shoot->refresh();
     }
 
     private function formatDispatchSummaryForLog(?array $dispatch): array

@@ -56,34 +56,45 @@ class ShootRescheduleRequestController extends Controller
             'requested_date' => 'required|date',
             'requested_time' => 'nullable|string|max:25',
             'reason' => 'nullable|string|max:2000',
+            'expected_units_revision' => 'nullable|integer|min:0',
         ]);
 
         $user = $request->user();
         $canApplyDirectly = $this->userCanReviewRequests($user);
 
-        $record = ShootRescheduleRequest::create([
-            'shoot_id' => $shoot->id,
-            'requested_by' => $user?->id,
-            // Snapshot what is currently confirmed, so the requested values are
-            // never confused with the live ones.
-            'original_date' => $shoot->scheduled_date,
-            'original_time' => $shoot->time,
-            'requested_date' => $validated['requested_date'],
-            'requested_time' => $validated['requested_time'] ?? $shoot->time,
-            'reason' => $validated['reason'] ?? null,
-            'status' => $canApplyDirectly
-                ? ShootRescheduleRequest::STATUS_APPROVED
-                : ShootRescheduleRequest::STATUS_PENDING,
-            'reviewed_at' => $canApplyDirectly ? now() : null,
-            'approved_by' => $canApplyDirectly ? $user?->id : null,
-        ]);
+        $record = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($shoot, $validated, $user, $canApplyDirectly) {
+            $shoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->id);
+            $hasUnits = $shoot->units()->exists();
+            if ($hasUnits && isset($validated['expected_units_revision']) && (int) $validated['expected_units_revision'] !== (int) $shoot->units_revision) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['expected_units_revision' => ['The unit schedule changed. Reload before rescheduling.']]);
+            }
+            $record = ShootRescheduleRequest::create([
+                'shoot_id' => $shoot->id,
+                'units_revision' => $hasUnits ? (int) $shoot->units_revision : null,
+                'requested_by' => $user?->id,
+                // Snapshot what is currently confirmed, so the requested values are
+                // never confused with the live ones.
+                'original_date' => $shoot->scheduled_date,
+                'original_time' => $shoot->time,
+                'requested_date' => $validated['requested_date'],
+                'requested_time' => $validated['requested_time'] ?? $shoot->time,
+                'reason' => $validated['reason'] ?? null,
+                'status' => $canApplyDirectly
+                    ? ShootRescheduleRequest::STATUS_APPROVED
+                    : ShootRescheduleRequest::STATUS_PENDING,
+                'reviewed_at' => $canApplyDirectly ? now() : null,
+                'approved_by' => $canApplyDirectly ? $user?->id : null,
+            ]);
 
-        // A pending request must not move the shoot. That was the bug.
-        if ($canApplyDirectly) {
-            $this->applyScheduleChanges($shoot, $record);
-        } else {
-            $this->logRequestSubmitted($shoot, $record);
-        }
+            // A pending request must not move the shoot. That was the bug.
+            if ($canApplyDirectly) {
+                $this->applyScheduleChanges($shoot, $record);
+            } else {
+                $this->logRequestSubmitted($shoot, $record);
+            }
+
+            return $record;
+        }), 'shoot-reschedule-create');
 
         return response()->json([
             'message' => $canApplyDirectly
@@ -130,29 +141,32 @@ class ShootRescheduleRequestController extends Controller
 
         $applied = false;
 
-        DB::beginTransaction();
-
         try {
-            $rescheduleRequest->status = $validated['status'];
-            $rescheduleRequest->reviewed_at = now();
-            $rescheduleRequest->approved_by = $request->user()->id;
-            $rescheduleRequest->review_notes = $validated['review_notes'] ?? null;
-            $rescheduleRequest->save();
+            $applied = \App\Support\LockedWrite::run(fn () => DB::transaction(function () use ($rescheduleRequest, $validated, $request, &$applied) {
+                $rescheduleRequest->refresh();
+                $rescheduleRequest->status = $validated['status'];
+                $rescheduleRequest->reviewed_at = now();
+                $rescheduleRequest->approved_by = $request->user()->id;
+                $rescheduleRequest->review_notes = $validated['review_notes'] ?? null;
+                $rescheduleRequest->save();
 
-            if ($validated['status'] === ShootRescheduleRequest::STATUS_APPROVED) {
-                $shoot = $rescheduleRequest->shoot;
+                if ($validated['status'] === ShootRescheduleRequest::STATUS_APPROVED) {
+                    $shoot = $rescheduleRequest->shoot;
 
-                if (! $shoot) {
-                    throw new \RuntimeException('Reschedule request is not linked to a shoot.');
+                    if (! $shoot) {
+                        throw new \RuntimeException('Reschedule request is not linked to a shoot.');
+                    }
+
+                    $this->applyScheduleChanges($shoot, $rescheduleRequest);
+                    $applied = true;
                 }
 
-                $this->applyScheduleChanges($shoot, $rescheduleRequest);
-                $applied = true;
-            }
+                return $applied;
 
-            DB::commit();
+            }), 'shoot-reschedule-review');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['message' => $e->getMessage(), 'errors' => $e->errors()], 422);
         } catch (\Throwable $e) {
-            DB::rollBack();
 
             return response()->json([
                 'message' => 'Unable to update reschedule request.',
@@ -181,21 +195,26 @@ class ShootRescheduleRequestController extends Controller
         $shoot->loadMissing('services');
         $beforeSnapshot = $mailService->captureShootSnapshot($shoot);
 
-        $shoot->scheduled_date = $request->requested_date;
-        if (!empty($request->requested_time)) {
-            $shoot->time = $request->requested_time;
+        if ($shoot->units()->exists()) {
+            app(\App\Services\Shoots\MultiUnitRescheduleService::class)->apply($shoot, $request, auth()->user());
+        } else {
+            $shoot->scheduled_date = $request->requested_date;
+            if (! empty($request->requested_time)) {
+                $shoot->time = $request->requested_time;
+            }
+
+            $timeStr = $request->requested_time ?? $shoot->time ?? '10:00';
+            $timeParsed = date_parse($timeStr);
+            $hours = $timeParsed['hour'] ?? 10;
+            $minutes = $timeParsed['minute'] ?? 0;
+
+            $scheduledAt = \Carbon\Carbon::parse($request->requested_date)
+                ->setTime($hours, $minutes, 0);
+            $shoot->scheduled_at = $scheduledAt;
+
+            $shoot->save();
+
         }
-
-        $timeStr = $request->requested_time ?? $shoot->time ?? '10:00';
-        $timeParsed = date_parse($timeStr);
-        $hours = $timeParsed['hour'] ?? 10;
-        $minutes = $timeParsed['minute'] ?? 0;
-
-        $scheduledAt = \Carbon\Carbon::parse($request->requested_date)
-            ->setTime($hours, $minutes, 0);
-        $shoot->scheduled_at = $scheduledAt;
-
-        $shoot->save();
 
         // Mark applied before notifying: if a notification throws, the shoot has
         // still moved, and a retry must not move it again.
@@ -301,7 +320,7 @@ class ShootRescheduleRequestController extends Controller
      */
     private function userCanReviewRequests(?User $user): bool
     {
-        if (!$user) {
+        if (! $user) {
             return false;
         }
 
@@ -326,7 +345,7 @@ class ShootRescheduleRequestController extends Controller
 
     private function authorizeReviewer(Request $request): void
     {
-        if (!$this->userCanReviewRequests($request->user())) {
+        if (! $this->userCanReviewRequests($request->user())) {
             abort(403, 'Only staff can review reschedule requests.');
         }
     }

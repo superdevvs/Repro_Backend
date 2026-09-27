@@ -892,6 +892,9 @@ class Shoot extends Model
         return $this->belongsToMany(Service::class, 'shoot_service')
             ->withPivot([
                 'id',
+                'shoot_unit_id',
+                'client_key',
+                'duration_minutes',
                 'price',
                 'nominal_value_snapshot',
                 'quantity',
@@ -918,6 +921,11 @@ class Shoot extends Model
     public function serviceItems()
     {
         return $this->hasMany(ShootService::class);
+    }
+
+    public function units()
+    {
+        return $this->hasMany(ShootUnit::class)->orderBy('sort_order')->orderBy('id');
     }
 
     public function ghostUsers()

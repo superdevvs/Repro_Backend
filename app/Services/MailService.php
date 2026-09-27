@@ -2172,7 +2172,7 @@ class MailService
         array $serviceItemIds = []
     ): array
     {
-        $shoot->loadMissing(['services.category']);
+        $shoot->loadMissing(['services.category', 'units']);
         $serviceItemScope = collect($serviceItemIds)
             ->map(fn ($id) => (int) $id)
             ->filter()
@@ -2244,10 +2244,14 @@ class MailService
 
             $serviceName = $service->name ?? $service->service_name ?? 'Service';
             $scheduledAt = $service->pivot->scheduled_at ?? $shoot->scheduled_at;
+            $unit = $shoot->units->firstWhere('id', $service->pivot->shoot_unit_id);
+            if ($unit) $serviceName = $unit->label.' · '.$serviceName;
             $formattedSchedule = $this->formatServiceSchedule($scheduledAt);
 
             $rows[] = [
                 'shoot_service_id' => $shootServiceId ?: null,
+                'shoot_unit_id' => $unit?->id,
+                'unit_label' => $unit?->label,
                 'name' => $serviceName,
                 'display_name' => $serviceName . ($quantity > 1 ? " x{$quantity}" : ''),
                 'quantity' => $quantity,

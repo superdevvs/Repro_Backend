@@ -40,7 +40,7 @@ class ShootEditingDispatchService
             $tagged = $files->filter(fn ($file) => $file->treatment === $treatment || $file->media_type === $treatment
                 || $services->contains(fn ($service) => (int) $service->pivot->id === (int) $file->shoot_service_id));
             if ($services->isNotEmpty() || $tagged->isNotEmpty()) {
-                $addons[] = ['preset' => $preset, 'label' => $label, 'fileIds' => $tagged->pluck('id')->values()->all(), 'serviceIds' => $services->pluck('id')->values()->all()];
+                $addons[] = ['preset' => $preset, 'label' => $label, 'fileIds' => $tagged->pluck('id')->values()->all(), 'serviceIds' => $services->pluck('id')->values()->all(), 'serviceItemIds' => $services->pluck('pivot.id')->values()->all()];
             }
         }
 
@@ -84,7 +84,8 @@ class ShootEditingDispatchService
         $preset = $full ? 'full-shoot' : ($data['preset'] ?? 'listing-ready');
         $plan = $this->plan($shoot);
         $projects = [['preset' => $preset, 'label' => $full ? 'Full Shoot' : 'Selected photos', 'files' => $selected,
-            'serviceIds' => $full ? app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)->where('lane', 'photo')->pluck('service_id')->all() : []]];
+            'serviceIds' => $full ? app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)->where('lane', 'photo')->pluck('service_id')->all() : [],
+            'serviceItemIds' => $full ? app(ShootEditingAssignmentService::class)->getTrackedServiceAssignments($shoot)->where('lane', 'photo')->pluck('shoot_service_id')->all() : []]];
         if ($full) {
             foreach ($plan['addons'] as $addon) {
                 $ids = array_map('intval', $data['targets'][$addon['preset']] ?? $addon['fileIds']);
@@ -92,7 +93,7 @@ class ShootEditingDispatchService
                 if (! $ids || count($ids) !== $targets->count()) {
                     throw ValidationException::withMessages(['targets.'.$addon['preset'] => 'Select the photos for '.$addon['label'].' before sending.']);
                 }
-                $projects[] = ['preset' => $addon['preset'], 'label' => $addon['label'], 'files' => $targets, 'serviceIds' => $addon['serviceIds']];
+                $projects[] = ['preset' => $addon['preset'], 'label' => $addon['label'], 'files' => $targets, 'serviceIds' => $addon['serviceIds'], 'serviceItemIds' => $addon['serviceItemIds']];
             }
         }
         $teamId = (int) ($user->team_id ?? $user->metadata['team_id'] ?? $user->id);
@@ -125,6 +126,7 @@ class ShootEditingDispatchService
                 $workspace = StudioWorkspace::create([
                     'team_id' => $teamId, 'created_by' => $user->id, 'shoot_id' => $shoot->id,
                     'shoot_dispatch_key' => $key, 'shoot_dispatch_hash' => $inputHash, 'parent_workspace_id' => $parent, 'shoot_service_ids' => $project['serviceIds'],
+                    'shoot_service_item_ids' => $project['serviceItemIds'],
                     'name' => 'Shoot #'.$shoot->id.' · '.$project['label'], 'preset_id' => $project['preset'],
                     'media' => $project['media'], 'config' => ['prompt' => '', 'ratio' => '16:9', 'duration' => 30, 'transition' => 'none', 'transitionDuration' => 0.4, 'text' => ['title' => '', 'subtitle' => '', 'style' => 'none', 'position' => 'bottom'], 'frames' => array_map(fn ($item) => ['mediaId' => $item['id'], 'method' => 'fit', 'duration' => 5], $project['media']), 'adjustments' => $project['preset'] === 'virtual-staging' ? $staging : []],
                     'status' => 'generating', 'progress' => 0,

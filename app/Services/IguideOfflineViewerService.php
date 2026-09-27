@@ -40,10 +40,10 @@ class IguideOfflineViewerService
      */
     public function issueViewerLink(Shoot $shoot): array
     {
-        [$file, $lifecycle] = $this->resolveReadyPackage((int) $shoot->getKey());
+        [$file, $lifecycle] = $this->resolveReadyPackage((int) $shoot->getKey(), $shoot->relationLoaded('tourUnit') ? (int) data_get($shoot->iguide_data, 'manual_offline_package.file_id') : null);
         $entryPath = $this->indexEntryPath($lifecycle);
 
-        if ($this->shortLinks->enabled(ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER)) {
+        if (! $shoot->relationLoaded('tourUnit') && $this->shortLinks->enabled(ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER)) {
             return [
                 'url' => $this->shortLinks->url(
                     $this->shortLinks->remember(
@@ -127,7 +127,7 @@ class IguideOfflineViewerService
             abort(403, 'This iGUIDE viewer link is invalid or has expired.');
         }
 
-        if ($this->shortLinks->enabled(ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER)) {
+        if (! ShootFile::whereKey($fileId)->whereHas('serviceItem', fn ($query) => $query->whereNotNull('shoot_unit_id'))->exists() && $this->shortLinks->enabled(ShortLink::TYPE_IGUIDE_OFFLINE_VIEWER)) {
             [, $lifecycle] = $this->resolveReadyPackage($shootId, $fileId);
 
             return redirect()->to($this->shortLinks->url(
@@ -228,6 +228,10 @@ class IguideOfflineViewerService
     private function resolveReadyPackage(int $shootId, ?int $expectedFileId = null): array
     {
         $shoot = Shoot::find($shootId);
+        if ($shoot && $expectedFileId) {
+            $lineId = ShootFile::whereKey($expectedFileId)->where('shoot_id', $shootId)->value('shoot_service_id');
+            $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($shoot, $lineId);
+        }
         $lifecycle = data_get($shoot?->iguide_data, 'manual_offline_package');
         $lifecycleFileId = is_array($lifecycle) && is_numeric($lifecycle['file_id'] ?? null)
             ? (int) $lifecycle['file_id']
@@ -609,6 +613,7 @@ HTML;
 
     private function isPubliclyReleased(Shoot $shoot): bool
     {
+        if ($shoot->relationLoaded('releasedUnitLineIds')) return count($shoot->getRelation('releasedUnitLineIds')) > 0;
         if ($shoot->admin_verified_at !== null) {
             return true;
         }

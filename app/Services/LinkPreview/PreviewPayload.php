@@ -44,6 +44,7 @@ class PreviewPayload
         public readonly ?string $videoUrl = null,
         public readonly ?int $shootId = null,
         public readonly string $fingerprintSeed = '',
+        public readonly ?int $unitId = null,
     ) {
     }
 

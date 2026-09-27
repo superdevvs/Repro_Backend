@@ -22,10 +22,16 @@ class AssignEditorAction
     {
         $validated = $request->validate([
             'editor_id' => 'nullable|exists:users,id',
+            'shoot_unit_id' => 'nullable|integer',
         ]);
 
         $selectedEditor = $this->support->resolveEditor($validated['editor_id'] ?? null);
         $trackedAssignments = $this->editingAssignmentService->getTrackedServiceAssignments($shoot);
+        if (! empty($validated['shoot_unit_id'])) {
+            abort_unless($shoot->units()->whereKey($validated['shoot_unit_id'])->exists(), 422, 'This unit does not belong to the shoot.');
+            $trackedAssignments = $trackedAssignments->where('shoot_unit_id', (int) $validated['shoot_unit_id']);
+            abort_if($trackedAssignments->isEmpty(), 422, 'This unit has no services requiring editing.');
+        }
 
         if ($trackedAssignments->isNotEmpty()) {
             $unsupportedLane = $trackedAssignments
@@ -39,7 +45,7 @@ class AssignEditorAction
             }
 
             foreach ($trackedAssignments as $assignment) {
-                \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('service_id', $assignment['service_id'])
+                \Illuminate\Support\Facades\DB::table('shoot_service')->where('shoot_id', $shoot->id)->where('id', $assignment['shoot_service_id'])
                     ->update([$assignment['editor_column'] => $selectedEditor->id, $assignment['completed_column'] => null, 'updated_at' => now()]);
             }
 

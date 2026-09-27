@@ -52,7 +52,7 @@ class StoreShootRequest extends FormRequest
         $canOmitServices = $userRole === 'superadmin'
             && in_array($shootType, Shoot::INTERNAL_NO_CHARGE_SHOOT_TYPES, true);
 
-        return [
+        return array_merge(\App\Services\Shoots\MultiUnitBookingService::rules(), [
             // Client ID: required for admin, optional for client (defaults to auth user)
             'client_id' => [
                 $isInternalScheduler ? 'required' : 'nullable',
@@ -107,7 +107,7 @@ class StoreShootRequest extends FormRequest
             ],
 
             // Services: required array with service_id, quantity, and price
-            'services' => [$canOmitServices ? 'nullable' : 'required', 'array', $canOmitServices ? 'min:0' : 'min:1'],
+            'services' => [$this->has('service_lines') || $canOmitServices ? 'nullable' : 'required', 'array', $canOmitServices ? 'min:0' : 'min:1'],
             'services.*.id' => 'required|exists:services,id',
             'services.*.quantity' => 'nullable|integer|min:1',
             'services.*.price' => 'nullable|numeric|min:0',
@@ -175,7 +175,7 @@ class StoreShootRequest extends FormRequest
             'is_private_listing' => 'nullable|boolean',
             'listing_type' => 'nullable|string|in:for_sale,for_rent',
             'property_status' => 'nullable|string|in:available,coming_soon,pending,sold,rented',
-        ];
+        ]);
     }
 
     /**

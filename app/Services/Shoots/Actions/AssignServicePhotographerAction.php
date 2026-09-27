@@ -48,6 +48,15 @@ class AssignServicePhotographerAction
             }
         }
 
+        if ($shoot->units()->exists()) {
+            $this->assignUnitLines($shoot, $assignments, $payload, $actor);
+            if ($radiusViolations !== []) {
+                $this->logRadiusOverrides($shoot, $radiusViolations, $radiusOverrideReason, $actor);
+            }
+
+            return $shoot->fresh(['client', 'rep', 'photographer', 'services.category']);
+        }
+
         $this->shootMutationSupportService->checkServiceItemPhotographerAvailability(
             $this->buildTargetServices($shoot, $assignments),
             $shoot->photographer_id,
@@ -78,9 +87,10 @@ class AssignServicePhotographerAction
 
     protected function normalizeAssignments(array $payload): array
     {
-        if (isset($payload['service_id'])) {
+        if (isset($payload['service_id']) || isset($payload['shoot_service_id'])) {
             return [[
-                'service_id' => $payload['service_id'],
+                'service_id' => $payload['service_id'] ?? null,
+                'shoot_service_id' => $payload['shoot_service_id'] ?? null,
                 'photographer_id' => $payload['photographer_id'] ?? null,
             ]];
         }
@@ -91,15 +101,48 @@ class AssignServicePhotographerAction
             ?? $payload;
 
         return collect($assignments)
-            ->filter(fn ($assignment) => is_array($assignment) && !empty($assignment['service_id']))
+            ->filter(fn ($assignment) => is_array($assignment) && (!empty($assignment['service_id']) || !empty($assignment['shoot_service_id'])))
             ->map(fn (array $assignment) => [
-                'service_id' => (int) $assignment['service_id'],
-                'photographer_id' => array_key_exists('photographer_id', $assignment) && $assignment['photographer_id'] !== ''
+                'service_id' => isset($assignment['service_id']) ? (int) $assignment['service_id'] : null,
+                'shoot_service_id' => isset($assignment['shoot_service_id']) ? (int) $assignment['shoot_service_id'] : null,
+                'photographer_id' => array_key_exists('photographer_id', $assignment) && $assignment['photographer_id'] !== '' && $assignment['photographer_id'] !== null
                     ? (int) $assignment['photographer_id']
                     : null,
             ])
             ->values()
             ->all();
+    }
+
+    private function assignUnitLines(Shoot $shoot, array $assignments, array $payload, User $actor): void
+    {
+        $lines = $shoot->serviceItems()->get();
+        $byId = [];
+        foreach ($assignments as $index => $assignment) {
+            $id = (int) ($assignment['shoot_service_id'] ?? 0);
+            $line = $lines->firstWhere('id', $id);
+            if (! $line || isset($byId[$id]) || (! empty($assignment['service_id']) && (int) $assignment['service_id'] !== (int) $line->service_id)) {
+                throw ValidationException::withMessages(["service_photographers.$index.shoot_service_id" => ['Choose a unique booked service line belonging to this shoot.']]);
+            }
+            $byId[$id] = $assignment;
+        }
+        if ($byId === []) {
+            throw ValidationException::withMessages(['service_photographers' => ['At least one booked service-line assignment is required.']]);
+        }
+        $changes = [
+            'expected_units_revision' => $payload['expected_units_revision'] ?? null,
+            'service_lines' => $lines->map(fn ($line) => [
+                'shoot_service_id' => $line->id, 'client_key' => $line->client_key,
+                'shoot_unit_id' => $line->shoot_unit_id, 'service_id' => $line->service_id,
+                'photographer_id' => array_key_exists($line->id, $byId) ? $byId[$line->id]['photographer_id'] : $line->photographer_id,
+            ])->all(),
+        ];
+        $prepared = app(\App\Services\Shoots\MultiUnitBookingService::class)->prepare($shoot, $changes, $actor);
+        foreach ($prepared['services'] as $line) {
+            if (! empty($line['photographer_id']) && ! empty($line['scheduled_at'])) {
+                $this->shootMutationSupportService->assertWithinAvailabilityBounds((int) $line['photographer_id'], new \DateTime($line['scheduled_at']), (int) $line['duration_minutes'], $shoot->id);
+            }
+        }
+        app(\App\Services\Shoots\ShootEditablePayloadService::class)->apply($shoot, $changes, $actor);
     }
 
     protected function buildTargetServices(Shoot $shoot, array $assignments): array

@@ -27,6 +27,7 @@ class IguideOfflineUploadSession extends Model
     protected $fillable = [
         'id',
         'shoot_id',
+        'shoot_service_id',
         'user_id',
         'idempotency_key',
         'original_filename',

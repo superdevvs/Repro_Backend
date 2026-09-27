@@ -215,7 +215,7 @@ class IguideOfflinePackageService
         $uploadId = $requestedUploadId ?? (string) Str::uuid();
 
         return DB::transaction(function () use ($shoot, $inspection, $user, $uploadId, $requestedUploadId): array {
-            $lockedShoot = Shoot::query()->lockForUpdate()->findOrFail($shoot->getKey());
+            $lockedShoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->refreshProjection($shoot, true);
             $iguideData = is_array($lockedShoot->iguide_data) ? $lockedShoot->iguide_data : [];
             $current = $iguideData['manual_offline_package'] ?? null;
             $previousReady = null;
@@ -272,7 +272,7 @@ class IguideOfflinePackageService
 
             $iguideData['manual_offline_package'] = $lifecycle;
             $lockedShoot->iguide_data = $iguideData;
-            $lockedShoot->save();
+            app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($lockedShoot);
             $shoot->setRawAttributes($lockedShoot->getAttributes(), true);
 
             return $lifecycle;
@@ -337,7 +337,7 @@ class IguideOfflinePackageService
 
         if ($supersededFileId !== null) {
             $this->cleanupSupersededPackage($file, $supersededFileId);
-            $lifecycle = $this->currentLifecycle((int) $file->shoot_id);
+            $lifecycle = $this->currentLifecycle(app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($file->shoot, $file->shoot_service_id));
         }
 
         return $lifecycle;
@@ -395,7 +395,7 @@ class IguideOfflinePackageService
     /** @return array<string,mixed>|null */
     public function currentLifecycle(Shoot|int $shoot): ?array
     {
-        $model = $shoot instanceof Shoot ? $shoot->fresh() : Shoot::find($shoot);
+        $model = $shoot instanceof Shoot ? app(\App\Services\Shoots\ShootUnitTourScope::class)->refreshProjection($shoot) : Shoot::find($shoot);
         $data = is_array($model?->iguide_data) ? $model->iguide_data : [];
         $lifecycle = $data['manual_offline_package'] ?? null;
 
@@ -426,6 +426,7 @@ class IguideOfflinePackageService
                 return null;
             }
 
+            $shoot = app(\App\Services\Shoots\ShootUnitTourScope::class)->forUpload($shoot, $uploadId);
             $iguideData = is_array($shoot->iguide_data) ? $shoot->iguide_data : [];
             $lifecycle = $iguideData['manual_offline_package'] ?? null;
             if (! is_array($lifecycle) || ($lifecycle['upload_id'] ?? $lifecycle['id'] ?? null) !== $uploadId) {
@@ -435,7 +436,7 @@ class IguideOfflinePackageService
             $updated = $callback($lifecycle);
             $iguideData['manual_offline_package'] = $updated;
             $shoot->iguide_data = $iguideData;
-            $shoot->save();
+            app(\App\Services\Shoots\ShootUnitTourScope::class)->persistProvider($shoot);
 
             return $updated;
         });
@@ -593,7 +594,7 @@ class IguideOfflinePackageService
             return;
         }
 
-        $currentLifecycle = $this->currentLifecycle((int) $currentFile->shoot_id);
+        $currentLifecycle = $this->currentLifecycle(app(\App\Services\Shoots\ShootUnitTourScope::class)->forLine($currentFile->shoot, $currentFile->shoot_service_id));
         if (($currentLifecycle['status'] ?? null) !== 'ready'
             || (int) ($currentLifecycle['file_id'] ?? 0) !== (int) $currentFile->getKey()
             || $currentFile->fresh()?->scan_status !== ShootFile::SCAN_STATUS_CLEAN) {
@@ -616,7 +617,8 @@ class IguideOfflinePackageService
                 $cleanup['cleanup_status'] = 'already_removed';
                 $cleanup['local_blob_deleted'] = true;
                 $cleanup['row_deleted'] = true;
-            } elseif ((int) $superseded->shoot_id !== (int) $currentFile->shoot_id
+            } elseif ((int) $superseded->shoot_service_id !== (int) $currentFile->shoot_service_id
+                || (int) $superseded->shoot_id !== (int) $currentFile->shoot_id
                 || ! $superseded->isIguideOfflinePackage()) {
                 $cleanup['cleanup_status'] = 'invalid_reference_retained';
             } else {

@@ -36,6 +36,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         public int $shootId,
         /** @var array<int, array<string, mixed>> Floorplan items from CubiCasaService::buildFloorplanList() */
         public array $floorplans,
+        public ?int $shootServiceId = null,
     ) {
         $this->onQueue('default');
     }
@@ -44,6 +45,9 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
     {
         $shoot = Shoot::find($this->shootId);
         if (!$shoot || $shoot->isInternalTestShoot()) {
+            return;
+        }
+        if ($this->shootServiceId && ! $shoot->serviceItems()->whereKey($this->shootServiceId)->exists()) {
             return;
         }
         if (empty($this->floorplans)) {
@@ -61,6 +65,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
         $existingByKey = ShootFile::query()
             ->where('shoot_id', $shoot->id)
             ->where('media_type', 'floorplan')
+            ->where('shoot_service_id', $this->shootServiceId)
             ->get()
             ->keyBy(function (ShootFile $f) {
                 $metadata = is_array($f->metadata) ? $f->metadata : [];
@@ -98,7 +103,9 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
                     substr(md5($assetKey), 0, 8),
                     $extension,
                 );
-                $relativePath = sprintf('shoots/%d/floorplans/%s', $shoot->id, $storedFilename);
+                $relativePath = $this->shootServiceId
+                    ? sprintf('shoots/%d/services/%d/floorplans/%s', $shoot->id, $this->shootServiceId, $storedFilename)
+                    : sprintf('shoots/%d/floorplans/%s', $shoot->id, $storedFilename);
 
                 $response = Http::withOptions([
                     'verify' => config('app.env') === 'production',
@@ -129,6 +136,7 @@ class IngestCubiCasaAssetsJob implements ShouldQueue
 
                 $shootFile = ShootFile::create([
                     'shoot_id' => $shoot->id,
+                    'shoot_service_id' => $this->shootServiceId,
                     'filename' => $filename,
                     'stored_filename' => $storedFilename,
                     'path' => $publicPath,

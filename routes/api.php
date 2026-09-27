@@ -1320,3 +1320,5 @@ Route::middleware(['auth:sanctum', 'role:admin,superadmin,editing_manager'])->pr
 // Independent monitor authorization: short requests only; the gateway owns streaming.
 Route::middleware(['auth:sanctum', 'role:superadmin', 'throttle:120,1'])->post('admin/system-overview/server/session', [\App\Http\Controllers\API\Admin\ServerMonitorController::class, 'session']);
 Route::middleware('throttle:600,1')->post('admin/system-overview/server/validate', [\App\Http\Controllers\API\Admin\ServerMonitorController::class, 'validateSession']);
+
+require __DIR__.'/shoot-unit-tours.php';
