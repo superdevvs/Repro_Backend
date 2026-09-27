@@ -329,6 +329,42 @@ class UpdateProfileTest extends TestCase
         $this->assertSame(['category:old'], $user->metadata['specialties']);
     }
 
+    public function test_photographer_can_save_and_clear_an_id_or_passport_document(): void
+    {
+        $user = User::factory()->photographer()->create([
+            'license_number' => 'KEEP-ME',
+            'metadata' => ['specialties' => ['category:old']],
+        ]);
+        $token = $user->createToken('id-document')->plainTextToken;
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/profile', [
+                'idDocumentFile' => 'https://files.example/passport.pdf',
+                'idDocumentFileName' => 'Passport',
+            ])
+            ->assertOk()
+            ->assertJsonPath('user.metadata.idDocumentFile', 'https://files.example/passport.pdf')
+            ->assertJsonPath('user.metadata.idDocumentFileName', 'Passport')
+            ->assertJsonPath('user.license_number', 'KEEP-ME');
+
+        $user->refresh();
+        $this->assertSame('KEEP-ME', $user->license_number);
+        $this->assertSame('https://files.example/passport.pdf', $user->metadata['idDocumentFile']);
+        $this->assertSame(['category:old'], $user->metadata['specialties']);
+
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->putJson('/api/profile', [
+                'idDocumentFile' => null,
+                'idDocumentFileName' => null,
+            ])
+            ->assertOk();
+
+        $user->refresh();
+        $this->assertArrayNotHasKey('idDocumentFile', $user->metadata);
+        $this->assertArrayNotHasKey('idDocumentFileName', $user->metadata);
+        $this->assertSame('KEEP-ME', $user->license_number);
+    }
+
     public function test_non_photographer_cannot_store_pilot_license_metadata_on_profile(): void
     {
         $user = User::factory()->create([

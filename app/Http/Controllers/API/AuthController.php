@@ -450,6 +450,8 @@ class AuthController extends Controller
         ], $onboardingRules, $user->role === 'photographer' ? [
             // Collected on photographer account creation and editable later from Settings.
             'license_number' => 'nullable|string|max:100',
+            'idDocumentFile' => 'nullable|string|url|max:2048',
+            'idDocumentFileName' => 'nullable|string|max:255',
             'insuranceNumber' => 'nullable|string|max:255',
             'insuranceFile' => 'nullable|string|url|max:2048',
             'insuranceFileName' => 'nullable|string|max:255',
@@ -530,6 +532,8 @@ class AuthController extends Controller
 
         if ($user->role === 'photographer') {
             foreach ([
+                'idDocumentFile',
+                'idDocumentFileName',
                 'insuranceNumber',
                 'insuranceFile',
                 'insuranceFileName',
