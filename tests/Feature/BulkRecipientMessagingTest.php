@@ -165,8 +165,15 @@ class BulkRecipientMessagingTest extends TestCase
         $response->assertOk();
         $response->assertJsonPath('sent', 1);
         $response->assertJsonPath('failed', 1);
-        $this->assertSame(1, Message::query()->where('channel', 'SMS')->where('status', 'SENT')->count());
-        $this->assertSame('+12025550101', Message::query()->where('status', 'SENT')->value('to_address'));
+        $response->assertJsonPath('thread.group.name', 'Weekend crew');
+        $this->assertSame(1, Message::query()->where('hidden_from_inbox', false)->where('status', 'SENT')->count());
+        $this->assertSame('+12025550101', Message::query()->where('hidden_from_inbox', true)->where('status', 'SENT')->value('to_address'));
+
+        $threads = $this->getJson('/api/messaging/sms/threads');
+        $threads->assertOk();
+        $threads->assertJsonCount(1, 'data');
+        $threads->assertJsonPath('data.0.group.name', 'Weekend crew');
+        $threads->assertJsonPath('data.0.group.memberCount', 2);
     }
 
     public function test_sms_send_accepts_several_numbers_at_once(): void

@@ -46,6 +46,7 @@ class Message extends Model
         'related_account_id',
         'related_invoice_id',
         'thread_id',
+        'hidden_from_inbox',
     ];
 
     protected $casts = [
@@ -58,6 +59,7 @@ class Message extends Model
         'cc_addresses_json' => 'array',
         'bcc_addresses_json' => 'array',
         'metadata' => 'array',
+        'hidden_from_inbox' => 'boolean',
     ];
 
     public function attributesToArray(): array

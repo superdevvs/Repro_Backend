@@ -37,6 +37,18 @@ class SmsThreadResource extends JsonResource
             'aiRateLimitedAt' => $this->metadata['ai_rate_limited_at'] ?? null,
             'contactAiEnabled' => optional($this->contact)->sms_ai_enabled ?? null,
             'contactOptedOut' => optional($this->contact)->sms_opt_out ?? null,
+            'group' => $this->sms_group_id && $this->smsGroup ? [
+                'id' => $this->smsGroup->id,
+                'name' => $this->smsGroup->name,
+                'memberCount' => $this->smsGroup->members_count ?? $this->smsGroup->members->count(),
+                'members' => $this->smsGroup->relationLoaded('members')
+                    ? $this->smsGroup->members->map(fn ($member) => [
+                        'id' => $member->id,
+                        'name' => $member->name,
+                        'phone' => $member->phone,
+                    ])->values()->all()
+                    : [],
+            ] : null,
         ];
     }
 }

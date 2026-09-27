@@ -25,6 +25,7 @@ class MessageThread extends Model
         'ai_paused_until',
         'ai_session_id',
         'metadata',
+        'sms_group_id',
     ];
 
     protected $casts = [
@@ -48,6 +49,11 @@ class MessageThread extends Model
     public function assignedTo(): BelongsTo
     {
         return $this->belongsTo(User::class, 'assigned_to_user_id');
+    }
+
+    public function smsGroup(): BelongsTo
+    {
+        return $this->belongsTo(SmsGroup::class, 'sms_group_id');
     }
 
     public function messages(): HasMany

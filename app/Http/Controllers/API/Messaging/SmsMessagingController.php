@@ -38,11 +38,25 @@ class SmsMessagingController extends Controller
 
         $threads = $this->messaging
             ->listThreads(['channel' => 'SMS'])
-            ->with(['contact', 'assignedTo'])
+            ->with(['contact', 'assignedTo', 'smsGroup' => fn ($query) => $query->withCount('members')])
+            ->where(function ($query) {
+                $query->whereNotNull('sms_group_id')
+                    ->orWhereHas('messages', function ($messages) {
+                        $messages->where(function ($inner) {
+                            $inner->where('direction', 'INBOUND')
+                                ->orWhere('hidden_from_inbox', false)
+                                ->orWhereNull('hidden_from_inbox');
+                        });
+                    });
+            })
             ->when($search, function ($query) use ($search) {
-                $query->whereHas('contact', function ($sub) use ($search) {
-                    $sub->where('name', 'like', "%{$search}%")
-                        ->orWhere('phone', 'like', "%{$search}%");
+                $query->where(function ($inner) use ($search) {
+                    $inner->whereHas('contact', function ($sub) use ($search) {
+                        $sub->where('name', 'like', "%{$search}%")
+                            ->orWhere('phone', 'like', "%{$search}%");
+                    })->orWhereHas('smsGroup', function ($sub) use ($search) {
+                        $sub->where('name', 'like', "%{$search}%");
+                    });
                 });
             })
             ->when($filter === 'unanswered', fn ($query) => $query->where('last_direction', 'INBOUND'))
@@ -64,7 +78,7 @@ class SmsMessagingController extends Controller
         $this->ensureSmsThread($thread);
         $this->authorizeThread($thread, $request->user()?->id);
 
-        $thread->load(['contact', 'assignedTo']);
+        $thread->load(['contact', 'assignedTo', 'smsGroup.members']);
         $messages = $thread->messages()->orderBy('created_at')->get();
         $this->markThreadAsRead($thread, $request->user()?->id);
 
@@ -276,6 +290,13 @@ class SmsMessagingController extends Controller
             'contact_type' => ['nullable', 'string'],
         ]);
 
+        $groupIds = array_values(array_unique(array_map('intval', $data['group_ids'] ?? [])));
+        if ($groupIds !== []) {
+            $direct = $this->collectDestinations(array_merge($data, ['group_ids' => []]));
+
+            return $this->sendGroups($request, $groupIds, $direct, $data);
+        }
+
         $destinations = $this->collectDestinations($data);
         if (count($destinations) > self::MAX_RECIPIENTS) {
             throw ValidationException::withMessages([
@@ -304,6 +325,12 @@ class SmsMessagingController extends Controller
             'body' => ['required', 'string', 'max:1200'],
             'sms_number_id' => ['nullable', 'exists:sms_numbers,id'],
         ]);
+
+        if ($thread->sms_group_id) {
+            return response()->json([
+                'message' => 'Reply from the group conversation sends to the whole group. Use New SMS for one person.',
+            ], 422);
+        }
 
         $contact = $thread->contact ?? Contact::findOrFail($thread->contact_id);
         $toNumber = $contact->phone ?? Arr::get($contact->phones_json, '0.number');
@@ -375,6 +402,189 @@ class SmsMessagingController extends Controller
         $this->markThreadAsRead($thread, $request->user()?->id);
 
         return response()->json(['status' => 'ok']);
+    }
+
+    /**
+     * @param  array<int, int>  $groupIds
+     * @param  array<int, array<string, mixed>>  $direct
+     * @param  array<string, mixed>  $data
+     */
+    protected function sendGroups(Request $request, array $groupIds, array $direct, array $data): JsonResponse
+    {
+        $results = [];
+        $sent = 0;
+        $primaryThread = null;
+        $primaryMessage = null;
+        $covered = [];
+
+        foreach ($groupIds as $groupId) {
+            $group = SmsGroup::query()->with('members.user')->find($groupId);
+            if (!$group) {
+                continue;
+            }
+            $outcome = $this->deliverGroup($request, $group, $data);
+            $sent += $outcome['sent'];
+            $results = array_merge($results, $outcome['results']);
+            foreach ($outcome['phones'] as $phone) {
+                $covered[$phone] = true;
+            }
+            $primaryThread ??= $outcome['thread'];
+            $primaryMessage ??= $outcome['message'];
+        }
+
+        foreach ($direct as $destination) {
+            if (!$destination['valid'] || isset($covered[$destination['phone']])) {
+                continue;
+            }
+            try {
+                $message = $this->messaging->sendSms($this->smsPayload($request, $destination, $data));
+                $sent++;
+                $primaryThread ??= $message->thread->load(['contact', 'assignedTo']);
+                $primaryMessage ??= $message;
+                $results[] = ['to' => $destination['phone'], 'status' => 'sent'];
+            } catch (SmsSendException $e) {
+                $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => \App\Services\ApiErrorResponder::publicMessage($e)];
+            } catch (\RuntimeException $e) {
+                $results[] = [
+                    'to' => $destination['phone'],
+                    'status' => 'failed',
+                    'error' => $e->getMessage() === 'Recipient is opted out of SMS.' ? 'Recipient is opted out of SMS.' : 'SMS could not be sent.',
+                ];
+            } catch (\Throwable $e) {
+                report($e);
+                $results[] = ['to' => $destination['phone'], 'status' => 'failed', 'error' => 'SMS could not be sent.'];
+            }
+        }
+
+        $failed = count(array_filter($results, fn ($result) => ($result['status'] ?? '') === 'failed'));
+        if ($sent === 0 || !$primaryThread) {
+            return response()->json([
+                'success' => false,
+                'error' => 'sms_send_failed',
+                'message' => $results[0]['error'] ?? 'SMS could not be sent.',
+                'sent' => 0,
+                'failed' => $failed,
+                'results' => $results,
+            ], 422);
+        }
+
+        $primaryThread->load(['contact', 'assignedTo', 'smsGroup.members']);
+
+        return response()->json([
+            'sent' => $sent,
+            'failed' => $failed,
+            'results' => $results,
+            'message' => $primaryMessage ? SmsMessageResource::make($primaryMessage) : null,
+            'thread' => SmsThreadResource::make($primaryThread),
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array{sent: int, results: array<int, array<string, mixed>>, phones: array<int, string>, thread: ?MessageThread, message: ?\App\Models\Message}
+     */
+    protected function deliverGroup(Request $request, SmsGroup $group, array $data): array
+    {
+        $sent = 0;
+        $results = [];
+        $phones = [];
+        $phoneKey = 'group:'.$group->id;
+        $email = 'sms-group-'.$group->id.'@groups.repro.local';
+        $contact = Contact::query()->updateOrCreate(
+            ['phone' => $phoneKey],
+            ['name' => $group->name, 'type' => 'group', 'email' => $email]
+        );
+        $contact->fill(['name' => $group->name, 'type' => 'group'])->save();
+
+        foreach ($group->members as $member) {
+            $phone = $member->phone;
+            $name = $member->name;
+            $userId = $member->user_id ? (int) $member->user_id : null;
+            $type = null;
+            if ($member->user) {
+                $livePhone = $this->phoneFromUser($member->user);
+                if ($livePhone !== '') {
+                    $phone = $livePhone;
+                }
+                $name = $name ?: $member->user->name;
+                $type = $member->user->role;
+            }
+            $normalized = $this->normalizePhone((string) $phone);
+            if ($normalized === '' || isset($phones[$normalized])) {
+                continue;
+            }
+            $phones[$normalized] = $normalized;
+            $destination = [
+                'phone' => $normalized,
+                'name' => $name,
+                'user_id' => $userId,
+                'type' => $type,
+                'valid' => true,
+            ];
+            try {
+                $this->messaging->sendSms($this->smsPayload($request, $destination, $data, hidden: true));
+                $sent++;
+                $results[] = ['to' => $normalized, 'status' => 'sent'];
+            } catch (SmsSendException $e) {
+                $results[] = ['to' => $normalized, 'status' => 'failed', 'error' => \App\Services\ApiErrorResponder::publicMessage($e)];
+            } catch (\RuntimeException $e) {
+                $results[] = [
+                    'to' => $normalized,
+                    'status' => 'failed',
+                    'error' => $e->getMessage() === 'Recipient is opted out of SMS.' ? 'Recipient is opted out of SMS.' : 'SMS could not be sent.',
+                ];
+            } catch (\Throwable $e) {
+                report($e);
+                $results[] = ['to' => $normalized, 'status' => 'failed', 'error' => 'SMS could not be sent.'];
+            }
+        }
+
+        $thread = null;
+        $message = null;
+        if ($sent > 0) {
+            $message = $this->messaging->recordSentSmsCopy([
+                'to' => $phoneKey,
+                'body_text' => $data['body_text'],
+                'sms_number_id' => $data['sms_number_id'] ?? null,
+                'user_id' => $request->user()?->id,
+                'contact_phone' => $phoneKey,
+                'contact_email' => $email,
+                'contact_name' => $group->name,
+                'contact_type' => 'group',
+                'hidden_from_inbox' => false,
+            ]);
+            $thread = $message->thread;
+            $thread->forceFill(['sms_group_id' => $group->id])->save();
+            $thread = $thread->fresh(['contact', 'assignedTo', 'smsGroup.members']);
+        }
+
+        return [
+            'sent' => $sent,
+            'results' => $results,
+            'phones' => array_values($phones),
+            'thread' => $thread,
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $destination
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function smsPayload(Request $request, array $destination, array $data, bool $hidden = false): array
+    {
+        return [
+            'to' => $destination['phone'],
+            'body_text' => $data['body_text'],
+            'sms_number_id' => $data['sms_number_id'] ?? null,
+            'user_id' => $request->user()?->id,
+            'contact_phone' => $destination['phone'],
+            'contact_name' => $destination['name'] ?? null,
+            'contact_type' => $destination['type'] ?? null,
+            'contact_user_id' => $destination['user_id'] ?? null,
+            'hidden_from_inbox' => $hidden,
+        ];
     }
 
     /**

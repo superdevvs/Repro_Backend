@@ -186,6 +186,28 @@ class MessagingService
     /**
      * @param  array<string, mixed>  $payload
      */
+    /**
+     * Store an already-sent SMS on a thread without calling the provider.
+     * Used for the single group conversation that represents a blast.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    public function recordSentSmsCopy(array $payload): Message
+    {
+        $number = $this->resolveSmsNumber($payload);
+        $message = $this->storeMessageRecord(
+            array_merge($payload, ['from' => $number->phone_number]),
+            null,
+            'SMS',
+            direction: 'OUTBOUND',
+            status: 'SENT',
+            providerOverride: 'TELNYX'
+        );
+        $message->update(['sent_at' => now(), 'status' => 'SENT']);
+
+        return $message->fresh();
+    }
+
     public function sendSms(array $payload): Message
     {
         if (!empty($payload['related_shoot_id']) && Shoot::find($payload['related_shoot_id'])?->isInternalTestShoot()) {
@@ -357,6 +379,7 @@ class MessagingService
             'related_invoice_id' => $payload['related_invoice_id'] ?? null,
             'thread_id' => $thread->id,
             'message_channel_id' => $channel?->id,
+            'hidden_from_inbox' => (bool) ($payload['hidden_from_inbox'] ?? false),
         ]);
 
         $thread = $this->updateThreadForMessage($thread, $message);
